@@ -441,13 +441,18 @@ async function runImport(args, io, storePath) {
 
 function pendingRequestsForImportedHead(candidate) {
   const head = candidate.bundle?.head;
-  if (head?.status !== 'needs_host') return [];
   const closureBytes = carrierBundleBlobBytes(candidate.bundle, head.turnClosureRef);
+  let summary;
   try {
-    return inspectTurnOutput(closureBytes).hostRequests;
+    summary = inspectTurnOutput(closureBytes);
   } catch (error) {
-    fail('ERR_IMPORT_PREFLIGHT_CLOSURE_UNDECODABLE', 'receiver preflight could not inspect needs_host closure', { cause: error.message });
+    fail('ERR_IMPORT_PREFLIGHT_CLOSURE_UNDECODABLE', 'receiver preflight could not inspect selected closure', { cause: error.message });
   }
+  const decodedStatus = importClosureStatusLabel(summary.status);
+  if (head.status !== decodedStatus) {
+    fail('ERR_IMPORT_PREFLIGHT_HEAD_STATUS_MISMATCH', 'receiver preflight requires imported head status to match selected closure', { headStatus: head.status, decodedStatus });
+  }
+  return decodedStatus === 'needs_host' ? summary.hostRequests : [];
 }
 
 function carrierBundleBlobBytes(bundle, ref) {
@@ -461,6 +466,15 @@ function carrierBundleBlobBytes(bundle, ref) {
     fail('ERR_IMPORT_PREFLIGHT_CLOSURE_BLOB_MISMATCH', 'receiver preflight closure bytes do not match the selected head ref');
   }
   return bytes;
+}
+
+function importClosureStatusLabel(status) {
+  if (status === 0) return 'needs_host';
+  if (status === 2) return 'completed';
+  if (status === 3) return 'failed';
+  if (status === 4) return 'blocked';
+  if (status === 5) return 'cancelled';
+  return `world-status:${status}`;
 }
 
 async function runRecover(args, io, storePath) {

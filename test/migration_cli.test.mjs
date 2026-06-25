@@ -646,6 +646,37 @@ describe('migration, branching, and CLI diagnostics', () => {
         }),
         { code: 'ERR_IMPORT_PREFLIGHT_BLOCKED' },
       );
+      const tamperedStatusPackagePath = path.join(sourceRoot, 'tampered-status-package.json');
+      await writeFile(tamperedStatusPackagePath, JSON.stringify({
+        ...packageJson,
+        bundle: {
+          ...packageJson.bundle,
+          head: {
+            ...packageJson.bundle.head,
+            status: 'completed',
+            turnClosureRef: {
+              algorithm: 'sha256',
+              checksum: pendingClosureBlob.checksum,
+              byteLength: pendingClosureBlob.byteLength,
+            },
+            turnClosureWorldFingerprint: 'world:closure:tampered-status-import',
+          },
+          blobs: [...packageJson.bundle.blobs, pendingClosureBlob],
+        },
+      }));
+      await assert.rejects(
+        () => runNodeCli([
+          'import',
+          '--json',
+          '--store', receiverRoot,
+          '--package', tamperedStatusPackagePath,
+          '--run', 'tampered-status-run',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_IMPORT_PREFLIGHT_HEAD_STATUS_MISMATCH' },
+      );
 
       output = '';
       const importCode = await runNodeCli([
@@ -672,7 +703,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         assert.equal((await receiverStore.getApplication(run.applicationId)).applicationId, run.applicationId);
         const receiverHead = await receiverStore.readHead('receiver-run', 'main');
         assert.equal(receiverHead.turnClosureWorldFingerprint, head.turnClosureWorldFingerprint);
-        assert.deepEqual([...await receiverStore.getBlob(receiverHead.turnClosureRef)], [...fromUtf8('closure')]);
+        assert.deepEqual([...await receiverStore.getBlob(receiverHead.turnClosureRef)], [...fixtureTurnClosureBytes()]);
         await assert.rejects(
           () => receiverStore.readHead('receiver-run', 'alternate'),
           { code: 'ERR_HEAD_NOT_FOUND' },
@@ -1068,7 +1099,7 @@ async function fixtureDirectoryStore(root, options = {}) {
   try {
     const imageRef = await store.putBlob(fromUtf8('image'));
     const manifestRef = await store.putBlob(fromUtf8('manifest'));
-    const closureRef = await store.putBlob(fromUtf8('closure'));
+    const closureRef = await store.putBlob(fixtureTurnClosureBytes());
     const app = createApplicationRecord({
       applicationId: 'directory-app',
       universalWasmChecksum: 'sha256:fixture',
