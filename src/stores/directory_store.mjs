@@ -1,8 +1,9 @@
-import { mkdir, open, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
+import { link, mkdir, open, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
 import { createApplicationRecord } from '../core/application.mjs';
+import { assertEffectRecord } from '../core/effect_journal.mjs';
 import { ClosureStore, assertBlobRef, assertBytes, makeBlobRef, stableJson } from '../core/store.mjs';
 import { fail } from '../core/store.mjs';
 import { NodeStoreLock } from '../node/node_lock.mjs';
@@ -161,8 +162,6 @@ export class DirectoryStore extends ClosureStore {
   async importRun(bundle) {
     assertBundleApplicationMatchesRun(bundle);
     assertBundleEffectsScoped(bundle);
-    if (await exists(runPath(this.root, bundle.run.runId))) fail('ERR_IMPORT_RUN_EXISTS');
-    if (await exists(this.headPath(bundle.run.runId, bundle.branchId))) fail('ERR_IMPORT_HEAD_EXISTS');
     for (const blob of bundle.blobs ?? []) {
       if (Array.isArray(blob.bytes)) {
         const ref = await this.putBlob(Uint8Array.from(blob.bytes));
@@ -174,17 +173,44 @@ export class DirectoryStore extends ClosureStore {
     for (const ref of collectBlobRefs(bundle.run, bundle.application, bundle.head, bundle.effects ?? [])) {
       if (!await this.hasBlob(ref)) fail('ERR_IMPORT_BLOB_REF_MISSING');
     }
+    const runExists = await exists(runPath(this.root, bundle.run.runId));
+    const headExists = await exists(this.headPath(bundle.run.runId, bundle.branchId));
     if (bundle.application) {
       if (await exists(applicationPath(this.root, bundle.application.applicationId))) {
         const existing = await this.getApplication(bundle.application.applicationId);
         if (stableJson(existing) !== stableJson(bundle.application)) fail('ERR_IMPORT_APPLICATION_MISMATCH');
+      } else if (runExists || headExists) {
+        fail('ERR_IMPORT_RUN_EXISTS');
       } else {
         await this.createApplication(bundle.application);
       }
     }
-    await this.createRun(bundle.run);
-    await this.writeHead(bundle.run.runId, bundle.branchId, bundle.head);
-    for (const effect of bundle.effects ?? []) await this.putEffectRecord(effect);
+    const effectRecords = (bundle.effects ?? []).map((effect) => assertEffectRecord(effect));
+    let missingEffect = false;
+    for (const record of effectRecords) {
+      const existing = await this.getEffectRecord(record.runId, record.idempotencyKey, record.branchId);
+      if (!existing) {
+        missingEffect = true;
+      } else if (stableJson(existing) !== stableJson(record)) {
+        fail('ERR_IMPORT_EFFECT_EXISTS');
+      }
+    }
+    if (runExists) {
+      const existing = await this.getRun(bundle.run.runId);
+      if (stableJson(existing) !== stableJson(bundle.run)) fail('ERR_IMPORT_RUN_EXISTS');
+    }
+    if (headExists) {
+      const existing = await this.readHead(bundle.run.runId, bundle.branchId);
+      if (stableJson(existing) !== stableJson(bundle.head)) fail('ERR_IMPORT_HEAD_EXISTS');
+    }
+    if (runExists && headExists && !missingEffect) fail('ERR_IMPORT_RUN_EXISTS');
+    if (!runExists && !headExists) {
+      await this.createRun(bundle.run);
+    } else {
+      if (!headExists) await this.writeHead(bundle.run.runId, bundle.branchId, bundle.head);
+      if (!runExists) await writeJsonNew(runPath(this.root, bundle.run.runId), bundle.run, 'ERR_IMPORT_RUN_EXISTS');
+    }
+    for (const record of effectRecords) await this.putEffectRecord(record);
     return await this.getRun(bundle.run.runId);
   }
 
@@ -355,14 +381,9 @@ function collectBlobRefs(...values) {
       return;
     }
     if (!value || typeof value !== 'object') return;
-    add(value.executableImageRef);
-    add(value.applianceManifestRef);
-    add(value.turnClosureRef);
-    add(value.requestBytesRef);
-    add(value.resolutionInputRef);
-    add(value.hostClaimRef);
+    add(value);
     add(universalWasmRef(value));
-    for (const branch of value.branches ?? []) visit(branch.currentHead);
+    for (const child of Object.values(value)) visit(child);
   }
 }
 
@@ -398,15 +419,22 @@ function assertBundleEffectsScoped(bundle) {
 
 async function writeJsonNew(file, value, existsCode) {
   await mkdir(path.dirname(file), { recursive: true });
-  const handle = await open(file, 'wx').catch((error) => {
-    if (error.code === 'EEXIST') fail(existsCode);
-    throw error;
-  });
+  if (await exists(file)) fail(existsCode);
+  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${Date.now()}.${randomUUID()}.tmp`);
+  const handle = await open(tmp, 'wx');
   try {
     await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`);
     await handle.sync();
   } finally {
     await handle.close();
+  }
+  try {
+    await link(tmp, file);
+  } catch (error) {
+    if (error.code === 'EEXIST') fail(existsCode);
+    throw error;
+  } finally {
+    await rm(tmp, { force: true });
   }
   await fsyncDir(path.dirname(file));
   return value;

@@ -32,8 +32,7 @@ describe('EffectJournal', () => {
     ]);
 
     assert.equal(driver.calls, 1);
-    assert.equal(first.reused, false);
-    assert.equal(second.reused, true);
+    assert.deepEqual([first.reused, second.reused].sort(), [false, true]);
     assert.deepEqual(decodeResolutionInputBytes(second.resolutionInputBytes).responseValueImageBytes, fromUtf8('resolution:one'));
   });
 
@@ -111,6 +110,42 @@ describe('EffectJournal', () => {
     assert.equal(records[0].resolutionInputRef, undefined);
   });
 
+  it('rejects driver ResolutionInput statuses outside the HostRequest response schema', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest(), fixtureDriver({
+        recoveryClass: EffectRecoveryClass.idempotent,
+        response: fixtureResolutionInputBytes(hostRequest(), fromUtf8('not found'), 1),
+      })),
+      { code: 'ERR_EFFECT_RESPONSE_STATUS_MISMATCH' },
+    );
+    const records = await store.listEffectRecords('run');
+    assert.equal(records.length, 1);
+    assert.equal(records[0].state, EffectState.failed);
+    assert.equal(records[0].resolutionInputRef, undefined);
+  });
+
+  it('rejects unsupported driver ResolutionInput versions before persisting', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const unsupported = fixtureResolutionInputBytes(hostRequest(), fromUtf8('future response'));
+    unsupported[0] = 2;
+
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest(), fixtureDriver({
+        recoveryClass: EffectRecoveryClass.idempotent,
+        response: unsupported,
+      })),
+      /unsupported ResolutionInput format version: 2/,
+    );
+    const records = await store.listEffectRecords('run');
+    assert.equal(records.length, 1);
+    assert.equal(records[0].state, EffectState.failed);
+    assert.equal(records[0].resolutionInputRef, undefined);
+  });
+
   it('validates serialized fallback request bytes before driver execution', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
@@ -122,6 +157,83 @@ describe('EffectJournal', () => {
     );
     assert.equal(driver.calls, 0);
     assert.equal((await store.listEffectRecords('run')).length, 0);
+  });
+
+  it('validates HostRequest fingerprints before driver execution', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest({ hostRequestFingerprint: 'not-a-world-fingerprint' }), driver),
+      { code: 'ERR_HOST_REQUEST_FINGERPRINT_REQUIRED' },
+    );
+    assert.equal(driver.calls, 0);
+    assert.equal((await store.listEffectRecords('run')).length, 0);
+  });
+
+  it('passes generated request identities to drivers and validation', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+    const request = hostRequest({
+      requestBytes: undefined,
+      request: { payload: 'fallback identity path' },
+      hostRequestFingerprint: undefined,
+      idempotencyKeyWorldFingerprint: undefined,
+    });
+    const prepared = await prepareHostRequest(request);
+
+    const resolved = await journal.resolve({}, request, driver);
+    const decoded = decodeResolutionInputBytes(resolved.resolutionInputBytes);
+
+    assert.equal(driver.calls, 1);
+    assert.equal(driver.requests[0].hostRequestFingerprint, prepared.hostRequestFingerprint);
+    assert.equal(driver.requests[0].idempotencyKeyWorldFingerprint, prepared.idempotencyKeyWorldFingerprint);
+    assert.deepEqual(driver.requests[0].requestBytes, prepared.requestBytes);
+    assert.equal(decoded.targetHostRequestFingerprint, requestTargetFingerprint(prepared));
+    assert.equal(resolved.record.hostRequestFingerprint, prepared.hostRequestFingerprint);
+    assert.equal(resolved.record.idempotencyKeyWorldFingerprint, prepared.idempotencyKeyWorldFingerprint);
+  });
+
+  it('includes response schema in generated request identity conflicts', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const request = hostRequest({
+      requestBytes: undefined,
+      request: { payload: 'same request bytes' },
+      hostRequestFingerprint: undefined,
+      responseSchema: { status: 'ok' },
+    });
+    await journal.resolve({}, request, fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent, supportedResponseStatuses: ['ok', 'final'] }));
+
+    await assert.rejects(
+      () => journal.resolve({}, {
+        ...request,
+        hostRequestFingerprint: undefined,
+        responseSchema: { status: 'final' },
+      }, fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent, supportedResponseStatuses: ['ok', 'final'] })),
+      { code: 'ERR_EFFECT_IDEMPOTENCY_CONFLICT' },
+    );
+  });
+
+  it('revalidates reused ResolutionInputs against current receiver policy', async () => {
+    const store = new MemoryStore();
+    const first = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent, response: 'too large for resumed policy' });
+    await first.resolve({}, hostRequest(), driver);
+    const resumed = new EffectJournal({
+      store,
+      runId: 'run',
+      branchId: 'main',
+      parentTurnClosureFingerprint: 'turn:0',
+      policy: { maximumResponseBytes: 1 },
+    });
+
+    await assert.rejects(
+      () => resumed.resolve({}, hostRequest(), fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent })),
+      { code: 'ERR_EFFECT_RESPONSE_TOO_LARGE' },
+    );
   });
 
   it('rejects the same full idempotency key with different request bytes', async () => {
@@ -139,10 +251,10 @@ describe('EffectJournal', () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
     const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.pure });
-    await journal.resolve({}, hostRequest({ hostRequestFingerprint: 'world:host-request:one' }), driver);
+    await journal.resolve({}, hostRequest({ hostRequestFingerprint: 'world:host-request:00000000000000a1' }), driver);
 
     await assert.rejects(
-      () => journal.resolve({}, hostRequest({ hostRequestFingerprint: 'world:host-request:two' }), driver),
+      () => journal.resolve({}, hostRequest({ hostRequestFingerprint: 'world:host-request:00000000000000a2' }), driver),
       { code: 'ERR_EFFECT_IDEMPOTENCY_CONFLICT' },
     );
     assert.equal(driver.calls, 1);
@@ -216,6 +328,78 @@ describe('EffectJournal', () => {
     }
   });
 
+  it('routes transactional resolve failures through recovery before retrying side effects', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.transactional });
+    driver.resolve = async () => {
+      driver.calls += 1;
+      const error = new Error('transaction outcome unknown');
+      error.code = 'ERR_TRANSACTION_UNKNOWN';
+      throw error;
+    };
+
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest(), driver),
+      { code: 'ERR_TRANSACTION_UNKNOWN' },
+    );
+    const [running] = await store.listEffectRecords('run');
+    assert.equal(running.state, EffectState.running);
+    assert.equal(running.diagnostics.recoveryRequired, 'transactional_resolve_failed');
+
+    const recovered = await journal.resolve({}, hostRequest(), driver);
+
+    assert.equal(recovered.record.state, EffectState.resolved);
+    assert.equal(driver.calls, 1);
+    assert.equal(driver.recoverCalls, 1);
+  });
+
+  it('keeps idempotent driver failures recoverable before retrying side effects', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+    driver.resolve = async () => {
+      driver.calls += 1;
+      const error = new Error('idempotent outcome unknown');
+      error.code = 'ERR_IDEMPOTENT_UNKNOWN';
+      throw error;
+    };
+
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest(), driver),
+      { code: 'ERR_IDEMPOTENT_UNKNOWN' },
+    );
+    const [running] = await store.listEffectRecords('run');
+    assert.equal(running.state, EffectState.running);
+    assert.equal(running.diagnostics.recoveryRequired, 'idempotent_resolve_failed');
+
+    const recovered = await journal.resolve({}, hostRequest(), driver);
+
+    assert.equal(recovered.record.state, EffectState.resolved);
+    assert.equal(driver.calls, 1);
+    assert.equal(driver.recoverCalls, 1);
+  });
+
+  it('keeps idempotent persistence failures recoverable before retrying side effects', async () => {
+    const store = new FailResolutionBlobStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest(), driver),
+      { code: 'ERR_TEST_RESOLUTION_BLOB_WRITE_FAILED' },
+    );
+    const [running] = await store.listEffectRecords('run');
+    assert.equal(running.state, EffectState.running);
+    assert.equal(running.diagnostics.recoveryRequired, 'idempotent_persistence_failed');
+
+    const recovered = await journal.resolve({}, hostRequest(), driver);
+
+    assert.equal(recovered.record.state, EffectState.resolved);
+    assert.equal(driver.calls, 1);
+    assert.equal(driver.recoverCalls, 1);
+  });
+
   it('marks unresolved best_effort recovery for operator intervention', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({
@@ -282,6 +466,20 @@ describe('EffectJournal', () => {
       () => journal.recover({}, observed, fixtureDriver({ recoveryClass: EffectRecoveryClass.pure })),
       { code: 'ERR_EFFECT_RECOVERY_CLASS_MISMATCH' },
     );
+  });
+
+  it('rechecks persisted request byte limits before driver recovery', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const observed = await journal.observe(hostRequest({ requestBytes: fromUtf8('oversized persisted request') }), { recoveryClass: EffectRecoveryClass.idempotent });
+    const running = await store.putEffectRecord({ ...observed, state: EffectState.running, attemptCount: 1 });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent, maximumRequestBytes: 1 });
+
+    await assert.rejects(
+      () => journal.recover({}, running, driver),
+      { code: 'ERR_HOST_REQUEST_TOO_LARGE' },
+    );
+    assert.equal(driver.recoverCalls, 0);
   });
 
   it('reconciles resolved and submitted effects from the committed head without crossing branch or parent', async () => {
@@ -395,6 +593,25 @@ function hostRequest(overrides = {}) {
   };
 }
 
+class FailResolutionBlobStore extends MemoryStore {
+  constructor() {
+    super();
+    this.putBlobCalls = 0;
+    this.failedResolutionBlob = false;
+  }
+
+  async putBlob(bytes) {
+    this.putBlobCalls += 1;
+    if (!this.failedResolutionBlob && this.putBlobCalls === 2) {
+      this.failedResolutionBlob = true;
+      const error = new Error('test resolution blob write failed');
+      error.code = 'ERR_TEST_RESOLUTION_BLOB_WRITE_FAILED';
+      throw error;
+    }
+    return await super.putBlob(bytes);
+  }
+}
+
 function httpHostRequest(overrides = {}) {
   return {
     actuatorRef: 'http:json',
@@ -409,17 +626,18 @@ function httpHostRequest(overrides = {}) {
   };
 }
 
-function fixtureDriver({ recoveryClass, response = 'resolution', descriptorFingerprint = 'descriptor:fixture', recover = true, recoverHostClaim = false, delayMs = 0, maximumRequestBytes = 1024, maximumResponseBytes = Number.MAX_SAFE_INTEGER }) {
+function fixtureDriver({ recoveryClass, response = 'resolution', descriptorFingerprint = 'descriptor:fixture', recover = true, recoverHostClaim = false, delayMs = 0, maximumRequestBytes = 1024, maximumResponseBytes = Number.MAX_SAFE_INTEGER, supportedResponseStatuses = ['ok'] }) {
   return {
     calls: 0,
     recoverCalls: 0,
+    requests: [],
     manifest() {
       return {
         driverId: 'fixture-driver',
         supportedActuatorRefs: ['fixture:model'],
         supportedDescriptorFingerprints: [descriptorFingerprint],
         supportedActuationClasses: ['fixture'],
-        supportedResponseStatuses: ['ok'],
+        supportedResponseStatuses,
         maximumRequestBytes,
         maximumResponseBytes,
         recoveryClass,
@@ -429,6 +647,7 @@ function fixtureDriver({ recoveryClass, response = 'resolution', descriptorFinge
     },
     async resolve(_context, request) {
       this.calls += 1;
+      this.requests.push(request);
       if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
       return { resolutionInputBytes: response instanceof Uint8Array ? response : fixtureResolutionInputBytes(request, fromUtf8(response)) };
     },
@@ -442,10 +661,10 @@ function fixtureDriver({ recoveryClass, response = 'resolution', descriptorFinge
   };
 }
 
-function fixtureResolutionInputBytes(request, responseValueImageBytes) {
+function fixtureResolutionInputBytes(request, responseValueImageBytes, status = 0) {
   return encodeResolutionInputBytes({
     targetHostRequestFingerprint: requestTargetFingerprint(request),
-    status: 0,
+    status,
     responseValueImageBytes,
     hostClaimBytes: new Uint8Array(),
     attemptNumber: 1,

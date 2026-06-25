@@ -11,7 +11,7 @@ import { createBranchRecord, createRunHead, createRunRecord } from '../src/core/
 import { RunController, WorldWorker, assertWarmWorkerBinding, worldHostRequestToEffectRequest } from '../src/core/worker.mjs';
 import { fromUtf8 } from '../src/core/store.mjs';
 import { encodeBootTurnInput, encodeContinueTurnInput, encodeResolutionInput, encodeResolutionInputBytes, encodeRestoreTurnInput } from '../src/protocol/world_appliance_wire_codec.mjs';
-import { inspectTurnOutput } from '../src/protocol/world_universal_appliance_codec.mjs';
+import { inspectTurnOutput, summarizeTurnClosureForRunHead } from '../src/protocol/world_universal_appliance_codec.mjs';
 import { NodeWorldWorker, applianceStatus } from '../src/node/node_worker.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
 
@@ -697,7 +697,9 @@ async function fixtureStore(prefix = 'run') {
   const store = new MemoryStore();
   const imageRef = await store.putBlob(fromUtf8(`${prefix}:image`));
   const manifestRef = await store.putBlob(fromUtf8(`${prefix}:manifest`));
-  const closureRef = await store.putBlob(fromUtf8('closure:0'));
+  const closureBytes = fixtureTurnClosureBytes();
+  const closureSummary = summarizeTurnClosureForRunHead(closureBytes);
+  const closureRef = await store.putBlob(closureBytes);
   const application = createApplicationRecord({
     applicationId: `${prefix}:app`,
     universalWasmChecksum: 'sha256:fixture',
@@ -714,12 +716,12 @@ async function fixtureStore(prefix = 'run') {
   const head = createRunHead({
     generation: 0,
     turnClosureRef: closureRef,
-    turnClosureWorldFingerprint: 'world:closure:0',
-    resultingStateFingerprint: 'world:state:0',
-    chronicleCursor: 'cursor:0',
-    archiveMomentFingerprint: 'archive:moment:0',
-    archiveSealFingerprint: 'archive:seal:0',
-    status: 'completed',
+    turnClosureWorldFingerprint: closureSummary.turnClosureWorldFingerprint,
+    resultingStateFingerprint: closureSummary.resultingStateFingerprint,
+    chronicleCursor: closureSummary.chronicleCursor,
+    archiveMomentFingerprint: closureSummary.archiveMomentFingerprint,
+    archiveSealFingerprint: closureSummary.archiveSealFingerprint,
+    status: closureSummary.status,
   });
   const branch = createBranchRecord({ branchId: 'main', currentHead: head });
   const run = createRunRecord({ runId: `${prefix}:run`, applicationId: application.applicationId, branches: [branch], effectJournalNamespace: `${prefix}:effects` });

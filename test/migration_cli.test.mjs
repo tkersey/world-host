@@ -12,8 +12,10 @@ import { exportCarrierRun, forkRunBranch, importCarrierRun } from '../src/core/m
 import { createBranchRecord, createRunHead, createRunRecord } from '../src/core/run.mjs';
 import { fromUtf8 } from '../src/core/store.mjs';
 import { WorldWorker } from '../src/core/worker.mjs';
+import { NodeStoreLock } from '../src/node/node_lock.mjs';
 import { redact, runNodeCli } from '../src/node/node_cli.mjs';
 import { encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
+import { summarizeTurnClosureForRunHead } from '../src/protocol/world_universal_appliance_codec.mjs';
 import { DirectoryStore } from '../src/stores/directory_store.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
 
@@ -36,6 +38,63 @@ describe('migration, branching, and CLI diagnostics', () => {
       sourceClosureFingerprint: head.turnClosureWorldFingerprint,
       newBranchId: 'alternate',
     }), { code: 'ERR_BRANCH_EXISTS' });
+  });
+
+  it('resumes fork metadata publication after matching branch head publication', async () => {
+    const { store, run, head } = await fixtureStore();
+    store.heads.set(`${run.runId}\0alternate`, JSON.parse(JSON.stringify(head)));
+
+    const branch = await forkRunBranch(store, {
+      runId: run.runId,
+      sourceBranchId: 'main',
+      sourceClosureFingerprint: head.turnClosureWorldFingerprint,
+      newBranchId: 'alternate',
+    });
+
+    assert.equal(branch.parentBranchId, 'main');
+    assert.equal((await store.getRun(run.runId)).branches.some((item) => item.branchId === 'alternate'), true);
+  });
+
+  it('does not unlink another store lock after failed acquisition cleanup', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-lock-'));
+    const lockPath = path.join(root, 'store.lock');
+    const owner = new NodeStoreLock(lockPath);
+    const contender = new NodeStoreLock(lockPath);
+    const afterCleanup = new NodeStoreLock(lockPath);
+    try {
+      await owner.acquire();
+      await assert.rejects(() => contender.acquire(), { code: 'EEXIST' });
+      await contender.release();
+      await assert.rejects(() => afterCleanup.acquire(), { code: 'EEXIST' });
+    } finally {
+      await afterCleanup.release();
+      await contender.release();
+      await owner.release();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not unlink a replacement store lock after stale break acquisition', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-lock-'));
+    const lockPath = path.join(root, 'store.lock');
+    const staleOwner = new NodeStoreLock(lockPath);
+    const replacement = new NodeStoreLock(lockPath);
+    const contender = new NodeStoreLock(lockPath);
+    const afterRelease = new NodeStoreLock(lockPath);
+    try {
+      await staleOwner.acquire();
+      await replacement.acquire({ breakStale: true });
+      await staleOwner.release();
+      await assert.rejects(() => contender.acquire(), { code: 'EEXIST' });
+      await replacement.release();
+      await afterRelease.acquire();
+    } finally {
+      await afterRelease.release();
+      await contender.release();
+      await replacement.release();
+      await staleOwner.release();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('exports and imports with receiver-local run id and no authority transfer', async () => {
@@ -62,6 +121,15 @@ describe('migration, branching, and CLI diagnostics', () => {
     const corrupt = JSON.parse(JSON.stringify(carrierExport.bundle));
     corrupt.blobs[0].byteLength += 1;
     await assert.rejects(() => new MemoryStore().importRun(corrupt), { code: 'ERR_IMPORT_BLOB_CHECKSUM_MISMATCH' });
+    const malformedEffect = JSON.parse(JSON.stringify(carrierExport.bundle));
+    malformedEffect.effects = [{ runId: malformedEffect.run.runId, branchId: malformedEffect.branchId, state: 'not-an-effect-record' }];
+    await assertImportsReject(malformedEffect, 'ERR_INVALID_EFFECT_RECORD');
+    const missingResolutionInput = JSON.parse(JSON.stringify(carrierExport.bundle));
+    missingResolutionInput.effects = [fixtureImportEffect(missingResolutionInput, { state: 'resolved' })];
+    await assertImportsReject(missingResolutionInput, 'ERR_INVALID_EFFECT_RECORD');
+    const missingRunningRequest = JSON.parse(JSON.stringify(carrierExport.bundle));
+    missingRunningRequest.effects = [fixtureImportEffect(missingRunningRequest, { state: 'running', attemptCount: 1 })];
+    await assertImportsReject(missingRunningRequest, 'ERR_INVALID_EFFECT_RECORD');
   });
 
   it('redacts credentials from CLI-shaped diagnostics', async () => {
@@ -173,6 +241,7 @@ describe('migration, branching, and CLI diagnostics', () => {
 
   it('creates and resumes DirectoryStore runs through RunController-backed CLI paths', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-cli-run-'));
+    const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-genesis-import-'));
     try {
       const wasmPath = path.join(root, 'world_universal_appliance.wasm');
       const imagePath = path.join(root, 'file-agent.world-executable');
@@ -250,6 +319,65 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(createOnly.head.generation, 0);
       assert.equal(createOnly.diagnostics.workerExecuted, false);
 
+      const genesisPackagePath = path.join(root, 'genesis-export.json');
+      output = '';
+      const exportGenesisCode = await runNodeCli([
+        'export',
+        '--json',
+        '--store', root,
+        '--run', 'cli-resume',
+        '--branch', 'main',
+        '--out', genesisPackagePath,
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      });
+      const exportedGenesis = JSON.parse(output);
+      assert.equal(exportGenesisCode, 0);
+      assert.equal(exportedGenesis.blobCount >= 3, true);
+
+      output = '';
+      const importGenesisCode = await runNodeCli([
+        'import',
+        '--json',
+        '--store', receiverRoot,
+        '--package', genesisPackagePath,
+        '--run', 'receiver-genesis',
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      });
+      const importedGenesis = JSON.parse(output);
+      assert.equal(importGenesisCode, 0);
+      assert.equal(importedGenesis.runId, 'receiver-genesis');
+      store = new DirectoryStore(receiverRoot);
+      await store.acquireLock();
+      try {
+        const genesisHead = await store.readHead('receiver-genesis', 'main');
+        assert.equal(genesisHead.status, 'genesis');
+        assert.deepEqual([...await store.getBlob(genesisHead.turnClosureRef)], [...fromUtf8('world-host:genesis')]);
+      } finally {
+        await store.releaseLock();
+      }
+
+      const tamperedGenesisPackagePath = path.join(root, 'tampered-genesis-export.json');
+      const tamperedGenesisPackage = JSON.parse(await readFile(genesisPackagePath, 'utf8'));
+      tamperedGenesisPackage.bundle.head.turnClosureWorldFingerprint = 'world:turn-closure:evil';
+      await writeFile(tamperedGenesisPackagePath, JSON.stringify(tamperedGenesisPackage));
+      await assert.rejects(
+        () => runNodeCli([
+          'import',
+          '--json',
+          '--store', receiverRoot,
+          '--package', tamperedGenesisPackagePath,
+          '--run', 'receiver-genesis-tampered',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_IMPORT_PREFLIGHT_GENESIS_MISMATCH' },
+      );
+
       output = '';
       const recoverGenesisCode = await runNodeCli([
         'recover',
@@ -302,16 +430,18 @@ describe('migration, branching, and CLI diagnostics', () => {
       store = new DirectoryStore(root);
       await store.acquireLock();
       try {
-        const zeroClosureRef = await store.putBlob(fixtureTurnClosureBytes());
+        const zeroClosureBytes = fixtureTurnClosureBytes();
+        const zeroClosureSummary = summarizeTurnClosureForRunHead(zeroClosureBytes);
+        const zeroClosureRef = await store.putBlob(zeroClosureBytes);
         const zeroHead = createRunHead({
           generation: 0,
           turnClosureRef: zeroClosureRef,
-          turnClosureWorldFingerprint: 'world:closure:real-zero',
-          resultingStateFingerprint: 'world:state:real-zero',
-          chronicleCursor: 'cursor:real-zero',
-          archiveMomentFingerprint: 'archive:moment:real-zero',
-          archiveSealFingerprint: 'archive:seal:real-zero',
-          status: 'completed',
+          turnClosureWorldFingerprint: zeroClosureSummary.turnClosureWorldFingerprint,
+          resultingStateFingerprint: zeroClosureSummary.resultingStateFingerprint,
+          chronicleCursor: zeroClosureSummary.chronicleCursor,
+          archiveMomentFingerprint: zeroClosureSummary.archiveMomentFingerprint,
+          archiveSealFingerprint: zeroClosureSummary.archiveSealFingerprint,
+          status: zeroClosureSummary.status,
         });
         await store.createRun(createRunRecord({
           runId: 'cli-real-zero',
@@ -363,6 +493,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(secondResumed.diagnostics.workerExecuted, true);
     } finally {
       await rm(root, { recursive: true, force: true });
+      await rm(receiverRoot, { recursive: true, force: true });
     }
   });
 
@@ -474,6 +605,22 @@ describe('migration, branching, and CLI diagnostics', () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-cli-store-'));
     try {
       const { run, head } = await fixtureDirectoryStore(root);
+      const store = new DirectoryStore(root);
+      await store.acquireLock();
+      try {
+        const [effect] = await store.listEffectRecords(run.runId);
+        await store.putEffectRecord({
+          ...effect,
+          diagnostics: {
+            idempotencyKey: {
+              format: 'world-idempotency-key-bytes.hex',
+              bytesHex: Buffer.from('complete-world-idempotency-key').toString('hex'),
+            },
+          },
+        });
+      } finally {
+        await store.releaseLock();
+      }
       let output = '';
       const inspectCode = await runNodeCli(['inspect', '--json', '--store', root, '--run', run.runId, '--branch', 'main'], {
         stdout: { write: (text) => { output += text; } },
@@ -552,11 +699,41 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('resumes DirectoryStore imports after run and head publication', async () => {
+    const sourceRoot = await mkdtemp(path.join(tmpdir(), 'world-host-import-source-'));
+    const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-import-receiver-'));
+    try {
+      const { run } = await fixtureDirectoryStore(sourceRoot);
+      const sourceStore = new DirectoryStore(sourceRoot);
+      const bundle = await sourceStore.exportRun(run.runId, 'main');
+      const receiverStore = new DirectoryStore(receiverRoot);
+      await receiverStore.acquireLock();
+      try {
+        for (const blob of bundle.blobs) await receiverStore.putBlob(Uint8Array.from(blob.bytes));
+        await receiverStore.createApplication(bundle.application);
+        await receiverStore.createRun(bundle.run);
+        assert.equal((await receiverStore.listEffectRecords(run.runId)).length, 0);
+
+        await receiverStore.importRun(bundle);
+
+        const effects = await receiverStore.listEffectRecords(run.runId);
+        assert.equal(effects.length, bundle.effects.length);
+        assert.deepEqual(effects[0], bundle.effects[0]);
+      } finally {
+        await receiverStore.releaseLock();
+      }
+    } finally {
+      await rm(sourceRoot, { recursive: true, force: true });
+      await rm(receiverRoot, { recursive: true, force: true });
+    }
+  });
+
   it('exports, imports, and forks DirectoryStore runs through redacted CLI operations', async () => {
       const sourceRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-migrate-source-'));
       const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-migrate-receiver-'));
       const packagePath = path.join(receiverRoot, 'carrier-export.json');
-      let unrelatedRef = null;
+      let diagnosticRef = null;
+      let unreferencedRef = null;
       try {
       const { run, head } = await fixtureDirectoryStore(sourceRoot);
       let output = '';
@@ -599,11 +776,12 @@ describe('migration, branching, and CLI diagnostics', () => {
           requestBytes: fromUtf8('request:alternate'),
           hostRequestFingerprint: 'world:host-request:0000000000000b01',
         }, fixtureDriver());
-        unrelatedRef = await sourceStore.putBlob(fromUtf8('unrelated-secret'));
+        diagnosticRef = await sourceStore.putBlob(fromUtf8('diagnostic-input'));
+        unreferencedRef = await sourceStore.putBlob(fromUtf8('unrelated-secret'));
         const [mainEffect] = await sourceStore.listEffectRecords(run.runId);
         await sourceStore.putEffectRecord({
           ...mainEffect,
-          diagnostics: { unrelatedBlobRef: unrelatedRef },
+          diagnostics: { retainedBlobRef: diagnosticRef },
         });
       } finally {
         await sourceStore.releaseLock();
@@ -630,7 +808,8 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(packageJson.authorityCarried, false);
       assert.equal(packageJson.bundle.application.applicationId, run.applicationId);
       assert.equal(Array.isArray(packageJson.bundle.blobs[0].bytes), true);
-      assert.equal(packageJson.bundle.blobs.some((blob) => blob.checksum === unrelatedRef.checksum), false);
+      assert.equal(packageJson.bundle.blobs.some((blob) => blob.checksum === diagnosticRef.checksum), true);
+      assert.equal(packageJson.bundle.blobs.some((blob) => blob.checksum === unreferencedRef.checksum), false);
       assert.equal(packageJson.bundle.effects.every((effect) => effect.branchId === 'main'), true);
       assert.doesNotMatch(output, /bytesHex|complete-world-idempotency-key/);
       packageJson.bundle.run.branches.push(createBranchRecord({
@@ -669,6 +848,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         { code: 'ERR_IMPORT_PREFLIGHT_BLOCKED' },
       );
       const pendingClosureBytes = fixtureNeedsHostTurnClosureBytes();
+      const pendingClosureSummary = summarizeTurnClosureForRunHead(pendingClosureBytes);
       const pendingClosureBlob = blobEntryForBytes(pendingClosureBytes);
       const pendingPackagePath = path.join(sourceRoot, 'pending-package.json');
       await writeFile(pendingPackagePath, JSON.stringify({
@@ -683,7 +863,11 @@ describe('migration, branching, and CLI diagnostics', () => {
               checksum: pendingClosureBlob.checksum,
               byteLength: pendingClosureBlob.byteLength,
             },
-            turnClosureWorldFingerprint: 'world:closure:pending-import',
+            turnClosureWorldFingerprint: pendingClosureSummary.turnClosureWorldFingerprint,
+            resultingStateFingerprint: pendingClosureSummary.resultingStateFingerprint,
+            chronicleCursor: pendingClosureSummary.chronicleCursor,
+            archiveMomentFingerprint: pendingClosureSummary.archiveMomentFingerprint,
+            archiveSealFingerprint: pendingClosureSummary.archiveSealFingerprint,
           },
           blobs: [...packageJson.bundle.blobs, pendingClosureBlob],
         },
@@ -714,7 +898,11 @@ describe('migration, branching, and CLI diagnostics', () => {
               checksum: pendingClosureBlob.checksum,
               byteLength: pendingClosureBlob.byteLength,
             },
-            turnClosureWorldFingerprint: 'world:closure:tampered-status-import',
+            turnClosureWorldFingerprint: pendingClosureSummary.turnClosureWorldFingerprint,
+            resultingStateFingerprint: pendingClosureSummary.resultingStateFingerprint,
+            chronicleCursor: pendingClosureSummary.chronicleCursor,
+            archiveMomentFingerprint: pendingClosureSummary.archiveMomentFingerprint,
+            archiveSealFingerprint: pendingClosureSummary.archiveSealFingerprint,
           },
           blobs: [...packageJson.bundle.blobs, pendingClosureBlob],
         },
@@ -731,6 +919,56 @@ describe('migration, branching, and CLI diagnostics', () => {
           stderr: { write() {} },
         }),
         { code: 'ERR_IMPORT_PREFLIGHT_HEAD_STATUS_MISMATCH' },
+      );
+
+      const tamperedGenesisPackagePath = path.join(sourceRoot, 'tampered-genesis-package.json');
+      await writeFile(tamperedGenesisPackagePath, JSON.stringify({
+        ...packageJson,
+        bundle: {
+          ...packageJson.bundle,
+          head: {
+            ...packageJson.bundle.head,
+            status: 'genesis',
+          },
+        },
+      }));
+      await assert.rejects(
+        () => runNodeCli([
+          'import',
+          '--json',
+          '--store', receiverRoot,
+          '--package', tamperedGenesisPackagePath,
+          '--run', 'tampered-genesis-run',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_IMPORT_PREFLIGHT_GENESIS_MISMATCH' },
+      );
+
+      const tamperedFingerprintPackagePath = path.join(sourceRoot, 'tampered-fingerprint-package.json');
+      await writeFile(tamperedFingerprintPackagePath, JSON.stringify({
+        ...packageJson,
+        bundle: {
+          ...packageJson.bundle,
+          head: {
+            ...packageJson.bundle.head,
+            turnClosureWorldFingerprint: 'world:turn-closure:tampered',
+          },
+        },
+      }));
+      await assert.rejects(
+        () => runNodeCli([
+          'import',
+          '--json',
+          '--store', receiverRoot,
+          '--package', tamperedFingerprintPackagePath,
+          '--run', 'tampered-fingerprint-run',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_IMPORT_PREFLIGHT_HEAD_CLOSURE_MISMATCH' },
       );
 
       output = '';
@@ -759,6 +997,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         const receiverHead = await receiverStore.readHead('receiver-run', 'main');
         assert.equal(receiverHead.turnClosureWorldFingerprint, head.turnClosureWorldFingerprint);
         assert.deepEqual([...await receiverStore.getBlob(receiverHead.turnClosureRef)], [...fixtureTurnClosureBytes()]);
+        assert.deepEqual([...await receiverStore.getBlob(diagnosticRef)], [...fromUtf8('diagnostic-input')]);
         await assert.rejects(
           () => receiverStore.readHead('receiver-run', 'alternate'),
           { code: 'ERR_HEAD_NOT_FOUND' },
@@ -1179,7 +1418,9 @@ async function fixtureDirectoryStore(root, options = {}) {
     const imageRef = await store.putBlob(fromUtf8('image'));
     const wasmRef = await store.putBlob(fromUtf8('wasm'));
     const manifestRef = await store.putBlob(fromUtf8('manifest'));
-    const closureRef = await store.putBlob(fixtureTurnClosureBytes());
+    const closureBytes = fixtureTurnClosureBytes();
+    const closureSummary = summarizeTurnClosureForRunHead(closureBytes);
+    const closureRef = await store.putBlob(closureBytes);
     const app = createApplicationRecord({
       applicationId: 'directory-app',
       universalWasmChecksum: `sha256:${wasmRef.checksum}`,
@@ -1198,12 +1439,12 @@ async function fixtureDirectoryStore(root, options = {}) {
     const head = createRunHead({
       generation: 1,
       turnClosureRef: closureRef,
-      turnClosureWorldFingerprint: 'world:closure:directory',
-      resultingStateFingerprint: 'world:state:directory',
-      chronicleCursor: 'cursor:directory',
-      archiveMomentFingerprint: 'archive:moment:directory',
-      archiveSealFingerprint: 'archive:seal:directory',
-      status: 'completed',
+      turnClosureWorldFingerprint: closureSummary.turnClosureWorldFingerprint,
+      resultingStateFingerprint: closureSummary.resultingStateFingerprint,
+      chronicleCursor: closureSummary.chronicleCursor,
+      archiveMomentFingerprint: closureSummary.archiveMomentFingerprint,
+      archiveSealFingerprint: closureSummary.archiveSealFingerprint,
+      status: closureSummary.status,
       updateDiagnostics: {
         parentTurnClosureFingerprint: 'world:closure:parent',
       },
@@ -1250,6 +1491,27 @@ async function assertImportsReject(bundle, code) {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+}
+
+function fixtureImportEffect(bundle, overrides = {}) {
+  return {
+    runId: bundle.run.runId,
+    branchId: bundle.branchId,
+    parentTurnClosureFingerprint: 'world:closure:parent',
+    hostRequestFingerprint: 'world:host-request:0000000000000001',
+    idempotencyKey: { format: 'world-idempotency-key-bytes.hex', bytesHex: '00' },
+    idempotencyKeyWorldFingerprint: 'world:key:import-fixture',
+    actuatorRef: 'fixture:model',
+    descriptorFingerprint: 'descriptor:fixture',
+    actuationClass: 'fixture',
+    responseSchema: { status: 'ok' },
+    requestBytesChecksum: 'sha256:fixture',
+    state: 'observed',
+    attemptCount: 0,
+    driverRecoveryClass: 'pure',
+    diagnostics: {},
+    ...overrides,
+  };
 }
 
 function fixtureDriver() {

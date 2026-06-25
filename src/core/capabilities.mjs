@@ -110,6 +110,8 @@ function policyBlockers(route, request, policy) {
   }
   if (request?.actuationClass === 'http') {
     const origin = requestOrigin(request);
+    const driverOrigins = Array.isArray(route.diagnostics?.origins) ? new Set(route.diagnostics.origins) : null;
+    if (driverOrigins && (!origin || !driverOrigins.has(origin))) blockers.push(`http-origin-driver-denied:${origin ?? 'unknown'}`);
     if (!origin || policy.allowedHttpOrigins.size && !policy.allowedHttpOrigins.has(origin)) blockers.push(`http-origin-denied:${origin ?? 'unknown'}`);
   }
   return blockers;

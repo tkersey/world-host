@@ -127,6 +127,7 @@ export function encodeResolutionInputBytes(value) {
 export function decodeResolutionInputBytes(bytes) {
   const reader = new BinaryReader(bytes);
   const value = decodeResolutionInput(reader);
+  if (value.formatVersion !== 1) throw new Error(`unsupported ResolutionInput format version: ${value.formatVersion}`);
   if (reader.remaining() !== 0) throw new Error('trailing ResolutionInput bytes');
   return value;
 }
@@ -223,6 +224,8 @@ export function decodeHostRequest(reader) {
     preparedActuationEvidenceBytes: reader.bytes(),
     idempotencyKeyBytes: reader.bytes(),
   };
+  if (request.requestFormatVersion !== 4) throw new Error(`unsupported HostRequest format version: ${request.requestFormatVersion}`);
+  if (request.requestFingerprintVersion !== 4) throw new Error(`unsupported HostRequest fingerprint version: ${request.requestFingerprintVersion}`);
   request.hostRequestBytes = reader.bytesValue.slice(start, reader.offset);
   return request;
 }
@@ -357,6 +360,9 @@ export class BinaryReader {
       blockerCount: this.u64(),
       warningCount: this.u64(),
     };
+    if (receipt.formatVersion !== 1) throw new Error(`unsupported TurnReceipt format version: ${receipt.formatVersion}`);
+    if (receipt.fingerprintVersion !== 1) throw new Error(`unsupported TurnReceipt fingerprint version: ${receipt.fingerprintVersion}`);
+    if (this.remaining() !== 0) throw new Error('trailing TurnReceipt bytes');
     return receipt;
   }
 

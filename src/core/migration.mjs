@@ -1,7 +1,7 @@
 import { carrierVersionSummary } from '../protocol/world_manifest.mjs';
 import { EffectRecoveryClass } from './actuator.mjs';
 import { createBranchRecord, createRunRecord } from './run.mjs';
-import { fail } from './store.mjs';
+import { fail, stableJson } from './store.mjs';
 
 export async function forkRunBranch(store, { runId, sourceBranchId, sourceClosureFingerprint, newBranchId }) {
   const run = await store.getRun(runId);
@@ -16,13 +16,18 @@ export async function forkRunBranch(store, { runId, sourceBranchId, sourceClosur
     currentHead: sourceHead,
     diagnostics: { sourceRunId: run.runId },
   });
+  let existingHead = null;
   try {
-    await store.readHead(runId, newBranchId);
-    fail('ERR_BRANCH_EXISTS');
+    existingHead = await store.readHead(runId, newBranchId);
   } catch (error) {
     if (error?.code !== 'ERR_HEAD_NOT_FOUND') throw error;
   }
-  await writeBranchHead(store, runId, newBranchId, sourceHead);
+  const branchAlreadyPublished = (run.branches ?? []).some((existing) => existing.branchId === newBranchId);
+  if (existingHead) {
+    if (branchAlreadyPublished || stableJson(existingHead) !== stableJson(sourceHead)) fail('ERR_BRANCH_EXISTS');
+  } else {
+    await writeBranchHead(store, runId, newBranchId, sourceHead);
+  }
   await writeRunRecord(store, createRunRecord({
     ...run,
     branches: [...(run.branches ?? []).filter((existing) => existing.branchId !== newBranchId), branch],

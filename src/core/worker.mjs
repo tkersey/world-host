@@ -2,7 +2,7 @@ import { EffectJournal } from './effect_journal.mjs';
 import { assertDurableRecoveryAllowed } from './actuator.mjs';
 import { createRunHead } from './run.mjs';
 import { assertBytes, fail, fromUtf8, toHex } from './store.mjs';
-import { decodeResolutionInputBytes, encodeRestoreTurnInput } from '../protocol/world_appliance_wire_codec.mjs';
+import { decodeResolutionInputBytes, encodeRestoreTurnInput, resolutionResponded } from '../protocol/world_appliance_wire_codec.mjs';
 import { inspectTurnOutput, summarizeTurnClosureForRunHead } from '../protocol/world_universal_appliance_codec.mjs';
 import { wyhash64 } from '../protocol/world_loaded_value_codec.mjs';
 
@@ -118,6 +118,7 @@ export class RunController {
     const application = await this.store.getApplication(run.applicationId);
     const parentHead = await this.store.readHead(runId, branchId);
     const parentClosureBytes = await this.store.getBlob(parentHead.turnClosureRef);
+    assertParentHeadMatchesClosure(parentHead, parentClosureBytes);
     const imageBytes = await this.store.getBlob(application.executableImageRef);
     const executableHostFingerprint = `sha256:${await sha256Hex(imageBytes)}`;
     const worker = await this.#workerFor({
@@ -128,71 +129,85 @@ export class RunController {
       turnSequence: parentHead.generation,
     });
 
-    if (worker.loadedExecutableFingerprint !== executableHostFingerprint) await worker.loadExecutable(imageBytes);
-    if (parentHead.status !== 'genesis' && typeof worker.restoreFromTurnClosure === 'function') await worker.restoreFromTurnClosure(parentClosureBytes, parentHead);
+    let workerMayBeDirty = false;
+    try {
+      if (worker.loadedExecutableFingerprint !== executableHostFingerprint) {
+        workerMayBeDirty = true;
+        await worker.loadExecutable(imageBytes);
+      }
+      if (parentHead.status !== 'genesis' && typeof worker.restoreFromTurnClosure === 'function') {
+        workerMayBeDirty = true;
+        await worker.restoreFromTurnClosure(parentClosureBytes, parentHead);
+      }
 
-    const effectTurn = await this.#effectTurnInput({ run, branchId, application, parentHead, parentClosureBytes, worker, options });
-    const turnInputBytes = effectTurn?.turnInputBytes ?? await this.turnInputFactory({ run, branchId, application, parentHead, parentClosureBytes, worker, options });
-    const turnResult = options.turnResult ?? await worker.submitTurn(turnInputBytes);
-    const nextClosureBytes = assertBytes(turnResult.turnClosureBytes ?? worker.readTurnClosure(), 'turnClosureBytes');
-    const inspected = deriveTurnResult(turnResult, nextClosureBytes);
-    const confirmedEffects = effectTurn ? confirmedTurnEffects(effectTurn.effects, inspected) : [];
-    if ((inspected.archiveMomentFingerprint == null) !== (inspected.archiveSealFingerprint == null)) {
-      fail('ERR_PARTIAL_ARCHIVE_ANCHOR', 'archive moment and seal must both be present or both be absent');
-    }
-    const retainedArchivePending = inspected.archiveMomentFingerprint == null;
-    const turnClosureRef = await this.store.putBlob(nextClosureBytes);
-    const nextHead = createRunHead({
-      generation: parentHead.generation + 1,
-      turnClosureRef,
-      turnClosureWorldFingerprint: requiredString(inspected.turnClosureWorldFingerprint, 'turnClosureWorldFingerprint'),
-      resultingStateFingerprint: requiredString(inspected.resultingStateFingerprint, 'resultingStateFingerprint'),
-      chronicleCursor: requiredString(inspected.chronicleCursor, 'chronicleCursor'),
-      archiveMomentFingerprint: retainedArchivePending ? parentHead.archiveMomentFingerprint : requiredString(inspected.archiveMomentFingerprint, 'archiveMomentFingerprint'),
-      archiveSealFingerprint: retainedArchivePending ? parentHead.archiveSealFingerprint : requiredString(inspected.archiveSealFingerprint, 'archiveSealFingerprint'),
-      status: inspected.status ?? 'needs_host',
-      updateDiagnostics: {
-        workerWarm: worker === this.warmWorker,
-        parentTurnClosureFingerprint: parentHead.turnClosureWorldFingerprint,
-        committedEffectIds: confirmedEffects.map((effect) => effect.record.idempotencyKeyWorldFingerprint),
-        inspectedTurnClosure: inspected.inspectionDiagnostics ?? null,
-        retainedArchivePending,
-        unresolvedHostRequestCount: effectTurn?.unresolvedHostRequests.length ?? 0,
-        unresolvedHostRequests: effectTurn?.unresolvedHostRequests ?? [],
-      },
-    });
-    const cas = await this.store.compareAndSwapHead(runId, branchId, parentHead.generation, nextHead);
-    if (!cas.ok) {
+      const effectTurn = await this.#effectTurnInput({ run, branchId, application, parentHead, parentClosureBytes, worker, options });
+      const turnInputBytes = effectTurn?.turnInputBytes ?? await this.turnInputFactory({ run, branchId, application, parentHead, parentClosureBytes, worker, options });
+      workerMayBeDirty = true;
+      const turnResult = options.turnResult ?? await worker.submitTurn(turnInputBytes);
+      const nextClosureBytes = assertBytes(turnResult.turnClosureBytes ?? worker.readTurnClosure(), 'turnClosureBytes');
+      const inspected = deriveTurnResult(turnResult, nextClosureBytes);
+      const confirmedEffects = effectTurn ? confirmedTurnEffects(effectTurn.effects, inspected) : [];
+      if ((inspected.archiveMomentFingerprint == null) !== (inspected.archiveSealFingerprint == null)) {
+        fail('ERR_PARTIAL_ARCHIVE_ANCHOR', 'archive moment and seal must both be present or both be absent');
+      }
+      const retainedArchivePending = inspected.archiveMomentFingerprint == null;
+      const turnClosureRef = await this.store.putBlob(nextClosureBytes);
+      const nextHead = createRunHead({
+        generation: parentHead.generation + 1,
+        turnClosureRef,
+        turnClosureWorldFingerprint: requiredString(inspected.turnClosureWorldFingerprint, 'turnClosureWorldFingerprint'),
+        resultingStateFingerprint: requiredString(inspected.resultingStateFingerprint, 'resultingStateFingerprint'),
+        chronicleCursor: requiredString(inspected.chronicleCursor, 'chronicleCursor'),
+        archiveMomentFingerprint: retainedArchivePending ? parentHead.archiveMomentFingerprint : requiredString(inspected.archiveMomentFingerprint, 'archiveMomentFingerprint'),
+        archiveSealFingerprint: retainedArchivePending ? parentHead.archiveSealFingerprint : requiredString(inspected.archiveSealFingerprint, 'archiveSealFingerprint'),
+        status: inspected.status ?? 'needs_host',
+        updateDiagnostics: {
+          workerWarm: worker === this.warmWorker,
+          parentTurnClosureFingerprint: parentHead.turnClosureWorldFingerprint,
+          committedEffectIds: confirmedEffects.map((effect) => effect.record.idempotencyKeyWorldFingerprint),
+          inspectedTurnClosure: inspected.inspectionDiagnostics ?? null,
+          retainedArchivePending,
+          unresolvedHostRequestCount: effectTurn?.unresolvedHostRequests.length ?? 0,
+          unresolvedHostRequests: effectTurn?.unresolvedHostRequests ?? [],
+        },
+      });
+      const cas = await this.store.compareAndSwapHead(runId, branchId, parentHead.generation, nextHead);
+      if (!cas.ok) {
+        this.#disposeWarmWorker(worker);
+        return {
+          status: 'branch_conflict',
+          orphanClosureRef: turnClosureRef,
+          winningHead: cas.current,
+          submittedEffects: [],
+          unresolvedHostRequests: effectTurn?.unresolvedHostRequests ?? [],
+        };
+      }
+      const submittedEffects = [];
+      if (effectTurn) {
+        for (const effect of confirmedEffects) submittedEffects.push(await effectTurn.journal.markSubmitted(effect.record));
+      }
+      const committedEffects = [];
+      for (const effect of submittedEffects) committedEffects.push(await effectTurn.journal.markClosureCommitted(effect));
+      worker.bind({
+        applicationId: run.applicationId,
+        branchId,
+        turnClosureWorldFingerprint: cas.current.turnClosureWorldFingerprint,
+        resultingStateFingerprint: cas.current.resultingStateFingerprint,
+        turnSequence: cas.current.generation,
+      });
       return {
-        status: 'branch_conflict',
-        orphanClosureRef: turnClosureRef,
-        winningHead: cas.current,
-        submittedEffects: [],
+        status: 'advanced',
+        parentHead,
+        nextHead: cas.current,
+        closureRef: turnClosureRef,
+        workerStatus: worker === this.warmWorker ? 'warm' : 'cold',
+        effects: committedEffects,
         unresolvedHostRequests: effectTurn?.unresolvedHostRequests ?? [],
       };
+    } catch (error) {
+      if (workerMayBeDirty) this.#disposeWarmWorker(worker);
+      throw error;
     }
-    const submittedEffects = [];
-    if (effectTurn) {
-      for (const effect of confirmedEffects) submittedEffects.push(await effectTurn.journal.markSubmitted(effect.record));
-    }
-    const committedEffects = [];
-    for (const effect of submittedEffects) committedEffects.push(await effectTurn.journal.markClosureCommitted(effect));
-    worker.bind({
-      applicationId: run.applicationId,
-      branchId,
-      turnClosureWorldFingerprint: cas.current.turnClosureWorldFingerprint,
-      resultingStateFingerprint: cas.current.resultingStateFingerprint,
-      turnSequence: cas.current.generation,
-    });
-    return {
-      status: 'advanced',
-      parentHead,
-      nextHead: cas.current,
-      closureRef: turnClosureRef,
-      workerStatus: worker === this.warmWorker ? 'warm' : 'cold',
-      effects: committedEffects,
-      unresolvedHostRequests: effectTurn?.unresolvedHostRequests ?? [],
-    };
   }
 
   async #workerFor(binding) {
@@ -209,6 +224,11 @@ export class RunController {
     worker.bind(binding);
     this.warmWorker = worker;
     return worker;
+  }
+
+  #disposeWarmWorker(worker) {
+    if (worker === this.warmWorker) this.warmWorker = null;
+    worker.dispose();
   }
 
   async #effectTurnInput({ run, branchId, application, parentHead, parentClosureBytes, worker, options }) {
@@ -327,11 +347,6 @@ function deriveTurnResult(turnResult, nextClosureBytes) {
   }
 }
 
-function effectResolutionTargetFingerprint(effect) {
-  const resolution = decodeResolutionInputBytes(effect.resolutionInputBytes);
-  return resolution.targetHostRequestFingerprint.toString(16).padStart(16, '0');
-}
-
 function assertEffectTargetsPendingRequests(effects, pending) {
   return effects.map((effect, index) => {
     if (effect?.operatorInterventionRequired) {
@@ -350,8 +365,7 @@ function confirmedTurnEffects(effects, inspected) {
   const appliedReplies = new Set(inspected.inspectionDiagnostics?.appliedHostReplyFingerprints ?? []);
   return effects.filter((effect) => {
     const replyFingerprint = effectHostReplyFingerprint(effect);
-    if (replyFingerprint && appliedReplies.has(replyFingerprint)) return true;
-    return appliedReplies.has(effectResolutionTargetFingerprint(effect));
+    return replyFingerprint ? appliedReplies.has(replyFingerprint) : false;
   });
 }
 
@@ -472,9 +486,11 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}) {
   const allowedAuthorityLabels = policySet(policy.allowedAuthorityLabels);
   if (allowedAuthorityLabels.size && manifest.authorityLabels.some((label) => !allowedAuthorityLabels.has(label))) return false;
   const allowedHttpOrigins = policySet(policy.allowedHttpOrigins);
-  if (allowedHttpOrigins.size && (hostRequest.actuationClass === 'http' || manifest.authorityLabels.includes('network:http'))) {
+  if (hostRequest.actuationClass === 'http' || manifest.authorityLabels.includes('network:http')) {
     const origin = requestOrigin(hostRequest);
-    if (!origin || !allowedHttpOrigins.has(origin)) return false;
+    const driverOrigins = Array.isArray(manifest.diagnostics?.origins) ? new Set(manifest.diagnostics.origins) : null;
+    if (driverOrigins && (!origin || !driverOrigins.has(origin))) return false;
+    if (allowedHttpOrigins.size && (!origin || !allowedHttpOrigins.has(origin))) return false;
   }
   const allowedFileRoots = policySet(policy.allowedFileRoots);
   if (allowedFileRoots.size && manifest.authorityLabels.includes('file:sandbox')) {
@@ -616,7 +632,35 @@ function effectGlobalConcurrencyLimit(states, policy = {}) {
   return policyLimit;
 }
 
+function assertParentHeadMatchesClosure(parentHead, parentClosureBytes) {
+  if (parentHead.status === 'genesis') return;
+  let summarized;
+  try {
+    summarized = summarizeTurnClosureForRunHead(parentClosureBytes);
+  } catch (error) {
+    fail('ERR_PARENT_HEAD_CLOSURE_UNDECODABLE', 'parent RunHead closure bytes are not decodable', { cause: error?.message ?? String(error) });
+  }
+  for (const field of [
+    'turnClosureWorldFingerprint',
+    'resultingStateFingerprint',
+    'chronicleCursor',
+    'archiveMomentFingerprint',
+    'archiveSealFingerprint',
+    'status',
+  ]) {
+    if ((field === 'archiveMomentFingerprint' || field === 'archiveSealFingerprint') && summarized[field] == null) continue;
+    if (parentHead[field] !== summarized[field]) {
+      fail('ERR_PARENT_HEAD_CLOSURE_MISMATCH', 'parent RunHead does not match selected TurnClosure bytes', {
+        field,
+        headValue: parentHead[field],
+        closureValue: summarized[field],
+      });
+    }
+  }
+}
+
 export function worldHostRequestToEffectRequest(request) {
+  assertWorldResponseStatusAllowed(request, resolutionResponded, 'responded');
   return {
     hostRequestFingerprint: `world:host-request:${fingerprintString(request.requestFingerprint)}`,
     idempotencyKeyBytes: assertBytes(request.idempotencyKeyBytes, 'idempotencyKeyBytes'),
@@ -634,6 +678,12 @@ export function worldHostRequestToEffectRequest(request) {
       request.preparedActuationEvidenceBytes,
     ]),
   };
+}
+
+function assertWorldResponseStatusAllowed(request, status, label) {
+  const allowed = request?.allowedResponseStatuses;
+  if (!Number.isSafeInteger(allowed) || allowed < 0 || allowed > 0xff) fail('ERR_WORLD_HOST_REQUEST_ALLOWED_RESPONSE_STATUSES_INVALID');
+  if ((allowed & (1 << status)) === 0) fail('ERR_WORLD_HOST_REQUEST_RESPONSE_STATUS_NOT_ALLOWED', `World HostRequest does not allow ${label}`);
 }
 
 function fingerprintString(value) {

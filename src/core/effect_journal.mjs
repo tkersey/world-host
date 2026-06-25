@@ -5,7 +5,7 @@ import {
   assertRecoveryClass,
   defineActuatorDriver,
 } from './actuator.mjs';
-import { assertBytes, fail, fromUtf8, stableJson, toHex } from './store.mjs';
+import { assertBlobRef, assertBytes, fail, fromUtf8, stableJson, toHex } from './store.mjs';
 import { decodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
 
 export const EffectState = Object.freeze({
@@ -26,6 +26,23 @@ const TERMINAL_WITH_OUTCOME = new Set([
 ]);
 
 const EFFECT_STATES = new Set(Object.values(EffectState));
+const RECOVER_AFTER_RESOLVE_FAILURE = new Set([
+  EffectRecoveryClass.idempotent,
+  EffectRecoveryClass.externallyRecoverable,
+  EffectRecoveryClass.transactional,
+]);
+const RESPONSE_STATUS_CODES = Object.freeze({
+  responded: 0,
+  ok: 0,
+  final: 0,
+  rejected: 1,
+  not_found: 1,
+  http_error: 1,
+  failed: 2,
+  pending: 3,
+  deferred: 4,
+  cancelled: 5,
+});
 const effectKeyLocks = new WeakMap();
 
 export class EffectJournal {
@@ -80,11 +97,15 @@ export class EffectJournal {
     const manifest = driver.manifest();
     assertDriverCanResolve(manifest, hostRequest);
     const prepared = await prepareHostRequest(hostRequest);
+    const normalizedHostRequest = normalizePreparedHostRequest(hostRequest, prepared);
     assertPreparedRequestWithinLimits(prepared, manifest, this.policy);
     return await withEffectKeyLock(this.store, effectLockKey(this.runId, prepared.idempotencyKey), async () => {
       const observed = await this.observe(hostRequest, { manifest });
       const reused = await this.#resolutionFromRecord(observed);
-      if (reused) return reused;
+      if (reused) {
+        assertResolutionAccepted(reused.resolutionInputBytes, normalizedHostRequest, manifest, this.policy);
+        return reused;
+      }
       if (observed.state === EffectState.running) return await this.recover(context, observed, driver);
       if (observed.state === EffectState.operatorInterventionRequired) {
         return { record: observed, resolutionInputBytes: null, reused: false, operatorInterventionRequired: true };
@@ -97,9 +118,39 @@ export class EffectJournal {
         diagnostics: { ...observed.diagnostics, driverId: manifest.driverId },
       });
 
+      let resolved;
       try {
-        const resolved = normalizeDriverResolution(await driver.resolve(context, hostRequest));
-        assertResolutionAccepted(resolved.resolutionInputBytes, hostRequest, manifest, this.policy);
+        resolved = normalizeDriverResolution(await driver.resolve(context, normalizedHostRequest));
+      } catch (error) {
+        await this.#put({
+          ...running,
+          state: driverFailureState(manifest.recoveryClass),
+          diagnostics: {
+            ...running.diagnostics,
+            error: error.message,
+            ...driverFailureDiagnostics(manifest.recoveryClass),
+          },
+        });
+        throw error;
+      }
+
+      try {
+        assertResolutionAccepted(resolved.resolutionInputBytes, normalizedHostRequest, manifest, this.policy);
+      } catch (error) {
+        const failureState = invalidResolutionFailureState(manifest.recoveryClass);
+        await this.#put({
+          ...running,
+          state: failureState,
+          diagnostics: {
+            ...running.diagnostics,
+            error: error.message,
+            ...resolutionFailureDiagnostics(failureState),
+          },
+        });
+        throw error;
+      }
+
+      try {
         const resolutionInputRef = await this.store.putBlob(resolved.resolutionInputBytes);
         const hostClaimRef = resolved.hostClaimBytes ? await this.store.putBlob(resolved.hostClaimBytes) : running.hostClaimRef;
         const record = await this.#put({
@@ -116,16 +167,14 @@ export class EffectJournal {
           reused: false,
         };
       } catch (error) {
-        const failureState = manifest.recoveryClass === EffectRecoveryClass.bestEffort
-          ? EffectState.operatorInterventionRequired
-          : EffectState.failed;
+        const failureState = persistenceFailureState(manifest.recoveryClass);
         await this.#put({
           ...running,
           state: failureState,
           diagnostics: {
             ...running.diagnostics,
             error: error.message,
-            ...(failureState === EffectState.operatorInterventionRequired ? { recoveryRequired: 'best_effort_resolution_not_durable' } : {}),
+            ...persistenceFailureDiagnostics(failureState, manifest.recoveryClass),
           },
         });
         throw error;
@@ -136,8 +185,13 @@ export class EffectJournal {
   async recover(context, effectRecord, driverLike) {
     const driver = defineActuatorDriver(driverLike);
     const record = assertEffectRecord(effectRecord);
+    const manifest = driver.manifest();
+    assertDriverCanRecover(manifest, record);
     const reused = await this.#resolutionFromRecord(record);
-    if (reused) return reused;
+    if (reused) {
+      assertResolutionAccepted(reused.resolutionInputBytes, record, manifest, this.policy);
+      return reused;
+    }
 
     if (record.driverRecoveryClass === EffectRecoveryClass.bestEffort) {
       const intervention = await this.#put({
@@ -148,9 +202,8 @@ export class EffectJournal {
       return { record: intervention, resolutionInputBytes: null, reused: false, operatorInterventionRequired: true };
     }
 
-    const manifest = driver.manifest();
-    assertDriverCanRecover(manifest, record);
     const recordWithRequestBytes = await this.#recordWithRequestBytes(record);
+    assertRecoveredRequestWithinLimits(recordWithRequestBytes, manifest, this.policy);
     if (typeof driver.recover === 'function' || record.driverRecoveryClass === EffectRecoveryClass.pure) {
       const recovered = normalizeDriverResolution(typeof driver.recover === 'function'
         ? await driver.recover(context, recordWithRequestBytes)
@@ -299,6 +352,38 @@ export class EffectJournal {
   }
 }
 
+function driverFailureState(recoveryClass) {
+  if (recoveryClass === EffectRecoveryClass.bestEffort) return EffectState.operatorInterventionRequired;
+  if (RECOVER_AFTER_RESOLVE_FAILURE.has(recoveryClass)) return EffectState.running;
+  return EffectState.failed;
+}
+
+function driverFailureDiagnostics(recoveryClass) {
+  if (recoveryClass === EffectRecoveryClass.bestEffort) return { recoveryRequired: 'best_effort_resolution_not_durable' };
+  if (RECOVER_AFTER_RESOLVE_FAILURE.has(recoveryClass)) return { recoveryRequired: `${recoveryClass}_resolve_failed` };
+  return {};
+}
+
+function invalidResolutionFailureState(recoveryClass) {
+  if (recoveryClass === EffectRecoveryClass.bestEffort) return EffectState.operatorInterventionRequired;
+  return EffectState.failed;
+}
+
+function persistenceFailureState(recoveryClass) {
+  return driverFailureState(recoveryClass);
+}
+
+function resolutionFailureDiagnostics(failureState) {
+  if (failureState === EffectState.operatorInterventionRequired) return { recoveryRequired: 'best_effort_resolution_not_durable' };
+  return {};
+}
+
+function persistenceFailureDiagnostics(failureState, recoveryClass) {
+  if (failureState === EffectState.operatorInterventionRequired) return { recoveryRequired: 'best_effort_resolution_not_durable' };
+  if (RECOVER_AFTER_RESOLVE_FAILURE.has(recoveryClass)) return { recoveryRequired: `${recoveryClass}_persistence_failed` };
+  return {};
+}
+
 function assertDriverCanRecover(manifest, record) {
   if (!manifest.supportedActuatorRefs.includes(record.actuatorRef)) fail('ERR_ACTUATOR_REF_NOT_SUPPORTED');
   if (!manifest.supportedDescriptorFingerprints.includes(record.descriptorFingerprint)) fail('ERR_DESCRIPTOR_NOT_SUPPORTED');
@@ -352,7 +437,25 @@ export function assertEffectRecord(record) {
   if (!EFFECT_STATES.has(record.state)) fail('ERR_INVALID_EFFECT_STATE');
   if (!Number.isSafeInteger(record.attemptCount) || record.attemptCount < 0) fail('ERR_INVALID_EFFECT_RECORD', 'attemptCount must be non-negative');
   assertRecoveryClass(record.driverRecoveryClass);
+  assertOptionalBlobRef(record.requestBytesRef, 'requestBytesRef');
+  assertOptionalBlobRef(record.resolutionInputRef, 'resolutionInputRef');
+  assertOptionalBlobRef(record.hostClaimRef, 'hostClaimRef');
+  if (record.state === EffectState.running && !record.requestBytesRef) {
+    fail('ERR_INVALID_EFFECT_RECORD', 'running effects require persisted request bytes');
+  }
+  if (TERMINAL_WITH_OUTCOME.has(record.state) && !record.resolutionInputRef) {
+    fail('ERR_INVALID_EFFECT_RECORD', 'outcome effects require a persisted ResolutionInput');
+  }
   return record;
+}
+
+function assertOptionalBlobRef(ref, field) {
+  if (ref === undefined || ref === null) return;
+  try {
+    assertBlobRef(ref);
+  } catch (error) {
+    fail('ERR_INVALID_EFFECT_RECORD', `${field} must be a valid blob ref`, { cause: error.message });
+  }
 }
 
 export async function prepareHostRequest(hostRequest) {
@@ -361,12 +464,15 @@ export async function prepareHostRequest(hostRequest) {
   const requestBytes = assertBytes(hostRequest.requestBytes ?? fromUtf8(stableJson(hostRequest.request ?? {})), 'requestBytes');
   if (hostRequest.shortIdempotencyKeyHash) fail('ERR_SHORT_IDEMPOTENCY_KEY_FORBIDDEN');
   const requestBytesChecksum = `sha256:${await sha256Hex(requestBytes)}`;
-  const hostRequestFingerprint = hostRequest.hostRequestFingerprint ?? `sha256:${await sha256Hex(fromUtf8(stableJson({
+  const generatedHostRequestHash = await sha256Hex(fromUtf8(stableJson({
     actuatorRef: hostRequest.actuatorRef,
     descriptorFingerprint: hostRequest.descriptorFingerprint,
     actuationClass: hostRequest.actuationClass,
+    responseSchema: hostRequest.responseSchema ?? null,
     requestBytesChecksum,
-  })))}`;
+  })));
+  const hostRequestFingerprint = hostRequest.hostRequestFingerprint ?? `world:host-request:${generatedHostRequestHash.slice(0, 16)}`;
+  hostRequestTargetFingerprint({ hostRequestFingerprint });
   return {
     idempotencyKey: {
       format: 'world-idempotency-key-bytes.hex',
@@ -376,6 +482,15 @@ export async function prepareHostRequest(hostRequest) {
     requestBytes,
     requestBytesChecksum,
     hostRequestFingerprint,
+  };
+}
+
+function normalizePreparedHostRequest(hostRequest, prepared) {
+  return {
+    ...hostRequest,
+    requestBytes: prepared.requestBytes,
+    hostRequestFingerprint: prepared.hostRequestFingerprint,
+    idempotencyKeyWorldFingerprint: prepared.idempotencyKeyWorldFingerprint,
   };
 }
 
@@ -395,12 +510,19 @@ function assertPreparedRequestWithinLimits(prepared, manifest, policy) {
   if (policy.maximumRequestBytes !== undefined && prepared.requestBytes.byteLength > policy.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
 }
 
+function assertRecoveredRequestWithinLimits(record, manifest, policy) {
+  if (!record.requestBytes) fail('ERR_EFFECT_REQUEST_BYTES_REQUIRED', 'effect recovery requires persisted request bytes');
+  if (record.requestBytes.byteLength > manifest.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
+  if (policy.maximumRequestBytes !== undefined && record.requestBytes.byteLength > policy.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
+}
+
 function assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, policy) {
   const resolution = decodeResolutionInputBytes(resolutionInputBytes);
   const expectedTarget = hostRequestTargetFingerprint(hostRequest);
   if (resolution.targetHostRequestFingerprint !== expectedTarget) {
     fail('ERR_EFFECT_RESOLUTION_TARGET_MISMATCH', 'driver ResolutionInput targets a different HostRequest');
   }
+  assertResolutionStatusAccepted(resolution.status, hostRequest);
   const maximumResponseBytes = policy.maximumResponseBytes === undefined
     ? manifest.maximumResponseBytes
     : Math.min(manifest.maximumResponseBytes, policy.maximumResponseBytes);
@@ -408,6 +530,14 @@ function assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, p
   if (resolution.responseValueImageBytes.byteLength > maximumResponseBytes) {
     fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver ResolutionInput response exceeds byte limit');
   }
+}
+
+function assertResolutionStatusAccepted(status, hostRequest) {
+  const expectedStatus = hostRequest.responseSchema?.status;
+  if (expectedStatus === undefined) return;
+  const expectedWireStatus = RESPONSE_STATUS_CODES[expectedStatus];
+  if (expectedWireStatus === undefined) fail('ERR_RESPONSE_STATUS_NOT_SUPPORTED', 'response schema status is not mapped to a wire status');
+  if (status !== expectedWireStatus) fail('ERR_EFFECT_RESPONSE_STATUS_MISMATCH', 'driver ResolutionInput status does not match the HostRequest response schema');
 }
 
 function hostRequestTargetFingerprint(hostRequest) {

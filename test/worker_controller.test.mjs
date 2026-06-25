@@ -9,6 +9,8 @@ import { createBranchRecord, createRunHead, createRunRecord } from '../src/core/
 import { RunController, WorldWorker, assertWarmWorkerBinding } from '../src/core/worker.mjs';
 import { fromUtf8 } from '../src/core/store.mjs';
 import { encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
+import { wyhash64 } from '../src/protocol/world_loaded_value_codec.mjs';
+import { summarizeTurnClosureForRunHead } from '../src/protocol/world_universal_appliance_codec.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
 import { NodeWorldWorker } from '../src/node/node_worker.mjs';
 
@@ -80,6 +82,73 @@ describe('RunController and WorldWorker', () => {
     assert.equal(worker.restoreCount, 0);
   });
 
+  it('rejects parent heads whose metadata does not match stored closure bytes', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headOverrides: { turnClosureWorldFingerprint: 'world:turn-closure:0000000000000bad' },
+    });
+    const controller = new RunController({ store, workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes()) });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_PARENT_HEAD_CLOSURE_MISMATCH' },
+    );
+  });
+
+  it('disposes dirty warm workers after failed turn submission before retry', async () => {
+    const { store, runId, branchId } = await fixtureStore({ headStatus: 'genesis' });
+    const workers = [];
+    const controller = new RunController({
+      store,
+      workerFactory: async () => {
+        const worker = workers.length === 0
+          ? new ThrowingAfterSubmitWorker()
+          : new ClosureOnlyWorker(fixtureTurnClosureBytes());
+        workers.push(worker);
+        return worker;
+      },
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_TEST_SUBMIT_FAILED' },
+    );
+    assert.equal(workers[0].disposed, true);
+
+    const retried = await controller.advance(runId, branchId);
+
+    assert.equal(retried.status, 'advanced');
+    assert.equal(workers.length, 2);
+    assert.equal(workers[1].disposed, false);
+  });
+
+  it('disposes dirty warm workers after failed restore before retry', async () => {
+    const { store, runId, branchId } = await fixtureStore();
+    const workers = [];
+    const controller = new RunController({
+      store,
+      workerFactory: async () => {
+        const worker = workers.length === 0
+          ? new ThrowingRestoreWorker(fixtureTurnClosureBytes())
+          : new RestoringWorker(fixtureTurnClosureBytes());
+        workers.push(worker);
+        return worker;
+      },
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_TEST_RESTORE_FAILED' },
+    );
+    assert.equal(workers[0].disposed, true);
+
+    const retried = await controller.advance(runId, branchId);
+
+    assert.equal(retried.status, 'advanced');
+    assert.equal(workers.length, 2);
+    assert.equal(workers[1].restoreCount, 1);
+    assert.equal(workers[1].disposed, false);
+  });
+
   it('resolves pending host requests through EffectJournal before fallback turn input', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
@@ -147,6 +216,27 @@ describe('RunController and WorldWorker', () => {
     const controller = new RunController({
       store,
       workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes({ appliedHostReplyFingerprints: [] })),
+      effectDrivers: [fixtureEffectDriver()],
+    });
+
+    const result = await controller.advance(runId, branchId);
+    const effects = await store.listEffectRecords(runId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(result.effects.length, 0);
+    assert.deepEqual(result.nextHead.updateDiagnostics.committedEffectIds, []);
+    assert.equal(effects.length, 1);
+    assert.equal(effects[0].state, EffectState.resolved);
+  });
+
+  it('does not commit effects when the TurnReceipt only names the HostRequest fingerprint', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(),
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes({ appliedHostReplyFingerprints: [0xa01n] })),
       effectDrivers: [fixtureEffectDriver()],
     });
 
@@ -375,6 +465,53 @@ describe('RunController and WorldWorker', () => {
     assert.equal(selected.invocationCount, 1);
   });
 
+  it('rejects World host requests that do not allow responded resolutions', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({
+        requestFingerprint: 0xa01n,
+        allowedResponseStatuses: 0,
+      })]),
+    });
+    const driver = fixtureEffectDriver();
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [driver],
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_WORLD_HOST_REQUEST_RESPONSE_STATUS_NOT_ALLOWED' },
+    );
+    assert.equal(driver.invocationCount, 0);
+    assert.equal((await store.listEffectRecords(runId)).length, 0);
+  });
+
+  it('rejects unsupported World host request versions before driver selection', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({
+        requestFingerprint: 0xa01n,
+        requestFormatVersion: 5,
+      })]),
+      headSummary: needsHostHeadSummary(),
+    });
+    const driver = fixtureEffectDriver();
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [driver],
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_PARENT_HEAD_CLOSURE_UNDECODABLE' },
+    );
+    assert.equal(driver.invocationCount, 0);
+    assert.equal((await store.listEffectRecords(runId)).length, 0);
+  });
+
   it('fails closed on uncovered host requests unless partial batches are allowed', async () => {
     const requests = [
       fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'idempotency-key:1', idempotencyKeyFingerprint: 0xa09n }),
@@ -410,6 +547,40 @@ describe('RunController and WorldWorker', () => {
       effectPolicy: {
         allowedAuthorityLabels: new Set(['network:http']),
         allowedHttpOrigins: new Set(['https://receiver.example']),
+      },
+      hostRequestMapper: () => ({
+        actuatorRef: 'http:json',
+        descriptorFingerprint: 'descriptor:http-json',
+        actuationClass: 'http',
+        responseSchema: { status: 'ok' },
+        idempotencyKeyBytes: fromUtf8('http-idempotency-key'),
+        idempotencyKeyWorldFingerprint: 'world:key:http',
+        requestBytes: fromUtf8(JSON.stringify({ url: 'https://blocked.example/path' })),
+        hostRequestFingerprint: 'world:host-request:0000000000000a01',
+      }),
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_HOST_REQUEST_DRIVER_UNAVAILABLE' },
+    );
+    assert.equal(driver.invocationCount, 0);
+    assert.equal((await store.listEffectRecords(runId)).length, 0);
+  });
+
+  it('rejects HTTP requests outside the selected driver origin coverage', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const driver = policyDeniedHttpDriver({ origins: ['https://allowed.example'] });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [driver],
+      effectPolicy: {
+        allowedAuthorityLabels: new Set(['network:http']),
+        allowedHttpOrigins: new Set(['https://blocked.example']),
       },
       hostRequestMapper: () => ({
         actuatorRef: 'http:json',
@@ -626,6 +797,26 @@ describe('RunController and WorldWorker', () => {
     );
   });
 
+  it('fails closed on unsupported embedded TurnReceipt versions', async () => {
+    const { store, runId, branchId } = await fixtureStore();
+    const controller = new RunController({ store, workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes({ receiptFormatVersion: 2 })) });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_TURN_CLOSURE_INSPECTION_FAILED' },
+    );
+  });
+
+  it('fails closed on embedded TurnReceipt bytes with trailing data', async () => {
+    const { store, runId, branchId } = await fixtureStore();
+    const controller = new RunController({ store, workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes({ extraReceiptBytes: Uint8Array.of(0) })) });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_TURN_CLOSURE_INSPECTION_FAILED' },
+    );
+  });
+
   it('rejects mismatched warm-worker identity before reuse', async () => {
     const worker = new WorldWorker();
     await worker.instantiate(fromUtf8('placeholder'));
@@ -650,7 +841,18 @@ async function fixtureStore(options = {}) {
   const store = new MemoryStore();
   const imageRef = await store.putBlob(fromUtf8('image'));
   const manifestRef = await store.putBlob(fromUtf8('manifest'));
-  const closureRef = await store.putBlob(options.closureBytes ?? fromUtf8('closure:0'));
+  const closureBytes = options.closureBytes ?? (options.headStatus === 'genesis' ? fromUtf8('world-host:genesis') : fixtureTurnClosureBytes());
+  const closureRef = await store.putBlob(closureBytes);
+  const closureSummary = options.headSummary ?? (options.headStatus === 'genesis' ? {
+    turnClosureWorldFingerprint: 'world:turn-closure:genesis',
+    resultingStateFingerprint: 'world:state:genesis',
+    chronicleCursor: 'world:chronicle-cursor:genesis',
+    archiveMomentFingerprint: 'world:archive-moment:genesis',
+    archiveSealFingerprint: 'world:archive-seal:genesis',
+    status: 'genesis',
+  } : summarizeTurnClosureForRunHead(closureBytes));
+  const archiveMomentFingerprint = closureSummary.archiveMomentFingerprint ?? 'world:archive-moment:retained';
+  const archiveSealFingerprint = closureSummary.archiveSealFingerprint ?? 'world:archive-seal:retained';
   const application = createApplicationRecord({
     applicationId: 'app',
     universalWasmChecksum: 'sha256:fixture',
@@ -667,17 +869,29 @@ async function fixtureStore(options = {}) {
   const head = createRunHead({
     generation: 0,
     turnClosureRef: closureRef,
-    turnClosureWorldFingerprint: 'world:closure:0',
-    resultingStateFingerprint: 'world:state:0',
-    chronicleCursor: 'cursor:0',
-    archiveMomentFingerprint: 'archive:moment:0',
-    archiveSealFingerprint: 'archive:seal:0',
-    status: options.headStatus ?? 'completed',
+    turnClosureWorldFingerprint: closureSummary.turnClosureWorldFingerprint,
+    resultingStateFingerprint: closureSummary.resultingStateFingerprint,
+    chronicleCursor: closureSummary.chronicleCursor,
+    archiveMomentFingerprint,
+    archiveSealFingerprint,
+    status: options.headStatus ?? closureSummary.status,
+    ...options.headOverrides,
   });
   const branch = createBranchRecord({ branchId: 'main', currentHead: head });
   const run = createRunRecord({ runId: 'run', applicationId: application.applicationId, branches: [branch], effectJournalNamespace: 'effects' });
   await store.createRun(run);
   return { store, runId: run.runId, branchId: branch.branchId, head };
+}
+
+function needsHostHeadSummary() {
+  return {
+    turnClosureWorldFingerprint: 'world:turn-closure:0000000000000111',
+    resultingStateFingerprint: 'world:state:0000000000000302',
+    chronicleCursor: 'world:chronicle-cursor:0000000000000304',
+    archiveMomentFingerprint: null,
+    archiveSealFingerprint: null,
+    status: 'needs_host',
+  };
 }
 
 function fixtureEffectDriver() {
@@ -703,7 +917,7 @@ function fixtureEffectDriver() {
         resolutionInputBytes: encodeResolutionInputBytes({
           targetHostRequestFingerprint: 0xa01n,
           status: 0,
-          responseValueImageBytes: fromUtf8('response'),
+          responseValueImageBytes: fixtureResponseValueBytes('response', 0xa01n),
           hostClaimBytes: fromUtf8('claim'),
           attemptNumber: this.invocationCount,
           metadata: fromUtf8('metadata'),
@@ -774,7 +988,7 @@ function delayedBatchDriver(options = {}) {
           resolutionInputBytes: encodeResolutionInputBytes({
             targetHostRequestFingerprint: context.worldHostRequest.requestFingerprint,
             status: 0,
-            responseValueImageBytes: fromUtf8(`response:${target.slice('world:host-request:'.length)}`),
+            responseValueImageBytes: fixtureResponseValueBytes(`response:${target.slice('world:host-request:'.length)}`, context.worldHostRequest.requestFingerprint),
             hostClaimBytes: fromUtf8(`claim:${target}`),
             attemptNumber: this.invocationCount,
             metadata: fromUtf8('metadata'),
@@ -812,7 +1026,7 @@ function sharedConcurrencyDriver({ driverId, descriptorFingerprint, tracker, con
           resolutionInputBytes: encodeResolutionInputBytes({
             targetHostRequestFingerprint: context.worldHostRequest.requestFingerprint,
             status: 0,
-            responseValueImageBytes: fromUtf8(`response:${context.hostRequest.hostRequestFingerprint}`),
+            responseValueImageBytes: fixtureResponseValueBytes(`response:${context.hostRequest.hostRequestFingerprint}`, context.worldHostRequest.requestFingerprint),
             hostClaimBytes: fromUtf8('claim'),
             attemptNumber: 1,
             metadata: fromUtf8('metadata'),
@@ -864,7 +1078,7 @@ function settlingFailureDriver() {
   };
 }
 
-function policyDeniedHttpDriver() {
+function policyDeniedHttpDriver(options = {}) {
   return {
     invocationCount: 0,
     manifest() {
@@ -879,6 +1093,9 @@ function policyDeniedHttpDriver() {
         recoveryClass: EffectRecoveryClass.idempotent,
         concurrencyLimit: 1,
         authorityLabels: ['network:http'],
+        diagnostics: {
+          ...(options.origins ? { origins: options.origins } : {}),
+        },
       };
     },
     async resolve() {
@@ -914,6 +1131,15 @@ function binding(overrides = {}) {
 class ScriptedWorker extends WorldWorker {
   async submitTurn() {
     return turnResult(1);
+  }
+}
+
+class ThrowingAfterSubmitWorker extends WorldWorker {
+  async submitTurn() {
+    this.lastTurnClosureBytes = fixtureTurnClosureBytes();
+    const error = new Error('test submit failed');
+    error.code = 'ERR_TEST_SUBMIT_FAILED';
+    throw error;
   }
 }
 
@@ -958,6 +1184,15 @@ class RestoringWorker extends ClosureOnlyWorker {
   }
 }
 
+class ThrowingRestoreWorker extends RestoringWorker {
+  async restoreFromTurnClosure() {
+    await super.restoreFromTurnClosure();
+    const error = new Error('test restore failed');
+    error.code = 'ERR_TEST_RESTORE_FAILED';
+    throw error;
+  }
+}
+
 function fixtureTurnClosureBytes(options = {}) {
   const turnReceiptBytes = concat([
     u32(options.receiptFormatVersion ?? 1),
@@ -967,7 +1202,7 @@ function fixtureTurnClosureBytes(options = {}) {
     u64(1n),
     u64(0x301n),
     optionalU64(null),
-    u64Slice(options.appliedHostReplyFingerprints ?? [0xa01n, 0xa02n, 0xa03n]),
+    u64Slice(options.appliedHostReplyFingerprints ?? defaultAppliedHostReplyFingerprints()),
     u64Slice([]),
     optionalU64(null),
     u64(0xc01n),
@@ -980,6 +1215,7 @@ function fixtureTurnClosureBytes(options = {}) {
     optionalU64(null),
     u64(0n),
     u64(0n),
+    ...(options.extraReceiptBytes ? [options.extraReceiptBytes] : []),
   ]);
   return concat([
     u32(options.formatVersion ?? 1),
@@ -1022,6 +1258,108 @@ function fixtureTurnClosureBytes(options = {}) {
     bytes(new Uint8Array()),
     u8(options.status ?? 2),
   ]);
+}
+
+function defaultAppliedHostReplyFingerprints() {
+  const requestFingerprints = [0xa01n, 0xa02n, 0xa03n];
+  const idempotencyKeyFingerprints = [0xa09n, 0xa19n, 0xa29n];
+  return [
+    fixtureHostReplyFingerprint({
+      requestFingerprint: 0xa01n,
+      idempotencyKeyFingerprint: 0xa09n,
+      responseValueImageBytes: fixtureResponseValueBytes('response', 0xa01n),
+      hostClaimBytes: fromUtf8('claim'),
+      attemptNumber: 1,
+    }),
+    ...requestFingerprints.flatMap((requestFingerprint, index) => {
+      const suffix = requestFingerprint.toString(16).padStart(16, '0');
+      return [
+        ...[1n, 2n, 3n].map((attemptNumber) => fixtureHostReplyFingerprint({
+          requestFingerprint,
+          idempotencyKeyFingerprint: idempotencyKeyFingerprints[index],
+          responseValueImageBytes: fixtureResponseValueBytes(`response:${suffix}`, requestFingerprint),
+          hostClaimBytes: fromUtf8(`claim:world:host-request:${suffix}`),
+          attemptNumber,
+        })),
+        fixtureHostReplyFingerprint({
+          requestFingerprint,
+          idempotencyKeyFingerprint: idempotencyKeyFingerprints[index],
+          responseValueImageBytes: fixtureResponseValueBytes(`response:world:host-request:${suffix}`, requestFingerprint),
+          hostClaimBytes: fromUtf8('claim'),
+          attemptNumber: 1n,
+        }),
+      ];
+    }),
+  ];
+}
+
+function fixtureHostReplyFingerprint({
+  requestFingerprint,
+  intentFingerprint = 0xa06n,
+  envelopeFingerprint = 0xa07n,
+  idempotencyKeyFingerprint,
+  status = 0n,
+  responseValueImageBytes,
+  hostClaimBytes,
+  attemptNumber,
+  metadata = fromUtf8('metadata'),
+}) {
+  const responseFingerprint = valueImageFingerprint(responseValueImageBytes);
+  const responseKind = status === 0n ? 1n : 0n;
+  const outcomeFingerprint = nonzero(wyhash64(concat([
+    hashBytes(fromUtf8('world.appliance.host_outcome.fingerprint')),
+    u64(1n),
+    u64(1n),
+    u64(requestFingerprint),
+    u64(intentFingerprint),
+    u64(envelopeFingerprint),
+    u64(idempotencyKeyFingerprint),
+    u64(status),
+    optionalHashU64(responseFingerprint),
+    u64(responseKind),
+    hashBytes(responseValueImageBytes),
+    optionalHashU64(null),
+    hashBytes(hostClaimBytes),
+    u64(attemptNumber),
+    hashBytes(metadata),
+  ])));
+  return nonzero(wyhash64(concat([
+    hashBytes(fromUtf8('world.appliance.host_reply.fingerprint')),
+    u64(1n),
+    u64(1n),
+    u64(requestFingerprint),
+    u64(outcomeFingerprint),
+    optionalHashU64(null),
+    u64(0n),
+    hashBytes(metadata),
+  ])));
+}
+
+function fixtureResponseValueBytes(text, fingerprint) {
+  const payload = fromUtf8(text);
+  const out = new Uint8Array(16 + payload.byteLength);
+  const view = new DataView(out.buffer);
+  view.setUint32(8, Number(BigInt(fingerprint) & 0xffff_ffffn), true);
+  view.setUint32(12, Number((BigInt(fingerprint) >> 32n) & 0xffff_ffffn), true);
+  out.set(payload, 16);
+  return out;
+}
+
+function valueImageFingerprint(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return (BigInt(view.getUint32(12, true)) << 32n) | BigInt(view.getUint32(8, true));
+}
+
+function hashBytes(value) {
+  return concat([u64(value.byteLength), value]);
+}
+
+function optionalHashU64(value) {
+  return value == null ? u64(0n) : concat([u64(1n), u64(value)]);
+}
+
+function nonzero(value) {
+  return value === 0n ? 1n : value;
 }
 
 function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()]) {
@@ -1092,14 +1430,17 @@ function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()]
 }
 
 function fixtureHostRequestBytes(options = {}) {
+  const requestFormatVersion = options.requestFormatVersion ?? 4;
+  const requestFingerprintVersion = options.requestFingerprintVersion ?? 4;
   const requestFingerprint = options.requestFingerprint ?? 0xa01n;
   const requestOrdinal = options.requestOrdinal ?? 0;
   const idempotencyKey = options.idempotencyKey ?? 'idempotency-key';
   const idempotencyKeyFingerprint = options.idempotencyKeyFingerprint ?? 0xa09n;
   const expectedResponseDescriptorFingerprint = options.expectedResponseDescriptorFingerprint ?? 0xa0bn;
+  const allowedResponseStatuses = options.allowedResponseStatuses ?? 1;
   return concat([
-    u32(4),
-    u32(4),
+    u32(requestFormatVersion),
+    u32(requestFingerprintVersion),
     u64(requestFingerprint),
     u64(0n),
     u32(requestOrdinal),
@@ -1110,7 +1451,7 @@ function fixtureHostRequestBytes(options = {}) {
     u64(0xa05n),
     u64(0xa05n),
     u8(1),
-    u8(1),
+    u8(allowedResponseStatuses),
     u64(0xa06n),
     u64(0xa07n),
     u64(0xa08n),

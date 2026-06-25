@@ -8,7 +8,7 @@ import { assertBlobRef, fail, fromUtf8, makeBlobRef } from '../core/store.mjs';
 import { RunController } from '../core/worker.mjs';
 import { createRunPolicy, preflightCapabilities } from '../core/capabilities.mjs';
 import { encodeBootTurnInput, encodeRestoreTurnInput } from '../protocol/world_appliance_wire_codec.mjs';
-import { inspectTurnOutput } from '../protocol/world_universal_appliance_codec.mjs';
+import { inspectTurnOutput, summarizeTurnClosureForRunHead } from '../protocol/world_universal_appliance_codec.mjs';
 import { carrierVersionSummary } from '../protocol/world_manifest.mjs';
 import { EffectJournal } from '../core/effect_journal.mjs';
 import { NodeWorldWorker } from './node_worker.mjs';
@@ -442,9 +442,15 @@ async function runImport(args, io, storePath) {
 function pendingRequestsForImportedHead(candidate) {
   const head = candidate.bundle?.head;
   const closureBytes = carrierBundleBlobBytes(candidate.bundle, head.turnClosureRef);
+  if (head.status === 'genesis') {
+    assertImportedGenesisHead(head, closureBytes);
+    return [];
+  }
   let summary;
+  let headSummary;
   try {
     summary = inspectTurnOutput(closureBytes);
+    headSummary = summarizeTurnClosureForRunHead(closureBytes);
   } catch (error) {
     fail('ERR_IMPORT_PREFLIGHT_CLOSURE_UNDECODABLE', 'receiver preflight could not inspect selected closure', { cause: error.message });
   }
@@ -452,7 +458,51 @@ function pendingRequestsForImportedHead(candidate) {
   if (head.status !== decodedStatus) {
     fail('ERR_IMPORT_PREFLIGHT_HEAD_STATUS_MISMATCH', 'receiver preflight requires imported head status to match selected closure', { headStatus: head.status, decodedStatus });
   }
+  assertImportedHeadMatchesClosure(head, headSummary);
   return decodedStatus === 'needs_host' ? summary.hostRequests : [];
+}
+
+function assertImportedGenesisHead(head, closureBytes) {
+  const genesisBytes = fromUtf8('world-host:genesis');
+  if (head.generation !== 0 || closureBytes.byteLength !== genesisBytes.byteLength || !closureBytes.every((byte, index) => byte === genesisBytes[index])) {
+    fail('ERR_IMPORT_PREFLIGHT_GENESIS_MISMATCH', 'receiver preflight requires genesis heads to use the host genesis sentinel');
+  }
+  for (const [field, expected] of Object.entries({
+    turnClosureWorldFingerprint: 'world:turn-closure:genesis',
+    resultingStateFingerprint: 'world:state:genesis',
+    chronicleCursor: 'world:chronicle-cursor:genesis',
+    archiveMomentFingerprint: 'world:archive-moment:genesis',
+    archiveSealFingerprint: 'world:archive-seal:genesis',
+    status: 'genesis',
+  })) {
+    if (head[field] !== expected) {
+      fail('ERR_IMPORT_PREFLIGHT_GENESIS_MISMATCH', 'receiver preflight requires genesis heads to use canonical host genesis metadata', {
+        field,
+        headValue: head[field],
+        expected,
+      });
+    }
+  }
+}
+
+function assertImportedHeadMatchesClosure(head, summary) {
+  for (const field of [
+    'turnClosureWorldFingerprint',
+    'resultingStateFingerprint',
+    'chronicleCursor',
+    'archiveMomentFingerprint',
+    'archiveSealFingerprint',
+    'status',
+  ]) {
+    if ((field === 'archiveMomentFingerprint' || field === 'archiveSealFingerprint') && summary[field] == null) continue;
+    if (head[field] !== summary[field]) {
+      fail('ERR_IMPORT_PREFLIGHT_HEAD_CLOSURE_MISMATCH', 'receiver preflight requires imported head metadata to match selected closure', {
+        field,
+        headValue: head[field],
+        closureValue: summary[field],
+      });
+    }
+  }
 }
 
 function carrierBundleBlobBytes(bundle, ref) {
@@ -706,8 +756,27 @@ function summarizeEffectRecord(record) {
     resolutionInputRef: summarizeBlobRef(record.resolutionInputRef),
     hostClaimRef: summarizeBlobRef(record.hostClaimRef),
     driverTransactionRef: record.driverTransactionRef ?? null,
-    diagnostics: record.diagnostics ?? {},
+    diagnostics: sanitizeEffectDiagnostics(record.diagnostics ?? {}),
   };
+}
+
+function sanitizeEffectDiagnostics(value) {
+  if (Array.isArray(value)) return value.map(sanitizeEffectDiagnostics);
+  if (!value || typeof value !== 'object') return value;
+  if (value.format === 'world-idempotency-key-bytes.hex' && typeof value.bytesHex === 'string') {
+    return { format: value.format, completeIdempotencyKeyBytesOmitted: true };
+  }
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (key === 'bytesHex') {
+      out.hexBytesOmitted = true;
+    } else if (key === 'idempotencyKeyBytes') {
+      out.idempotencyKeyBytesOmitted = true;
+    } else {
+      out[key] = sanitizeEffectDiagnostics(item);
+    }
+  }
+  return out;
 }
 
 function summarizeBlobRef(ref) {

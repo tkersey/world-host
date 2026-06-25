@@ -1,4 +1,5 @@
 import { createApplicationRecord } from '../core/application.mjs';
+import { assertEffectRecord } from '../core/effect_journal.mjs';
 import { ClosureStore, assertBlobRef, assertBytes, fromUtf8, makeBlobRef, sameBlobRef, stableJson, toHex } from '../core/store.mjs';
 import { fail } from '../core/store.mjs';
 
@@ -150,7 +151,7 @@ export class MemoryStore extends ClosureStore {
     if (bundle.application && !this.applications.has(bundle.application.applicationId)) this.applications.set(bundle.application.applicationId, clone(bundle.application));
     this.runs.set(bundle.run.runId, clone(bundle.run));
     this.heads.set(headKey(bundle.run.runId, bundle.branchId), clone(bundle.head));
-    for (const effect of bundle.effects ?? []) await this.putEffectRecord(effect);
+    for (const effect of bundle.effects ?? []) await this.putEffectRecord(assertEffectRecord(effect));
     return await this.getRun(bundle.run.runId);
   }
 }
@@ -184,14 +185,9 @@ function collectBlobRefs(...values) {
       return;
     }
     if (!value || typeof value !== 'object') return;
-    add(value.executableImageRef);
-    add(value.applianceManifestRef);
-    add(value.turnClosureRef);
-    add(value.requestBytesRef);
-    add(value.resolutionInputRef);
-    add(value.hostClaimRef);
+    add(value);
     add(universalWasmRef(value));
-    for (const branch of value.branches ?? []) visit(branch.currentHead);
+    for (const child of Object.values(value)) visit(child);
   }
 }
 
