@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, rename, lstat } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, lstat, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 
@@ -74,7 +74,7 @@ export class SandboxFileDriver {
     await mkdir(path.dirname(resolved), { recursive: true });
     if (this.symlinkPolicy === 'reject') await this.#rejectSymlinkComponents(path.dirname(resolved));
     const tmp = path.join(path.dirname(resolved), `.${path.basename(resolved)}.${tempKey(key)}.tmp`);
-    const handle = await open(tmp, 'wx');
+    const handle = await this.#openTempForWrite(tmp);
     try {
       await handle.writeFile(bytes);
     } finally {
@@ -84,6 +84,23 @@ export class SandboxFileDriver {
     const outcome = { status: 'ok', path: path.relative(this.root, resolved), byteLength: bytes.byteLength };
     this.writeOutcomes.set(key, outcome);
     return { resolutionInputBytes: resolutionInput(hostRequest, outcome), driverTransactionRef: key };
+  }
+
+  async #openTempForWrite(tmp) {
+    try {
+      return await open(tmp, 'wx');
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      const info = await lstat(tmp).catch((statError) => {
+        if (statError.code === 'ENOENT') return null;
+        throw statError;
+      });
+      if (!info) return await open(tmp, 'wx');
+      if (info.isSymbolicLink()) fail('ERR_SANDBOX_SYMLINK_REJECTED');
+      if (!info.isFile()) fail('ERR_SANDBOX_TEMP_EXISTS');
+      await rm(tmp, { force: true });
+      return await open(tmp, 'wx');
+    }
   }
 
   async #resolvePath(filePath) {

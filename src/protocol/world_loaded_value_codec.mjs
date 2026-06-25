@@ -223,7 +223,7 @@ function concat(chunks) {
   return out;
 }
 
-function wyhash64(input, seed = 0n) {
+export function wyhash64(input, seed = 0n) {
   const bytes = bytesOf(input);
   const state0 = (seed ^ mix(seed ^ SECRET[0], SECRET[1])) & MASK64;
   const state = [state0, state0, state0];

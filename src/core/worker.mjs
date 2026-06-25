@@ -4,6 +4,7 @@ import { createRunHead } from './run.mjs';
 import { assertBytes, fail, fromUtf8, toHex } from './store.mjs';
 import { decodeResolutionInputBytes, encodeContinueTurnInput } from '../protocol/world_appliance_wire_codec.mjs';
 import { inspectTurnOutput, summarizeTurnClosureForRunHead } from '../protocol/world_universal_appliance_codec.mjs';
+import { wyhash64 } from '../protocol/world_loaded_value_codec.mjs';
 
 export class WorldWorker {
   constructor() {
@@ -294,7 +295,7 @@ export class RunController {
     const pendingPositions = new Map(pending.map((item, index) => [item, index]));
     const groups = groupPendingEffects(pending);
     await Promise.all(groups.map((group) => runBounded(group, effectConcurrencyLimit(group.manifest, policy), async (item) => {
-      effects[pendingPositions.get(item)] = await journal.resolve(
+      const resolved = await journal.resolve(
         await this.effectContextFactory({
           run,
           branchId,
@@ -309,6 +310,7 @@ export class RunController {
         item.hostRequest,
         item.driver,
       );
+      effects[pendingPositions.get(item)] = { ...resolved, worldHostRequest: item.worldHostRequest };
     })));
     return effects;
   }
@@ -329,8 +331,68 @@ function effectResolutionTargetFingerprint(effect) {
 
 function confirmedTurnEffects(effects, inspected) {
   const appliedReplies = new Set(inspected.inspectionDiagnostics?.appliedHostReplyFingerprints ?? []);
-  if (appliedReplies.size === effects.length) return effects;
-  return effects.filter((effect) => appliedReplies.has(effectResolutionTargetFingerprint(effect)));
+  return effects.filter((effect) => {
+    const replyFingerprint = effectHostReplyFingerprint(effect);
+    if (replyFingerprint && appliedReplies.has(replyFingerprint)) return true;
+    return appliedReplies.has(effectResolutionTargetFingerprint(effect));
+  });
+}
+
+function effectHostReplyFingerprint(effect) {
+  if (!effect.worldHostRequest) return null;
+  try {
+    const request = effect.worldHostRequest;
+    const resolution = decodeResolutionInputBytes(effect.resolutionInputBytes);
+    const responseFingerprint = resolution.status === 0 ? valueImageFingerprint(resolution.responseValueImageBytes) : null;
+    const responseKind = resolution.status === 0 ? 1n : 0n;
+    const outcomeFingerprint = nonzero(wyhash64(concatBytes([
+      hashBytes(fromUtf8('world.appliance.host_outcome.fingerprint')),
+      u64(1n),
+      u64(1n),
+      u64(request.requestFingerprint),
+      u64(request.intentFingerprint),
+      u64(request.envelopeFingerprint),
+      u64(request.idempotencyKeyFingerprint),
+      u64(resolution.status),
+      optionalU64(responseFingerprint),
+      u64(responseKind),
+      hashBytes(resolution.responseValueImageBytes),
+      optionalU64(null),
+      hashBytes(resolution.hostClaimBytes),
+      u64(resolution.attemptNumber),
+      hashBytes(resolution.metadata),
+    ])));
+    return nonzero(wyhash64(concatBytes([
+      hashBytes(fromUtf8('world.appliance.host_reply.fingerprint')),
+      u64(1n),
+      u64(1n),
+      u64(request.requestFingerprint),
+      u64(outcomeFingerprint),
+      optionalU64(null),
+      u64(0n),
+      hashBytes(resolution.metadata),
+    ]))).toString(16).padStart(16, '0');
+  } catch {
+    return null;
+  }
+}
+
+function valueImageFingerprint(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength < 16) throw new Error('invalid value image');
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return (BigInt(view.getUint32(12, true)) << 32n) | BigInt(view.getUint32(8, true));
+}
+
+function hashBytes(bytes) {
+  return concatBytes([u64(bytes.byteLength), bytes]);
+}
+
+function optionalU64(value) {
+  return value == null ? u64(0n) : concatBytes([u64(1n), u64(value)]);
+}
+
+function nonzero(value) {
+  return value === 0n ? 1n : value;
 }
 
 export function createWorkerBinding(input) {
@@ -487,6 +549,15 @@ export function worldHostRequestToEffectRequest(request) {
 function fingerprintString(value) {
   if (value == null) fail('ERR_REQUIRED_FIELD', 'fingerprint is required');
   return BigInt(value).toString(16).padStart(16, '0');
+}
+
+function u64(value) {
+  const out = new Uint8Array(8);
+  const actual = BigInt.asUintN(64, BigInt(value));
+  const view = new DataView(out.buffer);
+  view.setUint32(0, Number(actual & 0xffff_ffffn), true);
+  view.setUint32(4, Number((actual >> 32n) & 0xffff_ffffn), true);
+  return out;
 }
 
 function concatBytes(values) {

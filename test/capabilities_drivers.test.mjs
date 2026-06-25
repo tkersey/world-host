@@ -81,10 +81,18 @@ describe('capability preflight and reference drivers', () => {
       await symlink(path.join(outside, 'outside.tmp'), path.join(root, `.blocked.txt.${sha256(symlinkKey)}.tmp`));
       await assert.rejects(
         () => driver.resolve({}, fileRequest('blocked.txt', { operation: 'write', content: 'blocked' }, symlinkKey)),
-        { code: 'EEXIST' },
+        { code: 'ERR_SANDBOX_SYMLINK_REJECTED' },
       );
       await assert.rejects(
         () => readFile(path.join(outside, 'outside.tmp')),
+        { code: 'ENOENT' },
+      );
+      const staleKey = 'stale-temp-key';
+      await writeFile(path.join(root, `.stale.txt.${sha256(staleKey)}.tmp`), 'stale');
+      await driver.resolve({}, fileRequest('stale.txt', { operation: 'write', content: 'recovered from stale temp' }, staleKey));
+      assert.equal(await readFile(path.join(root, 'stale.txt'), 'utf8'), 'recovered from stale temp');
+      await assert.rejects(
+        () => readFile(path.join(root, `.stale.txt.${sha256(staleKey)}.tmp`)),
         { code: 'ENOENT' },
       );
       await driver.resolve({}, fileRequest('safe.txt', { operation: 'write', content: 'safe' }, '../../../../outside'));
