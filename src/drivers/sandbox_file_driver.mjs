@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { EffectRecoveryClass } from '../core/actuator.mjs';
 import { assertBytes, fail, fromUtf8, stableJson } from '../core/store.mjs';
+import { encodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
 
 export class SandboxFileDriver {
   constructor({ root, allowAbsolute = false, symlinkPolicy = 'reject', maximumReadBytes = 1024 * 1024, maximumWriteBytes = 1024 * 1024 } = {}) {
@@ -33,8 +34,8 @@ export class SandboxFileDriver {
 
   async resolve(context, hostRequest) {
     const request = parseJsonBytes(hostRequest.requestBytes);
-    if (request.operation === 'read') return await this.#read(request.path);
-    if (request.operation === 'write') return await this.#write(request.path, request.content ?? '', hostRequest.idempotencyKeyWorldFingerprint);
+    if (request.operation === 'read') return await this.#read(request.path, hostRequest);
+    if (request.operation === 'write') return await this.#write(request.path, request.content ?? '', hostRequest.idempotencyKeyWorldFingerprint, hostRequest);
     fail('ERR_SANDBOX_FILE_OPERATION_UNSUPPORTED');
   }
 
@@ -44,18 +45,18 @@ export class SandboxFileDriver {
     return { resolutionInputBytes: fromUtf8(stableJson(outcome)), diagnostics: { recovered: true } };
   }
 
-  async #read(filePath) {
+  async #read(filePath, hostRequest) {
     const resolved = await this.#resolvePath(filePath);
     const bytes = await readFile(resolved).catch((error) => {
       if (error.code === 'ENOENT') return null;
       throw error;
     });
-    if (bytes === null) return { resolutionInputBytes: fromUtf8(stableJson({ status: 'not_found' })) };
+    if (bytes === null) return { resolutionInputBytes: resolutionInput(hostRequest, { status: 'not_found' }, undefined, 1) };
     if (bytes.byteLength > this.maximumReadBytes) fail('ERR_SANDBOX_FILE_READ_TOO_LARGE');
-    return { resolutionInputBytes: new Uint8Array(bytes) };
+    return { resolutionInputBytes: resolutionInput(hostRequest, { status: 'ok' }, bytes) };
   }
 
-  async #write(filePath, content, key) {
+  async #write(filePath, content, key, hostRequest) {
     const bytes = content instanceof Uint8Array ? content : fromUtf8(String(content));
     if (bytes.byteLength > this.maximumWriteBytes) fail('ERR_SANDBOX_FILE_WRITE_TOO_LARGE');
     const resolved = await this.#resolvePath(filePath);
@@ -66,7 +67,7 @@ export class SandboxFileDriver {
     await rename(tmp, resolved);
     const outcome = { status: 'ok', path: path.relative(this.root, resolved), byteLength: bytes.byteLength };
     this.writeOutcomes.set(key, outcome);
-    return { resolutionInputBytes: fromUtf8(stableJson(outcome)), driverTransactionRef: key };
+    return { resolutionInputBytes: resolutionInput(hostRequest, outcome), driverTransactionRef: key };
   }
 
   async #resolvePath(filePath) {
@@ -94,6 +95,26 @@ export class SandboxFileDriver {
       if (info.isSymbolicLink()) fail('ERR_SANDBOX_SYMLINK_REJECTED');
     }
   }
+}
+
+function resolutionInput(hostRequest, payload, responseBytes = fromUtf8(stableJson(payload)), status = 0) {
+  return encodeResolutionInputBytes({
+    targetHostRequestFingerprint: resolutionTarget(hostRequest),
+    status,
+    responseValueImageBytes: responseBytes,
+    hostClaimBytes: new Uint8Array(),
+    attemptNumber: 1,
+    metadata: fromUtf8('sandbox-file'),
+  });
+}
+
+function resolutionTarget(hostRequest = {}) {
+  const value = hostRequest.hostRequestFingerprint;
+  if (value === undefined) return 0n;
+  if (typeof value === 'bigint' || typeof value === 'number') return BigInt(value);
+  const match = String(value).match(/(?:0x)?([0-9a-f]+)$/i);
+  if (!match) fail('ERR_HOST_REQUEST_FINGERPRINT_REQUIRED');
+  return BigInt(`0x${match[1]}`);
 }
 
 function parseJsonBytes(bytes) {

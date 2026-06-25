@@ -81,6 +81,11 @@ export class DirectoryStore extends ClosureStore {
     return await readJson(runPath(this.root, id), 'ERR_RUN_NOT_FOUND');
   }
 
+  async writeRun(record) {
+    await writeJsonReplace(runPath(this.root, record.runId), record);
+    return record;
+  }
+
   async readHead(runId, branchId) {
     return await readJson(this.headPath(runId, branchId), 'ERR_HEAD_NOT_FOUND');
   }

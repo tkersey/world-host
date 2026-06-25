@@ -1,6 +1,6 @@
 import { carrierVersionSummary } from '../protocol/world_manifest.mjs';
 import { EffectRecoveryClass } from './actuator.mjs';
-import { createBranchRecord } from './run.mjs';
+import { createBranchRecord, createRunRecord } from './run.mjs';
 import { fail } from './store.mjs';
 
 export async function forkRunBranch(store, { runId, sourceBranchId, sourceClosureFingerprint, newBranchId }) {
@@ -23,6 +23,10 @@ export async function forkRunBranch(store, { runId, sourceBranchId, sourceClosur
     if (error?.code !== 'ERR_HEAD_NOT_FOUND') throw error;
   }
   await writeBranchHead(store, runId, newBranchId, sourceHead);
+  await writeRunRecord(store, createRunRecord({
+    ...run,
+    branches: [...(run.branches ?? []).filter((existing) => existing.branchId !== newBranchId), branch],
+  }));
   return branch;
 }
 
@@ -98,4 +102,13 @@ async function writeBranchHead(store, runId, branchId, head) {
     return head;
   }
   fail('ERR_STORE_BRANCH_CREATE_UNSUPPORTED');
+}
+
+async function writeRunRecord(store, run) {
+  if (typeof store.writeRun === 'function') return await store.writeRun(run);
+  if (store.runs instanceof Map) {
+    store.runs.set(run.runId, JSON.parse(JSON.stringify(run)));
+    return run;
+  }
+  fail('ERR_STORE_RUN_UPDATE_UNSUPPORTED');
 }

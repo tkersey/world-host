@@ -59,6 +59,11 @@ export class MemoryStore extends ClosureStore {
     return requiredClone(this.runs, id, 'ERR_RUN_NOT_FOUND');
   }
 
+  async writeRun(record) {
+    this.runs.set(record.runId, clone(record));
+    return clone(record);
+  }
+
   async readHead(runId, branchId) {
     return requiredClone(this.heads, headKey(runId, branchId), 'ERR_HEAD_NOT_FOUND');
   }

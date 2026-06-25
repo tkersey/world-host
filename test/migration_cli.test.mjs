@@ -27,6 +27,7 @@ describe('migration, branching, and CLI diagnostics', () => {
     assert.equal(branch.parentBranchId, 'main');
     assert.equal((await store.readHead(run.runId, 'main')).generation, 0);
     assert.equal((await store.readHead(run.runId, 'alternate')).turnClosureWorldFingerprint, head.turnClosureWorldFingerprint);
+    assert.equal((await store.getRun(run.runId)).branches.some((item) => item.branchId === 'alternate' && item.parentBranchId === 'main'), true);
     await assert.rejects(() => forkRunBranch(store, {
       runId: run.runId,
       sourceBranchId: 'main',

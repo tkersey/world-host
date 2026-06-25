@@ -48,7 +48,11 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
   for (const request of pendingRequests) {
     const route = findDriverManifestForRequest(manifests, request);
     if (!route) {
-      blockers.push(`pending-request-uncovered:${request.hostRequestFingerprint ?? request.actuatorRef}`);
+      if (manifests.some((manifest) => driverMatchesExceptResponseStatus(manifest, request))) {
+        blockers.push('ERR_RESPONSE_STATUS_NOT_SUPPORTED');
+      } else {
+        blockers.push(`pending-request-uncovered:${request.hostRequestFingerprint ?? request.actuatorRef}`);
+      }
       continue;
     }
     try {
@@ -85,6 +89,14 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
     blockers,
     warnings,
   });
+}
+
+function driverMatchesExceptResponseStatus(manifest, request) {
+  return manifest.supportedActuatorRefs.includes(request.actuatorRef) &&
+    manifest.supportedDescriptorFingerprints.includes(request.descriptorFingerprint) &&
+    manifest.supportedActuationClasses.includes(request.actuationClass) &&
+    request.responseSchema &&
+    !manifest.supportedResponseStatuses.includes(request.responseSchema.status);
 }
 
 export function findDriverManifestForRequest(manifests, request) {

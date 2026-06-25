@@ -34,6 +34,19 @@ describe('capability preflight and reference drivers', () => {
     assert.ok(report.blockers.includes('http-origin-denied:https://blocked.example'));
   });
 
+  it('reports unsupported response statuses separately from uncovered requests', () => {
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path', 'GET', { status: 'streaming' })],
+      drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'] })],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'], allowedHttpOrigins: ['https://allowed.example'] }),
+    });
+    assert.ok(report.blockers.includes('ERR_RESPONSE_STATUS_NOT_SUPPORTED'));
+    assert.equal(report.everyPendingRequestCovered, true);
+    assert.equal(report.responseStatusesSupported, false);
+  });
+
   it('constrains sandbox file paths, symlinks, and atomic writes', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-sandbox-'));
     const outside = await mkdtemp(path.join(tmpdir(), 'world-host-outside-'));
@@ -115,12 +128,12 @@ function fileRequest(filePath, request = { operation: 'read' }) {
   };
 }
 
-function httpRequest(url, method = 'GET') {
+function httpRequest(url, method = 'GET', responseSchema = { status: 'ok' }) {
   return {
     actuatorRef: 'http:json',
     descriptorFingerprint: 'descriptor:http-json',
     actuationClass: 'http',
-    responseSchema: { status: 'ok' },
+    responseSchema,
     idempotencyKeyWorldFingerprint: `key:${url}`,
     requestBytes: fromUtf8(stableJson({ url, method })),
   };
