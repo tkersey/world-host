@@ -115,9 +115,9 @@ describe('RunController and WorldWorker', () => {
     const effects = await store.listEffectRecords(runId);
 
     assert.equal(result.status, 'branch_conflict');
-    assert.equal(result.submittedEffects.length, 1);
+    assert.equal(result.submittedEffects.length, 0);
     assert.equal(effects.length, 1);
-    assert.equal(effects[0].state, EffectState.submitted);
+    assert.equal(effects[0].state, EffectState.resolved);
   });
 
   it('batches host requests with bounded concurrency and canonical resolution order', async () => {
@@ -149,6 +149,25 @@ describe('RunController and WorldWorker', () => {
     assert.equal(effects.every((record) => record.state === EffectState.closureCommitted), true);
     assert.equal(indexOfBytes(worker.submittedTurnInputBytes, fromUtf8('response:0000000000000a01')) < indexOfBytes(worker.submittedTurnInputBytes, fromUtf8('response:0000000000000a02')), true);
     assert.equal(indexOfBytes(worker.submittedTurnInputBytes, fromUtf8('response:0000000000000a02')) < indexOfBytes(worker.submittedTurnInputBytes, fromUtf8('response:0000000000000a03')), true);
+  });
+
+  it('skips ineligible effect drivers before selecting a resolver', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const worker = new CaptureTurnInputWorker(fixtureTurnClosureBytes());
+    const selected = fixtureEffectDriver();
+    const controller = new RunController({
+      store,
+      workerFactory: async () => worker,
+      effectDrivers: [tooSmallEffectDriver(), selected],
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(selected.invocationCount, 1);
   });
 
   it('fails closed on uncovered host requests unless partial batches are allowed', async () => {
@@ -369,6 +388,21 @@ function fixtureEffectDriver() {
           metadata: fromUtf8('metadata'),
         }),
       };
+    },
+  };
+}
+
+function tooSmallEffectDriver() {
+  return {
+    manifest() {
+      return {
+        ...fixtureEffectDriver().manifest(),
+        driverId: 'too-small.effect.driver',
+        maximumRequestBytes: 1,
+      };
+    },
+    async resolve() {
+      throw new Error('too-small driver should not be selected');
     },
   };
 }

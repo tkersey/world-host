@@ -1,4 +1,5 @@
 import { EffectJournal } from './effect_journal.mjs';
+import { assertDurableRecoveryAllowed } from './actuator.mjs';
 import { createRunHead } from './run.mjs';
 import { assertBytes, fail, fromUtf8, toHex } from './store.mjs';
 import { decodeResolutionInputBytes, encodeContinueTurnInput } from '../protocol/world_appliance_wire_codec.mjs';
@@ -157,19 +158,19 @@ export class RunController {
         unresolvedHostRequests: effectTurn?.unresolvedHostRequests ?? [],
       },
     });
-    const submittedEffects = [];
-    if (effectTurn) {
-      for (const effect of effectTurn.effects) submittedEffects.push(await effectTurn.journal.markSubmitted(effect.record));
-    }
     const cas = await this.store.compareAndSwapHead(runId, branchId, parentHead.generation, nextHead);
     if (!cas.ok) {
       return {
         status: 'branch_conflict',
         orphanClosureRef: turnClosureRef,
         winningHead: cas.current,
-        submittedEffects,
+        submittedEffects: [],
         unresolvedHostRequests: effectTurn?.unresolvedHostRequests ?? [],
       };
+    }
+    const submittedEffects = [];
+    if (effectTurn) {
+      for (const effect of effectTurn.effects) submittedEffects.push(await effectTurn.journal.markSubmitted(effect.record));
     }
     const committedEffects = [];
     for (const effect of submittedEffects) committedEffects.push(await effectTurn.journal.markClosureCommitted(effect));
@@ -230,7 +231,7 @@ export class RunController {
     for (let index = 0; index < parentSummary.hostRequests.length; index += 1) {
       const worldHostRequest = parentSummary.hostRequests[index];
       const hostRequest = this.hostRequestMapper(worldHostRequest);
-      const selection = selectEffectDriver(this.effectDrivers, hostRequest);
+      const selection = selectEffectDriver(this.effectDrivers, hostRequest, policy);
       if (!selection) {
         unresolvedHostRequests.push(unresolvedHostRequestDiagnostic(index, hostRequest));
         continue;
@@ -356,10 +357,10 @@ async function defaultEffectContextFactory(context) {
   return context;
 }
 
-function selectEffectDriver(drivers, hostRequest) {
+function selectEffectDriver(drivers, hostRequest, policy = {}) {
   for (const driver of drivers) {
     const manifest = driverManifest(driver);
-    if (manifest && driverSupportsManifest(manifest, hostRequest)) {
+    if (manifest && driverSupportsManifest(manifest, hostRequest, policy)) {
       return { driver, manifest };
     }
   }
@@ -376,11 +377,19 @@ function driverSupports(driver, hostRequest) {
   return manifest ? driverSupportsManifest(manifest, hostRequest) : false;
 }
 
-function driverSupportsManifest(manifest, hostRequest) {
-  return manifest.supportedActuatorRefs?.includes(hostRequest.actuatorRef) === true &&
+function driverSupportsManifest(manifest, hostRequest, policy = {}) {
+  const structuralMatch = manifest.supportedActuatorRefs?.includes(hostRequest.actuatorRef) === true &&
     manifest.supportedDescriptorFingerprints?.includes(hostRequest.descriptorFingerprint) === true &&
     manifest.supportedActuationClasses?.includes(hostRequest.actuationClass) === true &&
     (!hostRequest.responseSchema || manifest.supportedResponseStatuses?.includes(hostRequest.responseSchema.status) === true);
+  if (!structuralMatch) return false;
+  if (hostRequest.requestBytes?.byteLength > manifest.maximumRequestBytes) return false;
+  try {
+    assertDurableRecoveryAllowed(manifest.recoveryClass, policy);
+  } catch {
+    return false;
+  }
+  return true;
 }
 
 function unresolvedHostRequestDiagnostic(index, hostRequest) {
