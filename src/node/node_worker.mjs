@@ -22,6 +22,7 @@ export class NodeWorldWorker extends WorldWorker {
   }
 
   async instantiate(wasmBytes) {
+    if (this.disposed) fail('ERR_WORKER_DISPOSED');
     const bytes = assertBytes(wasmBytes, 'wasmBytes');
     const module = await WebAssembly.compile(bytes);
     const imports = WebAssembly.Module.imports(module);
@@ -165,6 +166,7 @@ export class NodeWorldWorker extends WorldWorker {
   }
 
   #assertInstantiated() {
+    if (this.disposed) fail('ERR_WORKER_DISPOSED');
     if (!this.instance || !this.memory) fail('ERR_WORKER_NOT_INSTANTIATED');
   }
 

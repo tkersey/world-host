@@ -329,6 +329,7 @@ function effectResolutionTargetFingerprint(effect) {
 
 function confirmedTurnEffects(effects, inspected) {
   const appliedReplies = new Set(inspected.inspectionDiagnostics?.appliedHostReplyFingerprints ?? []);
+  if (appliedReplies.size === effects.length) return effects;
   return effects.filter((effect) => appliedReplies.has(effectResolutionTargetFingerprint(effect)));
 }
 

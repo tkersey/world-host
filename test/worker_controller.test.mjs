@@ -9,6 +9,7 @@ import { RunController, WorldWorker, assertWarmWorkerBinding } from '../src/core
 import { fromUtf8 } from '../src/core/store.mjs';
 import { encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
+import { NodeWorldWorker } from '../src/node/node_worker.mjs';
 
 describe('RunController and WorldWorker', () => {
   it('advances a branch only after persisting the next closure blob', async () => {
@@ -128,7 +129,7 @@ describe('RunController and WorldWorker', () => {
     });
     const controller = new RunController({
       store,
-      workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes({ appliedHostReplyFingerprints: [0xfffn] })),
+      workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes({ appliedHostReplyFingerprints: [] })),
       effectDrivers: [fixtureEffectDriver()],
     });
 
@@ -399,6 +400,16 @@ describe('RunController and WorldWorker', () => {
 
     assert.equal(assertWarmWorkerBinding(worker, binding({ turnSequence: 0 })), true);
     assert.throws(() => assertWarmWorkerBinding(worker, binding({ turnSequence: 1 })), { code: 'ERR_WARM_WORKER_IDENTITY_MISMATCH' });
+  });
+
+  it('does not reinstantiate a disposed NodeWorldWorker', async () => {
+    const worker = new NodeWorldWorker();
+    worker.dispose();
+
+    await assert.rejects(
+      () => worker.instantiate(fromUtf8('not-wasm')),
+      { code: 'ERR_WORKER_DISPOSED' },
+    );
   });
 });
 
