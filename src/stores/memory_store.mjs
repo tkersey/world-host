@@ -93,18 +93,27 @@ export class MemoryStore extends ClosureStore {
   async exportRun(runId, branchId) {
     const run = await this.getRun(runId);
     const head = await this.readHead(runId, branchId);
-    const effects = await this.listEffectRecords(runId);
+    const application = await this.getApplication(run.applicationId);
+    const effects = (await this.listEffectRecords(runId)).filter((effect) => effect.branchId === branchId);
+    const selectedBranch = (run.branches ?? []).find((branch) => branch.branchId === branchId);
+    const exportedRun = {
+      ...run,
+      branches: [{ ...(selectedBranch ?? { branchId }), currentHead: head }],
+    };
+    const blobRefs = collectBlobRefs(exportedRun, application, head, effects);
     return {
-      run,
+      run: exportedRun,
+      application,
       branchId,
       head,
       effects,
-      blobs: [...this.blobs.entries()].map(([checksum, bytes]) => ({ checksum, bytes: [...bytes] })),
+      blobs: blobRefs.map((ref) => ({ checksum: ref.checksum, byteLength: ref.byteLength, bytes: [...this.blobs.get(ref.checksum)] })),
     };
   }
 
   async importRun(bundle) {
     for (const blob of bundle.blobs ?? []) this.blobs.set(blob.checksum, Uint8Array.from(blob.bytes));
+    if (bundle.application && !this.applications.has(bundle.application.applicationId)) this.applications.set(bundle.application.applicationId, clone(bundle.application));
     if (!this.runs.has(bundle.run.runId)) this.runs.set(bundle.run.runId, clone(bundle.run));
     this.heads.set(headKey(bundle.run.runId, bundle.branchId), clone(bundle.head));
     for (const effect of bundle.effects ?? []) await this.putEffectRecord(effect);
@@ -118,6 +127,28 @@ function headKey(runId, branchId) {
 
 function effectKey(runId, idempotencyKey) {
   return `${runId}\0${stableJson(idempotencyKey)}`;
+}
+
+function collectBlobRefs(...values) {
+  const refs = new Map();
+  const visit = (value) => {
+    if (Array.isArray(value)) {
+      for (const child of value) visit(child);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    if (
+      value.algorithm === 'sha256' &&
+      /^[0-9a-f]{64}$/.test(value.checksum) &&
+      Number.isSafeInteger(value.byteLength) &&
+      value.byteLength >= 0
+    ) {
+      refs.set(`${value.checksum}:${value.byteLength}`, value);
+    }
+    for (const child of Object.values(value)) visit(child);
+  };
+  for (const value of values) visit(value);
+  return [...refs.values()];
 }
 
 function clone(value) {

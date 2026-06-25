@@ -62,6 +62,21 @@ describe('EffectJournal', () => {
     assert.equal(recovered.record.state, EffectState.operatorInterventionRequired);
   });
 
+  it('validates recovery driver authority against the effect record', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const observed = await journal.observe(hostRequest(), { recoveryClass: EffectRecoveryClass.idempotent });
+
+    await assert.rejects(
+      () => journal.recover({}, observed, fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent, descriptorFingerprint: 'descriptor:other' })),
+      { code: 'ERR_DESCRIPTOR_NOT_SUPPORTED' },
+    );
+    await assert.rejects(
+      () => journal.recover({}, observed, fixtureDriver({ recoveryClass: EffectRecoveryClass.pure })),
+      { code: 'ERR_EFFECT_RECOVERY_CLASS_MISMATCH' },
+    );
+  });
+
   it('reconciles submitted effects from the committed head without crossing branch or parent', async () => {
     const store = new MemoryStore();
     const mainJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
@@ -117,14 +132,14 @@ function hostRequest(overrides = {}) {
   };
 }
 
-function fixtureDriver({ recoveryClass, response = 'resolution' }) {
+function fixtureDriver({ recoveryClass, response = 'resolution', descriptorFingerprint = 'descriptor:fixture' }) {
   return {
     calls: 0,
     manifest() {
       return {
         driverId: 'fixture-driver',
         supportedActuatorRefs: ['fixture:model'],
-        supportedDescriptorFingerprints: ['descriptor:fixture'],
+        supportedDescriptorFingerprints: [descriptorFingerprint],
         supportedActuationClasses: ['fixture'],
         supportedResponseStatuses: ['ok'],
         maximumRequestBytes: 1024,

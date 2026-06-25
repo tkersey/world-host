@@ -124,6 +124,7 @@ export class EffectJournal {
     }
 
     if (typeof driver.recover === 'function') {
+      assertDriverCanRecover(driver.manifest(), record);
       const recovered = normalizeDriverResolution(await driver.recover(context, record));
       const resolutionInputRef = await this.store.putBlob(recovered.resolutionInputBytes);
       const next = await this.#put({
@@ -204,6 +205,12 @@ export class EffectJournal {
   async #put(record) {
     return await this.store.putEffectRecord(assertEffectRecord(record));
   }
+}
+
+function assertDriverCanRecover(manifest, record) {
+  if (!manifest.supportedActuatorRefs.includes(record.actuatorRef)) fail('ERR_ACTUATOR_REF_NOT_SUPPORTED');
+  if (!manifest.supportedDescriptorFingerprints.includes(record.descriptorFingerprint)) fail('ERR_DESCRIPTOR_NOT_SUPPORTED');
+  if (manifest.recoveryClass !== record.driverRecoveryClass) fail('ERR_EFFECT_RECOVERY_CLASS_MISMATCH');
 }
 
 export function createEffectRecord(record) {

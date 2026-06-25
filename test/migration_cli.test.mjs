@@ -37,11 +37,20 @@ describe('migration, branching, and CLI diagnostics', () => {
 
   it('exports and imports with receiver-local run id and no authority transfer', async () => {
     const source = await fixtureStore();
+    await forkRunBranch(source.store, {
+      runId: source.run.runId,
+      sourceBranchId: 'main',
+      sourceClosureFingerprint: source.head.turnClosureWorldFingerprint,
+      newBranchId: 'alternate',
+    });
     const carrierExport = await exportCarrierRun(source.store, source.run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
     const receiver = new MemoryStore();
     const imported = await importCarrierRun(receiver, carrierExport, { runId: 'receiver-run', preflight: async () => ({ blockers: [] }) });
     assert.equal(imported.run.runId, 'receiver-run');
     assert.equal(imported.authorityImported, false);
+    assert.equal(carrierExport.bundle.application.applicationId, source.run.applicationId);
+    assert.deepEqual(carrierExport.bundle.run.branches.map((branch) => branch.branchId), ['main']);
+    assert.equal((await receiver.getApplication(source.run.applicationId)).applicationId, source.run.applicationId);
     assert.equal((await receiver.readHead('receiver-run', 'main')).turnClosureWorldFingerprint, source.head.turnClosureWorldFingerprint);
   });
 
@@ -391,9 +400,12 @@ describe('migration, branching, and CLI diagnostics', () => {
       const store = new DirectoryStore(root);
       await store.acquireLock();
       try {
+        const app = await store.getApplication(run.applicationId);
         const effects = await store.listEffectRecords(run.runId);
         assert.equal(effects.length, 1);
         assert.equal(effects[0].state, 'closure_committed');
+        assert.equal(recovered.scan.orphanBlobs.some((ref) => ref.checksum === app.executableImageRef.checksum), false);
+        assert.equal(recovered.scan.orphanBlobs.some((ref) => ref.checksum === effects[0].resolutionInputRef.checksum), false);
       } finally {
         await store.releaseLock();
       }

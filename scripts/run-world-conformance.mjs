@@ -719,7 +719,7 @@ async function fixtureStore(prefix = 'run') {
     chronicleCursor: 'cursor:0',
     archiveMomentFingerprint: 'archive:moment:0',
     archiveSealFingerprint: 'archive:seal:0',
-    status: 'needs_host',
+    status: 'completed',
   });
   const branch = createBranchRecord({ branchId: 'main', currentHead: head });
   const run = createRunRecord({ runId: `${prefix}:run`, applicationId: application.applicationId, branches: [branch], effectJournalNamespace: `${prefix}:effects` });
@@ -745,6 +745,6 @@ function turnResult(index) {
     chronicleCursor: `cursor:${index}`,
     archiveMomentFingerprint: `archive:moment:${index}`,
     archiveSealFingerprint: `archive:seal:${index}`,
-    status: 'needs_host',
+    status: 'completed',
   };
 }

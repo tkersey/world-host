@@ -174,7 +174,14 @@ export class DirectoryStore extends ClosureStore {
   async recover() {
     const tmp = await readdir(path.join(this.root, 'tmp')).catch(() => []);
     const referenced = new Set();
-    for (const head of await this.allHeads()) referenced.add(head.turnClosureRef.checksum);
+    for (const ref of collectBlobRefs(
+      await this.allApplications(),
+      await this.allRuns(),
+      await this.allHeads(),
+      await this.allEffectRecords(),
+    )) {
+      referenced.add(ref.checksum);
+    }
     const orphanBlobs = (await this.listBlobRefs()).filter((ref) => !referenced.has(ref.checksum));
     return {
       temporaryFilesIgnored: tmp.filter((name) => name.endsWith('.tmp')),
@@ -221,6 +228,32 @@ export class DirectoryStore extends ClosureStore {
       }
     }
     return heads;
+  }
+
+  async allApplications() {
+    const dir = path.join(this.root, 'applications');
+    const entries = await readdir(dir).catch(() => []);
+    return await Promise.all(entries.filter((name) => name.endsWith('.json')).map((name) => readJson(path.join(dir, name))));
+  }
+
+  async allRuns() {
+    const dir = path.join(this.root, 'runs');
+    const entries = await readdir(dir).catch(() => []);
+    return await Promise.all(entries.filter((name) => name.endsWith('.json')).map((name) => readJson(path.join(dir, name))));
+  }
+
+  async allEffectRecords() {
+    const root = path.join(this.root, 'effects');
+    const runs = await readdir(root).catch(() => []);
+    const effects = [];
+    for (const runId of runs) {
+      const dir = path.join(root, runId);
+      const entries = await readdir(dir).catch(() => []);
+      for (const entry of entries) {
+        if (entry.endsWith('.json')) effects.push(await readJson(path.join(dir, entry)));
+      }
+    }
+    return effects;
   }
 }
 

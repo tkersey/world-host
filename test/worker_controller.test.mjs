@@ -173,6 +173,23 @@ describe('RunController and WorldWorker', () => {
     assert.equal((await store.listEffectRecords(runId)).length, 0);
   });
 
+  it('fails closed on needs_host heads when no effect drivers are configured', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes()]),
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [],
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_HOST_REQUEST_DRIVER_UNAVAILABLE' },
+    );
+  });
+
   it('submits covered host effects as a partial batch only under policy', async () => {
     const requests = [
       fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'idempotency-key:1', idempotencyKeyFingerprint: 0xa09n }),
@@ -315,7 +332,7 @@ async function fixtureStore(options = {}) {
     chronicleCursor: 'cursor:0',
     archiveMomentFingerprint: 'archive:moment:0',
     archiveSealFingerprint: 'archive:seal:0',
-    status: options.headStatus ?? 'needs_host',
+    status: options.headStatus ?? 'completed',
   });
   const branch = createBranchRecord({ branchId: 'main', currentHead: head });
   const run = createRunRecord({ runId: 'run', applicationId: application.applicationId, branches: [branch], effectJournalNamespace: 'effects' });
@@ -416,7 +433,7 @@ function turnResult(index) {
     chronicleCursor: `cursor:${index}`,
     archiveMomentFingerprint: `archive:moment:${index}`,
     archiveSealFingerprint: `archive:seal:${index}`,
-    status: 'needs_host',
+    status: 'completed',
   };
 }
 

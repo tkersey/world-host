@@ -208,7 +208,7 @@ export class RunController {
   }
 
   async #effectTurnInput({ run, branchId, application, parentHead, parentClosureBytes, worker, options }) {
-    if (parentHead.status !== 'needs_host' || this.effectDrivers.length === 0) return null;
+    if (parentHead.status !== 'needs_host') return null;
     let parentSummary;
     try {
       parentSummary = inspectTurnOutput(parentClosureBytes);
