@@ -74,6 +74,14 @@ describe('capability preflight and reference drivers', () => {
       );
       await driver.resolve({}, fileRequest('out.txt', { operation: 'write', content: 'world carrier updated the fixture' }));
       assert.equal(await readFile(path.join(root, 'out.txt'), 'utf8'), 'world carrier updated the fixture');
+      await driver.resolve({}, fileRequest('nested/out.txt', { operation: 'write', content: 'nested write works' }));
+      assert.equal(await readFile(path.join(root, 'nested', 'out.txt'), 'utf8'), 'nested write works');
+      await driver.resolve({}, fileRequest('safe.txt', { operation: 'write', content: 'safe' }, '../../../../outside'));
+      assert.equal(await readFile(path.join(root, 'safe.txt'), 'utf8'), 'safe');
+      await assert.rejects(
+        () => readFile(path.join(outside, 'outside.tmp')),
+        { code: 'ENOENT' },
+      );
       const recovered = await driver.recover({}, {
         idempotencyKeyWorldFingerprint: 'key:out.txt',
         hostRequestFingerprint: 'sha256:00000000000000a1',
@@ -126,13 +134,13 @@ function fixtureRequest() {
   };
 }
 
-function fileRequest(filePath, request = { operation: 'read' }) {
+function fileRequest(filePath, request = { operation: 'read' }, idempotencyKeyWorldFingerprint = `key:${filePath}`) {
   return {
     actuatorRef: 'sandbox:file',
     descriptorFingerprint: 'descriptor:sandbox-file',
     actuationClass: 'file',
     responseSchema: { status: 'ok' },
-    idempotencyKeyWorldFingerprint: `key:${filePath}`,
+    idempotencyKeyWorldFingerprint,
     requestBytes: fromUtf8(stableJson({ path: filePath, ...request })),
   };
 }

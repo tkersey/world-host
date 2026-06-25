@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, lstat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 
 import { EffectRecoveryClass } from '../core/actuator.mjs';
 import { assertBytes, fail, fromUtf8, stableJson } from '../core/store.mjs';
@@ -62,7 +63,7 @@ export class SandboxFileDriver {
     const resolved = await this.#resolvePath(filePath);
     await mkdir(path.dirname(resolved), { recursive: true });
     if (this.symlinkPolicy === 'reject') await this.#rejectSymlinkComponents(path.dirname(resolved));
-    const tmp = path.join(path.dirname(resolved), `.${path.basename(resolved)}.${key}.tmp`);
+    const tmp = path.join(path.dirname(resolved), `.${path.basename(resolved)}.${tempKey(key)}.tmp`);
     await writeFile(tmp, bytes);
     await rename(tmp, resolved);
     const outcome = { status: 'ok', path: path.relative(this.root, resolved), byteLength: bytes.byteLength };
@@ -120,4 +121,8 @@ function resolutionTarget(hostRequest = {}) {
 function parseJsonBytes(bytes) {
   assertBytes(bytes, 'requestBytes');
   return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+function tempKey(value) {
+  return createHash('sha256').update(String(value)).digest('hex');
 }
