@@ -42,7 +42,7 @@ export class SandboxFileDriver {
   async recover(context, effectRecord) {
     const outcome = this.writeOutcomes.get(effectRecord.idempotencyKeyWorldFingerprint);
     if (!outcome) fail('ERR_SANDBOX_FILE_RECOVERY_UNAVAILABLE');
-    return { resolutionInputBytes: fromUtf8(stableJson(outcome)), diagnostics: { recovered: true } };
+    return { resolutionInputBytes: resolutionInput({ hostRequestFingerprint: effectRecord.hostRequestFingerprint }, outcome), diagnostics: { recovered: true } };
   }
 
   async #read(filePath, hostRequest) {

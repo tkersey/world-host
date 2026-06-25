@@ -9,6 +9,7 @@ import { FixtureModelDriver } from '../src/drivers/fixture_model_driver.mjs';
 import { SandboxFileDriver } from '../src/drivers/sandbox_file_driver.mjs';
 import { HttpJsonDriver } from '../src/drivers/http_json_driver.mjs';
 import { fromUtf8, stableJson } from '../src/core/store.mjs';
+import { decodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
 
 describe('capability preflight and reference drivers', () => {
   it('accepts only exact driver manifest coverage under receiver-local policy', () => {
@@ -73,6 +74,14 @@ describe('capability preflight and reference drivers', () => {
       );
       await driver.resolve({}, fileRequest('out.txt', { operation: 'write', content: 'world carrier updated the fixture' }));
       assert.equal(await readFile(path.join(root, 'out.txt'), 'utf8'), 'world carrier updated the fixture');
+      const recovered = await driver.recover({}, {
+        idempotencyKeyWorldFingerprint: 'key:out.txt',
+        hostRequestFingerprint: 'sha256:00000000000000a1',
+      });
+      const decoded = decodeResolutionInputBytes(recovered.resolutionInputBytes);
+      const payload = JSON.parse(new TextDecoder().decode(decoded.responseValueImageBytes));
+      assert.equal(decoded.targetHostRequestFingerprint, 0xa1n);
+      assert.deepEqual(payload, { byteLength: 33, path: 'out.txt', status: 'ok' });
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(outside, { recursive: true, force: true });

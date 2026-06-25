@@ -159,7 +159,7 @@ export class EffectJournal {
       if (
         record.branchId === this.branchId &&
         record.parentTurnClosureFingerprint === committedParent &&
-        record.state === EffectState.submitted
+        (record.state === EffectState.resolved || record.state === EffectState.submitted)
       ) {
         committed.push(await this.markClosureCommitted(record));
       }

@@ -11,6 +11,7 @@ await provesRecoverableClasses();
 await provesBestEffortIntervention();
 await provesConflictIsHard();
 await provesCommittedHeadReconcilesSubmittedEffects();
+await provesCommittedHeadReconcilesResolvedEffects();
 
 console.log('crash_matrix=passed');
 
@@ -85,6 +86,25 @@ async function provesCommittedHeadReconcilesSubmittedEffects() {
   assert.equal(recovery.committed[0].state, EffectState.closureCommitted);
   assert.equal(retried.reused, true, 'post-recovery retry reuses persisted ResolutionInput');
   assert.equal(driver.calls, 1, 'H-I recovery does not rerun the external driver');
+}
+
+async function provesCommittedHeadReconcilesResolvedEffects() {
+  const store = new MemoryStore();
+  const journal = new EffectJournal({ store, runId: 'run-hi-resolved', branchId: 'main', parentTurnClosureFingerprint: 'turn:parent' });
+  const driver = driverFor(EffectRecoveryClass.idempotent, 'resolution:hi-resolved');
+  const resolved = await journal.resolve({}, request('hi-resolved'), driver);
+
+  const recovery = await journal.reconcileCommittedHead({
+    generation: 1,
+    updateDiagnostics: { parentTurnClosureFingerprint: 'turn:parent' },
+  });
+  const retried = await journal.resolve({}, request('hi-resolved'), driver);
+
+  assert.equal(resolved.record.state, EffectState.resolved, 'H-I crash before submission leaves resolved effect');
+  assert.equal(recovery.committedCount, 1, 'H-I recovery finalizes resolved effect from committed head');
+  assert.equal(recovery.committed[0].state, EffectState.closureCommitted);
+  assert.equal(retried.reused, true, 'post-recovery retry reuses recovered committed ResolutionInput');
+  assert.equal(driver.calls, 1, 'H-I resolved recovery does not rerun the external driver');
 }
 
 function request(key) {

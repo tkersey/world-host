@@ -77,13 +77,18 @@ describe('EffectJournal', () => {
     );
   });
 
-  it('reconciles submitted effects from the committed head without crossing branch or parent', async () => {
+  it('reconciles resolved and submitted effects from the committed head without crossing branch or parent', async () => {
     const store = new MemoryStore();
     const mainJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
     const otherParentJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:other' });
     const otherBranchJournal = new EffectJournal({ store, runId: 'run', branchId: 'alternate', parentTurnClosureFingerprint: 'turn:0' });
     const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
 
+    const resolved = (await mainJournal.resolve({}, hostRequest({
+      idempotencyKeyBytes: fromUtf8('key:resolved'),
+      idempotencyKeyWorldFingerprint: 'world:key:resolved',
+      requestBytes: fromUtf8('request:resolved'),
+    }), driver)).record;
     const matching = await mainJournal.markSubmitted((await mainJournal.resolve({}, hostRequest({ idempotencyKeyBytes: fromUtf8('key:matching') }), driver)).record);
     const otherParent = await otherParentJournal.markSubmitted((await otherParentJournal.resolve({}, hostRequest({
       idempotencyKeyBytes: fromUtf8('key:other-parent'),
@@ -101,12 +106,16 @@ describe('EffectJournal', () => {
     });
     const records = await store.listEffectRecords('run');
 
-    assert.equal(result.committedCount, 1);
-    assert.equal(result.committed[0].idempotencyKey.bytesHex, matching.idempotencyKey.bytesHex);
+    assert.equal(result.committedCount, 2);
+    assert.deepEqual(result.committed.map((record) => record.idempotencyKey.bytesHex).sort(), [
+      matching.idempotencyKey.bytesHex,
+      resolved.idempotencyKey.bytesHex,
+    ].sort());
+    assert.equal(records.find((record) => record.idempotencyKey.bytesHex === resolved.idempotencyKey.bytesHex).state, EffectState.closureCommitted);
     assert.equal(records.find((record) => record.idempotencyKey.bytesHex === matching.idempotencyKey.bytesHex).state, EffectState.closureCommitted);
     assert.equal(records.find((record) => record.idempotencyKey.bytesHex === otherParent.idempotencyKey.bytesHex).state, EffectState.submitted);
     assert.equal(records.find((record) => record.idempotencyKey.bytesHex === otherBranch.idempotencyKey.bytesHex).state, EffectState.submitted);
-    assert.equal(driver.calls, 3);
+    assert.equal(driver.calls, 4);
   });
 
   it('fails closed when committed-head recovery lacks a parent fingerprint', async () => {
