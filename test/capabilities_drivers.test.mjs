@@ -101,6 +101,15 @@ describe('capability preflight and reference drivers', () => {
       const payload = JSON.parse(new TextDecoder().decode(decoded.responseValueImageBytes));
       assert.equal(decoded.targetHostRequestFingerprint, 0xa1n);
       assert.deepEqual(payload, { byteLength: 33, path: 'out.txt', status: 'ok' });
+      const restarted = new SandboxFileDriver({ root });
+      await restarted.recover({}, {
+        actuatorRef: 'sandbox:file',
+        descriptorFingerprint: 'descriptor:sandbox-file',
+        idempotencyKeyWorldFingerprint: 'key:restart.txt',
+        hostRequestFingerprint: 'sha256:00000000000000a2',
+        requestBytes: fromUtf8(stableJson({ path: 'restart.txt', operation: 'write', content: 'recovered after restart' })),
+      });
+      assert.equal(await readFile(path.join(root, 'restart.txt'), 'utf8'), 'recovered after restart');
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(outside, { recursive: true, force: true });
@@ -129,6 +138,17 @@ describe('capability preflight and reference drivers', () => {
       assert.equal(requestHeaders.Authorization, 'secret');
       assert.equal(requestHeaders['X-Trace'], 'ok');
       assert.equal(JSON.stringify(result.diagnostics).includes('secret'), false);
+      globalThis.fetch = async () => new Response(null, { status: 302, headers: { location: 'https://blocked.example/next' } });
+      await assert.rejects(
+        () => driver.resolve({}, httpRequest('https://allowed.example/redirect')),
+        { code: 'ERR_HTTP_REDIRECT_REJECTED' },
+      );
+      const small = new HttpJsonDriver({ origins: ['https://allowed.example'], maximumResponseBytes: 4 });
+      globalThis.fetch = async () => new Response('too-large');
+      await assert.rejects(
+        () => small.resolve({}, httpRequest('https://allowed.example/large')),
+        { code: 'ERR_HTTP_RESPONSE_TOO_LARGE' },
+      );
     } finally {
       globalThis.fetch = originalFetch;
     }

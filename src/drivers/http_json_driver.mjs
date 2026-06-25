@@ -45,10 +45,10 @@ export class HttpJsonDriver {
         [this.idempotencyHeader]: hostRequest.idempotencyKeyWorldFingerprint,
         ...(this.credentials.headers ?? {}),
       };
-      const response = await fetch(url, { method, headers, body, signal: controller.signal });
-      const text = await response.text();
-      const bytes = fromUtf8(text);
-      if (bytes.byteLength > this.maximumResponseBytes) fail('ERR_HTTP_RESPONSE_TOO_LARGE');
+      const response = await fetch(url, { method, headers, body, signal: controller.signal, redirect: 'manual' });
+      if (response.status >= 300 && response.status < 400 && response.headers.get('location')) fail('ERR_HTTP_REDIRECT_REJECTED');
+      const bytes = await readResponseBytes(response, this.maximumResponseBytes);
+      const text = new TextDecoder().decode(bytes);
       return {
         resolutionInputBytes: encodeResolutionInputBytes({
           targetHostRequestFingerprint: resolutionTarget(hostRequest),
@@ -91,4 +91,28 @@ function resolutionTarget(hostRequest = {}) {
 function parseJsonBytes(bytes) {
   assertBytes(bytes, 'requestBytes');
   return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+async function readResponseBytes(response, maximumResponseBytes) {
+  const contentLength = response.headers.get('content-length');
+  if (contentLength && Number(contentLength) > maximumResponseBytes) fail('ERR_HTTP_RESPONSE_TOO_LARGE');
+  if (!response.body) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+    total += chunk.byteLength;
+    if (total > maximumResponseBytes) fail('ERR_HTTP_RESPONSE_TOO_LARGE');
+    chunks.push(chunk);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
 }

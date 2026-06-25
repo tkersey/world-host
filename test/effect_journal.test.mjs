@@ -52,11 +52,12 @@ describe('EffectJournal', () => {
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
     const observed = await journal.observe(hostRequest(), { recoveryClass: EffectRecoveryClass.idempotent });
     await store.putEffectRecord({ ...observed, state: EffectState.running, attemptCount: 1 });
-    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent, recoverHostClaim: true });
 
     const recovered = await journal.resolve({}, hostRequest(), driver);
 
     assert.equal(recovered.record.state, EffectState.resolved);
+    assert.deepEqual(await store.getBlob(recovered.record.hostClaimRef), fromUtf8('recovered-host-claim'));
     assert.equal(driver.calls, 0);
     assert.equal(driver.recoverCalls, 1);
   });
@@ -227,7 +228,7 @@ function httpHostRequest(overrides = {}) {
   };
 }
 
-function fixtureDriver({ recoveryClass, response = 'resolution', descriptorFingerprint = 'descriptor:fixture' }) {
+function fixtureDriver({ recoveryClass, response = 'resolution', descriptorFingerprint = 'descriptor:fixture', recoverHostClaim = false }) {
   return {
     calls: 0,
     recoverCalls: 0,
@@ -251,7 +252,10 @@ function fixtureDriver({ recoveryClass, response = 'resolution', descriptorFinge
     },
     async recover() {
       this.recoverCalls += 1;
-      return { resolutionInputBytes: fromUtf8(`recovered:${response}`) };
+      return {
+        resolutionInputBytes: fromUtf8(`recovered:${response}`),
+        hostClaimBytes: recoverHostClaim ? fromUtf8('recovered-host-claim') : undefined,
+      };
     },
   };
 }

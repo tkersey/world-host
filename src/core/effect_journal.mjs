@@ -136,10 +136,12 @@ export class EffectJournal {
       assertDriverCanRecover(driver.manifest(), record);
       const recovered = normalizeDriverResolution(await driver.recover(context, await this.#recordWithRequestBytes(record)));
       const resolutionInputRef = await this.store.putBlob(recovered.resolutionInputBytes);
+      const hostClaimRef = recovered.hostClaimBytes ? await this.store.putBlob(recovered.hostClaimBytes) : record.hostClaimRef;
       const next = await this.#put({
         ...record,
         state: EffectState.resolved,
         resolutionInputRef,
+        hostClaimRef,
         driverTransactionRef: recovered.driverTransactionRef ?? record.driverTransactionRef,
         diagnostics: { ...record.diagnostics, ...recovered.diagnostics, recovered: true },
       });
