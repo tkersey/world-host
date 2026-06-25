@@ -5,6 +5,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 
+import { EffectRecoveryClass } from '../src/core/actuator.mjs';
 import { createRunPolicy, preflightCapabilities } from '../src/core/capabilities.mjs';
 import { FixtureModelDriver } from '../src/drivers/fixture_model_driver.mjs';
 import { SandboxFileDriver } from '../src/drivers/sandbox_file_driver.mjs';
@@ -34,6 +35,22 @@ describe('capability preflight and reference drivers', () => {
       policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'], allowedHttpOrigins: ['https://allowed.example'] }),
     });
     assert.ok(report.blockers.includes('http-origin-denied:https://blocked.example'));
+  });
+
+  it('routes preflight through the first policy-allowed matching driver', () => {
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [fixtureRequest()],
+      drivers: [policyDeniedFixtureDriver(), new FixtureModelDriver({ responses: ['ok'] })],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture'] }),
+    });
+    assert.deepEqual(report.blockers, []);
+    assert.deepEqual(report.coveredRequests, [{
+      actuatorRef: 'fixture:model',
+      descriptorFingerprint: 'descriptor:fixture-model',
+      driverId: 'fixture-model',
+    }]);
   });
 
   it('reports unsupported response statuses separately from uncovered requests', () => {
@@ -125,7 +142,7 @@ describe('capability preflight and reference drivers', () => {
   });
 
   it('rejects HTTP origins and methods outside allowlists without leaking credentials', async () => {
-    const driver = new HttpJsonDriver({ origins: ['https://allowed.example'], methods: ['GET'], credentials: { headers: { Authorization: 'secret', 'X-Trace': 'ok' } } });
+    const driver = new HttpJsonDriver({ origins: ['https://allowed.example'], methods: ['GET'], credentials: { headers: { Authorization: 'secret', 'X-Trace': 'ok', 'Idempotency-Key': 'credential-key' } } });
     assert.deepEqual(driver.manifest().diagnostics.origins, ['https://allowed.example']);
     await assert.rejects(
       () => driver.resolve({}, httpRequest('https://blocked.example/path')),
@@ -145,6 +162,7 @@ describe('capability preflight and reference drivers', () => {
       const result = await driver.resolve({}, httpRequest('https://allowed.example/path'));
       assert.equal(requestHeaders.Authorization, 'secret');
       assert.equal(requestHeaders['X-Trace'], 'ok');
+      assert.equal(requestHeaders['Idempotency-Key'], 'key:https://allowed.example/path');
       assert.equal(JSON.stringify(result.diagnostics).includes('secret'), false);
       globalThis.fetch = async () => new Response(null, { status: 302, headers: { location: 'https://blocked.example/next' } });
       await assert.rejects(
@@ -162,6 +180,26 @@ describe('capability preflight and reference drivers', () => {
     }
   });
 });
+
+function policyDeniedFixtureDriver() {
+  return {
+    manifest() {
+      return {
+        driverId: 'policy-denied-fixture',
+        supportedActuatorRefs: ['fixture:model'],
+        supportedDescriptorFingerprints: ['descriptor:fixture-model'],
+        supportedActuationClasses: ['fixture'],
+        supportedResponseStatuses: ['ok'],
+        maximumRequestBytes: 1024 * 1024,
+        maximumResponseBytes: 1024 * 1024,
+        recoveryClass: EffectRecoveryClass.pure,
+        concurrencyLimit: 1,
+        authorityLabels: ['denied:fixture'],
+        diagnostics: {},
+      };
+    },
+  };
+}
 
 function fixtureRequest() {
   return {

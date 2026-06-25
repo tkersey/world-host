@@ -46,25 +46,18 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
   }
 
   for (const request of pendingRequests) {
-    const route = findDriverManifestForRequest(manifests, request);
+    const route = findDriverManifestForRequest(manifests, request, policy);
     if (!route) {
-      if (manifests.some((manifest) => driverMatchesExceptResponseStatus(manifest, request))) {
+      const structuralRoute = findDriverManifestForRequest(manifests, request);
+      if (structuralRoute) {
+        blockers.push(...policyBlockers(structuralRoute, request, policy));
+        coveredRequests.push({ actuatorRef: request.actuatorRef, descriptorFingerprint: request.descriptorFingerprint, driverId: structuralRoute.driverId });
+      } else if (manifests.some((manifest) => driverMatchesExceptResponseStatus(manifest, request))) {
         blockers.push('ERR_RESPONSE_STATUS_NOT_SUPPORTED');
       } else {
         blockers.push(`pending-request-uncovered:${request.hostRequestFingerprint ?? request.actuatorRef}`);
       }
       continue;
-    }
-    try {
-      assertDurableRecoveryAllowed(route.recoveryClass, policy);
-    } catch (error) {
-      blockers.push(error.code);
-    }
-    const deniedLabels = route.authorityLabels.filter((label) => policy.allowedAuthorityLabels.size && !policy.allowedAuthorityLabels.has(label));
-    if (deniedLabels.length) blockers.push(`authority-denied:${deniedLabels.join(',')}`);
-    if (request.actuationClass === 'http') {
-      const origin = requestOrigin(request);
-      if (!origin || policy.allowedHttpOrigins.size && !policy.allowedHttpOrigins.has(origin)) blockers.push(`http-origin-denied:${origin ?? 'unknown'}`);
     }
     coveredRequests.push({ actuatorRef: request.actuatorRef, descriptorFingerprint: request.descriptorFingerprint, driverId: route.driverId });
   }
@@ -91,6 +84,22 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
   });
 }
 
+function policyBlockers(route, request, policy) {
+  const blockers = [];
+  try {
+    assertDurableRecoveryAllowed(route.recoveryClass, policy);
+  } catch (error) {
+    blockers.push(error.code);
+  }
+  const deniedLabels = route.authorityLabels.filter((label) => policy.allowedAuthorityLabels.size && !policy.allowedAuthorityLabels.has(label));
+  if (deniedLabels.length) blockers.push(`authority-denied:${deniedLabels.join(',')}`);
+  if (request.actuationClass === 'http') {
+    const origin = requestOrigin(request);
+    if (!origin || policy.allowedHttpOrigins.size && !policy.allowedHttpOrigins.has(origin)) blockers.push(`http-origin-denied:${origin ?? 'unknown'}`);
+  }
+  return blockers;
+}
+
 function driverMatchesExceptResponseStatus(manifest, request) {
   return manifest.supportedActuatorRefs.includes(request.actuatorRef) &&
     manifest.supportedDescriptorFingerprints.includes(request.descriptorFingerprint) &&
@@ -99,10 +108,11 @@ function driverMatchesExceptResponseStatus(manifest, request) {
     !manifest.supportedResponseStatuses.includes(request.responseSchema.status);
 }
 
-export function findDriverManifestForRequest(manifests, request) {
+export function findDriverManifestForRequest(manifests, request, policy = null) {
   for (const manifest of manifests) {
     try {
       assertDriverCanResolve(manifest, request);
+      if (policy && policyBlockers(manifest, request, policy).length) continue;
       return manifest;
     } catch {
       continue;

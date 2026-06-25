@@ -174,6 +174,32 @@ describe('RunController and WorldWorker', () => {
     assert.equal(indexOfBytes(worker.submittedTurnInputBytes, fromUtf8('response:0000000000000a02')) < indexOfBytes(worker.submittedTurnInputBytes, fromUtf8('response:0000000000000a03')), true);
   });
 
+  it('enforces maximumConcurrentEffects across driver groups', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'idempotency-key:1', idempotencyKeyFingerprint: 0xa09n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'idempotency-key:2', idempotencyKeyFingerprint: 0xa19n, expectedResponseDescriptorFingerprint: 0xa0cn }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const tracker = { running: 0, maxRunning: 0 };
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [
+        sharedConcurrencyDriver({ driverId: 'test.effect.driver.one', descriptorFingerprint: 'world:descriptor:0000000000000a0b', tracker }),
+        sharedConcurrencyDriver({ driverId: 'test.effect.driver.two', descriptorFingerprint: 'world:descriptor:0000000000000a0c', tracker }),
+      ],
+      effectPolicy: { maximumConcurrentEffects: 1 },
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(tracker.maxRunning, 1);
+  });
+
   it('skips ineligible effect drivers before selecting a resolver', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
@@ -542,6 +568,44 @@ function delayedBatchDriver() {
         };
       } finally {
         running -= 1;
+      }
+    },
+  };
+}
+
+function sharedConcurrencyDriver({ driverId, descriptorFingerprint, tracker }) {
+  return {
+    manifest() {
+      return {
+        driverId,
+        supportedActuatorRefs: ['world:actuator-ref:0000000000000a05'],
+        supportedDescriptorFingerprints: [descriptorFingerprint],
+        supportedActuationClasses: ['world:actuation-class:1'],
+        supportedResponseStatuses: ['responded'],
+        maximumRequestBytes: 4096,
+        maximumResponseBytes: 4096,
+        recoveryClass: EffectRecoveryClass.pure,
+        concurrencyLimit: 3,
+        authorityLabels: ['test'],
+      };
+    },
+    async resolve(context) {
+      tracker.running += 1;
+      tracker.maxRunning = Math.max(tracker.maxRunning, tracker.running);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return {
+          resolutionInputBytes: encodeResolutionInputBytes({
+            targetHostRequestFingerprint: context.worldHostRequest.requestFingerprint,
+            status: 0,
+            responseValueImageBytes: fromUtf8(`response:${context.hostRequest.hostRequestFingerprint}`),
+            hostClaimBytes: fromUtf8('claim'),
+            attemptNumber: 1,
+            metadata: fromUtf8('metadata'),
+          }),
+        };
+      } finally {
+        tracker.running -= 1;
       }
     },
   };

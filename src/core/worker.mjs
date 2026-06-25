@@ -294,7 +294,7 @@ export class RunController {
     const effects = new Array(pending.length);
     const pendingPositions = new Map(pending.map((item, index) => [item, index]));
     const groups = groupPendingEffects(pending);
-    await Promise.all(groups.map((group) => runBounded(group, effectConcurrencyLimit(group.manifest, policy), async (item) => {
+    await runBounded(pending, effectBatchConcurrencyLimit(groups, policy), async (item) => {
       const resolved = await journal.resolve(
         await this.effectContextFactory({
           run,
@@ -311,7 +311,7 @@ export class RunController {
         item.driver,
       );
       effects[pendingPositions.get(item)] = { ...resolved, worldHostRequest: item.worldHostRequest };
-    })));
+    });
     return effects;
   }
 }
@@ -512,6 +512,10 @@ function effectConcurrencyLimit(manifest, policy = {}) {
   if (!Number.isSafeInteger(driverLimit) || driverLimit < 1) fail('ERR_EFFECT_CONCURRENCY_LIMIT_INVALID', 'driver concurrencyLimit must be at least one');
   if (!Number.isSafeInteger(policyLimit) || policyLimit < 1) fail('ERR_EFFECT_CONCURRENCY_LIMIT_INVALID', 'maximumConcurrentEffects must be at least one');
   return Math.min(driverLimit, policyLimit);
+}
+
+function effectBatchConcurrencyLimit(groups, policy = {}) {
+  return groups.reduce((limit, group) => Math.min(limit, effectConcurrencyLimit(group.manifest, policy)), policy.maximumConcurrentEffects ?? Number.MAX_SAFE_INTEGER);
 }
 
 async function runBounded(items, limit, fn) {

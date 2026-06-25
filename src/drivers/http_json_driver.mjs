@@ -42,8 +42,8 @@ export class HttpJsonDriver {
     try {
       const headers = {
         Accept: 'application/json',
-        [this.idempotencyHeader]: hostRequest.idempotencyKeyWorldFingerprint,
         ...(this.credentials.headers ?? {}),
+        [this.idempotencyHeader]: hostRequest.idempotencyKeyWorldFingerprint,
       };
       const response = await fetch(url, { method, headers, body, signal: controller.signal, redirect: 'manual' });
       if (response.status >= 300 && response.status < 400 && response.headers.get('location')) fail('ERR_HTTP_REDIRECT_REJECTED');
