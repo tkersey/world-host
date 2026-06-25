@@ -1,0 +1,253 @@
+import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+
+import { ClosureStore, assertBlobRef, assertBytes, makeBlobRef, stableJson } from '../core/store.mjs';
+import { fail } from '../core/store.mjs';
+import { NodeStoreLock } from '../node/node_lock.mjs';
+
+export class DirectoryStore extends ClosureStore {
+  constructor(root) {
+    super();
+    this.root = root;
+    this.lock = new NodeStoreLock(path.join(root, 'locks', 'store.lock'));
+  }
+
+  async acquireLock(options) {
+    return await this.lock.acquire(options);
+  }
+
+  async releaseLock() {
+    await this.lock.release();
+  }
+
+  async putBlob(bytes) {
+    const input = assertBytes(bytes);
+    const checksum = sha256(input);
+    const ref = makeBlobRef(checksum, input.byteLength);
+    const finalPath = this.blobPath(ref);
+    await mkdir(path.dirname(finalPath), { recursive: true });
+    if (await exists(finalPath)) {
+      await this.getBlob(ref);
+      return ref;
+    }
+    const tmp = path.join(this.root, 'tmp', `${checksum}.${Date.now()}.tmp`);
+    await mkdir(path.dirname(tmp), { recursive: true });
+    const handle = await open(tmp, 'wx');
+    try {
+      await handle.writeFile(input);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    const written = await readFile(tmp);
+    if (written.byteLength !== ref.byteLength || sha256(written) !== ref.checksum) fail('ERR_BLOB_WRITE_VERIFY_FAILED');
+    await rename(tmp, finalPath);
+    await fsyncDir(path.dirname(finalPath));
+    return ref;
+  }
+
+  async getBlob(ref) {
+    assertBlobRef(ref);
+    const bytes = await readFile(this.blobPath(ref)).catch(() => fail('ERR_BLOB_NOT_FOUND'));
+    if (bytes.byteLength !== ref.byteLength || sha256(bytes) !== ref.checksum) fail('ERR_BLOB_CHECKSUM_MISMATCH');
+    return new Uint8Array(bytes);
+  }
+
+  async hasBlob(ref) {
+    try {
+      await this.getBlob(ref);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async createApplication(record) {
+    return await writeJsonNew(path.join(this.root, 'applications', `${record.applicationId}.json`), record, 'ERR_APPLICATION_EXISTS');
+  }
+
+  async getApplication(id) {
+    return await readJson(path.join(this.root, 'applications', `${id}.json`), 'ERR_APPLICATION_NOT_FOUND');
+  }
+
+  async createRun(record) {
+    const written = await writeJsonNew(path.join(this.root, 'runs', `${record.runId}.json`), record, 'ERR_RUN_EXISTS');
+    for (const branch of record.branches ?? []) await this.writeHead(record.runId, branch.branchId, branch.currentHead);
+    return written;
+  }
+
+  async getRun(id) {
+    return await readJson(path.join(this.root, 'runs', `${id}.json`), 'ERR_RUN_NOT_FOUND');
+  }
+
+  async readHead(runId, branchId) {
+    return await readJson(this.headPath(runId, branchId), 'ERR_HEAD_NOT_FOUND');
+  }
+
+  async compareAndSwapHead(runId, branchId, expectedGeneration, nextHead) {
+    if (!await this.hasBlob(nextHead.turnClosureRef)) fail('ERR_HEAD_CLOSURE_BLOB_MISSING');
+    const current = await this.readHead(runId, branchId);
+    if (current.generation !== expectedGeneration) return { ok: false, current };
+    await this.writeHead(runId, branchId, nextHead);
+    return { ok: true, current: nextHead };
+  }
+
+  async putEffectRecord(record) {
+    const key = sha256(Buffer.from(stableJson(record.idempotencyKey)));
+    const file = path.join(this.root, 'effects', record.runId, `${key}.json`);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeJsonReplace(file, record);
+    return record;
+  }
+
+  async getEffectRecord(runId, idempotencyKey) {
+    const key = sha256(Buffer.from(stableJson(idempotencyKey)));
+    const file = path.join(this.root, 'effects', runId, `${key}.json`);
+    return await readJson(file, null).catch(() => null);
+  }
+
+  async listEffectRecords(runId) {
+    const dir = path.join(this.root, 'effects', runId);
+    const names = await readdir(dir).catch(() => []);
+    return await Promise.all(names.filter((name) => name.endsWith('.json')).map((name) => readJson(path.join(dir, name))));
+  }
+
+  async exportRun(runId, branchId) {
+    const run = await this.getRun(runId);
+    const blobRefs = await this.listBlobRefs();
+    return {
+      run,
+      application: await this.getApplication(run.applicationId),
+      branchId,
+      head: await this.readHead(runId, branchId),
+      effects: await this.listEffectRecords(runId),
+      blobs: await Promise.all(blobRefs.map(async (ref) => ({
+        checksum: ref.checksum,
+        byteLength: ref.byteLength,
+        bytes: [...await this.getBlob(ref)],
+      }))),
+    };
+  }
+
+  async importRun(bundle) {
+    for (const blob of bundle.blobs ?? []) {
+      if (Array.isArray(blob.bytes)) {
+        const ref = await this.putBlob(Uint8Array.from(blob.bytes));
+        if (ref.checksum !== blob.checksum) fail('ERR_IMPORT_BLOB_CHECKSUM_MISMATCH');
+      } else {
+        assertBlobRef(blob);
+      }
+    }
+    if (bundle.application && !await exists(path.join(this.root, 'applications', `${bundle.application.applicationId}.json`))) {
+      await this.createApplication(bundle.application);
+    }
+    if (!await exists(path.join(this.root, 'runs', `${bundle.run.runId}.json`))) await this.createRun(bundle.run);
+    await this.writeHead(bundle.run.runId, bundle.branchId, bundle.head);
+    for (const effect of bundle.effects ?? []) await this.putEffectRecord(effect);
+    return await this.getRun(bundle.run.runId);
+  }
+
+  async recover() {
+    const tmp = await readdir(path.join(this.root, 'tmp')).catch(() => []);
+    const referenced = new Set();
+    for (const head of await this.allHeads()) referenced.add(head.turnClosureRef.checksum);
+    const orphanBlobs = (await this.listBlobRefs()).filter((ref) => !referenced.has(ref.checksum));
+    return {
+      temporaryFilesIgnored: tmp.filter((name) => name.endsWith('.tmp')),
+      orphanBlobs,
+      garbageCollected: false,
+      multiProcessWriterSupport: false,
+    };
+  }
+
+  blobPath(ref) {
+    return path.join(this.root, 'blobs', 'sha256', ref.checksum);
+  }
+
+  headPath(runId, branchId) {
+    return path.join(this.root, 'heads', runId, `${branchId}.json`);
+  }
+
+  async writeHead(runId, branchId, head) {
+    await writeJsonReplace(this.headPath(runId, branchId), head);
+  }
+
+  async listBlobRefs() {
+    const dir = path.join(this.root, 'blobs', 'sha256');
+    const names = await readdir(dir).catch(() => []);
+    const refs = [];
+    for (const checksum of names) {
+      if (!/^[0-9a-f]{64}$/.test(checksum)) continue;
+      const file = path.join(dir, checksum);
+      const info = await stat(file);
+      refs.push(makeBlobRef(checksum, info.size));
+    }
+    return refs;
+  }
+
+  async allHeads() {
+    const root = path.join(this.root, 'heads');
+    const runs = await readdir(root).catch(() => []);
+    const heads = [];
+    for (const runId of runs) {
+      const dir = path.join(root, runId);
+      const entries = await readdir(dir).catch(() => []);
+      for (const entry of entries) {
+        if (entry.endsWith('.json')) heads.push(await readJson(path.join(dir, entry)));
+      }
+    }
+    return heads;
+  }
+}
+
+async function writeJsonNew(file, value, existsCode) {
+  await mkdir(path.dirname(file), { recursive: true });
+  const handle = await open(file, 'wx').catch((error) => {
+    if (error.code === 'EEXIST') fail(existsCode);
+    throw error;
+  });
+  try {
+    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await fsyncDir(path.dirname(file));
+  return value;
+}
+
+async function writeJsonReplace(file, value) {
+  await mkdir(path.dirname(file), { recursive: true });
+  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${Date.now()}.tmp`);
+  await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`);
+  await rename(tmp, file);
+  await fsyncDir(path.dirname(file));
+  return value;
+}
+
+async function readJson(file, missingCode = 'ERR_JSON_NOT_FOUND') {
+  const text = await readFile(file, 'utf8').catch((error) => {
+    if (missingCode) fail(missingCode);
+    throw error;
+  });
+  return JSON.parse(text);
+}
+
+function sha256(bytes) {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+async function exists(file) {
+  return !!await stat(file).catch(() => false);
+}
+
+async function fsyncDir(dir) {
+  const handle = await open(dir, 'r').catch(() => null);
+  if (!handle) return;
+  try {
+    await handle.sync().catch(() => {});
+  } finally {
+    await handle.close();
+  }
+}

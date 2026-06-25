@@ -1,0 +1,145 @@
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+
+import { EffectRecoveryClass } from '../src/core/actuator.mjs';
+import { EffectJournal, EffectState, prepareHostRequest } from '../src/core/effect_journal.mjs';
+import { fromUtf8 } from '../src/core/store.mjs';
+import { MemoryStore } from '../src/stores/memory_store.mjs';
+
+describe('EffectJournal', () => {
+  it('reuses persisted ResolutionInput for the same complete idempotency key', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent, response: 'resolution:one' });
+    const first = await journal.resolve({}, hostRequest(), driver);
+    const second = await journal.resolve({}, hostRequest(), driver);
+
+    assert.equal(first.reused, false);
+    assert.equal(second.reused, true);
+    assert.equal(driver.calls, 1);
+    assert.deepEqual(second.resolutionInputBytes, fromUtf8('resolution:one'));
+  });
+
+  it('rejects the same full idempotency key with different request bytes', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    await journal.resolve({}, hostRequest(), fixtureDriver({ recoveryClass: EffectRecoveryClass.pure }));
+
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest({ requestBytes: fromUtf8('different') }), fixtureDriver({ recoveryClass: EffectRecoveryClass.pure })),
+      { code: 'ERR_EFFECT_IDEMPOTENCY_CONFLICT' },
+    );
+  });
+
+  it('forbids shortened idempotency-key hash authority', async () => {
+    await assert.rejects(
+      () => prepareHostRequest(hostRequest({ shortIdempotencyKeyHash: 'abc123' })),
+      { code: 'ERR_SHORT_IDEMPOTENCY_KEY_FORBIDDEN' },
+    );
+  });
+
+  it('rejects best_effort drivers for durable automatic runs without operator opt-in', async () => {
+    const journal = new EffectJournal({ store: new MemoryStore(), runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest(), fixtureDriver({ recoveryClass: EffectRecoveryClass.bestEffort })),
+      { code: 'ERR_BEST_EFFORT_REQUIRES_OPERATOR_OPT_IN' },
+    );
+  });
+
+  it('marks unresolved best_effort recovery for operator intervention', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({
+      store,
+      runId: 'run',
+      branchId: 'main',
+      parentTurnClosureFingerprint: 'turn:0',
+      policy: { allowBestEffort: true },
+    });
+    const observed = await journal.observe(hostRequest(), { recoveryClass: EffectRecoveryClass.bestEffort });
+    const recovered = await journal.recover({}, { ...observed, state: EffectState.running }, fixtureDriver({ recoveryClass: EffectRecoveryClass.bestEffort }));
+
+    assert.equal(recovered.operatorInterventionRequired, true);
+    assert.equal(recovered.record.state, EffectState.operatorInterventionRequired);
+  });
+
+  it('reconciles submitted effects from the committed head without crossing branch or parent', async () => {
+    const store = new MemoryStore();
+    const mainJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const otherParentJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:other' });
+    const otherBranchJournal = new EffectJournal({ store, runId: 'run', branchId: 'alternate', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+
+    const matching = await mainJournal.markSubmitted((await mainJournal.resolve({}, hostRequest({ idempotencyKeyBytes: fromUtf8('key:matching') }), driver)).record);
+    const otherParent = await otherParentJournal.markSubmitted((await otherParentJournal.resolve({}, hostRequest({
+      idempotencyKeyBytes: fromUtf8('key:other-parent'),
+      idempotencyKeyWorldFingerprint: 'world:key:other-parent',
+      requestBytes: fromUtf8('request:other-parent'),
+    }), driver)).record);
+    const otherBranch = await otherBranchJournal.markSubmitted((await otherBranchJournal.resolve({}, hostRequest({
+      idempotencyKeyBytes: fromUtf8('key:other-branch'),
+      idempotencyKeyWorldFingerprint: 'world:key:other-branch',
+      requestBytes: fromUtf8('request:other-branch'),
+    }), driver)).record);
+
+    const result = await mainJournal.reconcileCommittedHead({
+      updateDiagnostics: { parentTurnClosureFingerprint: 'turn:0' },
+    });
+    const records = await store.listEffectRecords('run');
+
+    assert.equal(result.committedCount, 1);
+    assert.equal(result.committed[0].idempotencyKey.bytesHex, matching.idempotencyKey.bytesHex);
+    assert.equal(records.find((record) => record.idempotencyKey.bytesHex === matching.idempotencyKey.bytesHex).state, EffectState.closureCommitted);
+    assert.equal(records.find((record) => record.idempotencyKey.bytesHex === otherParent.idempotencyKey.bytesHex).state, EffectState.submitted);
+    assert.equal(records.find((record) => record.idempotencyKey.bytesHex === otherBranch.idempotencyKey.bytesHex).state, EffectState.submitted);
+    assert.equal(driver.calls, 3);
+  });
+
+  it('fails closed when committed-head recovery lacks a parent fingerprint', async () => {
+    const journal = new EffectJournal({ store: new MemoryStore(), runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+
+    await assert.rejects(
+      () => journal.reconcileCommittedHead({ updateDiagnostics: {} }),
+      { code: 'ERR_EFFECT_RECONCILE_HEAD_PARENT_REQUIRED' },
+    );
+  });
+});
+
+function hostRequest(overrides = {}) {
+  return {
+    actuatorRef: 'fixture:model',
+    descriptorFingerprint: 'descriptor:fixture',
+    actuationClass: 'fixture',
+    responseSchema: { status: 'ok' },
+    idempotencyKeyBytes: fromUtf8('complete-world-idempotency-key'),
+    idempotencyKeyWorldFingerprint: 'world:idempotency:key',
+    requestBytes: fromUtf8('request:one'),
+    ...overrides,
+  };
+}
+
+function fixtureDriver({ recoveryClass, response = 'resolution' }) {
+  return {
+    calls: 0,
+    manifest() {
+      return {
+        driverId: 'fixture-driver',
+        supportedActuatorRefs: ['fixture:model'],
+        supportedDescriptorFingerprints: ['descriptor:fixture'],
+        supportedActuationClasses: ['fixture'],
+        supportedResponseStatuses: ['ok'],
+        maximumRequestBytes: 1024,
+        maximumResponseBytes: 1024,
+        recoveryClass,
+        concurrencyLimit: 1,
+        authorityLabels: ['fixture'],
+      };
+    },
+    async resolve() {
+      this.calls += 1;
+      return { resolutionInputBytes: fromUtf8(response) };
+    },
+    async recover() {
+      return { resolutionInputBytes: fromUtf8(`recovered:${response}`) };
+    },
+  };
+}

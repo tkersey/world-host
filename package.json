@@ -1,0 +1,20 @@
+{
+  "name": "@tkersey/world-host",
+  "version": "0.0.0-carrier-v0",
+  "private": true,
+  "type": "module",
+  "description": "Disposable, crash-recoverable reference host for World TurnClosure processes.",
+  "bin": {
+    "world-host": "./bin/world-host.mjs"
+  },
+  "scripts": {
+    "test": "node --test",
+    "proof": "node --test && node scripts/run-world-conformance.mjs && node scripts/run-store-conformance.mjs && node scripts/run-crash-matrix.mjs && node scripts/run-migration-conformance.mjs && node scripts/run-security-conformance.mjs",
+    "proof:world-real": "node scripts/run-world-conformance.mjs --world-repo ../world"
+  },
+  "engines": {
+    "node": ">=26.0.0"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
