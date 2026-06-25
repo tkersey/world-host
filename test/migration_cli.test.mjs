@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
@@ -110,6 +111,38 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('uses relative store paths for lock creation', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-cli-relative-'));
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(root);
+      const wasmPath = path.join(root, 'world_universal_appliance.wasm');
+      const imagePath = path.join(root, 'file-agent.world-executable');
+      await writeFile(wasmPath, fromUtf8('wasm:relative'));
+      await writeFile(imagePath, fromUtf8('image:relative'));
+      let output = '';
+      const code = await runNodeCli([
+        'install',
+        '--json',
+        '--store', 'relative-store',
+        '--name', 'relative-app',
+        '--wasm', wasmPath,
+        '--image', imagePath,
+        '--image-fingerprint', 'world:image:relative',
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      });
+
+      assert.equal(code, 0);
+      assert.equal(JSON.parse(output).applicationId, 'relative-app');
+      assert.equal((await readFile(path.join(root, 'relative-store', 'applications', 'relative-app.json'), 'utf8')).includes('relative-app'), true);
+    } finally {
+      process.chdir(previousCwd);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('creates and resumes DirectoryStore runs through RunController-backed CLI paths', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-cli-run-'));
     try {
@@ -190,7 +223,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(createOnly.diagnostics.workerExecuted, false);
 
       output = '';
-      const resumeWorker = new DeterministicCliWorker('resume');
+      const resumeWorker = new DecodableCliWorker();
       const resumeCode = await runNodeCli([
         'resume',
         '--json',
@@ -217,10 +250,49 @@ describe('migration, branching, and CLI diagnostics', () => {
       try {
         const head = await store.readHead('cli-resume', 'main');
         assert.equal(head.generation, 1);
-        assert.deepEqual([...await store.getBlob(head.turnClosureRef)], [...fromUtf8('closure-bytes:resume:1')]);
+        assert.deepEqual([...await store.getBlob(head.turnClosureRef)], [...fixtureTurnClosureBytes()]);
       } finally {
         await store.releaseLock();
       }
+
+      output = '';
+      const secondResumeWorker = new DeterministicCliWorker('resume-second');
+      const secondResumeCode = await runNodeCli([
+        'resume',
+        '--json',
+        '--store', root,
+        '--run', 'cli-resume',
+        '--branch', 'main',
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      }, {
+        workerFactory: async () => secondResumeWorker,
+      });
+      const secondResumed = JSON.parse(output);
+      assert.equal(secondResumeCode, 0);
+      assert.equal(secondResumed.head.generation, 2);
+      assert.equal(secondResumed.advance.status, 'advanced');
+      assert.equal(secondResumed.diagnostics.workerExecuted, true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects unsafe DirectoryStore path segment ids', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-cli-unsafe-id-'));
+    try {
+      const store = new DirectoryStore(root);
+      const app = {
+        applicationId: '../escape',
+        worldProtocolVersion: 'v0.1.0',
+        applianceAbiVersion: 'v3',
+        universalWasmChecksum: 'sha256:00',
+        executableImageWorldFingerprint: 'world:image',
+      };
+      await assert.rejects(() => store.createApplication(app), { code: 'ERR_STORE_ID_PATH_UNSAFE' });
+      await assert.rejects(() => store.getRun('bad/run'), { code: 'ERR_STORE_ID_PATH_UNSAFE' });
+      await assert.rejects(() => store.readHead('run', 'bad/branch'), { code: 'ERR_STORE_ID_PATH_UNSAFE' });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -306,10 +378,11 @@ describe('migration, branching, and CLI diagnostics', () => {
   });
 
   it('exports, imports, and forks DirectoryStore runs through redacted CLI operations', async () => {
-    const sourceRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-migrate-source-'));
-    const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-migrate-receiver-'));
-    const packagePath = path.join(receiverRoot, 'carrier-export.json');
-    try {
+      const sourceRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-migrate-source-'));
+      const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-migrate-receiver-'));
+      const packagePath = path.join(receiverRoot, 'carrier-export.json');
+      let unrelatedRef = null;
+      try {
       const { run, head } = await fixtureDirectoryStore(sourceRoot);
       let output = '';
       const forkCode = await runNodeCli([
@@ -335,6 +408,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       try {
         assert.equal((await sourceStore.readHead(run.runId, 'main')).turnClosureWorldFingerprint, head.turnClosureWorldFingerprint);
         assert.equal((await sourceStore.readHead(run.runId, 'alternate')).turnClosureWorldFingerprint, head.turnClosureWorldFingerprint);
+        unrelatedRef = await sourceStore.putBlob(fromUtf8('unrelated-secret'));
       } finally {
         await sourceStore.releaseLock();
       }
@@ -360,6 +434,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(packageJson.authorityCarried, false);
       assert.equal(packageJson.bundle.application.applicationId, run.applicationId);
       assert.equal(Array.isArray(packageJson.bundle.blobs[0].bytes), true);
+      assert.equal(packageJson.bundle.blobs.some((blob) => blob.checksum === unrelatedRef.checksum), false);
       assert.doesNotMatch(output, /bytesHex|complete-world-idempotency-key/);
 
       output = '';
@@ -396,6 +471,15 @@ describe('migration, branching, and CLI diagnostics', () => {
       await rm(receiverRoot, { recursive: true, force: true });
     }
   });
+
+  it('propagates executable CLI return codes to the process', () => {
+    const result = spawnSync(process.execPath, [path.resolve('bin/world-host.mjs'), 'run-example', 'missing-example'], {
+      cwd: path.resolve('.'),
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /unknown example: missing-example/);
+  });
 });
 
 class DeterministicCliWorker extends WorldWorker {
@@ -421,8 +505,132 @@ class DeterministicCliWorker extends WorldWorker {
   }
 }
 
+class DecodableCliWorker extends WorldWorker {
+  async submitTurn(turnInputBytes) {
+    assert.equal(turnInputBytes.byteLength > 0, true);
+    return {
+      turnClosureBytes: fixtureTurnClosureBytes(),
+      turnClosureWorldFingerprint: 'world:closure:decodable',
+      resultingStateFingerprint: 'world:state:decodable',
+      chronicleCursor: 'world:chronicle:decodable',
+      archiveMomentFingerprint: 'world:archive-moment:decodable',
+      archiveSealFingerprint: 'world:archive-seal:decodable',
+      status: 'completed',
+    };
+  }
+}
+
 async function bytesToUtf8(bytes) {
   return new TextDecoder().decode(bytes);
+}
+
+function fixtureTurnClosureBytes() {
+  const turnReceiptBytes = concat([
+    u32(1),
+    u32(1),
+    u64(0x701n),
+    u64(0x211n),
+    u64(1n),
+    u64(0x301n),
+    optionalU64(null),
+    u64Slice([]),
+    u64Slice([]),
+    optionalU64(null),
+    u64(0xc01n),
+    optionalU64(0xa00n),
+    optionalU64(0xa01n),
+    optionalU64(0xa02n),
+    optionalU64(0xa03n),
+    optionalU64(0xb01n),
+    u8(2),
+    optionalU64(null),
+    u64(0n),
+    u64(0n),
+  ]);
+  return concat([
+    u32(1),
+    u32(1),
+    u64(0x111n),
+    u64(0x112n),
+    u64(0x211n),
+    optionalU64(null),
+    u64(1n),
+    u64(0x301n),
+    u64(0x302n),
+    u64(0x303n),
+    u64(0x304n),
+    optionalU64(null),
+    optionalU64(null),
+    optionalU64(null),
+    optionalU64(null),
+    u64(0x401n),
+    bytes(new Uint8Array()),
+    u64(0x501n),
+    bytes(new Uint8Array()),
+    u64(0x601n),
+    bytes(turnReceiptBytes),
+    bytes(new Uint8Array()),
+    optionalU64(0xa00n),
+    bytes(Uint8Array.of(1, 2, 3)),
+    bytes(new Uint8Array()),
+    optionalU64(0xb01n),
+    bytes(Uint8Array.of(4)),
+    optionalU64(null),
+    optionalU64(null),
+    bytes(new Uint8Array()),
+    u64Slice([]),
+    byteSlices([]),
+    u64Slice([]),
+    byteSlices([]),
+    u64Slice([]),
+    u64Slice([]),
+    u64Slice([]),
+    bytes(new Uint8Array()),
+    u8(2),
+  ]);
+}
+
+function u8(value) {
+  return Uint8Array.of(value);
+}
+
+function u32(value) {
+  const out = new Uint8Array(4);
+  new DataView(out.buffer).setUint32(0, value, true);
+  return out;
+}
+
+function u64(value) {
+  const out = new Uint8Array(8);
+  new DataView(out.buffer).setBigUint64(0, BigInt(value), true);
+  return out;
+}
+
+function optionalU64(value) {
+  return value === null ? u8(0) : concat([u8(1), u64(value)]);
+}
+
+function bytes(value) {
+  return concat([u32(value.byteLength), value]);
+}
+
+function u64Slice(values) {
+  return concat([u64(values.length), ...values.map(u64)]);
+}
+
+function byteSlices(values) {
+  return concat([u64(values.length), ...values.map(bytes)]);
+}
+
+function concat(chunks) {
+  const size = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+  const out = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
 }
 
 async function fixtureStore() {

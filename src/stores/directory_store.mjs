@@ -64,21 +64,21 @@ export class DirectoryStore extends ClosureStore {
   }
 
   async createApplication(record) {
-    return await writeJsonNew(path.join(this.root, 'applications', `${record.applicationId}.json`), record, 'ERR_APPLICATION_EXISTS');
+    return await writeJsonNew(applicationPath(this.root, record.applicationId), record, 'ERR_APPLICATION_EXISTS');
   }
 
   async getApplication(id) {
-    return await readJson(path.join(this.root, 'applications', `${id}.json`), 'ERR_APPLICATION_NOT_FOUND');
+    return await readJson(applicationPath(this.root, id), 'ERR_APPLICATION_NOT_FOUND');
   }
 
   async createRun(record) {
-    const written = await writeJsonNew(path.join(this.root, 'runs', `${record.runId}.json`), record, 'ERR_RUN_EXISTS');
+    const written = await writeJsonNew(runPath(this.root, record.runId), record, 'ERR_RUN_EXISTS');
     for (const branch of record.branches ?? []) await this.writeHead(record.runId, branch.branchId, branch.currentHead);
     return written;
   }
 
   async getRun(id) {
-    return await readJson(path.join(this.root, 'runs', `${id}.json`), 'ERR_RUN_NOT_FOUND');
+    return await readJson(runPath(this.root, id), 'ERR_RUN_NOT_FOUND');
   }
 
   async readHead(runId, branchId) {
@@ -95,7 +95,7 @@ export class DirectoryStore extends ClosureStore {
 
   async putEffectRecord(record) {
     const key = sha256(Buffer.from(stableJson(record.idempotencyKey)));
-    const file = path.join(this.root, 'effects', record.runId, `${key}.json`);
+    const file = path.join(effectsDir(this.root, record.runId), `${key}.json`);
     await mkdir(path.dirname(file), { recursive: true });
     await writeJsonReplace(file, record);
     return record;
@@ -103,25 +103,33 @@ export class DirectoryStore extends ClosureStore {
 
   async getEffectRecord(runId, idempotencyKey) {
     const key = sha256(Buffer.from(stableJson(idempotencyKey)));
-    const file = path.join(this.root, 'effects', runId, `${key}.json`);
+    const file = path.join(effectsDir(this.root, runId), `${key}.json`);
     return await readJson(file, null).catch(() => null);
   }
 
   async listEffectRecords(runId) {
-    const dir = path.join(this.root, 'effects', runId);
+    const dir = effectsDir(this.root, runId);
     const names = await readdir(dir).catch(() => []);
     return await Promise.all(names.filter((name) => name.endsWith('.json')).map((name) => readJson(path.join(dir, name))));
   }
 
   async exportRun(runId, branchId) {
     const run = await this.getRun(runId);
-    const blobRefs = await this.listBlobRefs();
+    const head = await this.readHead(runId, branchId);
+    const application = await this.getApplication(run.applicationId);
+    const effects = await this.listEffectRecords(runId);
+    const selectedBranch = (run.branches ?? []).find((branch) => branch.branchId === branchId);
+    const exportedRun = {
+      ...run,
+      branches: [{ ...(selectedBranch ?? { branchId }), currentHead: head }],
+    };
+    const blobRefs = collectBlobRefs(exportedRun, application, head, effects);
     return {
-      run,
-      application: await this.getApplication(run.applicationId),
+      run: exportedRun,
+      application,
       branchId,
-      head: await this.readHead(runId, branchId),
-      effects: await this.listEffectRecords(runId),
+      head,
+      effects,
       blobs: await Promise.all(blobRefs.map(async (ref) => ({
         checksum: ref.checksum,
         byteLength: ref.byteLength,
@@ -139,10 +147,10 @@ export class DirectoryStore extends ClosureStore {
         assertBlobRef(blob);
       }
     }
-    if (bundle.application && !await exists(path.join(this.root, 'applications', `${bundle.application.applicationId}.json`))) {
+    if (bundle.application && !await exists(applicationPath(this.root, bundle.application.applicationId))) {
       await this.createApplication(bundle.application);
     }
-    if (!await exists(path.join(this.root, 'runs', `${bundle.run.runId}.json`))) await this.createRun(bundle.run);
+    if (!await exists(runPath(this.root, bundle.run.runId))) await this.createRun(bundle.run);
     await this.writeHead(bundle.run.runId, bundle.branchId, bundle.head);
     for (const effect of bundle.effects ?? []) await this.putEffectRecord(effect);
     return await this.getRun(bundle.run.runId);
@@ -166,7 +174,7 @@ export class DirectoryStore extends ClosureStore {
   }
 
   headPath(runId, branchId) {
-    return path.join(this.root, 'heads', runId, `${branchId}.json`);
+    return path.join(this.root, 'heads', safePathSegment(runId, 'runId'), `${safePathSegment(branchId, 'branchId')}.json`);
   }
 
   async writeHead(runId, branchId, head) {
@@ -199,6 +207,55 @@ export class DirectoryStore extends ClosureStore {
     }
     return heads;
   }
+}
+
+function applicationPath(root, applicationId) {
+  return path.join(root, 'applications', `${safePathSegment(applicationId, 'applicationId')}.json`);
+}
+
+function runPath(root, runId) {
+  return path.join(root, 'runs', `${safePathSegment(runId, 'runId')}.json`);
+}
+
+function effectsDir(root, runId) {
+  return path.join(root, 'effects', safePathSegment(runId, 'runId'));
+}
+
+function safePathSegment(value, label) {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value === '.' ||
+    value === '..' ||
+    value.includes('/') ||
+    value.includes('\\') ||
+    value.includes('\0')
+  ) {
+    fail('ERR_STORE_ID_PATH_UNSAFE', `${label} must be a single path segment`, { label });
+  }
+  return value;
+}
+
+function collectBlobRefs(...values) {
+  const refs = new Map();
+  const visit = (value) => {
+    if (Array.isArray(value)) {
+      for (const child of value) visit(child);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    if (
+      value.algorithm === 'sha256' &&
+      /^[0-9a-f]{64}$/.test(value.checksum) &&
+      Number.isSafeInteger(value.byteLength) &&
+      value.byteLength >= 0
+    ) {
+      refs.set(`${value.checksum}:${value.byteLength}`, makeBlobRef(value.checksum, value.byteLength));
+    }
+    for (const child of Object.values(value)) visit(child);
+  };
+  for (const value of values) visit(value);
+  return [...refs.values()];
 }
 
 async function writeJsonNew(file, value, existsCode) {

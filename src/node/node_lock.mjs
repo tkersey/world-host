@@ -1,4 +1,5 @@
-import { mkdir, open, rm, writeFile } from 'node:fs/promises';
+import { mkdir, open, rm } from 'node:fs/promises';
+import path from 'node:path';
 import process from 'node:process';
 
 export class NodeStoreLock {
@@ -8,7 +9,7 @@ export class NodeStoreLock {
   }
 
   async acquire({ breakStale = false } = {}) {
-    await mkdir(new URL('.', `file://${this.lockPath}`).pathname, { recursive: true }).catch(() => {});
+    await mkdir(path.dirname(this.lockPath), { recursive: true }).catch(() => {});
     if (breakStale) await rm(this.lockPath, { force: true });
     this.handle = await open(this.lockPath, 'wx');
     await this.handle.writeFile(JSON.stringify({

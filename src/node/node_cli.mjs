@@ -307,7 +307,7 @@ function cliTurnInputFactory({ parentHead, parentClosureBytes, worker }) {
   const parentSummary = inspectTurnOutput(parentClosureBytes);
   return encodeRestoreTurnInput({
     manifestFingerprint,
-    parentTurnClosureBytes,
+    parentTurnClosureBytes: parentClosureBytes,
     expectedParentClosureFingerprint: parentSummary.closureFingerprint,
     expectedParentStateFingerprint: parentSummary.resultingStateFingerprint,
     previousTurnReceiptFingerprint: parentSummary.turnReceipt.receiptFingerprint,
