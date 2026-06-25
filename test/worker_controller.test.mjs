@@ -121,6 +121,27 @@ describe('RunController and WorldWorker', () => {
     assert.equal(effects[0].state, EffectState.resolved);
   });
 
+  it('does not commit effects missing from the returned TurnReceipt', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(),
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes({ appliedHostReplyFingerprints: [0xfffn] })),
+      effectDrivers: [fixtureEffectDriver()],
+    });
+
+    const result = await controller.advance(runId, branchId);
+    const effects = await store.listEffectRecords(runId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(result.effects.length, 0);
+    assert.deepEqual(result.nextHead.updateDiagnostics.committedEffectIds, []);
+    assert.equal(effects.length, 1);
+    assert.equal(effects[0].state, EffectState.resolved);
+  });
+
   it('batches host requests with bounded concurrency and canonical resolution order', async () => {
     const requests = [
       fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'idempotency-key:1', idempotencyKeyFingerprint: 0xa09n }),
@@ -361,6 +382,16 @@ describe('RunController and WorldWorker', () => {
     );
   });
 
+  it('fails closed on TurnClosure bytes with trailing data', async () => {
+    const { store, runId, branchId } = await fixtureStore();
+    const controller = new RunController({ store, workerFactory: async () => new ClosureOnlyWorker(concat([fixtureTurnClosureBytes(), Uint8Array.of(0)])) });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_TURN_CLOSURE_INSPECTION_FAILED' },
+    );
+  });
+
   it('rejects mismatched warm-worker identity before reuse', async () => {
     const worker = new WorldWorker();
     await worker.instantiate(fromUtf8('placeholder'));
@@ -588,7 +619,7 @@ class CaptureTurnInputWorker extends ClosureOnlyWorker {
   }
 }
 
-function fixtureTurnClosureBytes() {
+function fixtureTurnClosureBytes(options = {}) {
   const turnReceiptBytes = concat([
     u32(1),
     u32(1),
@@ -597,7 +628,7 @@ function fixtureTurnClosureBytes() {
     u64(1n),
     u64(0x301n),
     optionalU64(null),
-    u64Slice([]),
+    u64Slice(options.appliedHostReplyFingerprints ?? [0xa01n, 0xa02n, 0xa03n]),
     u64Slice([]),
     optionalU64(null),
     u64(0xc01n),

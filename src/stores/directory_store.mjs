@@ -32,7 +32,7 @@ export class DirectoryStore extends ClosureStore {
       await this.getBlob(ref);
       return ref;
     }
-    const tmp = path.join(this.root, 'tmp', `${checksum}.${Date.now()}.tmp`);
+    const tmp = path.join(this.root, 'tmp', `${checksum}.${Date.now()}.${randomUUID()}.tmp`);
     await mkdir(path.dirname(tmp), { recursive: true });
     const handle = await open(tmp, 'wx');
     try {

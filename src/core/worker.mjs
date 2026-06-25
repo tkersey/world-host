@@ -135,6 +135,7 @@ export class RunController {
     const turnResult = options.turnResult ?? await worker.submitTurn(turnInputBytes);
     const nextClosureBytes = assertBytes(turnResult.turnClosureBytes ?? worker.readTurnClosure(), 'turnClosureBytes');
     const inspected = deriveTurnResult(turnResult, nextClosureBytes);
+    const confirmedEffects = effectTurn ? confirmedTurnEffects(effectTurn.effects, inspected) : [];
     if ((inspected.archiveMomentFingerprint == null) !== (inspected.archiveSealFingerprint == null)) {
       fail('ERR_PARTIAL_ARCHIVE_ANCHOR', 'archive moment and seal must both be present or both be absent');
     }
@@ -152,7 +153,7 @@ export class RunController {
       updateDiagnostics: {
         workerWarm: worker === this.warmWorker,
         parentTurnClosureFingerprint: parentHead.turnClosureWorldFingerprint,
-        committedEffectIds: effectTurn?.effects.map((effect) => effect.record.idempotencyKeyWorldFingerprint) ?? [],
+        committedEffectIds: confirmedEffects.map((effect) => effect.record.idempotencyKeyWorldFingerprint),
         inspectedTurnClosure: inspected.inspectionDiagnostics ?? null,
         retainedArchivePending,
         unresolvedHostRequestCount: effectTurn?.unresolvedHostRequests.length ?? 0,
@@ -171,7 +172,7 @@ export class RunController {
     }
     const submittedEffects = [];
     if (effectTurn) {
-      for (const effect of effectTurn.effects) submittedEffects.push(await effectTurn.journal.markSubmitted(effect.record));
+      for (const effect of confirmedEffects) submittedEffects.push(await effectTurn.journal.markSubmitted(effect.record));
     }
     const committedEffects = [];
     for (const effect of submittedEffects) committedEffects.push(await effectTurn.journal.markClosureCommitted(effect));
@@ -319,6 +320,16 @@ function deriveTurnResult(turnResult, nextClosureBytes) {
   } catch (error) {
     fail('ERR_TURN_CLOSURE_INSPECTION_FAILED', error?.message ?? String(error));
   }
+}
+
+function effectResolutionTargetFingerprint(effect) {
+  const resolution = decodeResolutionInputBytes(effect.resolutionInputBytes);
+  return resolution.targetHostRequestFingerprint.toString(16).padStart(16, '0');
+}
+
+function confirmedTurnEffects(effects, inspected) {
+  const appliedReplies = new Set(inspected.inspectionDiagnostics?.appliedHostReplyFingerprints ?? []);
+  return effects.filter((effect) => appliedReplies.has(effectResolutionTargetFingerprint(effect)));
 }
 
 export function createWorkerBinding(input) {

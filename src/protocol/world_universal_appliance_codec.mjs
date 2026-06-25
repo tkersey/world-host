@@ -45,6 +45,7 @@ export function inspectTurnOutput(bytes) {
   reader.skipU64Slice();
   reader.bytesLen();
   const status = reader.u8();
+  if (reader.remaining() !== 0) throw new Error('trailing TurnClosure bytes');
   return {
     outputFingerprint: closureFingerprint,
     closureFingerprint,
@@ -81,6 +82,7 @@ export function summarizeTurnClosureForRunHead(bytes) {
       turnReceiptFingerprint: worldFingerprint('turn-receipt', receipt.receiptFingerprint),
       archiveAppendBatchFingerprint: receipt.archiveAppendBatchFingerprint == null ? null : worldFingerprint('archive-append-batch', receipt.archiveAppendBatchFingerprint),
       rootResultFingerprint: summary.rootResultFingerprint == null ? null : worldFingerprint('root-result', summary.rootResultFingerprint),
+      appliedHostReplyFingerprints: receipt.appliedHostReplyFingerprints.map(fingerprintString),
       hostRequestCount: summary.hostRequestCount,
       outputFingerprint: worldFingerprint('turn-output', summary.outputFingerprint),
     }),
@@ -113,6 +115,10 @@ function closureStatusLabel(status) {
 function worldFingerprint(kind, value) {
   if (value == null) throw new Error(`missing ${kind} fingerprint`);
   return `world:${kind}:${value.toString(16).padStart(16, '0')}`;
+}
+
+function fingerprintString(value) {
+  return value.toString(16).padStart(16, '0');
 }
 
 function optionalWorldFingerprint(kind, value) {

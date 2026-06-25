@@ -37,6 +37,9 @@ async function runStore(name, makeStore) {
     assert.deepEqual(await store.getBlob(imageRef), text.encode(`${name}:image`), `${name} blob roundtrip`);
     assert.equal(await store.hasBlob(imageRef), true, `${name} has blob`);
     await assert.rejects(() => store.getBlob({ ...imageRef, byteLength: imageRef.byteLength + 1 }), /ERR_BLOB_CHECKSUM_MISMATCH|ERR_BLOB_NOT_FOUND/);
+    const concurrentBlobBytes = text.encode(`${name}:same-blob`);
+    const concurrentBlobs = await Promise.all([store.putBlob(concurrentBlobBytes), store.putBlob(concurrentBlobBytes)]);
+    assert.deepEqual(concurrentBlobs[0], concurrentBlobs[1], `${name} concurrent identical blob writes share a ref`);
 
     const app = createApplicationRecord({
       applicationId: `${name}-app`,
