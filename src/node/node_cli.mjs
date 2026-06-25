@@ -298,7 +298,7 @@ function wasmBlobRefFromApplication(application) {
 function cliTurnInputFactory({ parentHead, parentClosureBytes, worker }) {
   const applianceManifest = worker.readApplianceManifest();
   const manifestFingerprint = applianceManifest.decoded?.manifestFingerprint ?? 0n;
-  if (parentHead.status === 'genesis' || parentHead.generation === 0) {
+  if (parentHead.status === 'genesis') {
     return encodeBootTurnInput({
       manifestFingerprint,
       metadata: 'world-host.cli.boot',
@@ -465,11 +465,20 @@ async function runRecover(args, io, storePath) {
 
 async function recoverEffects(store, runId, branchId) {
   const head = await store.readHead(runId, branchId);
+  const parentTurnClosureFingerprint = head.updateDiagnostics?.parentTurnClosureFingerprint;
+  if (typeof parentTurnClosureFingerprint !== 'string' || parentTurnClosureFingerprint.length === 0) {
+    return {
+      runId,
+      branchId,
+      committedCount: 0,
+      parentTurnClosureFingerprint: null,
+    };
+  }
   const journal = new EffectJournal({
     store,
     runId,
     branchId,
-    parentTurnClosureFingerprint: head.updateDiagnostics?.parentTurnClosureFingerprint,
+    parentTurnClosureFingerprint,
   });
   const reconciliation = await journal.reconcileCommittedHead(head);
   return {

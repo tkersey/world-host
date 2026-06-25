@@ -246,6 +246,22 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(createOnly.diagnostics.workerExecuted, false);
 
       output = '';
+      const recoverGenesisCode = await runNodeCli([
+        'recover',
+        '--json',
+        '--store', root,
+        '--run', 'cli-resume',
+        '--branch', 'main',
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      });
+      const recoveredGenesis = JSON.parse(output);
+      assert.equal(recoverGenesisCode, 0);
+      assert.equal(recoveredGenesis.effectReconciliation.committedCount, 0);
+      assert.equal(recoveredGenesis.effectReconciliation.parentTurnClosureFingerprint, null);
+
+      output = '';
       const resumeWorker = new DecodableCliWorker();
       const resumeCode = await runNodeCli([
         'resume',
@@ -277,6 +293,49 @@ describe('migration, branching, and CLI diagnostics', () => {
       } finally {
         await store.releaseLock();
       }
+
+      store = new DirectoryStore(root);
+      await store.acquireLock();
+      try {
+        const zeroClosureRef = await store.putBlob(fixtureTurnClosureBytes());
+        const zeroHead = createRunHead({
+          generation: 0,
+          turnClosureRef: zeroClosureRef,
+          turnClosureWorldFingerprint: 'world:closure:real-zero',
+          resultingStateFingerprint: 'world:state:real-zero',
+          chronicleCursor: 'cursor:real-zero',
+          archiveMomentFingerprint: 'archive:moment:real-zero',
+          archiveSealFingerprint: 'archive:seal:real-zero',
+          status: 'completed',
+        });
+        await store.createRun(createRunRecord({
+          runId: 'cli-real-zero',
+          applicationId: 'run-app',
+          branches: [createBranchRecord({ branchId: 'main', currentHead: zeroHead })],
+          effectJournalNamespace: 'effects',
+        }));
+      } finally {
+        await store.releaseLock();
+      }
+
+      output = '';
+      const zeroWorker = new DecodableCliWorker();
+      const zeroResumeCode = await runNodeCli([
+        'resume',
+        '--json',
+        '--store', root,
+        '--run', 'cli-real-zero',
+        '--branch', 'main',
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      }, {
+        workerFactory: async () => zeroWorker,
+      });
+      const zeroResumed = JSON.parse(output);
+      assert.equal(zeroResumeCode, 0);
+      assert.equal(zeroResumed.head.generation, 1);
+      assert.equal(zeroWorker.submittedTurnInputBytes[4], 1);
 
       output = '';
       const secondResumeWorker = new DeterministicCliWorker('resume-second');
@@ -679,6 +738,7 @@ class DeterministicCliWorker extends WorldWorker {
 class DecodableCliWorker extends WorldWorker {
   async submitTurn(turnInputBytes) {
     assert.equal(turnInputBytes.byteLength > 0, true);
+    this.submittedTurnInputBytes = turnInputBytes;
     return {
       turnClosureBytes: fixtureTurnClosureBytes(),
       turnClosureWorldFingerprint: 'world:closure:decodable',
