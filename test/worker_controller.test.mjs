@@ -390,7 +390,7 @@ describe('RunController and WorldWorker', () => {
     const controller = new RunController({
       store,
       workerFactory: async () => worker,
-      effectDrivers: [delayedBatchDriver()],
+      effectDrivers: [delayedBatchDriver({ coordinateFirstPair: false })],
       effectPolicy: { allowPartialEffectBatch: true },
     });
 
@@ -575,9 +575,14 @@ function tooSmallEffectDriver() {
   };
 }
 
-function delayedBatchDriver() {
+function delayedBatchDriver(options = {}) {
   let running = 0;
   let releaseFirst = null;
+  let firstReady = null;
+  const coordinateFirstPair = options.coordinateFirstPair !== false;
+  const waitForFirst = new Promise((resolve) => {
+    firstReady = resolve;
+  });
   return {
     invocationCount: 0,
     maxRunning: 0,
@@ -602,11 +607,13 @@ function delayedBatchDriver() {
       this.maxRunning = Math.max(this.maxRunning, running);
       const target = context.hostRequest.hostRequestFingerprint;
       try {
-        if (target === 'world:host-request:0000000000000a01') {
+        if (coordinateFirstPair && target === 'world:host-request:0000000000000a01') {
           await new Promise((resolve) => {
             releaseFirst = resolve;
+            firstReady();
           });
-        } else if (target === 'world:host-request:0000000000000a02') {
+        } else if (coordinateFirstPair && target === 'world:host-request:0000000000000a02') {
+          await waitForFirst;
           releaseFirst?.();
         }
         this.completions.push(target);
