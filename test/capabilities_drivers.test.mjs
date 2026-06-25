@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, symlink, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
 
 import { createRunPolicy, preflightCapabilities } from '../src/core/capabilities.mjs';
 import { FixtureModelDriver } from '../src/drivers/fixture_model_driver.mjs';
@@ -76,6 +77,16 @@ describe('capability preflight and reference drivers', () => {
       assert.equal(await readFile(path.join(root, 'out.txt'), 'utf8'), 'world carrier updated the fixture');
       await driver.resolve({}, fileRequest('nested/out.txt', { operation: 'write', content: 'nested write works' }));
       assert.equal(await readFile(path.join(root, 'nested', 'out.txt'), 'utf8'), 'nested write works');
+      const symlinkKey = 'temp-symlink-key';
+      await symlink(path.join(outside, 'outside.tmp'), path.join(root, `.blocked.txt.${sha256(symlinkKey)}.tmp`));
+      await assert.rejects(
+        () => driver.resolve({}, fileRequest('blocked.txt', { operation: 'write', content: 'blocked' }, symlinkKey)),
+        { code: 'EEXIST' },
+      );
+      await assert.rejects(
+        () => readFile(path.join(outside, 'outside.tmp')),
+        { code: 'ENOENT' },
+      );
       await driver.resolve({}, fileRequest('safe.txt', { operation: 'write', content: 'safe' }, '../../../../outside'));
       assert.equal(await readFile(path.join(root, 'safe.txt'), 'utf8'), 'safe');
       await assert.rejects(
@@ -143,6 +154,10 @@ function fileRequest(filePath, request = { operation: 'read' }, idempotencyKeyWo
     idempotencyKeyWorldFingerprint,
     requestBytes: fromUtf8(stableJson({ path: filePath, ...request })),
   };
+}
+
+function sha256(value) {
+  return createHash('sha256').update(String(value)).digest('hex');
 }
 
 function httpRequest(url, method = 'GET', responseSchema = { status: 'ok' }) {

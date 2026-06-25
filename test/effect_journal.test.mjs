@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { EffectRecoveryClass } from '../src/core/actuator.mjs';
 import { EffectJournal, EffectState, prepareHostRequest } from '../src/core/effect_journal.mjs';
 import { fromUtf8 } from '../src/core/store.mjs';
+import { HttpJsonDriver } from '../src/drivers/http_json_driver.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
 
 describe('EffectJournal', () => {
@@ -60,6 +61,30 @@ describe('EffectJournal', () => {
     assert.equal(driver.recoverCalls, 1);
   });
 
+  it('recovers idempotent HTTP effects from persisted request bytes', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const observed = await journal.observe(httpHostRequest(), { recoveryClass: EffectRecoveryClass.idempotent });
+    await store.putEffectRecord({ ...observed, state: EffectState.running, attemptCount: 1 });
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    try {
+      globalThis.fetch = async (url, options) => {
+        calls += 1;
+        assert.equal(String(url), 'https://allowed.example/path');
+        assert.equal(options.headers['Idempotency-Key'], 'world:key:http');
+        return new Response('{"ok":true}', { status: 200, headers: { 'x-request-id': 'recover-1' } });
+      };
+      const recovered = await journal.resolve({}, httpHostRequest(), new HttpJsonDriver({ origins: ['https://allowed.example'] }));
+
+      assert.equal(recovered.record.state, EffectState.resolved);
+      assert.equal(recovered.record.driverTransactionRef, 'recover-1');
+      assert.equal(calls, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('marks unresolved best_effort recovery for operator intervention', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({
@@ -74,6 +99,11 @@ describe('EffectJournal', () => {
 
     assert.equal(recovered.operatorInterventionRequired, true);
     assert.equal(recovered.record.state, EffectState.operatorInterventionRequired);
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.bestEffort });
+    const retried = await journal.resolve({}, hostRequest(), driver);
+    assert.equal(retried.operatorInterventionRequired, true);
+    assert.equal(retried.record.state, EffectState.operatorInterventionRequired);
+    assert.equal(driver.calls, 0);
   });
 
   it('validates recovery driver authority against the effect record', async () => {
@@ -179,6 +209,20 @@ function hostRequest(overrides = {}) {
     idempotencyKeyBytes: fromUtf8('complete-world-idempotency-key'),
     idempotencyKeyWorldFingerprint: 'world:idempotency:key',
     requestBytes: fromUtf8('request:one'),
+    ...overrides,
+  };
+}
+
+function httpHostRequest(overrides = {}) {
+  return {
+    actuatorRef: 'http:json',
+    descriptorFingerprint: 'descriptor:http-json',
+    actuationClass: 'http',
+    responseSchema: { status: 'ok' },
+    idempotencyKeyBytes: fromUtf8('complete-http-idempotency-key'),
+    idempotencyKeyWorldFingerprint: 'world:key:http',
+    requestBytes: fromUtf8(JSON.stringify({ url: 'https://allowed.example/path' })),
+    hostRequestFingerprint: 'world:host-request:00000000000000a1',
     ...overrides,
   };
 }

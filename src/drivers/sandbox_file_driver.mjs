@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, lstat, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 
@@ -64,7 +64,12 @@ export class SandboxFileDriver {
     await mkdir(path.dirname(resolved), { recursive: true });
     if (this.symlinkPolicy === 'reject') await this.#rejectSymlinkComponents(path.dirname(resolved));
     const tmp = path.join(path.dirname(resolved), `.${path.basename(resolved)}.${tempKey(key)}.tmp`);
-    await writeFile(tmp, bytes);
+    const handle = await open(tmp, 'wx');
+    try {
+      await handle.writeFile(bytes);
+    } finally {
+      await handle.close();
+    }
     await rename(tmp, resolved);
     const outcome = { status: 'ok', path: path.relative(this.root, resolved), byteLength: bytes.byteLength };
     this.writeOutcomes.set(key, outcome);

@@ -65,6 +65,18 @@ export class HttpJsonDriver {
       clearTimeout(timeout);
     }
   }
+
+  async recover(context, effectRecord) {
+    if (!effectRecord.requestBytes) fail('ERR_HTTP_RECOVERY_REQUEST_BYTES_REQUIRED');
+    return await this.resolve(context, {
+      actuatorRef: effectRecord.actuatorRef,
+      descriptorFingerprint: effectRecord.descriptorFingerprint,
+      actuationClass: 'http',
+      requestBytes: effectRecord.requestBytes,
+      idempotencyKeyWorldFingerprint: effectRecord.idempotencyKeyWorldFingerprint,
+      hostRequestFingerprint: effectRecord.hostRequestFingerprint,
+    });
+  }
 }
 
 function resolutionTarget(hostRequest = {}) {

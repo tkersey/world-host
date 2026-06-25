@@ -50,6 +50,7 @@ export class EffectJournal {
     const recoveryClass = options.recoveryClass ?? manifest?.recoveryClass ?? hostRequest.recoveryClass;
     assertRecoveryClass(recoveryClass);
     assertDurableRecoveryAllowed(recoveryClass, this.policy);
+    const requestBytesRef = await this.store.putBlob(prepared.requestBytes);
 
     const record = createEffectRecord({
       runId: this.runId,
@@ -60,6 +61,7 @@ export class EffectJournal {
       idempotencyKeyWorldFingerprint: prepared.idempotencyKeyWorldFingerprint,
       actuatorRef: hostRequest.actuatorRef,
       descriptorFingerprint: hostRequest.descriptorFingerprint,
+      requestBytesRef,
       requestBytesChecksum: prepared.requestBytesChecksum,
       state: EffectState.observed,
       attemptCount: 0,
@@ -77,6 +79,9 @@ export class EffectJournal {
     const reused = await this.#resolutionFromRecord(observed);
     if (reused) return reused;
     if (observed.state === EffectState.running) return await this.recover(context, observed, driver);
+    if (observed.state === EffectState.operatorInterventionRequired) {
+      return { record: observed, resolutionInputBytes: null, reused: false, operatorInterventionRequired: true };
+    }
 
     const running = await this.#put({
       ...observed,
@@ -129,7 +134,7 @@ export class EffectJournal {
 
     if (typeof driver.recover === 'function') {
       assertDriverCanRecover(driver.manifest(), record);
-      const recovered = normalizeDriverResolution(await driver.recover(context, record));
+      const recovered = normalizeDriverResolution(await driver.recover(context, await this.#recordWithRequestBytes(record)));
       const resolutionInputRef = await this.store.putBlob(recovered.resolutionInputBytes);
       const next = await this.#put({
         ...record,
@@ -237,6 +242,11 @@ export class EffectJournal {
   async #put(record) {
     return await this.store.putEffectRecord(assertEffectRecord(record));
   }
+
+  async #recordWithRequestBytes(record) {
+    if (!record.requestBytesRef) return record;
+    return { ...record, requestBytes: await this.store.getBlob(record.requestBytesRef) };
+  }
 }
 
 function assertDriverCanRecover(manifest, record) {
@@ -259,6 +269,7 @@ export function createEffectRecord(record) {
     state: record.state ?? EffectState.observed,
     attemptCount: record.attemptCount ?? 0,
     driverRecoveryClass: record.driverRecoveryClass,
+    requestBytesRef: record.requestBytesRef,
     resolutionInputRef: record.resolutionInputRef,
     hostClaimRef: record.hostClaimRef,
     driverTransactionRef: record.driverTransactionRef,
@@ -308,6 +319,7 @@ export async function prepareHostRequest(hostRequest) {
       bytesHex: toHex(idempotencyKeyBytes),
     },
     idempotencyKeyWorldFingerprint: hostRequest.idempotencyKeyWorldFingerprint ?? `sha256:${await sha256Hex(idempotencyKeyBytes)}`,
+    requestBytes,
     requestBytesChecksum,
     hostRequestFingerprint,
   };
