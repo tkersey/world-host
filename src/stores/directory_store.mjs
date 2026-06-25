@@ -2,6 +2,7 @@ import { mkdir, open, readFile, readdir, rename, rm, stat } from 'node:fs/promis
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
+import { createApplicationRecord } from '../core/application.mjs';
 import { ClosureStore, assertBlobRef, assertBytes, makeBlobRef, stableJson } from '../core/store.mjs';
 import { fail } from '../core/store.mjs';
 import { NodeStoreLock } from '../node/node_lock.mjs';
@@ -75,6 +76,7 @@ export class DirectoryStore extends ClosureStore {
   async createRun(record) {
     const targetRunPath = runPath(this.root, record.runId);
     if (await exists(targetRunPath)) fail('ERR_RUN_EXISTS');
+    for (const branch of record.branches ?? []) this.headPath(record.runId, branch.branchId);
     for (const branch of record.branches ?? []) await this.writeInitialHead(record.runId, branch.branchId, branch.currentHead);
     const written = await writeJsonNew(targetRunPath, record, 'ERR_RUN_EXISTS');
     return written;
@@ -382,6 +384,7 @@ function universalWasmRef(value) {
 function assertBundleApplicationMatchesRun(bundle) {
   const application = bundle?.application;
   if (!application) fail('ERR_IMPORT_APPLICATION_REQUIRED');
+  createApplicationRecord(application);
   if (bundle.run?.applicationId !== application.applicationId) fail('ERR_IMPORT_APPLICATION_MISMATCH');
 }
 

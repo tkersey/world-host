@@ -76,7 +76,7 @@ export async function runNodeCli(args, io, options = {}) {
   }
   if (command === 'run-example') return await runExample(args[1], io);
   io.stdout.write('world-host commands: install, doctor, run, resume, inspect, effects, recover, fork, export, import, run-example, version\n');
-  return 0;
+  return command === 'help' || command === '--help' || command === '-h' ? 0 : 2;
 }
 
 async function runStoreRun(args, io, storePath, options) {

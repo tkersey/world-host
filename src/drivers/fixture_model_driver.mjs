@@ -34,7 +34,7 @@ export class FixtureModelDriver {
   }
 
   async recover(context, effectRecord) {
-    if (!effectRecord.resolutionInputRef) return await this.resolve(context, {});
+    if (!effectRecord.resolutionInputRef) return await this.resolve(context, effectRecord);
     fail('ERR_FIXTURE_RECOVERY_SHOULD_REUSE_PERSISTED_OUTCOME');
   }
 }

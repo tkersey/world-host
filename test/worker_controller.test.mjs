@@ -66,6 +66,20 @@ describe('RunController and WorldWorker', () => {
     assert.equal(worker.loadCount, 1);
   });
 
+  it('does not call restore hooks for genesis heads', async () => {
+    const { store, runId, branchId } = await fixtureStore({ headStatus: 'genesis' });
+    const worker = new RestoringWorker(fixtureTurnClosureBytes());
+    const controller = new RunController({
+      store,
+      workerFactory: async () => worker,
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(worker.restoreCount, 0);
+  });
+
   it('resolves pending host requests through EffectJournal before fallback turn input', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
@@ -300,6 +314,45 @@ describe('RunController and WorldWorker', () => {
     await assert.rejects(
       () => controller.advance(runId, branchId),
       { code: 'ERR_EFFECT_RESOLUTION_TARGET_MISMATCH' },
+    );
+  });
+
+  it('surfaces parked best-effort effects before decoding resolutions', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'idempotency-key:1', idempotencyKeyFingerprint: 0xa09n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    await store.putEffectRecord(createEffectRecord({
+      runId,
+      branchId,
+      parentTurnClosureFingerprint: 'world:closure:0',
+      hostRequestFingerprint: 'world:host-request:0000000000000a01',
+      idempotencyKey: {
+        format: 'world-idempotency-key-bytes.hex',
+        bytesHex: Buffer.from('idempotency-key:1').toString('hex'),
+      },
+      idempotencyKeyWorldFingerprint: 'world:idempotency-key:0000000000000a09',
+      actuatorRef: 'world:actuator-ref:0000000000000a05',
+      descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+      actuationClass: 'world:actuation-class:1',
+      responseSchema: { status: 'responded' },
+      requestBytesChecksum: `sha256:${sha256Hex(requests[0])}`,
+      state: EffectState.operatorInterventionRequired,
+      driverRecoveryClass: EffectRecoveryClass.bestEffort,
+    }));
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [fixtureEffectDriver()],
+      effectPolicy: { allowBestEffort: true },
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_EFFECT_OPERATOR_INTERVENTION_REQUIRED' },
     );
   });
 
@@ -556,6 +609,16 @@ describe('RunController and WorldWorker', () => {
   it('fails closed on TurnClosure bytes with trailing data', async () => {
     const { store, runId, branchId } = await fixtureStore();
     const controller = new RunController({ store, workerFactory: async () => new ClosureOnlyWorker(concat([fixtureTurnClosureBytes(), Uint8Array.of(0)])) });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_TURN_CLOSURE_INSPECTION_FAILED' },
+    );
+  });
+
+  it('fails closed on unsupported TurnClosure versions', async () => {
+    const { store, runId, branchId } = await fixtureStore();
+    const controller = new RunController({ store, workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes({ formatVersion: 2 })) });
 
     await assert.rejects(
       () => controller.advance(runId, branchId),
@@ -884,10 +947,21 @@ class CaptureTurnInputWorker extends ClosureOnlyWorker {
   }
 }
 
+class RestoringWorker extends ClosureOnlyWorker {
+  constructor(closureBytes) {
+    super(closureBytes);
+    this.restoreCount = 0;
+  }
+
+  async restoreFromTurnClosure() {
+    this.restoreCount += 1;
+  }
+}
+
 function fixtureTurnClosureBytes(options = {}) {
   const turnReceiptBytes = concat([
-    u32(1),
-    u32(1),
+    u32(options.receiptFormatVersion ?? 1),
+    u32(options.receiptFingerprintVersion ?? 1),
     u64(0x701n),
     u64(0x211n),
     u64(1n),
@@ -908,8 +982,8 @@ function fixtureTurnClosureBytes(options = {}) {
     u64(0n),
   ]);
   return concat([
-    u32(1),
-    u32(1),
+    u32(options.formatVersion ?? 1),
+    u32(options.fingerprintVersion ?? 1),
     u64(0x111n),
     u64(0x112n),
     u64(0x211n),

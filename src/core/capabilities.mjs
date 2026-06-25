@@ -41,8 +41,16 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
   const coveredRequests = [];
 
   for (const required of application?.requiredActuators ?? []) {
-    const covered = manifests.some((manifest) => manifest.supportedActuatorRefs.includes(required.actuatorRef ?? required));
-    if (!covered) blockers.push(`required-actuator-uncovered:${required.actuatorRef ?? required}`);
+    const actuatorRef = required.actuatorRef ?? required;
+    const route = manifests.find((manifest) => manifest.supportedActuatorRefs.includes(actuatorRef));
+    if (!route) {
+      blockers.push(`required-actuator-uncovered:${actuatorRef}`);
+      continue;
+    }
+    const routeBlockers = policyBlockers(route, null, policy);
+    if (routeBlockers.length) {
+      blockers.push(`required-actuator-policy-blocked:${actuatorRef}`, ...routeBlockers);
+    }
   }
 
   for (const request of pendingRequests) {
@@ -76,7 +84,7 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
     responseStatusesSupported: !blockers.some((item) => item.includes('RESPONSE_STATUS')),
     valueSizeLimitsSupported: !blockers.some((item) => item.startsWith('runtime-')),
     recoveryClassSufficient: !blockers.includes('ERR_BEST_EFFORT_REQUIRES_OPERATOR_OPT_IN'),
-    fileNetworkAuthoritiesAllowed: !blockers.some((item) => item.startsWith('authority-denied') || item.startsWith('http-origin-denied')),
+    fileNetworkAuthoritiesAllowed: !blockers.some((item) => item.startsWith('authority-denied') || item.startsWith('http-origin-denied') || item.startsWith('file-root-denied')),
     supervisionPolicyAccepted: !blockers.includes('supervision-policy-rejected'),
     coveredRequests,
     blockers,
@@ -93,9 +101,14 @@ function policyBlockers(route, request, policy) {
   }
   const deniedLabels = route.authorityLabels.filter((label) => policy.allowedAuthorityLabels.size && !policy.allowedAuthorityLabels.has(label));
   if (deniedLabels.length) blockers.push(`authority-denied:${deniedLabels.join(',')}`);
-  if (policy.maximumRequestBytes !== undefined && request.requestBytes?.byteLength > policy.maximumRequestBytes) blockers.push('request-limit-exceeds-policy');
+  if (request && policy.maximumRequestBytes !== undefined && request.requestBytes?.byteLength > policy.maximumRequestBytes) blockers.push('request-limit-exceeds-policy');
   if (policy.maximumResponseBytes !== undefined && route.maximumResponseBytes > policy.maximumResponseBytes) blockers.push('response-limit-exceeds-policy');
-  if (request.actuationClass === 'http') {
+  const allowedFileRoots = policy.allowedFileRoots ?? new Set();
+  if (allowedFileRoots.size && route.authorityLabels.includes('file:sandbox')) {
+    const root = route.diagnostics?.root;
+    if (!root || !allowedFileRoots.has(root)) blockers.push(`file-root-denied:${root ?? 'unknown'}`);
+  }
+  if (request?.actuationClass === 'http') {
     const origin = requestOrigin(request);
     if (!origin || policy.allowedHttpOrigins.size && !policy.allowedHttpOrigins.has(origin)) blockers.push(`http-origin-denied:${origin ?? 'unknown'}`);
   }

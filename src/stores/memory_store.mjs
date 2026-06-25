@@ -1,3 +1,4 @@
+import { createApplicationRecord } from '../core/application.mjs';
 import { ClosureStore, assertBlobRef, assertBytes, fromUtf8, makeBlobRef, sameBlobRef, stableJson, toHex } from '../core/store.mjs';
 import { fail } from '../core/store.mjs';
 
@@ -212,6 +213,7 @@ function universalWasmRef(value) {
 function assertBundleApplicationMatchesRun(bundle) {
   const application = bundle?.application;
   if (!application) fail('ERR_IMPORT_APPLICATION_REQUIRED');
+  createApplicationRecord(application);
   if (bundle.run?.applicationId !== application.applicationId) fail('ERR_IMPORT_APPLICATION_MISMATCH');
 }
 

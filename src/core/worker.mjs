@@ -129,7 +129,7 @@ export class RunController {
     });
 
     if (worker.loadedExecutableFingerprint !== executableHostFingerprint) await worker.loadExecutable(imageBytes);
-    if (typeof worker.restoreFromTurnClosure === 'function') await worker.restoreFromTurnClosure(parentClosureBytes, parentHead);
+    if (parentHead.status !== 'genesis' && typeof worker.restoreFromTurnClosure === 'function') await worker.restoreFromTurnClosure(parentClosureBytes, parentHead);
 
     const effectTurn = await this.#effectTurnInput({ run, branchId, application, parentHead, parentClosureBytes, worker, options });
     const turnInputBytes = effectTurn?.turnInputBytes ?? await this.turnInputFactory({ run, branchId, application, parentHead, parentClosureBytes, worker, options });
@@ -334,6 +334,9 @@ function effectResolutionTargetFingerprint(effect) {
 
 function assertEffectTargetsPendingRequests(effects, pending) {
   return effects.map((effect, index) => {
+    if (effect?.operatorInterventionRequired) {
+      fail('ERR_EFFECT_OPERATOR_INTERVENTION_REQUIRED', 'effect requires operator intervention before a turn can be submitted');
+    }
     const resolution = decodeResolutionInputBytes(effect.resolutionInputBytes);
     const expected = BigInt(pending[index].worldHostRequest.requestFingerprint);
     if (resolution.targetHostRequestFingerprint !== expected) {
@@ -472,6 +475,11 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}) {
   if (allowedHttpOrigins.size && (hostRequest.actuationClass === 'http' || manifest.authorityLabels.includes('network:http'))) {
     const origin = requestOrigin(hostRequest);
     if (!origin || !allowedHttpOrigins.has(origin)) return false;
+  }
+  const allowedFileRoots = policySet(policy.allowedFileRoots);
+  if (allowedFileRoots.size && manifest.authorityLabels.includes('file:sandbox')) {
+    const root = manifest.diagnostics?.root;
+    if (!root || !allowedFileRoots.has(root)) return false;
   }
   try {
     assertDurableRecoveryAllowed(manifest.recoveryClass, policy);

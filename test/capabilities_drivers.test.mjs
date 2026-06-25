@@ -53,6 +53,38 @@ describe('capability preflight and reference drivers', () => {
     }]);
   });
 
+  it('applies receiver policy to required actuators and sandbox roots', async () => {
+    const allowedRoot = await mkdtemp(path.join(tmpdir(), 'world-host-allowed-root-'));
+    const blockedRoot = await mkdtemp(path.join(tmpdir(), 'world-host-blocked-root-'));
+    try {
+      const requiredReport = preflightCapabilities({
+        application: { requiredActuators: [{ actuatorRef: 'fixture:model' }], requiredRuntimeLimits: {} },
+        currentHead: { generation: 0 },
+        drivers: [policyDeniedFixtureDriver()],
+        policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture'] }),
+      });
+      assert.ok(requiredReport.blockers.includes('required-actuator-policy-blocked:fixture:model'));
+      assert.ok(requiredReport.blockers.includes('authority-denied:denied:fixture'));
+
+      const fileReport = preflightCapabilities({
+        application: { requiredActuators: [], requiredRuntimeLimits: {} },
+        currentHead: { generation: 0 },
+        pendingRequests: [fileRequest('out.txt', { operation: 'write', content: 'blocked' })],
+        drivers: [new SandboxFileDriver({ root: blockedRoot })],
+        policy: createRunPolicy({
+          allowBestEffort: true,
+          allowedAuthorityLabels: ['file:sandbox'],
+          allowedFileRoots: [allowedRoot],
+        }),
+      });
+      assert.ok(fileReport.blockers.includes(`file-root-denied:${path.resolve(blockedRoot)}`));
+      assert.equal(fileReport.fileNetworkAuthoritiesAllowed, false);
+    } finally {
+      await rm(allowedRoot, { recursive: true, force: true });
+      await rm(blockedRoot, { recursive: true, force: true });
+    }
+  });
+
   it('reports unsupported response statuses separately from uncovered requests', () => {
     const report = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },
@@ -83,6 +115,15 @@ describe('capability preflight and reference drivers', () => {
       () => assertDriverManifest({ ...policyDeniedFixtureDriver().manifest(), concurrencyLimit: 0 }),
       { code: 'ERR_INVALID_DRIVER_MANIFEST' },
     );
+  });
+
+  it('preserves HostRequest identity during fixture model recovery', async () => {
+    const driver = new FixtureModelDriver({ responses: ['recovered'] });
+    const recovered = await driver.recover({}, {
+      hostRequestFingerprint: 'world:host-request:00000000000000a1',
+    });
+    const decoded = decodeResolutionInputBytes(recovered.resolutionInputBytes);
+    assert.equal(decoded.targetHostRequestFingerprint, 0xa1n);
   });
 
   it('constrains sandbox file paths, symlinks, and atomic writes', async () => {

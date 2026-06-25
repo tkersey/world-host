@@ -4,8 +4,10 @@ const textDecoder = new TextDecoder();
 
 export function inspectTurnOutput(bytes) {
   const reader = new BinaryReader(bytes);
-  reader.u32();
-  reader.u32();
+  const formatVersion = reader.u32();
+  const fingerprintVersion = reader.u32();
+  if (formatVersion !== 1) throw new Error(`unsupported TurnClosure format version: ${formatVersion}`);
+  if (fingerprintVersion !== 1) throw new Error(`unsupported TurnClosure fingerprint version: ${fingerprintVersion}`);
   const closureFingerprint = reader.u64();
   reader.u64();
   const manifestFingerprint = reader.u64();

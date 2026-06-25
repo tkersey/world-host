@@ -401,6 +401,20 @@ describe('migration, branching, and CLI diagnostics', () => {
         { code: 'ERR_STORE_ID_PATH_UNSAFE' },
       );
       await assert.rejects(() => store.getRun('unsafe-run'), { code: 'ERR_RUN_NOT_FOUND' });
+
+      await assert.rejects(
+        () => store.createRun(createRunRecord({
+          runId: 'atomic-unsafe-run',
+          applicationId: 'app',
+          branches: [
+            createBranchRecord({ branchId: 'main', currentHead: head }),
+            createBranchRecord({ branchId: 'bad/branch', currentHead: head }),
+          ],
+          effectJournalNamespace: 'effects',
+        })),
+        { code: 'ERR_STORE_ID_PATH_UNSAFE' },
+      );
+      await assert.rejects(() => store.readHead('atomic-unsafe-run', 'main'), { code: 'ERR_HEAD_NOT_FOUND' });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -818,6 +832,10 @@ describe('migration, branching, and CLI diagnostics', () => {
       delete missingApplicationBundle.application;
       await assertImportsReject(missingApplicationBundle, 'ERR_IMPORT_APPLICATION_REQUIRED');
 
+      const invalidApplicationBundle = JSON.parse(JSON.stringify(carrierExport.bundle));
+      delete invalidApplicationBundle.application.worldProtocolVersion;
+      await assertImportsReject(invalidApplicationBundle, 'ERR_REQUIRED_FIELD');
+
       const runApplicationMismatchBundle = JSON.parse(JSON.stringify(carrierExport.bundle));
       runApplicationMismatchBundle.run.applicationId = 'receiver-local-app';
       await assertImportsReject(runApplicationMismatchBundle, 'ERR_IMPORT_APPLICATION_MISMATCH');
@@ -853,6 +871,12 @@ describe('migration, branching, and CLI diagnostics', () => {
     });
     assert.equal(result.status, 2);
     assert.match(result.stderr, /unknown example: missing-example/);
+
+    const unknown = spawnSync(process.execPath, [path.resolve('bin/world-host.mjs'), 'resum'], {
+      cwd: path.resolve('.'),
+      encoding: 'utf8',
+    });
+    assert.equal(unknown.status, 2);
   });
 });
 
