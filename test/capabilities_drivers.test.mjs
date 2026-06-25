@@ -66,6 +66,18 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.responseStatusesSupported, false);
   });
 
+  it('reports receiver byte-limit policy blockers for otherwise matching drivers', () => {
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [fixtureRequest()],
+      drivers: [new FixtureModelDriver({ responses: ['ok'] })],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture'], maximumRequestBytes: 4096, maximumResponseBytes: 1 }),
+    });
+    assert.ok(report.blockers.includes('response-limit-exceeds-policy'));
+    assert.equal(report.everyPendingRequestCovered, true);
+  });
+
   it('constrains sandbox file paths, symlinks, and atomic writes', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-sandbox-'));
     const outside = await mkdtemp(path.join(tmpdir(), 'world-host-outside-'));

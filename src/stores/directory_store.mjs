@@ -73,6 +73,8 @@ export class DirectoryStore extends ClosureStore {
   }
 
   async createRun(record) {
+    runPath(this.root, record.runId);
+    for (const branch of record.branches ?? []) this.headPath(record.runId, branch.branchId);
     const written = await writeJsonNew(runPath(this.root, record.runId), record, 'ERR_RUN_EXISTS');
     for (const branch of record.branches ?? []) await this.writeHead(record.runId, branch.branchId, branch.currentHead);
     return written;
@@ -155,6 +157,8 @@ export class DirectoryStore extends ClosureStore {
   }
 
   async importRun(bundle) {
+    if (await exists(runPath(this.root, bundle.run.runId))) fail('ERR_IMPORT_RUN_EXISTS');
+    if (await exists(this.headPath(bundle.run.runId, bundle.branchId))) fail('ERR_IMPORT_HEAD_EXISTS');
     for (const blob of bundle.blobs ?? []) {
       if (Array.isArray(blob.bytes)) {
         const ref = await this.putBlob(Uint8Array.from(blob.bytes));
@@ -174,8 +178,6 @@ export class DirectoryStore extends ClosureStore {
         await this.createApplication(bundle.application);
       }
     }
-    if (await exists(runPath(this.root, bundle.run.runId))) fail('ERR_IMPORT_RUN_EXISTS');
-    if (await exists(this.headPath(bundle.run.runId, bundle.branchId))) fail('ERR_IMPORT_HEAD_EXISTS');
     await this.createRun(bundle.run);
     await this.writeHead(bundle.run.runId, bundle.branchId, bundle.head);
     for (const effect of bundle.effects ?? []) await this.putEffectRecord(effect);

@@ -316,6 +316,27 @@ describe('migration, branching, and CLI diagnostics', () => {
       await assert.rejects(() => store.createApplication(app), { code: 'ERR_STORE_ID_PATH_UNSAFE' });
       await assert.rejects(() => store.getRun('bad/run'), { code: 'ERR_STORE_ID_PATH_UNSAFE' });
       await assert.rejects(() => store.readHead('run', 'bad/branch'), { code: 'ERR_STORE_ID_PATH_UNSAFE' });
+      const closureRef = await store.putBlob(fromUtf8('closure'));
+      const head = createRunHead({
+        generation: 0,
+        turnClosureRef: closureRef,
+        turnClosureWorldFingerprint: 'world:closure:unsafe',
+        resultingStateFingerprint: 'world:state:unsafe',
+        chronicleCursor: 'cursor:unsafe',
+        archiveMomentFingerprint: 'archive:moment:unsafe',
+        archiveSealFingerprint: 'archive:seal:unsafe',
+        status: 'completed',
+      });
+      await assert.rejects(
+        () => store.createRun(createRunRecord({
+          runId: 'unsafe-run',
+          applicationId: 'app',
+          branches: [createBranchRecord({ branchId: 'bad/branch', currentHead: head })],
+          effectJournalNamespace: 'effects',
+        })),
+        { code: 'ERR_STORE_ID_PATH_UNSAFE' },
+      );
+      await assert.rejects(() => store.getRun('unsafe-run'), { code: 'ERR_RUN_NOT_FOUND' });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -568,6 +589,24 @@ describe('migration, branching, and CLI diagnostics', () => {
         await assert.rejects(() => receiverStore.importRun(carrierExport.bundle), { code: 'ERR_IMPORT_RUN_EXISTS' });
       } finally {
         await receiverStore.releaseLock();
+      }
+
+      const runCollisionRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-import-run-collision-'));
+      try {
+        const runCollisionStore = new DirectoryStore(runCollisionRoot);
+        await runCollisionStore.acquireLock();
+        try {
+          await runCollisionStore.createRun(carrierExport.bundle.run);
+          await assert.rejects(() => runCollisionStore.importRun(carrierExport.bundle), { code: 'ERR_IMPORT_RUN_EXISTS' });
+          await assert.rejects(
+            () => runCollisionStore.getApplication(carrierExport.bundle.application.applicationId),
+            { code: 'ERR_APPLICATION_NOT_FOUND' },
+          );
+        } finally {
+          await runCollisionStore.releaseLock();
+        }
+      } finally {
+        await rm(runCollisionRoot, { recursive: true, force: true });
       }
 
       const mismatchRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-import-mismatch-'));

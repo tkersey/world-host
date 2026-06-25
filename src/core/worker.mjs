@@ -450,6 +450,8 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}) {
     (!hostRequest.responseSchema || manifest.supportedResponseStatuses?.includes(hostRequest.responseSchema.status) === true);
   if (!structuralMatch) return false;
   if (hostRequest.requestBytes?.byteLength > manifest.maximumRequestBytes) return false;
+  if (policy.maximumRequestBytes !== undefined && hostRequest.requestBytes?.byteLength > policy.maximumRequestBytes) return false;
+  if (policy.maximumResponseBytes !== undefined && manifest.maximumResponseBytes > policy.maximumResponseBytes) return false;
   const allowedAuthorityLabels = policySet(policy.allowedAuthorityLabels);
   if (allowedAuthorityLabels.size && manifest.authorityLabels.some((label) => !allowedAuthorityLabels.has(label))) return false;
   const allowedHttpOrigins = policySet(policy.allowedHttpOrigins);

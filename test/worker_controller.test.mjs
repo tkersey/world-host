@@ -275,6 +275,30 @@ describe('RunController and WorldWorker', () => {
     assert.equal((await store.listEffectRecords(runId)).length, 0);
   });
 
+  it('rejects drivers that exceed receiver byte limits before resolving effects', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const driver = fixtureEffectDriver();
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [driver],
+      effectPolicy: {
+        maximumRequestBytes: 4096,
+        maximumResponseBytes: 1,
+      },
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_HOST_REQUEST_DRIVER_UNAVAILABLE' },
+    );
+    assert.equal(driver.invocationCount, 0);
+    assert.equal((await store.listEffectRecords(runId)).length, 0);
+  });
+
   it('fails closed on needs_host heads when no effect drivers are configured', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
