@@ -7,8 +7,19 @@ export const applianceStatus = Object.freeze({
   ok: 0,
   needsHost: 2,
   completed: 3,
+  failed: 4,
+  blocked: 5,
+  cancelled: 6,
   invalidCommand: 7,
 });
+
+const closureProducingSubmitStatuses = new Set([
+  applianceStatus.needsHost,
+  applianceStatus.completed,
+  applianceStatus.failed,
+  applianceStatus.blocked,
+  applianceStatus.cancelled,
+]);
 
 const textDecoder = new TextDecoder();
 
@@ -80,7 +91,7 @@ export class NodeWorldWorker extends WorldWorker {
     const bytes = assertBytes(turnInputBytes, 'turnInputBytes');
     const status = this.instance.exports.world_appliance_submit_turn(this.#writeGuest(bytes), bytes.length);
     this.lastSubmitStatus = status;
-    if (status !== applianceStatus.needsHost && status !== applianceStatus.completed) {
+    if (!closureProducingSubmitStatuses.has(status)) {
       fail('ERR_WORLD_TURN_SUBMIT_FAILED', this.readLastError() || `status=${status}`, { status });
     }
     this.lastTurnClosureBytes = this.#readClosureBytes();

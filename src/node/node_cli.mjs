@@ -470,10 +470,11 @@ function carrierBundleBlobBytes(bundle, ref) {
 
 function importClosureStatusLabel(status) {
   if (status === 0) return 'needs_host';
+  if (status === 1) return 'yielded_budget';
   if (status === 2) return 'completed';
   if (status === 3) return 'failed';
-  if (status === 4) return 'blocked';
-  if (status === 5) return 'cancelled';
+  if (status === 4) return 'cancelled';
+  if (status === 5) return 'inspected';
   return `world-status:${status}`;
 }
 

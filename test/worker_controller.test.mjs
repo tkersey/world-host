@@ -453,6 +453,23 @@ describe('RunController and WorldWorker', () => {
     assert.deepEqual(await store.getBlob(result.nextHead.turnClosureRef), closureBytes);
   });
 
+  it('maps World TurnClosure terminal statuses without shifting enum values', async () => {
+    for (const [statusByte, statusLabel] of [
+      [1, 'yielded_budget'],
+      [3, 'failed'],
+      [4, 'cancelled'],
+      [5, 'inspected'],
+    ]) {
+      const { store, runId, branchId } = await fixtureStore({ runId: `run-status-${statusByte}` });
+      const closureBytes = fixtureTurnClosureBytes({ status: statusByte });
+      const controller = new RunController({ store, workerFactory: async () => new ClosureOnlyWorker(closureBytes) });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.nextHead.status, statusLabel);
+    }
+  });
+
   it('fails closed instead of fabricating RunHead fingerprints for undecodable closure bytes', async () => {
     const { store, runId, branchId } = await fixtureStore();
     const controller = new RunController({ store, workerFactory: async () => new ClosureOnlyWorker(fromUtf8('not-a-turn-closure')) });
@@ -817,7 +834,7 @@ function fixtureTurnClosureBytes(options = {}) {
     u64Slice([]),
     u64Slice([]),
     bytes(new Uint8Array()),
-    u8(2),
+    u8(options.status ?? 2),
   ]);
 }
 
