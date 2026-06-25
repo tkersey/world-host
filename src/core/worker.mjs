@@ -294,7 +294,7 @@ export class RunController {
     const effects = new Array(pending.length);
     const pendingPositions = new Map(pending.map((item, index) => [item, index]));
     const groups = groupPendingEffects(pending);
-    await runBounded(pending, effectBatchConcurrencyLimit(groups, policy), async (item) => {
+    await runGroupedBounded(groups, policy, async (item) => {
       const resolved = await journal.resolve(
         await this.effectContextFactory({
           run,
@@ -516,10 +516,6 @@ function effectConcurrencyLimit(manifest, policy = {}) {
   return Math.min(driverLimit, policyLimit);
 }
 
-function effectBatchConcurrencyLimit(groups, policy = {}) {
-  return groups.reduce((limit, group) => Math.min(limit, effectConcurrencyLimit(group.manifest, policy)), policy.maximumConcurrentEffects ?? Number.MAX_SAFE_INTEGER);
-}
-
 async function runBounded(items, limit, fn) {
   let next = 0;
   const workerCount = Math.min(limit, items.length);
@@ -530,6 +526,65 @@ async function runBounded(items, limit, fn) {
       await fn(item);
     }
   }));
+}
+
+async function runGroupedBounded(groups, policy, fn) {
+  const states = groups.map((group) => ({
+    items: group,
+    next: 0,
+    active: 0,
+    limit: effectConcurrencyLimit(group.manifest, policy),
+  }));
+  const total = states.reduce((sum, state) => sum + state.items.length, 0);
+  const globalLimit = effectGlobalConcurrencyLimit(states, policy);
+  let active = 0;
+  let completed = 0;
+  let cursor = 0;
+  let rejected = false;
+  await new Promise((resolve, reject) => {
+    const launch = () => {
+      if (rejected) return;
+      if (completed === total) {
+        resolve();
+        return;
+      }
+      while (active < globalLimit) {
+        const ready = nextReadyGroup(states, cursor);
+        if (!ready) break;
+        const { state, index } = ready;
+        cursor = (index + 1) % states.length;
+        const item = state.items[state.next];
+        state.next += 1;
+        state.active += 1;
+        active += 1;
+        Promise.resolve(fn(item)).then(() => {
+          state.active -= 1;
+          active -= 1;
+          completed += 1;
+          launch();
+        }, (error) => {
+          rejected = true;
+          reject(error);
+        });
+      }
+    };
+    launch();
+  });
+}
+
+function nextReadyGroup(states, cursor) {
+  for (let offset = 0; offset < states.length; offset += 1) {
+    const index = (cursor + offset) % states.length;
+    const state = states[index];
+    if (state.next < state.items.length && state.active < state.limit) return { state, index };
+  }
+  return null;
+}
+
+function effectGlobalConcurrencyLimit(states, policy = {}) {
+  const policyLimit = policy.maximumConcurrentEffects ?? states.reduce((sum, state) => sum + state.limit, 0);
+  if (!Number.isSafeInteger(policyLimit) || policyLimit < 1) fail('ERR_EFFECT_CONCURRENCY_LIMIT_INVALID', 'maximumConcurrentEffects must be at least one');
+  return policyLimit;
 }
 
 export function worldHostRequestToEffectRequest(request) {

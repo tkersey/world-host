@@ -200,6 +200,34 @@ describe('RunController and WorldWorker', () => {
     assert.equal(tracker.maxRunning, 1);
   });
 
+  it('preserves independent driver concurrency within the global policy', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'idempotency-key:1', idempotencyKeyFingerprint: 0xa09n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'idempotency-key:2', idempotencyKeyFingerprint: 0xa19n, expectedResponseDescriptorFingerprint: 0xa0cn }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa03n, requestOrdinal: 2, idempotencyKey: 'idempotency-key:3', idempotencyKeyFingerprint: 0xa29n, expectedResponseDescriptorFingerprint: 0xa0cn }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const slowTracker = { running: 0, maxRunning: 0 };
+    const fastTracker = { running: 0, maxRunning: 0 };
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [
+        sharedConcurrencyDriver({ driverId: 'test.effect.driver.slow', descriptorFingerprint: 'world:descriptor:0000000000000a0b', tracker: slowTracker, concurrencyLimit: 1 }),
+        sharedConcurrencyDriver({ driverId: 'test.effect.driver.fast', descriptorFingerprint: 'world:descriptor:0000000000000a0c', tracker: fastTracker, concurrencyLimit: 2 }),
+      ],
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(slowTracker.maxRunning, 1);
+    assert.equal(fastTracker.maxRunning, 2);
+  });
+
   it('skips ineligible effect drivers before selecting a resolver', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
@@ -597,7 +625,7 @@ function delayedBatchDriver() {
   };
 }
 
-function sharedConcurrencyDriver({ driverId, descriptorFingerprint, tracker }) {
+function sharedConcurrencyDriver({ driverId, descriptorFingerprint, tracker, concurrencyLimit = 3 }) {
   return {
     manifest() {
       return {
@@ -609,7 +637,7 @@ function sharedConcurrencyDriver({ driverId, descriptorFingerprint, tracker }) {
         maximumRequestBytes: 4096,
         maximumResponseBytes: 4096,
         recoveryClass: EffectRecoveryClass.pure,
-        concurrencyLimit: 3,
+        concurrencyLimit,
         authorityLabels: ['test'],
       };
     },
