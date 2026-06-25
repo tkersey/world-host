@@ -288,9 +288,10 @@ export class RunController {
 
   async #resolveEffectBatch({ journal, pending, run, branchId, application, parentHead, parentClosureBytes, worker, options, policy }) {
     const effects = new Array(pending.length);
+    const pendingPositions = new Map(pending.map((item, index) => [item, index]));
     const groups = groupPendingEffects(pending);
     await Promise.all(groups.map((group) => runBounded(group, effectConcurrencyLimit(group.manifest, policy), async (item) => {
-      effects[item.index] = await journal.resolve(
+      effects[pendingPositions.get(item)] = await journal.resolve(
         await this.effectContextFactory({
           run,
           branchId,

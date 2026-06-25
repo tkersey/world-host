@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, symlink, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, symlink, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -36,6 +36,7 @@ describe('capability preflight and reference drivers', () => {
 
   it('constrains sandbox file paths, symlinks, and atomic writes', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-sandbox-'));
+    const outside = await mkdtemp(path.join(tmpdir(), 'world-host-outside-'));
     try {
       const driver = new SandboxFileDriver({ root });
       await assert.rejects(
@@ -47,10 +48,21 @@ describe('capability preflight and reference drivers', () => {
         () => driver.resolve({}, fileRequest('link')),
         { code: 'ERR_SANDBOX_SYMLINK_REJECTED' },
       );
+      await writeFile(path.join(outside, 'secret.txt'), 'secret');
+      await symlink(outside, path.join(root, 'linkdir'));
+      await assert.rejects(
+        () => driver.resolve({}, fileRequest('linkdir/secret.txt')),
+        { code: 'ERR_SANDBOX_SYMLINK_REJECTED' },
+      );
+      await assert.rejects(
+        () => driver.resolve({}, fileRequest('linkdir/new.txt', { operation: 'write', content: 'nope' })),
+        { code: 'ERR_SANDBOX_SYMLINK_REJECTED' },
+      );
       await driver.resolve({}, fileRequest('out.txt', { operation: 'write', content: 'world carrier updated the fixture' }));
       assert.equal(await readFile(path.join(root, 'out.txt'), 'utf8'), 'world carrier updated the fixture');
     } finally {
       await rm(root, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
     }
   });
 
@@ -65,6 +77,20 @@ describe('capability preflight and reference drivers', () => {
       () => driver.resolve({}, httpRequest('https://allowed.example/path', 'POST')),
       { code: 'ERR_HTTP_METHOD_REJECTED' },
     );
+    const originalFetch = globalThis.fetch;
+    let requestHeaders = null;
+    try {
+      globalThis.fetch = async (url, options) => {
+        requestHeaders = options.headers;
+        return new Response('{"ok":true}', { status: 200, headers: { 'x-request-id': 'request-1' } });
+      };
+      const result = await driver.resolve({}, httpRequest('https://allowed.example/path'));
+      assert.equal(requestHeaders.Authorization, 'secret');
+      assert.equal(requestHeaders['X-Trace'], 'ok');
+      assert.equal(JSON.stringify(result.diagnostics).includes('secret'), false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

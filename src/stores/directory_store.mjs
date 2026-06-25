@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 
@@ -220,7 +220,13 @@ async function writeJsonNew(file, value, existsCode) {
 async function writeJsonReplace(file, value) {
   await mkdir(path.dirname(file), { recursive: true });
   const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${Date.now()}.tmp`);
-  await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`);
+  const handle = await open(tmp, 'wx');
+  try {
+    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
   await rename(tmp, file);
   await fsyncDir(path.dirname(file));
   return value;

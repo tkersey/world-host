@@ -60,6 +60,7 @@ export class SandboxFileDriver {
     if (bytes.byteLength > this.maximumWriteBytes) fail('ERR_SANDBOX_FILE_WRITE_TOO_LARGE');
     const resolved = await this.#resolvePath(filePath);
     await mkdir(path.dirname(resolved), { recursive: true });
+    if (this.symlinkPolicy === 'reject') await this.#rejectSymlinkComponents(path.dirname(resolved));
     const tmp = path.join(path.dirname(resolved), `.${path.basename(resolved)}.${key}.tmp`);
     await writeFile(tmp, bytes);
     await rename(tmp, resolved);
@@ -73,14 +74,25 @@ export class SandboxFileDriver {
     if (path.isAbsolute(filePath) && !this.allowAbsolute) fail('ERR_SANDBOX_ABSOLUTE_PATH_REJECTED');
     const resolved = path.resolve(this.root, filePath);
     if (resolved !== this.root && !resolved.startsWith(`${this.root}${path.sep}`)) fail('ERR_SANDBOX_PATH_ESCAPE');
-    if (this.symlinkPolicy === 'reject') {
-      const info = await lstat(resolved).catch((error) => {
+    if (this.symlinkPolicy === 'reject') await this.#rejectSymlinkComponents(resolved);
+    return resolved;
+  }
+
+  async #rejectSymlinkComponents(resolved) {
+    const rootInfo = await lstat(this.root);
+    if (rootInfo.isSymbolicLink()) fail('ERR_SANDBOX_SYMLINK_REJECTED');
+    const relative = path.relative(this.root, resolved);
+    if (relative === '') return;
+    let current = this.root;
+    for (const component of relative.split(path.sep)) {
+      current = path.join(current, component);
+      const info = await lstat(current).catch((error) => {
         if (error.code === 'ENOENT') return null;
         throw error;
       });
-      if (info?.isSymbolicLink()) fail('ERR_SANDBOX_SYMLINK_REJECTED');
+      if (!info) return;
+      if (info.isSymbolicLink()) fail('ERR_SANDBOX_SYMLINK_REJECTED');
     }
-    return resolved;
   }
 }
 

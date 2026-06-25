@@ -204,6 +204,35 @@ describe('RunController and WorldWorker', () => {
     assert.equal(indexOfBytes(worker.submittedTurnInputBytes, fromUtf8('response:0000000000000a02')), -1);
   });
 
+  it('keeps partial batch resolutions dense when uncovered requests come first', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'idempotency-key:1', idempotencyKeyFingerprint: 0xa09n, expectedResponseDescriptorFingerprint: 0xa0cn }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'idempotency-key:2', idempotencyKeyFingerprint: 0xa19n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const worker = new CaptureTurnInputWorker(fixtureTurnClosureBytes());
+    const controller = new RunController({
+      store,
+      workerFactory: async () => worker,
+      effectDrivers: [delayedBatchDriver()],
+      effectPolicy: { allowPartialEffectBatch: true },
+    });
+
+    const result = await controller.advance(runId, branchId);
+    const effects = await store.listEffectRecords(runId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(result.effects.length, 1);
+    assert.equal(effects.length, 1);
+    assert.equal(result.unresolvedHostRequests.length, 1);
+    assert.equal(result.unresolvedHostRequests[0].descriptorFingerprint, 'world:descriptor:0000000000000a0c');
+    assert.notEqual(indexOfBytes(worker.submittedTurnInputBytes, fromUtf8('response:0000000000000a02')), -1);
+    assert.equal(indexOfBytes(worker.submittedTurnInputBytes, fromUtf8('response:0000000000000a01')), -1);
+  });
+
   it('preserves an orphan closure and does not overwrite a winning head on CAS conflict', async () => {
     const { store, runId, branchId, head } = await fixtureStore();
     const winningRef = await store.putBlob(fromUtf8('winner'));

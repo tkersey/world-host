@@ -42,7 +42,7 @@ export class HttpJsonDriver {
       const headers = {
         Accept: 'application/json',
         [this.idempotencyHeader]: hostRequest.idempotencyKeyWorldFingerprint,
-        ...redactedCredentialHeaders(this.credentials.headers ?? {}),
+        ...(this.credentials.headers ?? {}),
       };
       const response = await fetch(url, { method, headers, body, signal: controller.signal });
       const text = await response.text();
@@ -62,13 +62,4 @@ export class HttpJsonDriver {
 function parseJsonBytes(bytes) {
   assertBytes(bytes, 'requestBytes');
   return JSON.parse(new TextDecoder().decode(bytes));
-}
-
-function redactedCredentialHeaders(headers) {
-  const result = {};
-  for (const [key, value] of Object.entries(headers)) {
-    if (/authorization|token|secret|key/i.test(key)) continue;
-    result[key] = value;
-  }
-  return result;
 }
