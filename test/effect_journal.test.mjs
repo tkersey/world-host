@@ -5,7 +5,7 @@ import { EffectRecoveryClass } from '../src/core/actuator.mjs';
 import { EffectJournal, EffectState, prepareHostRequest } from '../src/core/effect_journal.mjs';
 import { fromUtf8 } from '../src/core/store.mjs';
 import { HttpJsonDriver } from '../src/drivers/http_json_driver.mjs';
-import { encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
+import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
 
 describe('EffectJournal', () => {
@@ -18,7 +18,7 @@ describe('EffectJournal', () => {
 
     assert.deepEqual([first.reused, second.reused].sort(), [false, true]);
     assert.equal(driver.calls, 1);
-    assert.deepEqual(second.resolutionInputBytes, fromUtf8('resolution:one'));
+    assert.deepEqual(decodeResolutionInputBytes(second.resolutionInputBytes).responseValueImageBytes, fromUtf8('resolution:one'));
   });
 
   it('serializes concurrent same-key resolutions before driver execution', async () => {
@@ -34,7 +34,7 @@ describe('EffectJournal', () => {
     assert.equal(driver.calls, 1);
     assert.equal(first.reused, false);
     assert.equal(second.reused, true);
-    assert.deepEqual(second.resolutionInputBytes, fromUtf8('resolution:one'));
+    assert.deepEqual(decodeResolutionInputBytes(second.resolutionInputBytes).responseValueImageBytes, fromUtf8('resolution:one'));
   });
 
   it('rejects actual driver responses that exceed receiver policy', async () => {
@@ -85,6 +85,30 @@ describe('EffectJournal', () => {
       })),
       { code: 'ERR_EFFECT_RESPONSE_TOO_LARGE' },
     );
+  });
+
+  it('rejects driver ResolutionInput targeting another HostRequest before persisting it', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest(), fixtureDriver({
+        recoveryClass: EffectRecoveryClass.idempotent,
+        response: encodeResolutionInputBytes({
+          targetHostRequestFingerprint: 0xa2n,
+          status: 0,
+          responseValueImageBytes: fromUtf8('wrong target'),
+          hostClaimBytes: new Uint8Array(),
+          attemptNumber: 1,
+          metadata: new Uint8Array(),
+        }),
+      })),
+      { code: 'ERR_EFFECT_RESOLUTION_TARGET_MISMATCH' },
+    );
+    const records = await store.listEffectRecords('run');
+    assert.equal(records.length, 1);
+    assert.equal(records[0].state, EffectState.failed);
+    assert.equal(records[0].resolutionInputRef, undefined);
   });
 
   it('validates serialized fallback request bytes before driver execution', async () => {
@@ -320,6 +344,7 @@ function hostRequest(overrides = {}) {
     idempotencyKeyBytes: fromUtf8('complete-world-idempotency-key'),
     idempotencyKeyWorldFingerprint: 'world:idempotency:key',
     requestBytes: fromUtf8('request:one'),
+    hostRequestFingerprint: 'world:host-request:00000000000000a1',
     ...overrides,
   };
 }
@@ -356,17 +381,35 @@ function fixtureDriver({ recoveryClass, response = 'resolution', descriptorFinge
         authorityLabels: ['fixture'],
       };
     },
-    async resolve() {
+    async resolve(_context, request) {
       this.calls += 1;
       if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
-      return { resolutionInputBytes: response instanceof Uint8Array ? response : fromUtf8(response) };
+      return { resolutionInputBytes: response instanceof Uint8Array ? response : fixtureResolutionInputBytes(request, fromUtf8(response)) };
     },
-    async recover() {
+    async recover(_context, record) {
       this.recoverCalls += 1;
       return {
-        resolutionInputBytes: fromUtf8(`recovered:${response}`),
+        resolutionInputBytes: fixtureResolutionInputBytes(record, fromUtf8(`recovered:${response}`)),
         hostClaimBytes: recoverHostClaim ? fromUtf8('recovered-host-claim') : undefined,
       };
     },
   };
+}
+
+function fixtureResolutionInputBytes(request, responseValueImageBytes) {
+  return encodeResolutionInputBytes({
+    targetHostRequestFingerprint: requestTargetFingerprint(request),
+    status: 0,
+    responseValueImageBytes,
+    hostClaimBytes: new Uint8Array(),
+    attemptNumber: 1,
+    metadata: new Uint8Array(),
+  });
+}
+
+function requestTargetFingerprint(request) {
+  const value = request.hostRequestFingerprint;
+  if (typeof value === 'bigint' || typeof value === 'number') return BigInt(value);
+  const match = String(value ?? '').match(/(?:0x)?([0-9a-f]+)$/i);
+  return BigInt(`0x${match[1]}`);
 }

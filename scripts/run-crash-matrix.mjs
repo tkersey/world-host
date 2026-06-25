@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { EffectRecoveryClass } from '../src/core/actuator.mjs';
 import { EffectJournal, EffectState } from '../src/core/effect_journal.mjs';
 import { fromUtf8 } from '../src/core/store.mjs';
+import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
 
 await provesPersistedOutcomeReuse();
@@ -39,7 +40,7 @@ async function provesRecoverableClasses() {
     const observed = await journal.observe(request(recoveryClass), { recoveryClass });
     const recovered = await journal.recover({}, { ...observed, state: EffectState.running }, driverFor(recoveryClass, `resolution:${recoveryClass}`));
     assert.equal(recovered.record.state, EffectState.resolved, `${recoveryClass} recovers automatically`);
-    assert.deepEqual(recovered.resolutionInputBytes, fromUtf8(`recovered:${recoveryClass}`));
+    assert.deepEqual(decodeResolutionInputBytes(recovered.resolutionInputBytes).responseValueImageBytes, fromUtf8(`recovered:${recoveryClass}`));
   }
 }
 
@@ -119,6 +120,7 @@ function request(key) {
     idempotencyKeyBytes: fromUtf8(`complete-world-key:${key}`),
     idempotencyKeyWorldFingerprint: `world:key:${key}`,
     requestBytes: fromUtf8(`request:${key}`),
+    hostRequestFingerprint: `world:host-request:${requestTargetHex(key)}`,
   };
 }
 
@@ -139,12 +141,32 @@ function driverFor(recoveryClass, response) {
         authorityLabels: ['fixture'],
       };
     },
-    async resolve() {
+    async resolve(_context, hostRequest) {
       this.calls += 1;
-      return { resolutionInputBytes: fromUtf8(response) };
+      return { resolutionInputBytes: resolutionInputBytes(hostRequest, fromUtf8(response)) };
     },
-    async recover() {
-      return { resolutionInputBytes: fromUtf8(`recovered:${recoveryClass}`) };
+    async recover(_context, record) {
+      return { resolutionInputBytes: resolutionInputBytes(record, fromUtf8(`recovered:${recoveryClass}`)) };
     },
   };
+}
+
+function resolutionInputBytes(hostRequest, responseValueImageBytes) {
+  return encodeResolutionInputBytes({
+    targetHostRequestFingerprint: requestTargetFingerprint(hostRequest),
+    status: 0,
+    responseValueImageBytes,
+    hostClaimBytes: new Uint8Array(),
+    attemptNumber: 1,
+    metadata: new Uint8Array(),
+  });
+}
+
+function requestTargetFingerprint(hostRequest) {
+  const match = String(hostRequest.hostRequestFingerprint ?? '').match(/(?:0x)?([0-9a-f]+)$/i);
+  return BigInt(`0x${match[1]}`);
+}
+
+function requestTargetHex(key) {
+  return Buffer.from(key).toString('hex').slice(0, 16).padEnd(16, '0');
 }

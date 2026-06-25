@@ -741,7 +741,7 @@ export function redact(value) {
   if (!value || typeof value !== 'object') return value;
   return Object.fromEntries(Object.entries(value).map(([key, child]) => [
     key,
-    /credential|authorization|bearer|token|secret|password/i.test(key) ? '[redacted]' : redact(child),
+    /credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key/i.test(key) ? '[redacted]' : redact(child),
   ]));
 }
 

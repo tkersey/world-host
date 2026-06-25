@@ -224,6 +224,7 @@ function fileRequest(key, request) {
     idempotencyKeyBytes: fromUtf8(key),
     idempotencyKeyWorldFingerprint: `world:key:${key}`,
     requestBytes: fromUtf8(stableJson(request)),
+    hostRequestFingerprint: `world:host-request:${sha256Hex(fromUtf8(key)).slice(0, 16)}`,
   };
 }
 

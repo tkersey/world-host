@@ -73,10 +73,10 @@ export class DirectoryStore extends ClosureStore {
   }
 
   async createRun(record) {
-    runPath(this.root, record.runId);
-    for (const branch of record.branches ?? []) this.headPath(record.runId, branch.branchId);
-    const written = await writeJsonNew(runPath(this.root, record.runId), record, 'ERR_RUN_EXISTS');
-    for (const branch of record.branches ?? []) await this.writeHead(record.runId, branch.branchId, branch.currentHead);
+    const targetRunPath = runPath(this.root, record.runId);
+    if (await exists(targetRunPath)) fail('ERR_RUN_EXISTS');
+    for (const branch of record.branches ?? []) await this.writeInitialHead(record.runId, branch.branchId, branch.currentHead);
+    const written = await writeJsonNew(targetRunPath, record, 'ERR_RUN_EXISTS');
     return written;
   }
 
@@ -214,6 +214,18 @@ export class DirectoryStore extends ClosureStore {
 
   async writeHead(runId, branchId, head) {
     await writeJsonReplace(this.headPath(runId, branchId), head);
+  }
+
+  async writeInitialHead(runId, branchId, head) {
+    const file = this.headPath(runId, branchId);
+    try {
+      return await writeJsonNew(file, head, 'ERR_HEAD_EXISTS');
+    } catch (error) {
+      if (error?.code !== 'ERR_HEAD_EXISTS') throw error;
+      const existing = await readJson(file, 'ERR_HEAD_NOT_FOUND');
+      if (stableJson(existing) !== stableJson(head)) throw error;
+      return existing;
+    }
   }
 
   async listBlobRefs() {

@@ -13,6 +13,7 @@ import { createBranchRecord, createRunHead, createRunRecord } from '../src/core/
 import { fromUtf8 } from '../src/core/store.mjs';
 import { WorldWorker } from '../src/core/worker.mjs';
 import { redact, runNodeCli } from '../src/node/node_cli.mjs';
+import { encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
 import { DirectoryStore } from '../src/stores/directory_store.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
 
@@ -65,6 +66,9 @@ describe('migration, branching, and CLI diagnostics', () => {
 
   it('redacts credentials from CLI-shaped diagnostics', async () => {
     assert.equal(redact({ nested: { bearerToken: 'secret' } }).nested.bearerToken, '[redacted]');
+    assert.equal(redact({ diagnostics: { apiKey: 'secret' } }).diagnostics.apiKey, '[redacted]');
+    assert.equal(redact({ diagnostics: { access_key: 'secret' } }).diagnostics.access_key, '[redacted]');
+    assert.equal(redact({ diagnostics: { privateKey: 'secret' } }).diagnostics.privateKey, '[redacted]');
     let output = '';
     const code = await runNodeCli(['inspect', '--json', '--store', '.world-carrier'], { stdout: { write: (text) => { output += text; } }, stderr: { write() {} } });
     assert.equal(code, 0);
@@ -402,6 +406,37 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('publishes DirectoryStore run records only after initial branch heads are durable', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-cli-create-run-order-'));
+    try {
+      const store = new DirectoryStore(root);
+      const closureRef = await store.putBlob(fixtureTurnClosureBytes());
+      const head = createRunHead({
+        generation: 0,
+        turnClosureRef: closureRef,
+        turnClosureWorldFingerprint: 'world:closure:create-run-order',
+        resultingStateFingerprint: 'world:state:create-run-order',
+        chronicleCursor: 'cursor:create-run-order',
+        archiveMomentFingerprint: 'archive:moment:create-run-order',
+        archiveSealFingerprint: 'archive:seal:create-run-order',
+        status: 'completed',
+      });
+      await store.writeHead('partial-run', 'main', head);
+
+      await store.createRun(createRunRecord({
+        runId: 'partial-run',
+        applicationId: 'app',
+        branches: [createBranchRecord({ branchId: 'main', currentHead: head })],
+        effectJournalNamespace: 'effects',
+      }));
+
+      assert.equal((await store.getRun('partial-run')).runId, 'partial-run');
+      assert.deepEqual(await store.readHead('partial-run', 'main'), head);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('fails closed on corrupt persisted effect records', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-cli-corrupt-effect-'));
     try {
@@ -548,6 +583,7 @@ describe('migration, branching, and CLI diagnostics', () => {
           idempotencyKeyBytes: fromUtf8('alternate-world-idempotency-key'),
           idempotencyKeyWorldFingerprint: 'world:key:alternate',
           requestBytes: fromUtf8('request:alternate'),
+          hostRequestFingerprint: 'world:host-request:0000000000000b01',
         }, fixtureDriver());
         unrelatedRef = await sourceStore.putBlob(fromUtf8('unrelated-secret'));
       } finally {
@@ -1146,6 +1182,7 @@ async function fixtureDirectoryStore(root, options = {}) {
       idempotencyKeyBytes: fromUtf8('complete-world-idempotency-key'),
       idempotencyKeyWorldFingerprint: 'world:key:cli',
       requestBytes: fromUtf8('request:cli'),
+      hostRequestFingerprint: 'world:host-request:0000000000000a01',
     }, fixtureDriver());
     if (options.effectState === 'submitted') {
       await journal.markSubmitted(resolved.record);
@@ -1174,8 +1211,26 @@ function fixtureDriver() {
         authorityLabels: ['fixture'],
       };
     },
-    async resolve() {
-      return { resolutionInputBytes: fromUtf8('resolution:cli') };
+    async resolve(_context, hostRequest) {
+      return { resolutionInputBytes: fixtureResolutionInputBytes(hostRequest, fromUtf8('resolution:cli')) };
     },
   };
+}
+
+function fixtureResolutionInputBytes(hostRequest, responseValueImageBytes) {
+  return encodeResolutionInputBytes({
+    targetHostRequestFingerprint: requestTargetFingerprint(hostRequest),
+    status: 0,
+    responseValueImageBytes,
+    hostClaimBytes: new Uint8Array(),
+    attemptNumber: 1,
+    metadata: new Uint8Array(),
+  });
+}
+
+function requestTargetFingerprint(hostRequest) {
+  const value = hostRequest.hostRequestFingerprint;
+  if (typeof value === 'bigint' || typeof value === 'number') return BigInt(value);
+  const match = String(value ?? '').match(/(?:0x)?([0-9a-f]+)$/i);
+  return BigInt(`0x${match[1]}`);
 }

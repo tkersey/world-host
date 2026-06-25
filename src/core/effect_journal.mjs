@@ -97,7 +97,7 @@ export class EffectJournal {
 
       try {
         const resolved = normalizeDriverResolution(await driver.resolve(context, hostRequest));
-        assertResolutionWithinLimits(resolved.resolutionInputBytes, manifest, this.policy);
+        assertResolutionAccepted(resolved.resolutionInputBytes, hostRequest, manifest, this.policy);
         const resolutionInputRef = await this.store.putBlob(resolved.resolutionInputBytes);
         const hostClaimRef = resolved.hostClaimBytes ? await this.store.putBlob(resolved.hostClaimBytes) : running.hostClaimRef;
         const record = await this.#put({
@@ -143,7 +143,7 @@ export class EffectJournal {
       const manifest = driver.manifest();
       assertDriverCanRecover(manifest, record);
       const recovered = normalizeDriverResolution(await driver.recover(context, await this.#recordWithRequestBytes(record)));
-      assertResolutionWithinLimits(recovered.resolutionInputBytes, manifest, this.policy);
+      assertResolutionAccepted(recovered.resolutionInputBytes, record, manifest, this.policy);
       const resolutionInputRef = await this.store.putBlob(recovered.resolutionInputBytes);
       const hostClaimRef = recovered.hostClaimBytes ? await this.store.putBlob(recovered.hostClaimBytes) : record.hostClaimRef;
       const next = await this.#put({
@@ -375,15 +375,27 @@ function assertPreparedRequestWithinLimits(prepared, manifest, policy) {
   if (policy.maximumRequestBytes !== undefined && prepared.requestBytes.byteLength > policy.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
 }
 
-function assertResolutionWithinLimits(resolutionInputBytes, manifest, policy) {
+function assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, policy) {
+  const resolution = decodeResolutionInputBytes(resolutionInputBytes);
+  const expectedTarget = hostRequestTargetFingerprint(hostRequest);
+  if (resolution.targetHostRequestFingerprint !== expectedTarget) {
+    fail('ERR_EFFECT_RESOLUTION_TARGET_MISMATCH', 'driver ResolutionInput targets a different HostRequest');
+  }
   const maximumResponseBytes = policy.maximumResponseBytes === undefined
     ? manifest.maximumResponseBytes
     : Math.min(manifest.maximumResponseBytes, policy.maximumResponseBytes);
   if (maximumResponseBytes === Number.MAX_SAFE_INTEGER) return;
-  const resolution = decodeResolutionInputBytes(resolutionInputBytes);
   if (resolution.responseValueImageBytes.byteLength > maximumResponseBytes) {
     fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver ResolutionInput response exceeds byte limit');
   }
+}
+
+function hostRequestTargetFingerprint(hostRequest) {
+  const value = hostRequest.hostRequestFingerprint;
+  if (typeof value === 'bigint' || typeof value === 'number') return BigInt(value);
+  const match = String(value ?? '').match(/(?:0x)?([0-9a-f]+)$/i);
+  if (!match) fail('ERR_HOST_REQUEST_FINGERPRINT_REQUIRED');
+  return BigInt(`0x${match[1]}`);
 }
 
 async function withEffectKeyLock(store, key, fn) {
