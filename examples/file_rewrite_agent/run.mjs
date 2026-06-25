@@ -35,6 +35,7 @@ export async function runExample() {
       runId: RUN_ID,
       branchId: BRANCH_ID,
       parentTurnClosureFingerprint: parentHead.turnClosureWorldFingerprint,
+      policy: { allowBestEffort: true },
     });
 
     const read = await journal.resolve({}, fileRequest('read-input', {

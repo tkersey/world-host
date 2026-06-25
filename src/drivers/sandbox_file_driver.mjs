@@ -26,7 +26,7 @@ export class SandboxFileDriver {
       supportedResponseStatuses: ['ok', 'not_found'],
       maximumRequestBytes: this.maximumWriteBytes,
       maximumResponseBytes: this.maximumReadBytes,
-      recoveryClass: EffectRecoveryClass.idempotent,
+      recoveryClass: EffectRecoveryClass.bestEffort,
       concurrencyLimit: 2,
       authorityLabels: ['file:sandbox'],
       diagnostics: { root: this.root, symlinkPolicy: this.symlinkPolicy },
@@ -42,16 +42,6 @@ export class SandboxFileDriver {
 
   async recover(context, effectRecord) {
     const outcome = this.writeOutcomes.get(effectRecord.idempotencyKeyWorldFingerprint);
-    if (!outcome && effectRecord.requestBytes) {
-      return await this.resolve(context, {
-        actuatorRef: effectRecord.actuatorRef,
-        descriptorFingerprint: effectRecord.descriptorFingerprint,
-        actuationClass: 'file',
-        requestBytes: effectRecord.requestBytes,
-        idempotencyKeyWorldFingerprint: effectRecord.idempotencyKeyWorldFingerprint,
-        hostRequestFingerprint: effectRecord.hostRequestFingerprint,
-      });
-    }
     if (!outcome) fail('ERR_SANDBOX_FILE_RECOVERY_UNAVAILABLE');
     return { resolutionInputBytes: resolutionInput({ hostRequestFingerprint: effectRecord.hostRequestFingerprint }, outcome), diagnostics: { recovered: true } };
   }

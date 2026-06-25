@@ -6,6 +6,7 @@ import {
   defineActuatorDriver,
 } from './actuator.mjs';
 import { assertBytes, fail, fromUtf8, stableJson, toHex } from './store.mjs';
+import { decodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
 
 export const EffectState = Object.freeze({
   observed: 'observed',
@@ -95,6 +96,7 @@ export class EffectJournal {
 
       try {
         const resolved = normalizeDriverResolution(await driver.resolve(context, hostRequest));
+        assertResolutionWithinPolicy(resolved.resolutionInputBytes, this.policy);
         const resolutionInputRef = await this.store.putBlob(resolved.resolutionInputBytes);
         const hostClaimRef = resolved.hostClaimBytes ? await this.store.putBlob(resolved.hostClaimBytes) : running.hostClaimRef;
         const record = await this.#put({
@@ -139,6 +141,7 @@ export class EffectJournal {
     if (typeof driver.recover === 'function') {
       assertDriverCanRecover(driver.manifest(), record);
       const recovered = normalizeDriverResolution(await driver.recover(context, await this.#recordWithRequestBytes(record)));
+      assertResolutionWithinPolicy(recovered.resolutionInputBytes, this.policy);
       const resolutionInputRef = await this.store.putBlob(recovered.resolutionInputBytes);
       const hostClaimRef = recovered.hostClaimBytes ? await this.store.putBlob(recovered.hostClaimBytes) : record.hostClaimRef;
       const next = await this.#put({
@@ -340,6 +343,14 @@ function normalizeDriverResolution(value) {
     driverTransactionRef: value?.driverTransactionRef,
     diagnostics: value?.diagnostics ?? {},
   };
+}
+
+function assertResolutionWithinPolicy(resolutionInputBytes, policy) {
+  if (policy.maximumResponseBytes === undefined) return;
+  const resolution = decodeResolutionInputBytes(resolutionInputBytes);
+  if (resolution.responseValueImageBytes.byteLength > policy.maximumResponseBytes) {
+    fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver ResolutionInput response exceeds receiver policy');
+  }
 }
 
 async function withEffectKeyLock(store, key, fn) {

@@ -5,6 +5,7 @@ import { EffectRecoveryClass } from '../src/core/actuator.mjs';
 import { EffectJournal, EffectState, prepareHostRequest } from '../src/core/effect_journal.mjs';
 import { fromUtf8 } from '../src/core/store.mjs';
 import { HttpJsonDriver } from '../src/drivers/http_json_driver.mjs';
+import { encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
 
 describe('EffectJournal', () => {
@@ -35,6 +36,35 @@ describe('EffectJournal', () => {
     assert.equal(first.reused, false);
     assert.equal(second.reused, true);
     assert.deepEqual(second.resolutionInputBytes, fromUtf8('resolution:one'));
+  });
+
+  it('rejects actual driver responses that exceed receiver policy', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({
+      store,
+      runId: 'run',
+      branchId: 'main',
+      parentTurnClosureFingerprint: 'turn:0',
+      policy: { maximumResponseBytes: 1 },
+    });
+
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest(), fixtureDriver({
+        recoveryClass: EffectRecoveryClass.idempotent,
+        response: encodeResolutionInputBytes({
+          targetHostRequestFingerprint: 0xa1n,
+          status: 0,
+          responseValueImageBytes: fromUtf8('too large'),
+          hostClaimBytes: new Uint8Array(),
+          attemptNumber: 1,
+          metadata: new Uint8Array(),
+        }),
+      })),
+      { code: 'ERR_EFFECT_RESPONSE_TOO_LARGE' },
+    );
+    const records = await store.listEffectRecords('run');
+    assert.equal(records.length, 1);
+    assert.equal(records[0].state, EffectState.failed);
   });
 
   it('rejects the same full idempotency key with different request bytes', async () => {
@@ -265,7 +295,7 @@ function fixtureDriver({ recoveryClass, response = 'resolution', descriptorFinge
     async resolve() {
       this.calls += 1;
       if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
-      return { resolutionInputBytes: fromUtf8(response) };
+      return { resolutionInputBytes: response instanceof Uint8Array ? response : fromUtf8(response) };
     },
     async recover() {
       this.recoverCalls += 1;

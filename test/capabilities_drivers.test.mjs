@@ -139,14 +139,17 @@ describe('capability preflight and reference drivers', () => {
       assert.equal(decoded.targetHostRequestFingerprint, 0xa1n);
       assert.deepEqual(payload, { byteLength: 33, path: 'out.txt', status: 'ok' });
       const restarted = new SandboxFileDriver({ root });
-      await restarted.recover({}, {
+      await assert.rejects(() => restarted.recover({}, {
         actuatorRef: 'sandbox:file',
         descriptorFingerprint: 'descriptor:sandbox-file',
         idempotencyKeyWorldFingerprint: 'key:restart.txt',
         hostRequestFingerprint: 'sha256:00000000000000a2',
         requestBytes: fromUtf8(stableJson({ path: 'restart.txt', operation: 'write', content: 'recovered after restart' })),
-      });
-      assert.equal(await readFile(path.join(root, 'restart.txt'), 'utf8'), 'recovered after restart');
+      }), { code: 'ERR_SANDBOX_FILE_RECOVERY_UNAVAILABLE' });
+      await assert.rejects(
+        () => readFile(path.join(root, 'restart.txt')),
+        { code: 'ENOENT' },
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(outside, { recursive: true, force: true });
