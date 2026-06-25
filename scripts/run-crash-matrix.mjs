@@ -96,7 +96,10 @@ async function provesCommittedHeadReconcilesResolvedEffects() {
 
   const recovery = await journal.reconcileCommittedHead({
     generation: 1,
-    updateDiagnostics: { parentTurnClosureFingerprint: 'turn:parent' },
+    updateDiagnostics: {
+      parentTurnClosureFingerprint: 'turn:parent',
+      committedEffectIds: [resolved.record.idempotencyKeyWorldFingerprint],
+    },
   });
   const retried = await journal.resolve({}, request('hi-resolved'), driver);
 

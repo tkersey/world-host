@@ -221,7 +221,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       try {
         const head = await store.readHead('cli-run', 'main');
         assert.equal(head.generation, 1);
-        assert.deepEqual([...await store.getBlob(head.turnClosureRef)], [...fromUtf8('closure-bytes:run:1')]);
+        assert.deepEqual([...await store.getBlob(head.turnClosureRef)], [...fixtureTurnClosureBytes()]);
       } finally {
         await store.releaseLock();
       }
@@ -604,7 +604,7 @@ class DeterministicCliWorker extends WorldWorker {
   async submitTurn(turnInputBytes) {
     assert.equal(turnInputBytes.byteLength > 0, true);
     this.submitCount += 1;
-    this.lastTurnClosureBytes = fromUtf8(`closure-bytes:${this.label}:${this.submitCount}`);
+    this.lastTurnClosureBytes = fixtureTurnClosureBytes();
     return {
       turnClosureBytes: new Uint8Array(this.lastTurnClosureBytes),
       turnClosureWorldFingerprint: `world:closure:${this.label}:${this.submitCount}`,

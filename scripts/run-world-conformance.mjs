@@ -56,7 +56,7 @@ async function controllerReplayConformance() {
   const controller = new RunController({ store, workerFactory: async () => new DeterministicWorker() });
   const first = await controller.advance(runId, branchId, { turnResult: turnResult(1) });
   assert.equal(first.status, 'advanced');
-  assert.equal((await store.readHead(runId, branchId)).turnClosureWorldFingerprint, 'world:closure:1');
+  assert.equal((await store.readHead(runId, branchId)).turnClosureWorldFingerprint, 'world:turn-closure:0000000000000111');
 }
 
 async function deterministicRetryConformance() {
@@ -739,7 +739,7 @@ function binding(turnSequence) {
 
 function turnResult(index) {
   return {
-    turnClosureBytes: fromUtf8(`closure:${index}`),
+    turnClosureBytes: fixtureTurnClosureBytes(),
     turnClosureWorldFingerprint: `world:closure:${index}`,
     resultingStateFingerprint: `world:state:${index}`,
     chronicleCursor: `cursor:${index}`,
@@ -747,4 +747,116 @@ function turnResult(index) {
     archiveSealFingerprint: `archive:seal:${index}`,
     status: 'completed',
   };
+}
+
+function fixtureTurnClosureBytes() {
+  const turnReceiptBytes = concat([
+    u32(1),
+    u32(1),
+    u64(0x701n),
+    u64(0x211n),
+    u64(1n),
+    u64(0x301n),
+    optionalU64(null),
+    u64Slice([]),
+    u64Slice([]),
+    optionalU64(null),
+    u64(0xc01n),
+    optionalU64(0xa00n),
+    optionalU64(0xa01n),
+    optionalU64(0xa02n),
+    optionalU64(0xa03n),
+    optionalU64(0xb01n),
+    u8(2),
+    optionalU64(null),
+    u64(0n),
+    u64(0n),
+  ]);
+  return concat([
+    u32(1),
+    u32(1),
+    u64(0x111n),
+    u64(0x112n),
+    u64(0x211n),
+    optionalU64(null),
+    u64(1n),
+    u64(0x301n),
+    u64(0x302n),
+    u64(0x303n),
+    u64(0x304n),
+    optionalU64(null),
+    optionalU64(null),
+    optionalU64(null),
+    optionalU64(null),
+    u64(0x401n),
+    bytes(new Uint8Array()),
+    u64(0x501n),
+    bytes(new Uint8Array()),
+    u64(0x601n),
+    bytes(turnReceiptBytes),
+    bytes(new Uint8Array()),
+    optionalU64(0xa00n),
+    bytes(Uint8Array.of(1, 2, 3)),
+    bytes(new Uint8Array()),
+    optionalU64(0xb01n),
+    bytes(Uint8Array.of(4)),
+    optionalU64(null),
+    optionalU64(null),
+    bytes(new Uint8Array()),
+    u64Slice([]),
+    byteSlices([]),
+    u64Slice([]),
+    byteSlices([]),
+    u64Slice([]),
+    u64Slice([]),
+    u64Slice([]),
+    bytes(new Uint8Array()),
+    u8(2),
+  ]);
+}
+
+function u8(value) {
+  return Uint8Array.of(Number(value) & 0xff);
+}
+
+function u32(value) {
+  const out = new Uint8Array(4);
+  new DataView(out.buffer).setUint32(0, Number(value), true);
+  return out;
+}
+
+function u64(value) {
+  const out = new Uint8Array(8);
+  const actual = BigInt.asUintN(64, BigInt(value));
+  const view = new DataView(out.buffer);
+  view.setUint32(0, Number(actual & 0xffff_ffffn), true);
+  view.setUint32(4, Number((actual >> 32n) & 0xffff_ffffn), true);
+  return out;
+}
+
+function optionalU64(value) {
+  return value == null ? u8(0) : concat([u8(1), u64(value)]);
+}
+
+function bytes(value) {
+  return concat([u32(value.length), value]);
+}
+
+function u64Slice(values) {
+  return concat([u64(values.length), ...values.map(u64)]);
+}
+
+function byteSlices(values) {
+  return concat([u64(values.length), ...values.map(bytes)]);
+}
+
+function concat(chunks) {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
 }

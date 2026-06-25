@@ -153,13 +153,17 @@ export class EffectJournal {
     if (typeof committedParent !== 'string' || committedParent.length === 0) {
       fail('ERR_EFFECT_RECONCILE_HEAD_PARENT_REQUIRED', 'committed head parent TurnClosure fingerprint is required');
     }
+    const committedEffectIds = Array.isArray(head?.updateDiagnostics?.committedEffectIds)
+      ? new Set(head.updateDiagnostics.committedEffectIds)
+      : null;
     const committed = [];
     for (const record of await this.list()) {
       assertEffectRecord(record);
       if (
         record.branchId === this.branchId &&
         record.parentTurnClosureFingerprint === committedParent &&
-        (record.state === EffectState.resolved || record.state === EffectState.submitted)
+        (record.state === EffectState.submitted ||
+          (record.state === EffectState.resolved && committedEffectIds?.has(record.idempotencyKeyWorldFingerprint)))
       ) {
         committed.push(await this.markClosureCommitted(record));
       }

@@ -13,6 +13,7 @@ import { MemoryStore } from '../src/stores/memory_store.mjs';
 describe('RunController and WorldWorker', () => {
   it('advances a branch only after persisting the next closure blob', async () => {
     const { store, runId, branchId } = await fixtureStore();
+    const closureBytes = fixtureTurnClosureBytes();
     const controller = new RunController({ store, workerFactory: async () => new ScriptedWorker() });
     const result = await controller.advance(runId, branchId, {
       turnResult: turnResult(1),
@@ -20,7 +21,7 @@ describe('RunController and WorldWorker', () => {
 
     assert.equal(result.status, 'advanced');
     assert.equal(result.nextHead.generation, 1);
-    assert.deepEqual(await store.getBlob(result.nextHead.turnClosureRef), fromUtf8('closure:1'));
+    assert.deepEqual(await store.getBlob(result.nextHead.turnClosureRef), closureBytes);
   });
 
   it('rebinds the warm worker to the committed branch head after CAS success', async () => {
@@ -40,8 +41,8 @@ describe('RunController and WorldWorker', () => {
 
     assert.equal(result.status, 'advanced');
     assert.equal(assertWarmWorkerBinding(worker, binding({
-      turnClosureWorldFingerprint: 'world:closure:1',
-      resultingStateFingerprint: 'world:state:1',
+      turnClosureWorldFingerprint: 'world:turn-closure:0000000000000111',
+      resultingStateFingerprint: 'world:state:0000000000000302',
       turnSequence: 1,
     })), true);
   });
@@ -283,8 +284,19 @@ describe('RunController and WorldWorker', () => {
 
     const conflict = await controller.advance(runId, branchId, { turnResult: turnResult(2) });
     assert.equal(conflict.status, 'branch_conflict');
-    assert.deepEqual(await store.getBlob(conflict.orphanClosureRef), fromUtf8('closure:2'));
+    assert.deepEqual(await store.getBlob(conflict.orphanClosureRef), fixtureTurnClosureBytes());
     assert.equal((await store.readHead(runId, branchId)).turnClosureWorldFingerprint, 'world:closure:winner');
+  });
+
+  it('ignores worker-supplied RunHead metadata and derives it from closure bytes', async () => {
+    const { store, runId, branchId } = await fixtureStore();
+    const controller = new RunController({ store, workerFactory: async () => new ScriptedWorker() });
+
+    const result = await controller.advance(runId, branchId, { turnResult: turnResult(99) });
+
+    assert.equal(result.nextHead.turnClosureWorldFingerprint, 'world:turn-closure:0000000000000111');
+    assert.equal(result.nextHead.resultingStateFingerprint, 'world:state:0000000000000302');
+    assert.notEqual(result.nextHead.turnClosureWorldFingerprint, 'world:closure:99');
   });
 
   it('derives RunHead fields from decodable World TurnClosure bytes', async () => {
@@ -461,7 +473,7 @@ function delayedBatchDriver() {
 
 function turnResult(index) {
   return {
-    turnClosureBytes: fromUtf8(`closure:${index}`),
+    turnClosureBytes: fixtureTurnClosureBytes(),
     turnClosureWorldFingerprint: `world:closure:${index}`,
     resultingStateFingerprint: `world:state:${index}`,
     chronicleCursor: `cursor:${index}`,

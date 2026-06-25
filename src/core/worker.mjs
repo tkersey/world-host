@@ -152,6 +152,7 @@ export class RunController {
       updateDiagnostics: {
         workerWarm: worker === this.warmWorker,
         parentTurnClosureFingerprint: parentHead.turnClosureWorldFingerprint,
+        committedEffectIds: effectTurn?.effects.map((effect) => effect.record.idempotencyKeyWorldFingerprint) ?? [],
         inspectedTurnClosure: inspected.inspectionDiagnostics ?? null,
         retainedArchivePending,
         unresolvedHostRequestCount: effectTurn?.unresolvedHostRequests.length ?? 0,
@@ -313,15 +314,6 @@ export class RunController {
 }
 
 function deriveTurnResult(turnResult, nextClosureBytes) {
-  if (
-    turnResult.turnClosureWorldFingerprint &&
-    turnResult.resultingStateFingerprint &&
-    turnResult.chronicleCursor &&
-    turnResult.archiveMomentFingerprint &&
-    turnResult.archiveSealFingerprint
-  ) {
-    return turnResult;
-  }
   try {
     return summarizeTurnClosureForRunHead(nextClosureBytes);
   } catch (error) {

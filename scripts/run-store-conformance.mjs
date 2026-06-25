@@ -90,6 +90,27 @@ async function runStore(name, makeStore) {
 
     await assert.rejects(() => store.compareAndSwapHead(run.runId, branch.branchId, 1, { ...nextHead, turnClosureRef: { algorithm: 'sha256', checksum: '0'.repeat(64), byteLength: 1 } }), /ERR_HEAD_CLOSURE_BLOB_MISSING|ERR_BLOB_NOT_FOUND/);
 
+    const concurrentClosureRefA = await store.putBlob(text.encode(`${name}:closure:2a`));
+    const concurrentClosureRefB = await store.putBlob(text.encode(`${name}:closure:2b`));
+    const concurrentA = createRunHead({
+      ...nextHead,
+      generation: 2,
+      turnClosureRef: concurrentClosureRefA,
+      turnClosureWorldFingerprint: 'world:closure:2a',
+    });
+    const concurrentB = createRunHead({
+      ...nextHead,
+      generation: 2,
+      turnClosureRef: concurrentClosureRefB,
+      turnClosureWorldFingerprint: 'world:closure:2b',
+    });
+    const concurrent = await Promise.all([
+      store.compareAndSwapHead(run.runId, branch.branchId, 1, concurrentA),
+      store.compareAndSwapHead(run.runId, branch.branchId, 1, concurrentB),
+    ]);
+    assert.equal(concurrent.filter((result) => result.ok).length, 1, `${name} concurrent CAS has one winner`);
+    assert.equal(concurrent.filter((result) => !result.ok).length, 1, `${name} concurrent CAS has one conflict`);
+
     const effect = {
       runId: run.runId,
       idempotencyKey: { bytes: 'full-world-key' },
@@ -101,12 +122,12 @@ async function runStore(name, makeStore) {
     assert.equal((await store.listEffectRecords(run.runId)).length, 1);
 
     const bundle = await store.exportRun(run.runId, branch.branchId);
-    assert.equal(bundle.head.generation, 1);
+    assert.equal(bundle.head.generation, 2);
     assert.ok(bundle.blobs.length >= 3);
     const receiver = await makeStore();
     try {
       await receiver.importRun(bundle);
-      assert.equal((await receiver.readHead(run.runId, branch.branchId)).generation, 1);
+      assert.equal((await receiver.readHead(run.runId, branch.branchId)).generation, 2);
     } finally {
       await receiver.cleanup?.();
     }

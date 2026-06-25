@@ -1,6 +1,6 @@
 import { mkdir, open, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { ClosureStore, assertBlobRef, assertBytes, makeBlobRef, stableJson } from '../core/store.mjs';
 import { fail } from '../core/store.mjs';
@@ -11,6 +11,7 @@ export class DirectoryStore extends ClosureStore {
     super();
     this.root = root;
     this.lock = new NodeStoreLock(path.join(root, 'locks', 'store.lock'));
+    this.headCasQueues = new Map();
   }
 
   async acquireLock(options) {
@@ -91,11 +92,14 @@ export class DirectoryStore extends ClosureStore {
   }
 
   async compareAndSwapHead(runId, branchId, expectedGeneration, nextHead) {
-    if (!await this.hasBlob(nextHead.turnClosureRef)) fail('ERR_HEAD_CLOSURE_BLOB_MISSING');
-    const current = await this.readHead(runId, branchId);
-    if (current.generation !== expectedGeneration) return { ok: false, current };
-    await this.writeHead(runId, branchId, nextHead);
-    return { ok: true, current: nextHead };
+    const key = this.headPath(runId, branchId);
+    return await this.#withHeadCas(key, async () => {
+      if (!await this.hasBlob(nextHead.turnClosureRef)) fail('ERR_HEAD_CLOSURE_BLOB_MISSING');
+      const current = await this.readHead(runId, branchId);
+      if (current.generation !== expectedGeneration) return { ok: false, current };
+      await this.writeHead(runId, branchId, nextHead);
+      return { ok: true, current: nextHead };
+    });
   }
 
   async putEffectRecord(record) {
@@ -260,6 +264,23 @@ export class DirectoryStore extends ClosureStore {
     }
     return effects;
   }
+
+  async #withHeadCas(key, action) {
+    const previous = this.headCasQueues.get(key) ?? Promise.resolve();
+    let release;
+    const current = new Promise((resolve) => {
+      release = resolve;
+    });
+    const queued = previous.then(() => current, () => current);
+    this.headCasQueues.set(key, queued);
+    await previous;
+    try {
+      return await action();
+    } finally {
+      release();
+      if (this.headCasQueues.get(key) === queued) this.headCasQueues.delete(key);
+    }
+  }
 }
 
 function applicationPath(root, applicationId) {
@@ -329,7 +350,7 @@ async function writeJsonNew(file, value, existsCode) {
 
 async function writeJsonReplace(file, value) {
   await mkdir(path.dirname(file), { recursive: true });
-  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${Date.now()}.tmp`);
+  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${Date.now()}.${randomUUID()}.tmp`);
   const handle = await open(tmp, 'wx');
   try {
     await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`);
