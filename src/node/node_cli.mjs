@@ -1,10 +1,10 @@
 import { readFile, writeFile } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { createApplicationRecord } from '../core/application.mjs';
 import { exportCarrierRun, forkRunBranch, importCarrierRun } from '../core/migration.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from '../core/run.mjs';
-import { fromUtf8, makeBlobRef } from '../core/store.mjs';
+import { assertBlobRef, fail, fromUtf8, makeBlobRef } from '../core/store.mjs';
 import { RunController } from '../core/worker.mjs';
 import { createRunPolicy, preflightCapabilities } from '../core/capabilities.mjs';
 import { encodeBootTurnInput, encodeRestoreTurnInput } from '../protocol/world_appliance_wire_codec.mjs';
@@ -413,7 +413,7 @@ async function runImport(args, io, storePath) {
       preflight: async (candidate) => preflightCapabilities({
         application: candidate.bundle.application,
         currentHead: candidate.bundle.head,
-        pendingRequests: [],
+        pendingRequests: pendingRequestsForImportedHead(candidate),
         drivers: [],
         policy: createRunPolicy(),
       }),
@@ -437,6 +437,30 @@ async function runImport(args, io, storePath) {
   } finally {
     await store.releaseLock();
   }
+}
+
+function pendingRequestsForImportedHead(candidate) {
+  const head = candidate.bundle?.head;
+  if (head?.status !== 'needs_host') return [];
+  const closureBytes = carrierBundleBlobBytes(candidate.bundle, head.turnClosureRef);
+  try {
+    return inspectTurnOutput(closureBytes).hostRequests;
+  } catch (error) {
+    fail('ERR_IMPORT_PREFLIGHT_CLOSURE_UNDECODABLE', 'receiver preflight could not inspect needs_host closure', { cause: error.message });
+  }
+}
+
+function carrierBundleBlobBytes(bundle, ref) {
+  const expected = assertBlobRef(ref);
+  const blob = (bundle?.blobs ?? []).find((candidate) => candidate.checksum === expected.checksum && candidate.byteLength === expected.byteLength);
+  if (!blob || !Array.isArray(blob.bytes)) {
+    fail('ERR_IMPORT_PREFLIGHT_CLOSURE_BLOB_MISSING', 'receiver preflight requires exported needs_host closure bytes');
+  }
+  const bytes = Uint8Array.from(blob.bytes);
+  if (bytes.byteLength !== expected.byteLength || createHash('sha256').update(bytes).digest('hex') !== expected.checksum) {
+    fail('ERR_IMPORT_PREFLIGHT_CLOSURE_BLOB_MISMATCH', 'receiver preflight closure bytes do not match the selected head ref');
+  }
+  return bytes;
 }
 
 async function runRecover(args, io, storePath) {

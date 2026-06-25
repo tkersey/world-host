@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
@@ -612,6 +613,39 @@ describe('migration, branching, and CLI diagnostics', () => {
         }),
         { code: 'ERR_IMPORT_PREFLIGHT_BLOCKED' },
       );
+      const pendingClosureBytes = fixtureNeedsHostTurnClosureBytes();
+      const pendingClosureBlob = blobEntryForBytes(pendingClosureBytes);
+      const pendingPackagePath = path.join(sourceRoot, 'pending-package.json');
+      await writeFile(pendingPackagePath, JSON.stringify({
+        ...packageJson,
+        bundle: {
+          ...packageJson.bundle,
+          head: {
+            ...packageJson.bundle.head,
+            status: 'needs_host',
+            turnClosureRef: {
+              algorithm: 'sha256',
+              checksum: pendingClosureBlob.checksum,
+              byteLength: pendingClosureBlob.byteLength,
+            },
+            turnClosureWorldFingerprint: 'world:closure:pending-import',
+          },
+          blobs: [...packageJson.bundle.blobs, pendingClosureBlob],
+        },
+      }));
+      await assert.rejects(
+        () => runNodeCli([
+          'import',
+          '--json',
+          '--store', receiverRoot,
+          '--package', pendingPackagePath,
+          '--run', 'pending-run',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_IMPORT_PREFLIGHT_BLOCKED' },
+      );
 
       output = '';
       const importCode = await runNodeCli([
@@ -843,6 +877,114 @@ function fixtureTurnClosureBytes() {
     bytes(new Uint8Array()),
     u8(2),
   ]);
+}
+
+function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()]) {
+  const turnReceiptBytes = concat([
+    u32(1),
+    u32(1),
+    u64(0x701n),
+    u64(0x211n),
+    u64(0n),
+    u64(0x301n),
+    optionalU64(null),
+    u64Slice([]),
+    u64Slice([0xa01n]),
+    optionalU64(null),
+    u64(0xc01n),
+    optionalU64(null),
+    optionalU64(null),
+    optionalU64(0xa03n),
+    optionalU64(0xa04n),
+    optionalU64(null),
+    u8(0),
+    optionalU64(null),
+    u64(0n),
+    u64(0n),
+  ]);
+  const pendingHostRequests = concat([u64(BigInt(requests.length)), ...requests]);
+  return concat([
+    u32(1),
+    u32(1),
+    u64(0x111n),
+    u64(0x112n),
+    u64(0x211n),
+    optionalU64(null),
+    u64(0n),
+    u64(0x301n),
+    u64(0x302n),
+    u64(0x303n),
+    u64(0x304n),
+    optionalU64(null),
+    optionalU64(null),
+    optionalU64(null),
+    optionalU64(null),
+    u64(0x401n),
+    bytes(new Uint8Array()),
+    u64(0x501n),
+    bytes(new Uint8Array()),
+    u64(0x601n),
+    bytes(turnReceiptBytes),
+    bytes(new Uint8Array()),
+    optionalU64(null),
+    bytes(new Uint8Array()),
+    bytes(pendingHostRequests),
+    optionalU64(null),
+    bytes(new Uint8Array()),
+    optionalU64(null),
+    optionalU64(null),
+    bytes(new Uint8Array()),
+    u64Slice([]),
+    byteSlices([]),
+    u64Slice([]),
+    byteSlices([]),
+    u64Slice([]),
+    u64Slice([]),
+    u64Slice([]),
+    bytes(new Uint8Array()),
+    u8(0),
+  ]);
+}
+
+function fixtureHostRequestBytes() {
+  return concat([
+    u32(4),
+    u32(4),
+    u64(0xa01n),
+    u64(0n),
+    u32(0),
+    u64(0xa02n),
+    u64(0xa03n),
+    u32(0),
+    u64(0xa04n),
+    u64(0xa05n),
+    u64(0xa05n),
+    u8(1),
+    u8(1),
+    u64(0xa06n),
+    u64(0xa07n),
+    u64(0xa08n),
+    u64(0xa0bn),
+    u64(0xa09n),
+    optionalU64(null),
+    bytes(fromUtf8('metadata')),
+    bytes(fromUtf8('frame')),
+    bytes(fromUtf8('payload')),
+    optionalU64(0xa0cn),
+    optionalU64(0xa0dn),
+    optionalU64(0xa0en),
+    optionalU64(0xa0fn),
+    bytes(fromUtf8('prepared')),
+    bytes(fromUtf8('idempotency-key')),
+  ]);
+}
+
+function blobEntryForBytes(value) {
+  return {
+    checksum: createHash('sha256').update(value).digest('hex'),
+    byteLength: value.byteLength,
+    bytes: [...value],
+  };
 }
 
 function u8(value) {
