@@ -178,6 +178,20 @@ describe('EffectJournal', () => {
     assert.equal(driver.recoverCalls, 1);
   });
 
+  it('recomputes running pure effects when no recover hook exists', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const observed = await journal.observe(hostRequest(), { recoveryClass: EffectRecoveryClass.pure });
+    await store.putEffectRecord({ ...observed, state: EffectState.running, attemptCount: 1 });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.pure, recover: false });
+
+    const recovered = await journal.resolve({}, hostRequest(), driver);
+
+    assert.equal(recovered.record.state, EffectState.resolved);
+    assert.equal(driver.calls, 1);
+    assert.equal(driver.recoverCalls, 0);
+  });
+
   it('recovers idempotent HTTP effects from persisted request bytes', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
@@ -221,6 +235,38 @@ describe('EffectJournal', () => {
     assert.equal(retried.operatorInterventionRequired, true);
     assert.equal(retried.record.state, EffectState.operatorInterventionRequired);
     assert.equal(driver.calls, 0);
+  });
+
+  it('parks best_effort post-run validation failures for operator intervention', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({
+      store,
+      runId: 'run',
+      branchId: 'main',
+      parentTurnClosureFingerprint: 'turn:0',
+      policy: { allowBestEffort: true },
+    });
+    const driver = fixtureDriver({
+      recoveryClass: EffectRecoveryClass.bestEffort,
+      response: encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xa2n,
+        status: 0,
+        responseValueImageBytes: fromUtf8('wrong target'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: new Uint8Array(),
+      }),
+    });
+
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest(), driver),
+      { code: 'ERR_EFFECT_RESOLUTION_TARGET_MISMATCH' },
+    );
+    const records = await store.listEffectRecords('run');
+    assert.equal(records[0].state, EffectState.operatorInterventionRequired);
+    const retried = await journal.resolve({}, hostRequest(), driver);
+    assert.equal(retried.operatorInterventionRequired, true);
+    assert.equal(driver.calls, 1);
   });
 
   it('validates recovery driver authority against the effect record', async () => {
@@ -363,7 +409,7 @@ function httpHostRequest(overrides = {}) {
   };
 }
 
-function fixtureDriver({ recoveryClass, response = 'resolution', descriptorFingerprint = 'descriptor:fixture', recoverHostClaim = false, delayMs = 0, maximumRequestBytes = 1024, maximumResponseBytes = Number.MAX_SAFE_INTEGER }) {
+function fixtureDriver({ recoveryClass, response = 'resolution', descriptorFingerprint = 'descriptor:fixture', recover = true, recoverHostClaim = false, delayMs = 0, maximumRequestBytes = 1024, maximumResponseBytes = Number.MAX_SAFE_INTEGER }) {
   return {
     calls: 0,
     recoverCalls: 0,
@@ -386,13 +432,13 @@ function fixtureDriver({ recoveryClass, response = 'resolution', descriptorFinge
       if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
       return { resolutionInputBytes: response instanceof Uint8Array ? response : fixtureResolutionInputBytes(request, fromUtf8(response)) };
     },
-    async recover(_context, record) {
+    recover: recover ? async function recoverFn(_context, record) {
       this.recoverCalls += 1;
       return {
         resolutionInputBytes: fixtureResolutionInputBytes(record, fromUtf8(`recovered:${response}`)),
         hostClaimBytes: recoverHostClaim ? fromUtf8('recovered-host-claim') : undefined,
       };
-    },
+    } : undefined,
   };
 }
 

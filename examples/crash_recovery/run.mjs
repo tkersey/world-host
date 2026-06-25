@@ -1,5 +1,6 @@
 import { EffectJournal } from '../../src/core/effect_journal.mjs';
 import { fromUtf8 } from '../../src/core/store.mjs';
+import { encodeResolutionInputBytes } from '../../src/protocol/world_appliance_wire_codec.mjs';
 import { MemoryStore } from '../../src/stores/memory_store.mjs';
 
 export async function runExample() {
@@ -14,6 +15,7 @@ export async function runExample() {
     idempotencyKeyBytes: fromUtf8('same-full-world-key'),
     idempotencyKeyWorldFingerprint: 'world:key:same',
     requestBytes: fromUtf8('request'),
+    hostRequestFingerprint: 'world:host-request:0000000000000c01',
   };
   const first = await journal.resolve({}, request, driver);
   const retry = await journal.resolve({}, request, driver);
@@ -21,7 +23,7 @@ export async function runExample() {
     example: 'crash-recovery',
     persistedOutcomeReused: retry.reused,
     driverInvocations: driver.calls,
-    sameResolutionBytes: new TextDecoder().decode(first.resolutionInputBytes) === new TextDecoder().decode(retry.resolutionInputBytes),
+    sameResolutionBytes: sameBytes(first.resolutionInputBytes, retry.resolutionInputBytes),
   };
 }
 
@@ -42,9 +44,29 @@ function idempotentDriver() {
         authorityLabels: ['fixture'],
       };
     },
-    async resolve() {
+    async resolve(_context, hostRequest) {
       this.calls += 1;
-      return { resolutionInputBytes: fromUtf8('resolution') };
+      return { resolutionInputBytes: resolutionInputBytes(hostRequest, fromUtf8('resolution')) };
     },
   };
+}
+
+function resolutionInputBytes(hostRequest, responseValueImageBytes) {
+  return encodeResolutionInputBytes({
+    targetHostRequestFingerprint: requestTargetFingerprint(hostRequest),
+    status: 0,
+    responseValueImageBytes,
+    hostClaimBytes: new Uint8Array(),
+    attemptNumber: 1,
+    metadata: new Uint8Array(),
+  });
+}
+
+function requestTargetFingerprint(hostRequest) {
+  const match = String(hostRequest.hostRequestFingerprint ?? '').match(/(?:0x)?([0-9a-f]+)$/i);
+  return BigInt(`0x${match[1]}`);
+}
+
+function sameBytes(left, right) {
+  return left.byteLength === right.byteLength && left.every((byte, index) => byte === right[index]);
 }

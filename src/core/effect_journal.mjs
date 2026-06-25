@@ -63,6 +63,8 @@ export class EffectJournal {
       idempotencyKeyWorldFingerprint: prepared.idempotencyKeyWorldFingerprint,
       actuatorRef: hostRequest.actuatorRef,
       descriptorFingerprint: hostRequest.descriptorFingerprint,
+      actuationClass: hostRequest.actuationClass,
+      responseSchema: hostRequest.responseSchema,
       requestBytesRef,
       requestBytesChecksum: prepared.requestBytesChecksum,
       state: EffectState.observed,
@@ -114,10 +116,17 @@ export class EffectJournal {
           reused: false,
         };
       } catch (error) {
+        const failureState = manifest.recoveryClass === EffectRecoveryClass.bestEffort
+          ? EffectState.operatorInterventionRequired
+          : EffectState.failed;
         await this.#put({
           ...running,
-          state: EffectState.failed,
-          diagnostics: { ...running.diagnostics, error: error.message },
+          state: failureState,
+          diagnostics: {
+            ...running.diagnostics,
+            error: error.message,
+            ...(failureState === EffectState.operatorInterventionRequired ? { recoveryRequired: 'best_effort_resolution_not_durable' } : {}),
+          },
         });
         throw error;
       }
@@ -139,22 +148,15 @@ export class EffectJournal {
       return { record: intervention, resolutionInputBytes: null, reused: false, operatorInterventionRequired: true };
     }
 
-    if (typeof driver.recover === 'function') {
-      const manifest = driver.manifest();
-      assertDriverCanRecover(manifest, record);
-      const recovered = normalizeDriverResolution(await driver.recover(context, await this.#recordWithRequestBytes(record)));
+    const manifest = driver.manifest();
+    assertDriverCanRecover(manifest, record);
+    const recordWithRequestBytes = await this.#recordWithRequestBytes(record);
+    if (typeof driver.recover === 'function' || record.driverRecoveryClass === EffectRecoveryClass.pure) {
+      const recovered = normalizeDriverResolution(typeof driver.recover === 'function'
+        ? await driver.recover(context, recordWithRequestBytes)
+        : await driver.resolve(context, recordWithRequestBytes));
       assertResolutionAccepted(recovered.resolutionInputBytes, record, manifest, this.policy);
-      const resolutionInputRef = await this.store.putBlob(recovered.resolutionInputBytes);
-      const hostClaimRef = recovered.hostClaimBytes ? await this.store.putBlob(recovered.hostClaimBytes) : record.hostClaimRef;
-      const next = await this.#put({
-        ...record,
-        state: EffectState.resolved,
-        resolutionInputRef,
-        hostClaimRef,
-        driverTransactionRef: recovered.driverTransactionRef ?? record.driverTransactionRef,
-        diagnostics: { ...record.diagnostics, ...recovered.diagnostics, recovered: true },
-      });
-      return { record: next, resolutionInputBytes: await this.store.getBlob(resolutionInputRef), reused: false };
+      return await this.#recordRecoveredResolution(record, recovered);
     }
 
     fail('ERR_EFFECT_RECOVERY_UNAVAILABLE', 'driver does not expose recovery for unresolved effect');
@@ -281,11 +283,27 @@ export class EffectJournal {
     if (!record.requestBytesRef) return record;
     return { ...record, requestBytes: await this.store.getBlob(record.requestBytesRef) };
   }
+
+  async #recordRecoveredResolution(record, recovered) {
+    const resolutionInputRef = await this.store.putBlob(recovered.resolutionInputBytes);
+    const hostClaimRef = recovered.hostClaimBytes ? await this.store.putBlob(recovered.hostClaimBytes) : record.hostClaimRef;
+    const next = await this.#put({
+      ...record,
+      state: EffectState.resolved,
+      resolutionInputRef,
+      hostClaimRef,
+      driverTransactionRef: recovered.driverTransactionRef ?? record.driverTransactionRef,
+      diagnostics: { ...record.diagnostics, ...recovered.diagnostics, recovered: true },
+    });
+    return { record: next, resolutionInputBytes: await this.store.getBlob(resolutionInputRef), reused: false };
+  }
 }
 
 function assertDriverCanRecover(manifest, record) {
   if (!manifest.supportedActuatorRefs.includes(record.actuatorRef)) fail('ERR_ACTUATOR_REF_NOT_SUPPORTED');
   if (!manifest.supportedDescriptorFingerprints.includes(record.descriptorFingerprint)) fail('ERR_DESCRIPTOR_NOT_SUPPORTED');
+  if (record.actuationClass && !manifest.supportedActuationClasses.includes(record.actuationClass)) fail('ERR_ACTUATION_CLASS_NOT_SUPPORTED');
+  if (record.responseSchema && !manifest.supportedResponseStatuses.includes(record.responseSchema.status)) fail('ERR_RESPONSE_STATUS_NOT_SUPPORTED');
   if (manifest.recoveryClass !== record.driverRecoveryClass) fail('ERR_EFFECT_RECOVERY_CLASS_MISMATCH');
 }
 
@@ -299,6 +317,8 @@ export function createEffectRecord(record) {
     idempotencyKeyWorldFingerprint: record.idempotencyKeyWorldFingerprint,
     actuatorRef: record.actuatorRef,
     descriptorFingerprint: record.descriptorFingerprint,
+    actuationClass: record.actuationClass,
+    responseSchema: record.responseSchema,
     requestBytesChecksum: record.requestBytesChecksum,
     state: record.state ?? EffectState.observed,
     attemptCount: record.attemptCount ?? 0,
