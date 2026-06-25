@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -298,6 +298,25 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('fails closed on corrupt persisted effect records', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-cli-corrupt-effect-'));
+    try {
+      const { run } = await fixtureDirectoryStore(root);
+      const store = new DirectoryStore(root);
+      await store.acquireLock();
+      try {
+        const [effect] = await store.listEffectRecords(run.runId);
+        const [effectFile] = await readdir(path.join(root, 'effects', run.runId));
+        await writeFile(path.join(root, 'effects', run.runId, effectFile), '{"truncated"');
+        await assert.rejects(() => store.getEffectRecord(run.runId, effect.idempotencyKey), SyntaxError);
+      } finally {
+        await store.releaseLock();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('inspects DirectoryStore run and effect diagnostics without exposing key bytes', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-cli-store-'));
     try {
@@ -408,6 +427,21 @@ describe('migration, branching, and CLI diagnostics', () => {
       try {
         assert.equal((await sourceStore.readHead(run.runId, 'main')).turnClosureWorldFingerprint, head.turnClosureWorldFingerprint);
         assert.equal((await sourceStore.readHead(run.runId, 'alternate')).turnClosureWorldFingerprint, head.turnClosureWorldFingerprint);
+        const alternateJournal = new EffectJournal({
+          store: sourceStore,
+          runId: run.runId,
+          branchId: 'alternate',
+          parentTurnClosureFingerprint: 'world:closure:parent',
+        });
+        await alternateJournal.resolve({}, {
+          actuatorRef: 'fixture:model',
+          descriptorFingerprint: 'descriptor:fixture',
+          actuationClass: 'fixture',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('alternate-world-idempotency-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:alternate',
+          requestBytes: fromUtf8('request:alternate'),
+        }, fixtureDriver());
         unrelatedRef = await sourceStore.putBlob(fromUtf8('unrelated-secret'));
       } finally {
         await sourceStore.releaseLock();
@@ -435,6 +469,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(packageJson.bundle.application.applicationId, run.applicationId);
       assert.equal(Array.isArray(packageJson.bundle.blobs[0].bytes), true);
       assert.equal(packageJson.bundle.blobs.some((blob) => blob.checksum === unrelatedRef.checksum), false);
+      assert.equal(packageJson.bundle.effects.every((effect) => effect.branchId === 'main'), true);
       assert.doesNotMatch(output, /bytesHex|complete-world-idempotency-key/);
 
       output = '';
@@ -465,6 +500,42 @@ describe('migration, branching, and CLI diagnostics', () => {
         assert.deepEqual([...await receiverStore.getBlob(receiverHead.turnClosureRef)], [...fromUtf8('closure')]);
       } finally {
         await receiverStore.releaseLock();
+      }
+    } finally {
+      await rm(sourceRoot, { recursive: true, force: true });
+      await rm(receiverRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects imports that collide with local run or application identity', async () => {
+    const sourceRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-import-source-'));
+    const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-import-receiver-'));
+    try {
+      const { run } = await fixtureDirectoryStore(sourceRoot);
+      const sourceStore = new DirectoryStore(sourceRoot);
+      const carrierExport = await exportCarrierRun(sourceStore, run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
+
+      const receiverStore = new DirectoryStore(receiverRoot);
+      await receiverStore.acquireLock();
+      try {
+        await receiverStore.importRun(carrierExport.bundle);
+        await assert.rejects(() => receiverStore.importRun(carrierExport.bundle), { code: 'ERR_IMPORT_RUN_EXISTS' });
+      } finally {
+        await receiverStore.releaseLock();
+      }
+
+      const mismatchRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-import-mismatch-'));
+      try {
+        const mismatchStore = new DirectoryStore(mismatchRoot);
+        await mismatchStore.acquireLock();
+        try {
+          await mismatchStore.createApplication({ ...carrierExport.bundle.application, executableImageWorldFingerprint: 'world:image:other' });
+          await assert.rejects(() => mismatchStore.importRun(carrierExport.bundle), { code: 'ERR_IMPORT_APPLICATION_MISMATCH' });
+        } finally {
+          await mismatchStore.releaseLock();
+        }
+      } finally {
+        await rm(mismatchRoot, { recursive: true, force: true });
       }
     } finally {
       await rm(sourceRoot, { recursive: true, force: true });

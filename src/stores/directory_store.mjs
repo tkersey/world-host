@@ -104,7 +104,12 @@ export class DirectoryStore extends ClosureStore {
   async getEffectRecord(runId, idempotencyKey) {
     const key = sha256(Buffer.from(stableJson(idempotencyKey)));
     const file = path.join(effectsDir(this.root, runId), `${key}.json`);
-    return await readJson(file, null).catch(() => null);
+    try {
+      return await readJson(file, null);
+    } catch (error) {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    }
   }
 
   async listEffectRecords(runId) {
@@ -117,7 +122,7 @@ export class DirectoryStore extends ClosureStore {
     const run = await this.getRun(runId);
     const head = await this.readHead(runId, branchId);
     const application = await this.getApplication(run.applicationId);
-    const effects = await this.listEffectRecords(runId);
+    const effects = (await this.listEffectRecords(runId)).filter((effect) => effect.branchId === branchId);
     const selectedBranch = (run.branches ?? []).find((branch) => branch.branchId === branchId);
     const exportedRun = {
       ...run,
@@ -147,10 +152,17 @@ export class DirectoryStore extends ClosureStore {
         assertBlobRef(blob);
       }
     }
-    if (bundle.application && !await exists(applicationPath(this.root, bundle.application.applicationId))) {
-      await this.createApplication(bundle.application);
+    if (bundle.application) {
+      if (await exists(applicationPath(this.root, bundle.application.applicationId))) {
+        const existing = await this.getApplication(bundle.application.applicationId);
+        if (stableJson(existing) !== stableJson(bundle.application)) fail('ERR_IMPORT_APPLICATION_MISMATCH');
+      } else {
+        await this.createApplication(bundle.application);
+      }
     }
-    if (!await exists(runPath(this.root, bundle.run.runId))) await this.createRun(bundle.run);
+    if (await exists(runPath(this.root, bundle.run.runId))) fail('ERR_IMPORT_RUN_EXISTS');
+    if (await exists(this.headPath(bundle.run.runId, bundle.branchId))) fail('ERR_IMPORT_HEAD_EXISTS');
+    await this.createRun(bundle.run);
     await this.writeHead(bundle.run.runId, bundle.branchId, bundle.head);
     for (const effect of bundle.effects ?? []) await this.putEffectRecord(effect);
     return await this.getRun(bundle.run.runId);

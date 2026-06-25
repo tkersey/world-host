@@ -103,7 +103,13 @@ async function runStore(name, makeStore) {
     const bundle = await store.exportRun(run.runId, branch.branchId);
     assert.equal(bundle.head.generation, 1);
     assert.ok(bundle.blobs.length >= 3);
-    await store.importRun(bundle);
+    const receiver = await makeStore();
+    try {
+      await receiver.importRun(bundle);
+      assert.equal((await receiver.readHead(run.runId, branch.branchId)).generation, 1);
+    } finally {
+      await receiver.cleanup?.();
+    }
 
     if (store instanceof DirectoryStore) {
       await writeFile(path.join(store.root, 'tmp', 'partial.tmp'), 'partial');
