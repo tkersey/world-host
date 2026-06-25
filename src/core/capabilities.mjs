@@ -34,7 +34,8 @@ export function createHostCapabilityManifest(input = {}) {
   });
 }
 
-export function preflightCapabilities({ application, applianceManifest = {}, currentHead = null, pendingRequests = [], drivers = [], policy = createRunPolicy() }) {
+export function preflightCapabilities({ application, applianceManifest = {}, currentHead = null, pendingRequests = [], drivers = [], policy: policyInput = createRunPolicy() }) {
+  const policy = createRunPolicy(policyInput);
   const blockers = [];
   const warnings = [];
   const manifests = drivers.map((driver) => assertDriverManifest(driver.manifest()));
@@ -82,9 +83,9 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
     everyRequiredActuatorCovered: !blockers.some((item) => item.startsWith('required-actuator')),
     everyPendingRequestCovered: !blockers.some((item) => item.startsWith('pending-request')),
     responseStatusesSupported: !blockers.some((item) => item.includes('RESPONSE_STATUS')),
-    valueSizeLimitsSupported: !blockers.some((item) => item.startsWith('runtime-')),
+    valueSizeLimitsSupported: !blockers.some((item) => item.startsWith('runtime-') || item === 'request-limit-exceeds-policy' || item === 'response-limit-exceeds-policy'),
     recoveryClassSufficient: !blockers.includes('ERR_BEST_EFFORT_REQUIRES_OPERATOR_OPT_IN'),
-    fileNetworkAuthoritiesAllowed: !blockers.some((item) => item.startsWith('authority-denied') || item.startsWith('http-origin-denied') || item.startsWith('file-root-denied')),
+    fileNetworkAuthoritiesAllowed: !blockers.some((item) => item.startsWith('authority-denied') || item.startsWith('http-origin-denied') || item.startsWith('http-origin-driver-denied') || item.startsWith('file-root-denied')),
     supervisionPolicyAccepted: !blockers.includes('supervision-policy-rejected'),
     coveredRequests,
     blockers,

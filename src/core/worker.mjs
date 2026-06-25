@@ -121,7 +121,7 @@ export class RunController {
     assertParentHeadMatchesClosure(parentHead, parentClosureBytes);
     const imageBytes = await this.store.getBlob(application.executableImageRef);
     const executableHostFingerprint = `sha256:${await sha256Hex(imageBytes)}`;
-    const worker = await this.#workerFor({
+    const { worker, reused: workerReused } = await this.#workerFor({
       applicationId: run.applicationId,
       branchId,
       turnClosureWorldFingerprint: parentHead.turnClosureWorldFingerprint,
@@ -162,7 +162,7 @@ export class RunController {
         archiveSealFingerprint: retainedArchivePending ? parentHead.archiveSealFingerprint : requiredString(inspected.archiveSealFingerprint, 'archiveSealFingerprint'),
         status: inspected.status ?? 'needs_host',
         updateDiagnostics: {
-          workerWarm: worker === this.warmWorker,
+          workerWarm: workerReused,
           parentTurnClosureFingerprint: parentHead.turnClosureWorldFingerprint,
           committedEffectIds: confirmedEffects.map((effect) => effect.record.idempotencyKeyWorldFingerprint),
           inspectedTurnClosure: inspected.inspectionDiagnostics ?? null,
@@ -200,7 +200,7 @@ export class RunController {
         parentHead,
         nextHead: cas.current,
         closureRef: turnClosureRef,
-        workerStatus: worker === this.warmWorker ? 'warm' : 'cold',
+        workerStatus: workerReused ? 'warm' : 'cold',
         effects: committedEffects,
         unresolvedHostRequests: effectTurn?.unresolvedHostRequests ?? [],
       };
@@ -214,7 +214,7 @@ export class RunController {
     if (this.warmWorker && !this.warmWorker.disposed) {
       try {
         assertWarmWorkerBinding(this.warmWorker, binding);
-        return this.warmWorker;
+        return { worker: this.warmWorker, reused: true };
       } catch {
         this.warmWorker.dispose();
       }
@@ -223,7 +223,7 @@ export class RunController {
     await worker.instantiate(this.wasmBytes);
     worker.bind(binding);
     this.warmWorker = worker;
-    return worker;
+    return { worker, reused: false };
   }
 
   #disposeWarmWorker(worker) {

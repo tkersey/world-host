@@ -523,6 +523,12 @@ function assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, p
     fail('ERR_EFFECT_RESOLUTION_TARGET_MISMATCH', 'driver ResolutionInput targets a different HostRequest');
   }
   assertResolutionStatusAccepted(resolution.status, hostRequest);
+  if (resolution.status === 0 && resolution.responseValueImageBytes.byteLength === 0) {
+    fail('ERR_EFFECT_RESPONSE_REQUIRED', 'responded ResolutionInput requires response bytes');
+  }
+  if (resolution.status !== 0 && resolution.responseValueImageBytes.byteLength !== 0) {
+    fail('ERR_EFFECT_RESPONSE_FORBIDDEN', 'non-responded ResolutionInput must not carry response bytes');
+  }
   const maximumResponseBytes = policy.maximumResponseBytes === undefined
     ? manifest.maximumResponseBytes
     : Math.min(manifest.maximumResponseBytes, policy.maximumResponseBytes);

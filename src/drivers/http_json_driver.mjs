@@ -21,7 +21,7 @@ export class HttpJsonDriver {
       supportedActuationClasses: ['http'],
       supportedResponseStatuses: ['ok', 'http_error'],
       maximumRequestBytes: this.maximumRequestBytes,
-      maximumResponseBytes: this.maximumResponseBytes,
+      maximumResponseBytes: encodedJsonStringEnvelopeLimit(this.maximumResponseBytes, 128),
       recoveryClass: EffectRecoveryClass.idempotent,
       concurrencyLimit: 4,
       authorityLabels: ['network:http'],
@@ -49,14 +49,17 @@ export class HttpJsonDriver {
       if (response.status >= 300 && response.status < 400 && response.headers.get('location')) fail('ERR_HTTP_REDIRECT_REJECTED');
       const bytes = await readResponseBytes(response, this.maximumResponseBytes);
       const text = new TextDecoder().decode(bytes);
+      const responseStatus = response.ok ? 'ok' : 'http_error';
       return {
         resolutionInputBytes: encodeResolutionInputBytes({
           targetHostRequestFingerprint: resolutionTarget(hostRequest),
           status: response.ok ? 0 : 1,
-          responseValueImageBytes: fromUtf8(stableJson({ status: response.ok ? 'ok' : 'http_error', statusCode: response.status, body: text })),
+          responseValueImageBytes: response.ok
+            ? fromUtf8(stableJson({ status: responseStatus, statusCode: response.status, body: text }))
+            : new Uint8Array(),
           hostClaimBytes: new Uint8Array(),
           attemptNumber: 1,
-          metadata: fromUtf8('http-json'),
+          metadata: fromUtf8(stableJson({ driver: 'http-json', status: responseStatus, statusCode: response.status })),
         }),
         driverTransactionRef: response.headers.get('x-request-id') ?? null,
         diagnostics: { url: `${url.origin}${url.pathname}`, status: response.status },
@@ -77,6 +80,11 @@ export class HttpJsonDriver {
       hostRequestFingerprint: effectRecord.hostRequestFingerprint,
     });
   }
+}
+
+function encodedJsonStringEnvelopeLimit(logicalBytes, overheadBytes) {
+  if (logicalBytes > Math.floor((Number.MAX_SAFE_INTEGER - overheadBytes) / 6)) return Number.MAX_SAFE_INTEGER;
+  return logicalBytes * 6 + overheadBytes;
 }
 
 function resolutionTarget(hostRequest = {}) {

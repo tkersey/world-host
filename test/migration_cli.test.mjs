@@ -137,6 +137,7 @@ describe('migration, branching, and CLI diagnostics', () => {
     assert.equal(redact({ diagnostics: { apiKey: 'secret' } }).diagnostics.apiKey, '[redacted]');
     assert.equal(redact({ diagnostics: { access_key: 'secret' } }).diagnostics.access_key, '[redacted]');
     assert.equal(redact({ diagnostics: { privateKey: 'secret' } }).diagnostics.privateKey, '[redacted]');
+    assert.equal(redact({ diagnostics: { error: 'driver failed with bearer token sk-test-secret' } }).diagnostics.error, '[redacted]');
     let output = '';
     const code = await runNodeCli(['inspect', '--json', '--store', '.world-carrier'], { stdout: { write: (text) => { output += text; } }, stderr: { write() {} } });
     assert.equal(code, 0);
@@ -283,7 +284,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(ran.head.generation, 1);
       assert.equal(ran.head.status, 'completed');
       assert.equal(ran.advance.status, 'advanced');
-      assert.equal(ran.advance.workerStatus, 'warm');
+      assert.equal(ran.advance.workerStatus, 'cold');
       assert.equal(ran.advance.unresolvedHostRequestCount, 0);
       assert.equal(ran.diagnostics.workerExecuted, true);
       assert.equal(ran.diagnostics.runHeadMutatedDirectlyByCli, false);

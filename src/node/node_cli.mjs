@@ -806,12 +806,15 @@ export async function runExample(name, io) {
   return 0;
 }
 
+const SECRET_PATTERN = /credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key/i;
+
 export function redact(value) {
+  if (typeof value === 'string') return SECRET_PATTERN.test(value) ? '[redacted]' : value;
   if (Array.isArray(value)) return value.map(redact);
   if (!value || typeof value !== 'object') return value;
   return Object.fromEntries(Object.entries(value).map(([key, child]) => [
     key,
-    /credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key/i.test(key) ? '[redacted]' : redact(child),
+    SECRET_PATTERN.test(key) ? '[redacted]' : redact(child),
   ]));
 }
 

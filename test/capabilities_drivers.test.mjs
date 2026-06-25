@@ -35,6 +35,8 @@ describe('capability preflight and reference drivers', () => {
       policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'], allowedHttpOrigins: ['https://allowed.example'] }),
     });
     assert.ok(report.blockers.includes('http-origin-denied:https://blocked.example'));
+    assert.ok(report.blockers.includes('http-origin-driver-denied:https://blocked.example'));
+    assert.equal(report.fileNetworkAuthoritiesAllowed, false);
   });
 
   it('routes preflight through the first policy-allowed matching driver', () => {
@@ -108,6 +110,20 @@ describe('capability preflight and reference drivers', () => {
     });
     assert.ok(report.blockers.includes('response-limit-exceeds-policy'));
     assert.equal(report.everyPendingRequestCovered, true);
+    assert.equal(report.valueSizeLimitsSupported, false);
+  });
+
+  it('normalizes partial preflight policies before evaluating blockers', () => {
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [fixtureRequest()],
+      drivers: [new FixtureModelDriver({ responses: ['ok'] })],
+      policy: { maximumRequestBytes: 4096 },
+    });
+
+    assert.equal(report.everyPendingRequestCovered, true);
+    assert.deepEqual(report.blockers, []);
   });
 
   it('rejects zero-concurrency driver manifests before preflight can cover requests', () => {
@@ -154,6 +170,12 @@ describe('capability preflight and reference drivers', () => {
       assert.equal(await readFile(path.join(root, 'out.txt'), 'utf8'), 'world carrier updated the fixture');
       await driver.resolve({}, fileRequest('nested/out.txt', { operation: 'write', content: 'nested write works' }));
       assert.equal(await readFile(path.join(root, 'nested', 'out.txt'), 'utf8'), 'nested write works');
+      const edgeWrite = fileRequest('edge.txt', { operation: 'write', content: '1234' }, 'key:edge');
+      const edgeDriver = new SandboxFileDriver({ root, maximumWriteBytes: 4 });
+      assert.equal(edgeWrite.requestBytes.byteLength > 4, true);
+      assert.equal(edgeWrite.requestBytes.byteLength <= edgeDriver.manifest().maximumRequestBytes, true);
+      await edgeDriver.resolve({}, edgeWrite);
+      assert.equal(await readFile(path.join(root, 'edge.txt'), 'utf8'), '1234');
       const symlinkKey = 'temp-symlink-key';
       await symlink(path.join(outside, 'outside.tmp'), path.join(root, `.blocked.txt.${sha256(symlinkKey)}.tmp`));
       await assert.rejects(
@@ -186,6 +208,15 @@ describe('capability preflight and reference drivers', () => {
       const payload = JSON.parse(new TextDecoder().decode(decoded.responseValueImageBytes));
       assert.equal(decoded.targetHostRequestFingerprint, 0xa1n);
       assert.deepEqual(payload, { byteLength: 33, path: 'out.txt', status: 'ok' });
+      const missing = await driver.resolve({}, fileRequest('missing.txt'));
+      const missingDecoded = decodeResolutionInputBytes(missing.resolutionInputBytes);
+      assert.equal(missingDecoded.status, 1);
+      assert.equal(missingDecoded.responseValueImageBytes.byteLength, 0);
+      await writeFile(path.join(root, 'large.txt'), 'too-large');
+      await assert.rejects(
+        () => new SandboxFileDriver({ root, maximumReadBytes: 1 }).resolve({}, fileRequest('large.txt')),
+        { code: 'ERR_SANDBOX_FILE_READ_TOO_LARGE' },
+      );
       const restarted = new SandboxFileDriver({ root });
       await assert.rejects(() => restarted.recover({}, {
         actuatorRef: 'sandbox:file',
@@ -232,6 +263,17 @@ describe('capability preflight and reference drivers', () => {
         () => driver.resolve({}, httpRequest('https://allowed.example/redirect')),
         { code: 'ERR_HTTP_REDIRECT_REJECTED' },
       );
+      const edge = new HttpJsonDriver({ origins: ['https://allowed.example'], maximumResponseBytes: 4 });
+      globalThis.fetch = async () => new Response('1234');
+      const edgeResult = await edge.resolve({}, httpRequest('https://allowed.example/edge'));
+      const edgePayload = decodeResolutionInputBytes(edgeResult.resolutionInputBytes).responseValueImageBytes;
+      assert.equal(edgePayload.byteLength > 4, true);
+      assert.equal(edgePayload.byteLength <= edge.manifest().maximumResponseBytes, true);
+      globalThis.fetch = async () => new Response('server failed', { status: 500 });
+      const failed = await driver.resolve({}, httpRequest('https://allowed.example/fail', 'GET', { status: 'http_error' }));
+      const failedDecoded = decodeResolutionInputBytes(failed.resolutionInputBytes);
+      assert.equal(failedDecoded.status, 1);
+      assert.equal(failedDecoded.responseValueImageBytes.byteLength, 0);
       const small = new HttpJsonDriver({ origins: ['https://allowed.example'], maximumResponseBytes: 4 });
       globalThis.fetch = async () => new Response('too-large');
       await assert.rejects(

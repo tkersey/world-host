@@ -127,6 +127,42 @@ describe('EffectJournal', () => {
     assert.equal(records[0].resolutionInputRef, undefined);
   });
 
+  it('rejects non-responded ResolutionInputs that carry response bytes', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const request = hostRequest({ responseSchema: { status: 'not_found' } });
+
+    await assert.rejects(
+      () => journal.resolve({}, request, fixtureDriver({
+        recoveryClass: EffectRecoveryClass.idempotent,
+        supportedResponseStatuses: ['not_found'],
+        response: fixtureResolutionInputBytes(request, fromUtf8('not found'), 1),
+      })),
+      { code: 'ERR_EFFECT_RESPONSE_FORBIDDEN' },
+    );
+    const records = await store.listEffectRecords('run');
+    assert.equal(records.length, 1);
+    assert.equal(records[0].state, EffectState.failed);
+    assert.equal(records[0].resolutionInputRef, undefined);
+  });
+
+  it('rejects responded ResolutionInputs without response bytes', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest(), fixtureDriver({
+        recoveryClass: EffectRecoveryClass.idempotent,
+        response: fixtureResolutionInputBytes(hostRequest(), new Uint8Array(), 0),
+      })),
+      { code: 'ERR_EFFECT_RESPONSE_REQUIRED' },
+    );
+    const records = await store.listEffectRecords('run');
+    assert.equal(records.length, 1);
+    assert.equal(records[0].state, EffectState.failed);
+    assert.equal(records[0].resolutionInputRef, undefined);
+  });
+
   it('rejects unsupported driver ResolutionInput versions before persisting', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });

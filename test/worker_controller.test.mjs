@@ -62,10 +62,12 @@ describe('RunController and WorldWorker', () => {
       },
     });
 
-    await controller.advance(runId, branchId, { turnResult: turnResult(1) });
-    await controller.advance(runId, branchId, { turnResult: turnResult(2) });
+    const first = await controller.advance(runId, branchId, { turnResult: turnResult(1) });
+    const second = await controller.advance(runId, branchId, { turnResult: turnResult(2) });
 
     assert.equal(worker.loadCount, 1);
+    assert.equal(first.workerStatus, 'cold');
+    assert.equal(second.workerStatus, 'warm');
   });
 
   it('does not call restore hooks for genesis heads', async () => {
