@@ -275,7 +275,7 @@ export class RunController {
       options,
       policy,
     });
-    const resolutions = effects.map((effect) => decodeResolutionInputBytes(effect.resolutionInputBytes));
+    const resolutions = assertEffectTargetsPendingRequests(effects, pending);
     return {
       journal,
       effects,
@@ -330,6 +330,17 @@ function deriveTurnResult(turnResult, nextClosureBytes) {
 function effectResolutionTargetFingerprint(effect) {
   const resolution = decodeResolutionInputBytes(effect.resolutionInputBytes);
   return resolution.targetHostRequestFingerprint.toString(16).padStart(16, '0');
+}
+
+function assertEffectTargetsPendingRequests(effects, pending) {
+  return effects.map((effect, index) => {
+    const resolution = decodeResolutionInputBytes(effect.resolutionInputBytes);
+    const expected = BigInt(pending[index].worldHostRequest.requestFingerprint);
+    if (resolution.targetHostRequestFingerprint !== expected) {
+      fail('ERR_EFFECT_RESOLUTION_TARGET_MISMATCH', 'effect ResolutionInput targets a different pending HostRequest');
+    }
+    return resolution;
+  });
 }
 
 function confirmedTurnEffects(effects, inspected) {

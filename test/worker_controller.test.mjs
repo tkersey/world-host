@@ -1,9 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 
 import { EffectRecoveryClass } from '../src/core/actuator.mjs';
 import { createApplicationRecord } from '../src/core/application.mjs';
-import { EffectState } from '../src/core/effect_journal.mjs';
+import { createEffectRecord, EffectState } from '../src/core/effect_journal.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from '../src/core/run.mjs';
 import { RunController, WorldWorker, assertWarmWorkerBinding } from '../src/core/worker.mjs';
 import { fromUtf8 } from '../src/core/store.mjs';
@@ -253,6 +254,53 @@ describe('RunController and WorldWorker', () => {
     );
 
     assert.equal(driver.slowSettled, true);
+  });
+
+  it('rejects reused effect resolutions targeting a different HostRequest', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'idempotency-key:1', idempotencyKeyFingerprint: 0xa09n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const resolutionInputRef = await store.putBlob(encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xa02n,
+      status: 0,
+      responseValueImageBytes: fromUtf8('wrong-target'),
+      hostClaimBytes: fromUtf8('claim'),
+      attemptNumber: 1,
+      metadata: fromUtf8('metadata'),
+    }));
+    await store.putEffectRecord(createEffectRecord({
+      runId,
+      branchId,
+      parentTurnClosureFingerprint: 'world:closure:0',
+      hostRequestFingerprint: 'world:host-request:0000000000000a01',
+      idempotencyKey: {
+        format: 'world-idempotency-key-bytes.hex',
+        bytesHex: Buffer.from('idempotency-key:1').toString('hex'),
+      },
+      idempotencyKeyWorldFingerprint: 'world:idempotency-key:0000000000000a09',
+      actuatorRef: 'world:actuator-ref:0000000000000a05',
+      descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+      actuationClass: 'world:actuation-class:1',
+      responseSchema: { status: 'responded' },
+      requestBytesChecksum: `sha256:${sha256Hex(requests[0])}`,
+      state: EffectState.resolved,
+      driverRecoveryClass: EffectRecoveryClass.pure,
+      resolutionInputRef,
+    }));
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [fixtureEffectDriver()],
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_EFFECT_RESOLUTION_TARGET_MISMATCH' },
+    );
   });
 
   it('skips ineligible effect drivers before selecting a resolver', async () => {
@@ -1015,6 +1063,10 @@ function indexOfBytes(haystack, needle) {
     return index;
   }
   return -1;
+}
+
+function sha256Hex(bytes) {
+  return createHash('sha256').update(bytes).digest('hex');
 }
 
 function u8(value) {

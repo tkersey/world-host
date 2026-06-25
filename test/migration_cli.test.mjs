@@ -770,6 +770,8 @@ describe('migration, branching, and CLI diagnostics', () => {
       const { run } = await fixtureDirectoryStore(sourceRoot);
       const sourceStore = new DirectoryStore(sourceRoot);
       const carrierExport = await exportCarrierRun(sourceStore, run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
+      const wasmChecksum = carrierExport.bundle.application.universalWasmChecksum.slice('sha256:'.length);
+      assert.equal(carrierExport.bundle.blobs.some((blob) => blob.checksum === wasmChecksum), true);
 
       const receiverStore = new DirectoryStore(receiverRoot);
       await receiverStore.acquireLock();
@@ -811,6 +813,18 @@ describe('migration, branching, and CLI diagnostics', () => {
       } finally {
         await rm(mismatchRoot, { recursive: true, force: true });
       }
+
+      const missingApplicationBundle = JSON.parse(JSON.stringify(carrierExport.bundle));
+      delete missingApplicationBundle.application;
+      await assertImportsReject(missingApplicationBundle, 'ERR_IMPORT_APPLICATION_REQUIRED');
+
+      const runApplicationMismatchBundle = JSON.parse(JSON.stringify(carrierExport.bundle));
+      runApplicationMismatchBundle.run.applicationId = 'receiver-local-app';
+      await assertImportsReject(runApplicationMismatchBundle, 'ERR_IMPORT_APPLICATION_MISMATCH');
+
+      const effectScopeMismatchBundle = JSON.parse(JSON.stringify(carrierExport.bundle));
+      effectScopeMismatchBundle.effects[0].runId = 'receiver-local-run';
+      await assertImportsReject(effectScopeMismatchBundle, 'ERR_IMPORT_EFFECT_SCOPE_MISMATCH');
 
       const corruptRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-import-corrupt-'));
       try {
@@ -1139,11 +1153,12 @@ async function fixtureDirectoryStore(root, options = {}) {
   await store.acquireLock();
   try {
     const imageRef = await store.putBlob(fromUtf8('image'));
+    const wasmRef = await store.putBlob(fromUtf8('wasm'));
     const manifestRef = await store.putBlob(fromUtf8('manifest'));
     const closureRef = await store.putBlob(fixtureTurnClosureBytes());
     const app = createApplicationRecord({
       applicationId: 'directory-app',
-      universalWasmChecksum: 'sha256:fixture',
+      universalWasmChecksum: `sha256:${wasmRef.checksum}`,
       worldProtocolVersion: 'v0.1.0',
       applianceAbiVersion: 'v3',
       executableImageRef: imageRef,
@@ -1151,6 +1166,9 @@ async function fixtureDirectoryStore(root, options = {}) {
       applianceManifestRef: manifestRef,
       requiredActuators: [],
       requiredRuntimeLimits: {},
+      installationDiagnostics: {
+        wasmByteLength: wasmRef.byteLength,
+      },
     });
     await store.createApplication(app);
     const head = createRunHead({
@@ -1197,6 +1215,16 @@ async function fixtureDirectoryStore(root, options = {}) {
     return { run, head };
   } finally {
     await store.releaseLock();
+  }
+}
+
+async function assertImportsReject(bundle, code) {
+  await assert.rejects(() => new MemoryStore().importRun(JSON.parse(JSON.stringify(bundle))), { code });
+  const root = await mkdtemp(path.join(tmpdir(), 'world-host-import-reject-'));
+  try {
+    await assert.rejects(() => new DirectoryStore(root).importRun(JSON.parse(JSON.stringify(bundle))), { code });
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 }
 

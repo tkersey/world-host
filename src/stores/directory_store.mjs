@@ -157,6 +157,8 @@ export class DirectoryStore extends ClosureStore {
   }
 
   async importRun(bundle) {
+    assertBundleApplicationMatchesRun(bundle);
+    assertBundleEffectsScoped(bundle);
     if (await exists(runPath(this.root, bundle.run.runId))) fail('ERR_IMPORT_RUN_EXISTS');
     if (await exists(this.headPath(bundle.run.runId, bundle.branchId))) fail('ERR_IMPORT_HEAD_EXISTS');
     for (const blob of bundle.blobs ?? []) {
@@ -357,7 +359,37 @@ function collectBlobRefs(...values) {
     add(value.requestBytesRef);
     add(value.resolutionInputRef);
     add(value.hostClaimRef);
+    add(universalWasmRef(value));
     for (const branch of value.branches ?? []) visit(branch.currentHead);
+  }
+}
+
+function universalWasmRef(value) {
+  const checksum = value?.universalWasmChecksum;
+  const byteLength = value?.installationDiagnostics?.wasmByteLength;
+  if (
+    typeof checksum !== 'string' ||
+    !checksum.startsWith('sha256:') ||
+    !/^[0-9a-f]{64}$/.test(checksum.slice('sha256:'.length)) ||
+    !Number.isSafeInteger(byteLength) ||
+    byteLength < 0
+  ) {
+    return null;
+  }
+  return makeBlobRef(checksum.slice('sha256:'.length), byteLength);
+}
+
+function assertBundleApplicationMatchesRun(bundle) {
+  const application = bundle?.application;
+  if (!application) fail('ERR_IMPORT_APPLICATION_REQUIRED');
+  if (bundle.run?.applicationId !== application.applicationId) fail('ERR_IMPORT_APPLICATION_MISMATCH');
+}
+
+function assertBundleEffectsScoped(bundle) {
+  for (const effect of bundle.effects ?? []) {
+    if (effect.runId !== bundle.run?.runId || effect.branchId !== bundle.branchId) {
+      fail('ERR_IMPORT_EFFECT_SCOPE_MISMATCH');
+    }
   }
 }
 
