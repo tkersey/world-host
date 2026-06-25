@@ -21,6 +21,22 @@ describe('EffectJournal', () => {
     assert.deepEqual(second.resolutionInputBytes, fromUtf8('resolution:one'));
   });
 
+  it('serializes concurrent same-key resolutions before driver execution', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent, response: 'resolution:one', delayMs: 10 });
+
+    const [first, second] = await Promise.all([
+      journal.resolve({}, hostRequest(), driver),
+      journal.resolve({}, hostRequest(), driver),
+    ]);
+
+    assert.equal(driver.calls, 1);
+    assert.equal(first.reused, false);
+    assert.equal(second.reused, true);
+    assert.deepEqual(second.resolutionInputBytes, fromUtf8('resolution:one'));
+  });
+
   it('rejects the same full idempotency key with different request bytes', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
@@ -228,7 +244,7 @@ function httpHostRequest(overrides = {}) {
   };
 }
 
-function fixtureDriver({ recoveryClass, response = 'resolution', descriptorFingerprint = 'descriptor:fixture', recoverHostClaim = false }) {
+function fixtureDriver({ recoveryClass, response = 'resolution', descriptorFingerprint = 'descriptor:fixture', recoverHostClaim = false, delayMs = 0 }) {
   return {
     calls: 0,
     recoverCalls: 0,
@@ -248,6 +264,7 @@ function fixtureDriver({ recoveryClass, response = 'resolution', descriptorFinge
     },
     async resolve() {
       this.calls += 1;
+      if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
       return { resolutionInputBytes: fromUtf8(response) };
     },
     async recover() {

@@ -86,11 +86,18 @@ function rejectUnrecoverableEffects(effects) {
 }
 
 function rewriteRunBundle(bundle, runId) {
+  const selectedBranch = (bundle.run.branches ?? []).find((branch) => branch.branchId === bundle.branchId);
+  const branch = createBranchRecord({
+    ...(selectedBranch ?? { branchId: bundle.branchId }),
+    currentHead: bundle.head,
+  });
   return {
     ...bundle,
-    run: { ...bundle.run, runId },
+    run: { ...bundle.run, runId, branches: [branch] },
     head: bundle.head,
-    effects: (bundle.effects ?? []).map((effect) => ({ ...effect, runId })),
+    effects: (bundle.effects ?? [])
+      .filter((effect) => effect.branchId === bundle.branchId)
+      .map((effect) => ({ ...effect, runId })),
     branchId: bundle.branchId,
   };
 }

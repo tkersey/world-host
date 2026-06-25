@@ -25,6 +25,7 @@ const TERMINAL_WITH_OUTCOME = new Set([
 ]);
 
 const EFFECT_STATES = new Set(Object.values(EffectState));
+const effectKeyLocks = new WeakMap();
 
 export class EffectJournal {
   constructor({ store, runId, branchId, parentTurnClosureFingerprint, policy = {} }) {
@@ -75,46 +76,49 @@ export class EffectJournal {
     const driver = defineActuatorDriver(driverLike);
     const manifest = driver.manifest();
     assertDriverCanResolve(manifest, hostRequest);
-    const observed = await this.observe(hostRequest, { manifest });
-    const reused = await this.#resolutionFromRecord(observed);
-    if (reused) return reused;
-    if (observed.state === EffectState.running) return await this.recover(context, observed, driver);
-    if (observed.state === EffectState.operatorInterventionRequired) {
-      return { record: observed, resolutionInputBytes: null, reused: false, operatorInterventionRequired: true };
-    }
+    const prepared = await prepareHostRequest(hostRequest);
+    return await withEffectKeyLock(this.store, effectLockKey(this.runId, prepared.idempotencyKey), async () => {
+      const observed = await this.observe(hostRequest, { manifest });
+      const reused = await this.#resolutionFromRecord(observed);
+      if (reused) return reused;
+      if (observed.state === EffectState.running) return await this.recover(context, observed, driver);
+      if (observed.state === EffectState.operatorInterventionRequired) {
+        return { record: observed, resolutionInputBytes: null, reused: false, operatorInterventionRequired: true };
+      }
 
-    const running = await this.#put({
-      ...observed,
-      state: EffectState.running,
-      attemptCount: observed.attemptCount + 1,
-      diagnostics: { ...observed.diagnostics, driverId: manifest.driverId },
+      const running = await this.#put({
+        ...observed,
+        state: EffectState.running,
+        attemptCount: observed.attemptCount + 1,
+        diagnostics: { ...observed.diagnostics, driverId: manifest.driverId },
+      });
+
+      try {
+        const resolved = normalizeDriverResolution(await driver.resolve(context, hostRequest));
+        const resolutionInputRef = await this.store.putBlob(resolved.resolutionInputBytes);
+        const hostClaimRef = resolved.hostClaimBytes ? await this.store.putBlob(resolved.hostClaimBytes) : running.hostClaimRef;
+        const record = await this.#put({
+          ...running,
+          state: EffectState.resolved,
+          resolutionInputRef,
+          hostClaimRef,
+          driverTransactionRef: resolved.driverTransactionRef ?? running.driverTransactionRef,
+          diagnostics: { ...running.diagnostics, ...resolved.diagnostics },
+        });
+        return {
+          record,
+          resolutionInputBytes: await this.store.getBlob(resolutionInputRef),
+          reused: false,
+        };
+      } catch (error) {
+        await this.#put({
+          ...running,
+          state: EffectState.failed,
+          diagnostics: { ...running.diagnostics, error: error.message },
+        });
+        throw error;
+      }
     });
-
-    try {
-      const resolved = normalizeDriverResolution(await driver.resolve(context, hostRequest));
-      const resolutionInputRef = await this.store.putBlob(resolved.resolutionInputBytes);
-      const hostClaimRef = resolved.hostClaimBytes ? await this.store.putBlob(resolved.hostClaimBytes) : running.hostClaimRef;
-      const record = await this.#put({
-        ...running,
-        state: EffectState.resolved,
-        resolutionInputRef,
-        hostClaimRef,
-        driverTransactionRef: resolved.driverTransactionRef ?? running.driverTransactionRef,
-        diagnostics: { ...running.diagnostics, ...resolved.diagnostics },
-      });
-      return {
-        record,
-        resolutionInputBytes: await this.store.getBlob(resolutionInputRef),
-        reused: false,
-      };
-    } catch (error) {
-      await this.#put({
-        ...running,
-        state: EffectState.failed,
-        diagnostics: { ...running.diagnostics, error: error.message },
-      });
-      throw error;
-    }
   }
 
   async recover(context, effectRecord, driverLike) {
@@ -336,6 +340,27 @@ function normalizeDriverResolution(value) {
     driverTransactionRef: value?.driverTransactionRef,
     diagnostics: value?.diagnostics ?? {},
   };
+}
+
+async function withEffectKeyLock(store, key, fn) {
+  let locks = effectKeyLocks.get(store);
+  if (!locks) {
+    locks = new Map();
+    effectKeyLocks.set(store, locks);
+  }
+  const previous = locks.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => {}).then(fn);
+  const stored = current.catch(() => {});
+  locks.set(key, stored);
+  try {
+    return await current;
+  } finally {
+    if (locks.get(key) === stored) locks.delete(key);
+  }
+}
+
+function effectLockKey(runId, idempotencyKey) {
+  return `${runId}\0${stableJson(idempotencyKey)}`;
 }
 
 function normalizeManifest(value) {

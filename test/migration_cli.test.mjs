@@ -497,6 +497,17 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(packageJson.bundle.blobs.some((blob) => blob.checksum === unrelatedRef.checksum), false);
       assert.equal(packageJson.bundle.effects.every((effect) => effect.branchId === 'main'), true);
       assert.doesNotMatch(output, /bytesHex|complete-world-idempotency-key/);
+      packageJson.bundle.run.branches.push(createBranchRecord({
+        branchId: 'alternate',
+        currentHead: { ...packageJson.bundle.head, generation: 99 },
+      }));
+      packageJson.bundle.effects.push({
+        ...packageJson.bundle.effects[0],
+        branchId: 'alternate',
+        idempotencyKey: { format: 'world-idempotency-key-bytes.hex', bytesHex: '616c7465726e617465' },
+        idempotencyKeyWorldFingerprint: 'world:key:alternate-import',
+      });
+      await writeFile(packagePath, JSON.stringify(packageJson));
 
       output = '';
       const importCode = await runNodeCli([
@@ -524,6 +535,15 @@ describe('migration, branching, and CLI diagnostics', () => {
         const receiverHead = await receiverStore.readHead('receiver-run', 'main');
         assert.equal(receiverHead.turnClosureWorldFingerprint, head.turnClosureWorldFingerprint);
         assert.deepEqual([...await receiverStore.getBlob(receiverHead.turnClosureRef)], [...fromUtf8('closure')]);
+        await assert.rejects(
+          () => receiverStore.readHead('receiver-run', 'alternate'),
+          { code: 'ERR_HEAD_NOT_FOUND' },
+        );
+        const receiverRun = await receiverStore.getRun('receiver-run');
+        assert.deepEqual(receiverRun.branches.map((branch) => branch.branchId), ['main']);
+        const receiverEffects = await receiverStore.listEffectRecords('receiver-run');
+        assert.equal(receiverEffects.length, 1);
+        assert.equal(receiverEffects[0].branchId, 'main');
       } finally {
         await receiverStore.releaseLock();
       }
