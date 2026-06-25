@@ -133,7 +133,7 @@ function driverFor(recoveryClass, response) {
         supportedActuationClasses: ['fixture'],
         supportedResponseStatuses: ['ok'],
         maximumRequestBytes: 1024,
-        maximumResponseBytes: 1024,
+        maximumResponseBytes: Number.MAX_SAFE_INTEGER,
         recoveryClass,
         concurrencyLimit: 1,
         authorityLabels: ['fixture'],

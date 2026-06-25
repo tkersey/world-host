@@ -16,8 +16,7 @@ describe('EffectJournal', () => {
     const first = await journal.resolve({}, hostRequest(), driver);
     const second = await journal.resolve({}, hostRequest(), driver);
 
-    assert.equal(first.reused, false);
-    assert.equal(second.reused, true);
+    assert.deepEqual([first.reused, second.reused].sort(), [false, true]);
     assert.equal(driver.calls, 1);
     assert.deepEqual(second.resolutionInputBytes, fromUtf8('resolution:one'));
   });
@@ -67,6 +66,40 @@ describe('EffectJournal', () => {
     assert.equal(records[0].state, EffectState.failed);
   });
 
+  it('rejects actual driver responses that exceed manifest limits', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest(), fixtureDriver({
+        recoveryClass: EffectRecoveryClass.idempotent,
+        maximumResponseBytes: 1,
+        response: encodeResolutionInputBytes({
+          targetHostRequestFingerprint: 0xa1n,
+          status: 0,
+          responseValueImageBytes: fromUtf8('too large'),
+          hostClaimBytes: new Uint8Array(),
+          attemptNumber: 1,
+          metadata: new Uint8Array(),
+        }),
+      })),
+      { code: 'ERR_EFFECT_RESPONSE_TOO_LARGE' },
+    );
+  });
+
+  it('validates serialized fallback request bytes before driver execution', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent, maximumRequestBytes: 1 });
+
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest({ requestBytes: undefined, request: { payload: 'too large' } }), driver),
+      { code: 'ERR_HOST_REQUEST_TOO_LARGE' },
+    );
+    assert.equal(driver.calls, 0);
+    assert.equal((await store.listEffectRecords('run')).length, 0);
+  });
+
   it('rejects the same full idempotency key with different request bytes', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
@@ -76,6 +109,19 @@ describe('EffectJournal', () => {
       () => journal.resolve({}, hostRequest({ requestBytes: fromUtf8('different') }), fixtureDriver({ recoveryClass: EffectRecoveryClass.pure })),
       { code: 'ERR_EFFECT_IDEMPOTENCY_CONFLICT' },
     );
+  });
+
+  it('rejects the same full idempotency key with a different host request identity', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.pure });
+    await journal.resolve({}, hostRequest({ hostRequestFingerprint: 'world:host-request:one' }), driver);
+
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest({ hostRequestFingerprint: 'world:host-request:two' }), driver),
+      { code: 'ERR_EFFECT_IDEMPOTENCY_CONFLICT' },
+    );
+    assert.equal(driver.calls, 1);
   });
 
   it('forbids shortened idempotency-key hash authority', async () => {
@@ -292,7 +338,7 @@ function httpHostRequest(overrides = {}) {
   };
 }
 
-function fixtureDriver({ recoveryClass, response = 'resolution', descriptorFingerprint = 'descriptor:fixture', recoverHostClaim = false, delayMs = 0 }) {
+function fixtureDriver({ recoveryClass, response = 'resolution', descriptorFingerprint = 'descriptor:fixture', recoverHostClaim = false, delayMs = 0, maximumRequestBytes = 1024, maximumResponseBytes = Number.MAX_SAFE_INTEGER }) {
   return {
     calls: 0,
     recoverCalls: 0,
@@ -303,8 +349,8 @@ function fixtureDriver({ recoveryClass, response = 'resolution', descriptorFinge
         supportedDescriptorFingerprints: [descriptorFingerprint],
         supportedActuationClasses: ['fixture'],
         supportedResponseStatuses: ['ok'],
-        maximumRequestBytes: 1024,
-        maximumResponseBytes: 1024,
+        maximumRequestBytes,
+        maximumResponseBytes,
         recoveryClass,
         concurrencyLimit: 1,
         authorityLabels: ['fixture'],

@@ -78,6 +78,7 @@ export class EffectJournal {
     const manifest = driver.manifest();
     assertDriverCanResolve(manifest, hostRequest);
     const prepared = await prepareHostRequest(hostRequest);
+    assertPreparedRequestWithinLimits(prepared, manifest, this.policy);
     return await withEffectKeyLock(this.store, effectLockKey(this.runId, prepared.idempotencyKey), async () => {
       const observed = await this.observe(hostRequest, { manifest });
       const reused = await this.#resolutionFromRecord(observed);
@@ -96,7 +97,7 @@ export class EffectJournal {
 
       try {
         const resolved = normalizeDriverResolution(await driver.resolve(context, hostRequest));
-        assertResolutionWithinPolicy(resolved.resolutionInputBytes, this.policy);
+        assertResolutionWithinLimits(resolved.resolutionInputBytes, manifest, this.policy);
         const resolutionInputRef = await this.store.putBlob(resolved.resolutionInputBytes);
         const hostClaimRef = resolved.hostClaimBytes ? await this.store.putBlob(resolved.hostClaimBytes) : running.hostClaimRef;
         const record = await this.#put({
@@ -139,9 +140,10 @@ export class EffectJournal {
     }
 
     if (typeof driver.recover === 'function') {
-      assertDriverCanRecover(driver.manifest(), record);
+      const manifest = driver.manifest();
+      assertDriverCanRecover(manifest, record);
       const recovered = normalizeDriverResolution(await driver.recover(context, await this.#recordWithRequestBytes(record)));
-      assertResolutionWithinPolicy(recovered.resolutionInputBytes, this.policy);
+      assertResolutionWithinLimits(recovered.resolutionInputBytes, manifest, this.policy);
       const resolutionInputRef = await this.store.putBlob(recovered.resolutionInputBytes);
       const hostClaimRef = recovered.hostClaimBytes ? await this.store.putBlob(recovered.hostClaimBytes) : record.hostClaimRef;
       const next = await this.#put({
@@ -205,6 +207,12 @@ export class EffectJournal {
         idempotencyKeyWorldFingerprint: existing.idempotencyKeyWorldFingerprint,
       });
     }
+    if (existing.hostRequestFingerprint !== prepared.hostRequestFingerprint) {
+      fail('ERR_EFFECT_IDEMPOTENCY_CONFLICT', 'same full idempotency key used with different host request identity', {
+        runId: this.runId,
+        idempotencyKeyWorldFingerprint: existing.idempotencyKeyWorldFingerprint,
+      });
+    }
     if (
       existing.parentTurnClosureFingerprint !== this.parentTurnClosureFingerprint &&
       (existing.state === EffectState.running || (TERMINAL_WITH_OUTCOME.has(existing.state) && existing.resolutionInputRef))
@@ -226,6 +234,12 @@ export class EffectJournal {
       if (stableJson(record.idempotencyKey) !== idempotencyKeyJson) continue;
       if (record.requestBytesChecksum !== prepared.requestBytesChecksum) {
         fail('ERR_EFFECT_IDEMPOTENCY_CONFLICT', 'same full idempotency key used with different request bytes', {
+          runId: this.runId,
+          idempotencyKeyWorldFingerprint: record.idempotencyKeyWorldFingerprint,
+        });
+      }
+      if (record.hostRequestFingerprint !== prepared.hostRequestFingerprint) {
+        fail('ERR_EFFECT_IDEMPOTENCY_CONFLICT', 'same full idempotency key used with different host request identity', {
           runId: this.runId,
           idempotencyKeyWorldFingerprint: record.idempotencyKeyWorldFingerprint,
         });
@@ -356,11 +370,19 @@ function normalizeDriverResolution(value) {
   };
 }
 
-function assertResolutionWithinPolicy(resolutionInputBytes, policy) {
-  if (policy.maximumResponseBytes === undefined) return;
+function assertPreparedRequestWithinLimits(prepared, manifest, policy) {
+  if (prepared.requestBytes.byteLength > manifest.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
+  if (policy.maximumRequestBytes !== undefined && prepared.requestBytes.byteLength > policy.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
+}
+
+function assertResolutionWithinLimits(resolutionInputBytes, manifest, policy) {
+  const maximumResponseBytes = policy.maximumResponseBytes === undefined
+    ? manifest.maximumResponseBytes
+    : Math.min(manifest.maximumResponseBytes, policy.maximumResponseBytes);
+  if (maximumResponseBytes === Number.MAX_SAFE_INTEGER) return;
   const resolution = decodeResolutionInputBytes(resolutionInputBytes);
-  if (resolution.responseValueImageBytes.byteLength > policy.maximumResponseBytes) {
-    fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver ResolutionInput response exceeds receiver policy');
+  if (resolution.responseValueImageBytes.byteLength > maximumResponseBytes) {
+    fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver ResolutionInput response exceeds byte limit');
   }
 }
 
