@@ -2,7 +2,7 @@ import { EffectJournal } from './effect_journal.mjs';
 import { assertDurableRecoveryAllowed } from './actuator.mjs';
 import { createRunHead } from './run.mjs';
 import { assertBytes, fail, fromUtf8, toHex } from './store.mjs';
-import { decodeResolutionInputBytes, encodeContinueTurnInput } from '../protocol/world_appliance_wire_codec.mjs';
+import { decodeResolutionInputBytes, encodeRestoreTurnInput } from '../protocol/world_appliance_wire_codec.mjs';
 import { inspectTurnOutput, summarizeTurnClosureForRunHead } from '../protocol/world_universal_appliance_codec.mjs';
 import { wyhash64 } from '../protocol/world_loaded_value_codec.mjs';
 
@@ -280,8 +280,11 @@ export class RunController {
       journal,
       effects,
       unresolvedHostRequests,
-      turnInputBytes: encodeContinueTurnInput({
+      turnInputBytes: encodeRestoreTurnInput({
         manifestFingerprint: parentSummary.manifestFingerprint,
+        parentTurnClosureBytes: parentClosureBytes,
+        expectedParentClosureFingerprint: parentSummary.closureFingerprint,
+        expectedParentStateFingerprint: parentSummary.resultingStateFingerprint,
         previousTurnReceiptFingerprint: parentSummary.turnReceipt.receiptFingerprint,
         turnSequenceNumber: parentSummary.turnSequenceNumber + 1n,
         resolutions,

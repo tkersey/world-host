@@ -588,6 +588,30 @@ describe('migration, branching, and CLI diagnostics', () => {
         idempotencyKeyWorldFingerprint: 'world:key:alternate-import',
       });
       await writeFile(packagePath, JSON.stringify(packageJson));
+      const blockedPackagePath = path.join(sourceRoot, 'blocked-package.json');
+      await writeFile(blockedPackagePath, JSON.stringify({
+        ...packageJson,
+        bundle: {
+          ...packageJson.bundle,
+          application: {
+            ...packageJson.bundle.application,
+            requiredActuators: [{ actuatorRef: 'sandbox:file' }],
+          },
+        },
+      }));
+      await assert.rejects(
+        () => runNodeCli([
+          'import',
+          '--json',
+          '--store', receiverRoot,
+          '--package', blockedPackagePath,
+          '--run', 'blocked-run',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_IMPORT_PREFLIGHT_BLOCKED' },
+      );
 
       output = '';
       const importCode = await runNodeCli([

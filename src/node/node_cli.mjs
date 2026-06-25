@@ -6,6 +6,7 @@ import { exportCarrierRun, forkRunBranch, importCarrierRun } from '../core/migra
 import { createBranchRecord, createRunHead, createRunRecord } from '../core/run.mjs';
 import { fromUtf8, makeBlobRef } from '../core/store.mjs';
 import { RunController } from '../core/worker.mjs';
+import { createRunPolicy, preflightCapabilities } from '../core/capabilities.mjs';
 import { encodeBootTurnInput, encodeRestoreTurnInput } from '../protocol/world_appliance_wire_codec.mjs';
 import { inspectTurnOutput } from '../protocol/world_universal_appliance_codec.mjs';
 import { carrierVersionSummary } from '../protocol/world_manifest.mjs';
@@ -409,7 +410,13 @@ async function runImport(args, io, storePath) {
   try {
     const imported = await importCarrierRun(store, carrierExport, {
       runId: receiverRunId,
-      preflight: async () => ({ blockers: [] }),
+      preflight: async (candidate) => preflightCapabilities({
+        application: candidate.bundle.application,
+        currentHead: candidate.bundle.head,
+        pendingRequests: [],
+        drivers: [],
+        policy: createRunPolicy(),
+      }),
     });
     io.stdout.write(`${JSON.stringify(redact({
       command: 'import',

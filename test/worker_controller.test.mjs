@@ -72,9 +72,10 @@ describe('RunController and WorldWorker', () => {
     });
     let fallbackCalled = false;
     const driver = fixtureEffectDriver();
+    const worker = new CaptureTurnInputWorker(fixtureTurnClosureBytes());
     const controller = new RunController({
       store,
-      workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes()),
+      workerFactory: async () => worker,
       effectDrivers: [driver],
       turnInputFactory: async () => {
         fallbackCalled = true;
@@ -88,6 +89,7 @@ describe('RunController and WorldWorker', () => {
     assert.equal(result.status, 'advanced');
     assert.equal(fallbackCalled, false);
     assert.equal(driver.invocationCount, 1);
+    assert.equal(worker.submittedTurnInputBytes[4], 1);
     assert.equal(result.effects.length, 1);
     assert.equal(result.effects[0].state, EffectState.closureCommitted);
     assert.equal(effects.length, 1);
