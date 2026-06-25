@@ -332,24 +332,33 @@ function safePathSegment(value, label) {
 
 function collectBlobRefs(...values) {
   const refs = new Map();
-  const visit = (value) => {
+  const add = (value) => {
+    if (
+      value?.algorithm === 'sha256' &&
+      /^[0-9a-f]{64}$/.test(value?.checksum) &&
+      Number.isSafeInteger(value?.byteLength) &&
+      value.byteLength >= 0
+    ) {
+      refs.set(`${value.checksum}:${value.byteLength}`, makeBlobRef(value.checksum, value.byteLength));
+    }
+  };
+  for (const value of values) visit(value);
+  return [...refs.values()];
+
+  function visit(value) {
     if (Array.isArray(value)) {
       for (const child of value) visit(child);
       return;
     }
     if (!value || typeof value !== 'object') return;
-    if (
-      value.algorithm === 'sha256' &&
-      /^[0-9a-f]{64}$/.test(value.checksum) &&
-      Number.isSafeInteger(value.byteLength) &&
-      value.byteLength >= 0
-    ) {
-      refs.set(`${value.checksum}:${value.byteLength}`, makeBlobRef(value.checksum, value.byteLength));
-    }
-    for (const child of Object.values(value)) visit(child);
-  };
-  for (const value of values) visit(value);
-  return [...refs.values()];
+    add(value.executableImageRef);
+    add(value.applianceManifestRef);
+    add(value.turnClosureRef);
+    add(value.requestBytesRef);
+    add(value.resolutionInputRef);
+    add(value.hostClaimRef);
+    for (const branch of value.branches ?? []) visit(branch.currentHead);
+  }
 }
 
 async function writeJsonNew(file, value, existsCode) {

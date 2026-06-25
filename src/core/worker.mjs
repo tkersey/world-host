@@ -541,13 +541,13 @@ async function runGroupedBounded(groups, policy, fn) {
   const total = states.reduce((sum, state) => sum + state.items.length, 0);
   const globalLimit = effectGlobalConcurrencyLimit(states, policy);
   let active = 0;
-  let completed = 0;
+  let settled = 0;
   let cursor = 0;
-  let rejected = false;
+  let firstError = null;
   await new Promise((resolve, reject) => {
     const launch = () => {
-      if (rejected) return;
-      if (completed === total) {
+      if (firstError) return;
+      if (settled === total) {
         resolve();
         return;
       }
@@ -563,11 +563,18 @@ async function runGroupedBounded(groups, policy, fn) {
         Promise.resolve(fn(item)).then(() => {
           state.active -= 1;
           active -= 1;
-          completed += 1;
+          settled += 1;
+          if (firstError) {
+            if (active === 0) reject(firstError);
+            return;
+          }
           launch();
         }, (error) => {
-          rejected = true;
-          reject(error);
+          state.active -= 1;
+          active -= 1;
+          settled += 1;
+          firstError ??= error;
+          if (active === 0) reject(firstError);
         });
       }
     };

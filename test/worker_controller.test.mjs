@@ -230,6 +230,31 @@ describe('RunController and WorldWorker', () => {
     assert.equal(fastTracker.maxRunning, 2);
   });
 
+  it('waits for already launched effects to settle after a batch failure', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'idempotency-key:1', idempotencyKeyFingerprint: 0xa09n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'idempotency-key:2', idempotencyKeyFingerprint: 0xa19n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const driver = settlingFailureDriver();
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [driver],
+      effectPolicy: { maximumConcurrentEffects: 2 },
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_TEST_EFFECT_FAILED' },
+    );
+
+    assert.equal(driver.slowSettled, true);
+  });
+
   it('skips ineligible effect drivers before selecting a resolver', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
@@ -685,6 +710,45 @@ function sharedConcurrencyDriver({ driverId, descriptorFingerprint, tracker, con
       } finally {
         tracker.running -= 1;
       }
+    },
+  };
+}
+
+function settlingFailureDriver() {
+  return {
+    slowSettled: false,
+    manifest() {
+      return {
+        driverId: 'settling.failure.driver',
+        supportedActuatorRefs: ['world:actuator-ref:0000000000000a05'],
+        supportedDescriptorFingerprints: ['world:descriptor:0000000000000a0b'],
+        supportedActuationClasses: ['world:actuation-class:1'],
+        supportedResponseStatuses: ['responded'],
+        maximumRequestBytes: 4096,
+        maximumResponseBytes: 4096,
+        recoveryClass: EffectRecoveryClass.pure,
+        concurrencyLimit: 2,
+        authorityLabels: ['test'],
+      };
+    },
+    async resolve(context) {
+      if (context.hostRequest.hostRequestFingerprint === 'world:host-request:0000000000000a01') {
+        const error = new Error('test effect failed');
+        error.code = 'ERR_TEST_EFFECT_FAILED';
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      this.slowSettled = true;
+      return {
+        resolutionInputBytes: encodeResolutionInputBytes({
+          targetHostRequestFingerprint: context.worldHostRequest.requestFingerprint,
+          status: 0,
+          responseValueImageBytes: fromUtf8('response:slow'),
+          hostClaimBytes: fromUtf8('claim:slow'),
+          attemptNumber: 1,
+          metadata: fromUtf8('metadata'),
+        }),
+      };
     },
   };
 }

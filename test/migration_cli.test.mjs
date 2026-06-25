@@ -586,6 +586,11 @@ describe('migration, branching, and CLI diagnostics', () => {
           hostRequestFingerprint: 'world:host-request:0000000000000b01',
         }, fixtureDriver());
         unrelatedRef = await sourceStore.putBlob(fromUtf8('unrelated-secret'));
+        const [mainEffect] = await sourceStore.listEffectRecords(run.runId);
+        await sourceStore.putEffectRecord({
+          ...mainEffect,
+          diagnostics: { unrelatedBlobRef: unrelatedRef },
+        });
       } finally {
         await sourceStore.releaseLock();
       }
