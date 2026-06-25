@@ -79,13 +79,18 @@ export class MemoryStore extends ClosureStore {
   }
 
   async putEffectRecord(record) {
-    const key = effectKey(record.runId, record.idempotencyKey);
+    const key = effectKey(record.runId, record.branchId, record.idempotencyKey);
     this.effects.set(key, clone(record));
     return clone(record);
   }
 
-  async getEffectRecord(runId, idempotencyKey) {
-    const record = this.effects.get(effectKey(runId, idempotencyKey));
+  async getEffectRecord(runId, idempotencyKey, branchId = null) {
+    if (branchId) {
+      const record = this.effects.get(effectKey(runId, branchId, idempotencyKey));
+      return record ? clone(record) : null;
+    }
+    const record = [...this.effects.entries()]
+      .find(([key]) => key.startsWith(`${runId}\0`) && key.endsWith(`\0${stableJson(idempotencyKey)}`))?.[1];
     return record ? clone(record) : null;
   }
 
@@ -151,8 +156,8 @@ function headKey(runId, branchId) {
   return `${runId}\0${branchId}`;
 }
 
-function effectKey(runId, idempotencyKey) {
-  return `${runId}\0${stableJson(idempotencyKey)}`;
+function effectKey(runId, branchId, idempotencyKey) {
+  return `${runId}\0${branchId}\0${stableJson(idempotencyKey)}`;
 }
 
 function collectBlobRefs(...values) {

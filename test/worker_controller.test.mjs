@@ -193,6 +193,40 @@ describe('RunController and WorldWorker', () => {
     assert.equal((await store.listEffectRecords(runId)).length, 0);
   });
 
+  it('rejects receiver-policy-denied drivers before resolving effects', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const driver = policyDeniedHttpDriver();
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [driver],
+      effectPolicy: {
+        allowedAuthorityLabels: new Set(['network:http']),
+        allowedHttpOrigins: new Set(['https://receiver.example']),
+      },
+      hostRequestMapper: () => ({
+        actuatorRef: 'http:json',
+        descriptorFingerprint: 'descriptor:http-json',
+        actuationClass: 'http',
+        responseSchema: { status: 'ok' },
+        idempotencyKeyBytes: fromUtf8('http-idempotency-key'),
+        idempotencyKeyWorldFingerprint: 'world:key:http',
+        requestBytes: fromUtf8(JSON.stringify({ url: 'https://blocked.example/path' })),
+        hostRequestFingerprint: 'world:host-request:0000000000000a01',
+      }),
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_HOST_REQUEST_DRIVER_UNAVAILABLE' },
+    );
+    assert.equal(driver.invocationCount, 0);
+    assert.equal((await store.listEffectRecords(runId)).length, 0);
+  });
+
   it('fails closed on needs_host heads when no effect drivers are configured', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
@@ -467,6 +501,30 @@ function delayedBatchDriver() {
       } finally {
         running -= 1;
       }
+    },
+  };
+}
+
+function policyDeniedHttpDriver() {
+  return {
+    invocationCount: 0,
+    manifest() {
+      return {
+        driverId: 'policy.http.driver',
+        supportedActuatorRefs: ['http:json'],
+        supportedDescriptorFingerprints: ['descriptor:http-json'],
+        supportedActuationClasses: ['http'],
+        supportedResponseStatuses: ['ok'],
+        maximumRequestBytes: 4096,
+        maximumResponseBytes: 4096,
+        recoveryClass: EffectRecoveryClass.idempotent,
+        concurrencyLimit: 1,
+        authorityLabels: ['network:http'],
+      };
+    },
+    async resolve() {
+      this.invocationCount += 1;
+      throw new Error('policy-denied driver should not run');
     },
   };
 }

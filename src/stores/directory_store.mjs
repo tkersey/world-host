@@ -103,16 +103,18 @@ export class DirectoryStore extends ClosureStore {
   }
 
   async putEffectRecord(record) {
-    const key = sha256(Buffer.from(stableJson(record.idempotencyKey)));
+    const key = effectFileKey(record.branchId, record.idempotencyKey);
     const file = path.join(effectsDir(this.root, record.runId), `${key}.json`);
     await mkdir(path.dirname(file), { recursive: true });
     await writeJsonReplace(file, record);
     return record;
   }
 
-  async getEffectRecord(runId, idempotencyKey) {
-    const key = sha256(Buffer.from(stableJson(idempotencyKey)));
-    const file = path.join(effectsDir(this.root, runId), `${key}.json`);
+  async getEffectRecord(runId, idempotencyKey, branchId = null) {
+    if (!branchId) {
+      return (await this.listEffectRecords(runId)).find((record) => stableJson(record.idempotencyKey) === stableJson(idempotencyKey)) ?? null;
+    }
+    const file = path.join(effectsDir(this.root, runId), `${effectFileKey(branchId, idempotencyKey)}.json`);
     try {
       return await readJson(file, null);
     } catch (error) {
@@ -293,6 +295,10 @@ function runPath(root, runId) {
 
 function effectsDir(root, runId) {
   return path.join(root, 'effects', safePathSegment(runId, 'runId'));
+}
+
+function effectFileKey(branchId, idempotencyKey) {
+  return sha256(Buffer.from(stableJson({ branchId, idempotencyKey })));
 }
 
 function safePathSegment(value, label) {

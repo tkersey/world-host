@@ -40,8 +40,11 @@ export class EffectJournal {
 
   async observe(hostRequest, options = {}) {
     const prepared = await prepareHostRequest(hostRequest);
-    const existing = await this.store.getEffectRecord(this.runId, prepared.idempotencyKey);
+    const existing = await this.store.getEffectRecord(this.runId, prepared.idempotencyKey, this.branchId);
     if (existing) return await this.#reuseOrConflict(existing, prepared);
+
+    const reusable = await this.#branchLocalReusableRecord(prepared);
+    if (reusable) return reusable;
 
     const manifest = options.manifest ? normalizeManifest(options.manifest) : null;
     const recoveryClass = options.recoveryClass ?? manifest?.recoveryClass ?? hostRequest.recoveryClass;
@@ -73,6 +76,7 @@ export class EffectJournal {
     const observed = await this.observe(hostRequest, { manifest });
     const reused = await this.#resolutionFromRecord(observed);
     if (reused) return reused;
+    if (observed.state === EffectState.running) return await this.recover(context, observed, driver);
 
     const running = await this.#put({
       ...observed,
@@ -188,6 +192,30 @@ export class EffectJournal {
       });
     }
     return existing;
+  }
+
+  async #branchLocalReusableRecord(prepared) {
+    const idempotencyKeyJson = stableJson(prepared.idempotencyKey);
+    for (const record of await this.list()) {
+      assertEffectRecord(record);
+      if (stableJson(record.idempotencyKey) !== idempotencyKeyJson) continue;
+      if (record.requestBytesChecksum !== prepared.requestBytesChecksum) {
+        fail('ERR_EFFECT_IDEMPOTENCY_CONFLICT', 'same full idempotency key used with different request bytes', {
+          runId: this.runId,
+          idempotencyKeyWorldFingerprint: record.idempotencyKeyWorldFingerprint,
+        });
+      }
+      if (record.state === EffectState.running || (TERMINAL_WITH_OUTCOME.has(record.state) && record.resolutionInputRef)) {
+        return await this.#put({
+          ...record,
+          branchId: this.branchId,
+          parentTurnClosureFingerprint: this.parentTurnClosureFingerprint,
+          state: record.state === EffectState.running ? EffectState.running : EffectState.resolved,
+          diagnostics: { ...record.diagnostics, branchLocalReuse: record.branchId },
+        });
+      }
+    }
+    return null;
   }
 
   async #resolutionFromRecord(record) {

@@ -376,12 +376,34 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}) {
     (!hostRequest.responseSchema || manifest.supportedResponseStatuses?.includes(hostRequest.responseSchema.status) === true);
   if (!structuralMatch) return false;
   if (hostRequest.requestBytes?.byteLength > manifest.maximumRequestBytes) return false;
+  const allowedAuthorityLabels = policySet(policy.allowedAuthorityLabels);
+  if (allowedAuthorityLabels.size && manifest.authorityLabels.some((label) => !allowedAuthorityLabels.has(label))) return false;
+  const allowedHttpOrigins = policySet(policy.allowedHttpOrigins);
+  if (allowedHttpOrigins.size && (hostRequest.actuationClass === 'http' || manifest.authorityLabels.includes('network:http'))) {
+    const origin = requestOrigin(hostRequest);
+    if (!origin || !allowedHttpOrigins.has(origin)) return false;
+  }
   try {
     assertDurableRecoveryAllowed(manifest.recoveryClass, policy);
   } catch {
     return false;
   }
   return true;
+}
+
+function policySet(value) {
+  if (value instanceof Set) return value;
+  if (Array.isArray(value)) return new Set(value);
+  return new Set();
+}
+
+function requestOrigin(hostRequest) {
+  try {
+    const request = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
+    return new URL(request.url).origin;
+  } catch {
+    return null;
+  }
 }
 
 function unresolvedHostRequestDiagnostic(index, hostRequest) {

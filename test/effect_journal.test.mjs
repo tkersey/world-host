@@ -46,6 +46,20 @@ describe('EffectJournal', () => {
     );
   });
 
+  it('recovers running effects instead of resolving them again', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const observed = await journal.observe(hostRequest(), { recoveryClass: EffectRecoveryClass.idempotent });
+    await store.putEffectRecord({ ...observed, state: EffectState.running, attemptCount: 1 });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+
+    const recovered = await journal.resolve({}, hostRequest(), driver);
+
+    assert.equal(recovered.record.state, EffectState.resolved);
+    assert.equal(driver.calls, 0);
+    assert.equal(driver.recoverCalls, 1);
+  });
+
   it('marks unresolved best_effort recovery for operator intervention', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({
@@ -127,6 +141,25 @@ describe('EffectJournal', () => {
     assert.equal(driver.calls, 5);
   });
 
+  it('reuses same-key outcomes with a branch-local effect record', async () => {
+    const store = new MemoryStore();
+    const mainJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const alternateJournal = new EffectJournal({ store, runId: 'run', branchId: 'alternate', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+
+    const main = await mainJournal.resolve({}, hostRequest(), driver);
+    const alternate = await alternateJournal.resolve({}, hostRequest(), driver);
+    const records = await store.listEffectRecords('run');
+
+    assert.equal(main.record.branchId, 'main');
+    assert.equal(alternate.record.branchId, 'alternate');
+    assert.equal(alternate.reused, true);
+    assert.equal(driver.calls, 1);
+    assert.equal(records.length, 2);
+    assert.equal(records.filter((record) => record.branchId === 'main').length, 1);
+    assert.equal(records.filter((record) => record.branchId === 'alternate').length, 1);
+  });
+
   it('fails closed when committed-head recovery lacks a parent fingerprint', async () => {
     const journal = new EffectJournal({ store: new MemoryStore(), runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
 
@@ -153,6 +186,7 @@ function hostRequest(overrides = {}) {
 function fixtureDriver({ recoveryClass, response = 'resolution', descriptorFingerprint = 'descriptor:fixture' }) {
   return {
     calls: 0,
+    recoverCalls: 0,
     manifest() {
       return {
         driverId: 'fixture-driver',
@@ -172,6 +206,7 @@ function fixtureDriver({ recoveryClass, response = 'resolution', descriptorFinge
       return { resolutionInputBytes: fromUtf8(response) };
     },
     async recover() {
+      this.recoverCalls += 1;
       return { resolutionInputBytes: fromUtf8(`recovered:${response}`) };
     },
   };
