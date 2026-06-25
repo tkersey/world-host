@@ -205,6 +205,17 @@ export class EffectJournal {
         idempotencyKeyWorldFingerprint: existing.idempotencyKeyWorldFingerprint,
       });
     }
+    if (
+      existing.parentTurnClosureFingerprint !== this.parentTurnClosureFingerprint &&
+      (existing.state === EffectState.running || (TERMINAL_WITH_OUTCOME.has(existing.state) && existing.resolutionInputRef))
+    ) {
+      return await this.#put({
+        ...existing,
+        parentTurnClosureFingerprint: this.parentTurnClosureFingerprint,
+        state: existing.state === EffectState.running ? EffectState.running : EffectState.resolved,
+        diagnostics: { ...existing.diagnostics, parentReboundFrom: existing.parentTurnClosureFingerprint },
+      });
+    }
     return existing;
   }
 

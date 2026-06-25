@@ -237,6 +237,24 @@ describe('EffectJournal', () => {
     assert.equal(records.filter((record) => record.branchId === 'alternate').length, 1);
   });
 
+  it('reparents same-branch reused outcomes to the current parent', async () => {
+    const store = new MemoryStore();
+    const firstJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const nextJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:1' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+
+    await firstJournal.resolve({}, hostRequest(), driver);
+    const reused = await nextJournal.resolve({}, hostRequest(), driver);
+    const records = await store.listEffectRecords('run');
+
+    assert.equal(reused.reused, true);
+    assert.equal(reused.record.parentTurnClosureFingerprint, 'turn:1');
+    assert.equal(reused.record.state, EffectState.resolved);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].parentTurnClosureFingerprint, 'turn:1');
+    assert.equal(driver.calls, 1);
+  });
+
   it('fails closed when committed-head recovery lacks a parent fingerprint', async () => {
     const journal = new EffectJournal({ store: new MemoryStore(), runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
 

@@ -56,7 +56,7 @@ export function assertDriverManifest(manifest) {
   requiredSafeInteger(manifest.maximumRequestBytes, 'maximumRequestBytes');
   requiredSafeInteger(manifest.maximumResponseBytes, 'maximumResponseBytes');
   assertRecoveryClass(manifest.recoveryClass);
-  requiredSafeInteger(manifest.concurrencyLimit, 'concurrencyLimit');
+  requiredPositiveSafeInteger(manifest.concurrencyLimit, 'concurrencyLimit');
   requiredList(manifest.authorityLabels, 'authorityLabels');
   return Object.freeze({
     driverId: manifest.driverId,
@@ -97,4 +97,8 @@ function requiredList(value, field) {
 
 function requiredSafeInteger(value, field) {
   if (!Number.isSafeInteger(value) || value < 0) fail('ERR_INVALID_DRIVER_MANIFEST', `${field} must be a non-negative safe integer`);
+}
+
+function requiredPositiveSafeInteger(value, field) {
+  if (!Number.isSafeInteger(value) || value < 1) fail('ERR_INVALID_DRIVER_MANIFEST', `${field} must be a positive safe integer`);
 }

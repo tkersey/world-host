@@ -5,7 +5,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 
-import { EffectRecoveryClass } from '../src/core/actuator.mjs';
+import { EffectRecoveryClass, assertDriverManifest } from '../src/core/actuator.mjs';
 import { createRunPolicy, preflightCapabilities } from '../src/core/capabilities.mjs';
 import { FixtureModelDriver } from '../src/drivers/fixture_model_driver.mjs';
 import { SandboxFileDriver } from '../src/drivers/sandbox_file_driver.mjs';
@@ -76,6 +76,13 @@ describe('capability preflight and reference drivers', () => {
     });
     assert.ok(report.blockers.includes('response-limit-exceeds-policy'));
     assert.equal(report.everyPendingRequestCovered, true);
+  });
+
+  it('rejects zero-concurrency driver manifests before preflight can cover requests', () => {
+    assert.throws(
+      () => assertDriverManifest({ ...policyDeniedFixtureDriver().manifest(), concurrencyLimit: 0 }),
+      { code: 'ERR_INVALID_DRIVER_MANIFEST' },
+    );
   });
 
   it('constrains sandbox file paths, symlinks, and atomic writes', async () => {
