@@ -52,6 +52,13 @@ describe('migration, branching, and CLI diagnostics', () => {
     assert.deepEqual(carrierExport.bundle.run.branches.map((branch) => branch.branchId), ['main']);
     assert.equal((await receiver.getApplication(source.run.applicationId)).applicationId, source.run.applicationId);
     assert.equal((await receiver.readHead('receiver-run', 'main')).turnClosureWorldFingerprint, source.head.turnClosureWorldFingerprint);
+    await assert.rejects(
+      () => importCarrierRun(receiver, carrierExport, { runId: 'receiver-run', preflight: async () => ({ blockers: [] }) }),
+      { code: 'ERR_IMPORT_RUN_EXISTS' },
+    );
+    const corrupt = JSON.parse(JSON.stringify(carrierExport.bundle));
+    corrupt.blobs[0].byteLength += 1;
+    await assert.rejects(() => new MemoryStore().importRun(corrupt), { code: 'ERR_IMPORT_BLOB_CHECKSUM_MISMATCH' });
   });
 
   it('redacts credentials from CLI-shaped diagnostics', async () => {

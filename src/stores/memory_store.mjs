@@ -112,9 +112,30 @@ export class MemoryStore extends ClosureStore {
   }
 
   async importRun(bundle) {
-    for (const blob of bundle.blobs ?? []) this.blobs.set(blob.checksum, Uint8Array.from(blob.bytes));
+    const importedBlobs = new Map();
+    for (const blob of bundle.blobs ?? []) {
+      if (Array.isArray(blob.bytes)) {
+        const bytes = Uint8Array.from(blob.bytes);
+        const checksum = await sha256(bytes);
+        if (checksum !== blob.checksum || bytes.byteLength !== blob.byteLength) fail('ERR_IMPORT_BLOB_CHECKSUM_MISMATCH');
+        importedBlobs.set(blob.checksum, bytes);
+      } else {
+        assertBlobRef(blob);
+      }
+    }
+    if (bundle.application && this.applications.has(bundle.application.applicationId)) {
+      const existing = this.applications.get(bundle.application.applicationId);
+      if (stableJson(existing) !== stableJson(bundle.application)) fail('ERR_IMPORT_APPLICATION_MISMATCH');
+    }
+    if (this.runs.has(bundle.run.runId)) fail('ERR_IMPORT_RUN_EXISTS');
+    if (this.heads.has(headKey(bundle.run.runId, bundle.branchId))) fail('ERR_IMPORT_HEAD_EXISTS');
+    for (const ref of collectBlobRefs(bundle.run, bundle.application, bundle.head, bundle.effects ?? [])) {
+      const bytes = importedBlobs.get(ref.checksum) ?? this.blobs.get(ref.checksum);
+      if (!bytes || bytes.byteLength !== ref.byteLength) fail('ERR_IMPORT_BLOB_REF_MISSING');
+    }
+    for (const [checksum, bytes] of importedBlobs) this.blobs.set(checksum, new Uint8Array(bytes));
     if (bundle.application && !this.applications.has(bundle.application.applicationId)) this.applications.set(bundle.application.applicationId, clone(bundle.application));
-    if (!this.runs.has(bundle.run.runId)) this.runs.set(bundle.run.runId, clone(bundle.run));
+    this.runs.set(bundle.run.runId, clone(bundle.run));
     this.heads.set(headKey(bundle.run.runId, bundle.branchId), clone(bundle.head));
     for (const effect of bundle.effects ?? []) await this.putEffectRecord(effect);
     return await this.getRun(bundle.run.runId);
