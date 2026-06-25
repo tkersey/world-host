@@ -16,6 +16,12 @@ export async function forkRunBranch(store, { runId, sourceBranchId, sourceClosur
     currentHead: sourceHead,
     diagnostics: { sourceRunId: run.runId },
   });
+  try {
+    await store.readHead(runId, newBranchId);
+    fail('ERR_BRANCH_EXISTS');
+  } catch (error) {
+    if (error?.code !== 'ERR_HEAD_NOT_FOUND') throw error;
+  }
   await writeBranchHead(store, runId, newBranchId, sourceHead);
   return branch;
 }

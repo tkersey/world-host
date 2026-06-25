@@ -27,6 +27,12 @@ describe('migration, branching, and CLI diagnostics', () => {
     assert.equal(branch.parentBranchId, 'main');
     assert.equal((await store.readHead(run.runId, 'main')).generation, 0);
     assert.equal((await store.readHead(run.runId, 'alternate')).turnClosureWorldFingerprint, head.turnClosureWorldFingerprint);
+    await assert.rejects(() => forkRunBranch(store, {
+      runId: run.runId,
+      sourceBranchId: 'main',
+      sourceClosureFingerprint: head.turnClosureWorldFingerprint,
+      newBranchId: 'alternate',
+    }), { code: 'ERR_BRANCH_EXISTS' });
   });
 
   it('exports and imports with receiver-local run id and no authority transfer', async () => {
@@ -536,6 +542,21 @@ describe('migration, branching, and CLI diagnostics', () => {
         }
       } finally {
         await rm(mismatchRoot, { recursive: true, force: true });
+      }
+
+      const corruptRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-import-corrupt-'));
+      try {
+        const corruptStore = new DirectoryStore(corruptRoot);
+        const corruptExport = JSON.parse(JSON.stringify(carrierExport));
+        corruptExport.bundle.blobs[0].byteLength += 1;
+        await corruptStore.acquireLock();
+        try {
+          await assert.rejects(() => corruptStore.importRun(corruptExport.bundle), { code: 'ERR_IMPORT_BLOB_CHECKSUM_MISMATCH' });
+        } finally {
+          await corruptStore.releaseLock();
+        }
+      } finally {
+        await rm(corruptRoot, { recursive: true, force: true });
       }
     } finally {
       await rm(sourceRoot, { recursive: true, force: true });

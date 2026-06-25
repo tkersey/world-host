@@ -147,10 +147,13 @@ export class DirectoryStore extends ClosureStore {
     for (const blob of bundle.blobs ?? []) {
       if (Array.isArray(blob.bytes)) {
         const ref = await this.putBlob(Uint8Array.from(blob.bytes));
-        if (ref.checksum !== blob.checksum) fail('ERR_IMPORT_BLOB_CHECKSUM_MISMATCH');
+        if (ref.checksum !== blob.checksum || ref.byteLength !== blob.byteLength) fail('ERR_IMPORT_BLOB_CHECKSUM_MISMATCH');
       } else {
         assertBlobRef(blob);
       }
+    }
+    for (const ref of collectBlobRefs(bundle.run, bundle.application, bundle.head, bundle.effects ?? [])) {
+      if (!await this.hasBlob(ref)) fail('ERR_IMPORT_BLOB_REF_MISSING');
     }
     if (bundle.application) {
       if (await exists(applicationPath(this.root, bundle.application.applicationId))) {
