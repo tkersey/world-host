@@ -11,7 +11,7 @@ import { EffectJournal } from '../src/core/effect_journal.mjs';
 import { exportCarrierRun, forkRunBranch, importCarrierRun } from '../src/core/migration.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from '../src/core/run.mjs';
 import { fromUtf8 } from '../src/core/store.mjs';
-import { WorldWorker } from '../src/core/worker.mjs';
+import { RunController, WorldWorker } from '../src/core/worker.mjs';
 import { NodeStoreLock } from '../src/node/node_lock.mjs';
 import { redact, runNodeCli } from '../src/node/node_cli.mjs';
 import { encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
@@ -99,8 +99,14 @@ describe('migration, branching, and CLI diagnostics', () => {
 
       assert.equal(branch.forkedFromTurnClosureFingerprint, head.turnClosureWorldFingerprint);
       assert.equal((await store.readHead(run.runId, 'historic')).turnClosureWorldFingerprint, head.turnClosureWorldFingerprint);
+      assert.equal((await store.readHead(run.runId, 'historic')).generation, head.generation);
       assert.equal((await store.readHead(run.runId, 'main')).turnClosureWorldFingerprint, advancedHead.turnClosureWorldFingerprint);
       assert.equal((await store.getRun(run.runId)).branches.some((item) => item.branchId === 'historic'), true);
+
+      const controller = new RunController({ store, workerFactory: async () => new DeterministicCliWorker('historic') });
+      const advancedHistoric = await controller.advance(run.runId, 'historic');
+      assert.equal(advancedHistoric.status, 'advanced');
+      assert.equal(advancedHistoric.nextHead.generation, head.generation + 1);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -177,6 +183,27 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(results.filter((result) => result.ok).length, 1);
       assert.equal((await first.readHead(run.runId, 'main')).generation, head.generation + 1);
     } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('removes a lock file when acquisition metadata write fails', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-lock-write-failure-'));
+    const lockPath = path.join(root, 'store.lock');
+    const failing = new NodeStoreLock(lockPath, {
+      writeMetadata: async () => {
+        const error = new Error('test metadata write failed');
+        error.code = 'ERR_TEST_LOCK_METADATA_WRITE_FAILED';
+        throw error;
+      },
+    });
+    const afterFailure = new NodeStoreLock(lockPath);
+    try {
+      await assert.rejects(() => failing.acquire(), { code: 'ERR_TEST_LOCK_METADATA_WRITE_FAILED' });
+      await afterFailure.acquire();
+    } finally {
+      await afterFailure.release();
+      await failing.release();
       await rm(root, { recursive: true, force: true });
     }
   });
