@@ -90,6 +90,7 @@ export async function exportCarrierRun(store, runId, branchId, options = {}) {
 
 export async function importCarrierRun(store, carrierExport, options = {}) {
   if (carrierExport?.carrierExportVersion !== 'CarrierExport-v0') fail('ERR_INVALID_CARRIER_EXPORT');
+  if (stableJson(carrierExport.release) !== stableJson(carrierVersionSummary())) fail('ERR_IMPORT_RELEASE_MISMATCH');
   rejectUnrecoverableEffects(carrierExport.bundle.effects ?? []);
   if (typeof options.preflight === 'function') {
     const report = await options.preflight(carrierExport);

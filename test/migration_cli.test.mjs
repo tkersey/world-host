@@ -202,6 +202,25 @@ describe('migration, branching, and CLI diagnostics', () => {
       () => importCarrierRun(receiver, carrierExport, { runId: 'receiver-run', preflight: async () => ({ blockers: [] }) }),
       { code: 'ERR_IMPORT_RUN_EXISTS' },
     );
+    const mismatchedRelease = JSON.parse(JSON.stringify(carrierExport));
+    mismatchedRelease.release.world = 'v999.0.0';
+    const rejectedMemory = new MemoryStore();
+    await assert.rejects(
+      () => importCarrierRun(rejectedMemory, mismatchedRelease, { runId: 'rejected-run' }),
+      { code: 'ERR_IMPORT_RELEASE_MISMATCH' },
+    );
+    await assert.rejects(() => rejectedMemory.getRun('rejected-run'), { code: 'ERR_RUN_NOT_FOUND' });
+    const rejectedRoot = await mkdtemp(path.join(tmpdir(), 'world-host-release-mismatch-'));
+    try {
+      const rejectedDirectory = new DirectoryStore(rejectedRoot);
+      await assert.rejects(
+        () => importCarrierRun(rejectedDirectory, mismatchedRelease, { runId: 'rejected-run' }),
+        { code: 'ERR_IMPORT_RELEASE_MISMATCH' },
+      );
+      await assert.rejects(() => rejectedDirectory.getRun('rejected-run'), { code: 'ERR_RUN_NOT_FOUND' });
+    } finally {
+      await rm(rejectedRoot, { recursive: true, force: true });
+    }
     const corrupt = JSON.parse(JSON.stringify(carrierExport.bundle));
     corrupt.blobs[0].byteLength += 1;
     await assert.rejects(() => new MemoryStore().importRun(corrupt), { code: 'ERR_IMPORT_BLOB_CHECKSUM_MISMATCH' });
