@@ -847,6 +847,11 @@ describe('EffectJournal', () => {
       idempotencyKeyWorldFingerprint: 'world:key:uncommitted-resolved',
       requestBytes: fromUtf8('request:uncommitted-resolved'),
     }), driver)).record;
+    const uncommittedSubmitted = await mainJournal.markSubmitted((await mainJournal.resolve({}, hostRequest({
+      idempotencyKeyBytes: fromUtf8('key:uncommitted-submitted'),
+      idempotencyKeyWorldFingerprint: 'world:key:uncommitted-submitted',
+      requestBytes: fromUtf8('request:uncommitted-submitted'),
+    }), driver)).record);
     const matching = await mainJournal.markSubmitted((await mainJournal.resolve({}, hostRequest({ idempotencyKeyBytes: fromUtf8('key:matching') }), driver)).record);
     const otherParent = await otherParentJournal.markSubmitted((await otherParentJournal.resolve({}, hostRequest({
       idempotencyKeyBytes: fromUtf8('key:other-parent'),
@@ -874,9 +879,10 @@ describe('EffectJournal', () => {
     assert.equal(records.find((record) => record.idempotencyKey.bytesHex === resolved.idempotencyKey.bytesHex).state, EffectState.resolved);
     assert.equal(records.find((record) => record.idempotencyKey.bytesHex === uncommittedResolved.idempotencyKey.bytesHex).state, EffectState.resolved);
     assert.equal(records.find((record) => record.idempotencyKey.bytesHex === matching.idempotencyKey.bytesHex).state, EffectState.closureCommitted);
+    assert.equal(records.find((record) => record.idempotencyKey.bytesHex === uncommittedSubmitted.idempotencyKey.bytesHex).state, EffectState.submitted);
     assert.equal(records.find((record) => record.idempotencyKey.bytesHex === otherParent.idempotencyKey.bytesHex).state, EffectState.submitted);
     assert.equal(records.find((record) => record.idempotencyKey.bytesHex === otherBranch.idempotencyKey.bytesHex).state, EffectState.submitted);
-    assert.equal(driver.calls, 5);
+    assert.equal(driver.calls, 6);
   });
 
   it('reuses same-key outcomes with a branch-local effect record', async () => {
@@ -926,7 +932,10 @@ describe('EffectJournal', () => {
     const resolved = await nextJournal.resolve({}, hostRequest(), driver);
     const submitted = await nextJournal.markSubmitted(resolved.record);
     const result = await nextJournal.reconcileCommittedHead({
-      updateDiagnostics: { parentTurnClosureFingerprint: 'turn:1' },
+      updateDiagnostics: {
+        parentTurnClosureFingerprint: 'turn:1',
+        committedEffectIds: [submitted.idempotencyKeyWorldFingerprint],
+      },
     });
     const records = await store.listEffectRecords('run');
 

@@ -2044,6 +2044,7 @@ async function fixtureDirectoryStore(root, options = {}) {
       status: closureSummary.status,
       updateDiagnostics: {
         parentTurnClosureFingerprint: 'world:closure:parent',
+        committedEffectIds: ['world:key:cli'],
       },
     });
     const run = createRunRecord({
