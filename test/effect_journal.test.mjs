@@ -36,7 +36,7 @@ describe('EffectJournal', () => {
     assert.deepEqual(decodeResolutionInputBytes(second.resolutionInputBytes).responseValueImageBytes, fromUtf8('resolution:one'));
   });
 
-  it('rejects actual driver responses that exceed receiver policy', async () => {
+  it('rejects driver response limits outside receiver policy before execution', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({
       store,
@@ -45,24 +45,26 @@ describe('EffectJournal', () => {
       parentTurnClosureFingerprint: 'turn:0',
       policy: { maximumResponseBytes: 1 },
     });
+    const driver = fixtureDriver({
+      recoveryClass: EffectRecoveryClass.idempotent,
+      response: encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xa1n,
+        status: 0,
+        responseValueImageBytes: fromUtf8('too large'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: new Uint8Array(),
+      }),
+    });
 
     await assert.rejects(
-      () => journal.resolve({}, hostRequest(), fixtureDriver({
-        recoveryClass: EffectRecoveryClass.idempotent,
-        response: encodeResolutionInputBytes({
-          targetHostRequestFingerprint: 0xa1n,
-          status: 0,
-          responseValueImageBytes: fromUtf8('too large'),
-          hostClaimBytes: new Uint8Array(),
-          attemptNumber: 1,
-          metadata: new Uint8Array(),
-        }),
-      })),
-      { code: 'ERR_EFFECT_RESPONSE_TOO_LARGE' },
+      () => journal.resolve({}, hostRequest(), driver),
+      { code: 'ERR_EFFECT_RESPONSE_LIMIT_EXCEEDS_POLICY' },
     );
     const records = await store.listEffectRecords('run');
     assert.equal(records.length, 1);
-    assert.equal(records[0].state, EffectState.failed);
+    assert.equal(records[0].state, EffectState.observed);
+    assert.equal(driver.calls, 0);
   });
 
   it('rejects actual driver responses that exceed manifest limits', async () => {
@@ -89,25 +91,56 @@ describe('EffectJournal', () => {
   it('rejects driver ResolutionInput targeting another HostRequest before persisting it', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({
+      recoveryClass: EffectRecoveryClass.idempotent,
+      response: encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xa2n,
+        status: 0,
+        responseValueImageBytes: fromUtf8('wrong target'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: new Uint8Array(),
+      }),
+    });
 
     await assert.rejects(
-      () => journal.resolve({}, hostRequest(), fixtureDriver({
-        recoveryClass: EffectRecoveryClass.idempotent,
-        response: encodeResolutionInputBytes({
-          targetHostRequestFingerprint: 0xa2n,
-          status: 0,
-          responseValueImageBytes: fromUtf8('wrong target'),
-          hostClaimBytes: new Uint8Array(),
-          attemptNumber: 1,
-          metadata: new Uint8Array(),
-        }),
-      })),
+      () => journal.resolve({}, hostRequest(), driver),
       { code: 'ERR_EFFECT_RESOLUTION_TARGET_MISMATCH' },
     );
     const records = await store.listEffectRecords('run');
     assert.equal(records.length, 1);
     assert.equal(records[0].state, EffectState.failed);
     assert.equal(records[0].resolutionInputRef, undefined);
+    assert.equal(driver.calls, 1);
+  });
+
+  it('does not automatically re-run failed non-idempotent effects', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({
+      recoveryClass: EffectRecoveryClass.transactional,
+      response: encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xa2n,
+        status: 0,
+        responseValueImageBytes: fromUtf8('wrong target'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: new Uint8Array(),
+      }),
+    });
+
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest(), driver),
+      { code: 'ERR_EFFECT_RESOLUTION_TARGET_MISMATCH' },
+    );
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest(), driver),
+      { code: 'ERR_EFFECT_FAILED_REQUIRES_OPERATOR' },
+    );
+    const records = await store.listEffectRecords('run');
+    assert.equal(records.length, 1);
+    assert.equal(records[0].state, EffectState.failed);
+    assert.equal(driver.calls, 1);
   });
 
   it('rejects driver ResolutionInput statuses outside the HostRequest response schema', async () => {
@@ -311,6 +344,37 @@ describe('EffectJournal', () => {
     );
   });
 
+  it('rechecks best_effort policy before resolving an existing observed effect', async () => {
+    const store = new MemoryStore();
+    const approved = new EffectJournal({
+      store,
+      runId: 'run',
+      branchId: 'main',
+      parentTurnClosureFingerprint: 'turn:0',
+      policy: { allowBestEffort: true },
+    });
+    await approved.observe(hostRequest(), { recoveryClass: EffectRecoveryClass.bestEffort });
+    const durable = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+
+    await assert.rejects(
+      () => durable.resolve({}, hostRequest(), fixtureDriver({ recoveryClass: EffectRecoveryClass.bestEffort })),
+      { code: 'ERR_BEST_EFFORT_REQUIRES_OPERATOR_OPT_IN' },
+    );
+  });
+
+  it('rejects selected driver recovery classes that differ from the observed effect', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+    await journal.observe(hostRequest(), { recoveryClass: EffectRecoveryClass.pure });
+
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest(), driver),
+      { code: 'ERR_EFFECT_RECOVERY_CLASS_MISMATCH' },
+    );
+    assert.equal(driver.calls, 0);
+  });
+
   it('recovers running effects instead of resolving them again', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
@@ -332,6 +396,20 @@ describe('EffectJournal', () => {
     const observed = await journal.observe(hostRequest(), { recoveryClass: EffectRecoveryClass.pure });
     await store.putEffectRecord({ ...observed, state: EffectState.running, attemptCount: 1 });
     const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.pure, recover: false });
+
+    const recovered = await journal.resolve({}, hostRequest(), driver);
+
+    assert.equal(recovered.record.state, EffectState.resolved);
+    assert.equal(driver.calls, 1);
+    assert.equal(driver.recoverCalls, 0);
+  });
+
+  it('reissues running idempotent effects when no recover hook exists', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const observed = await journal.observe(hostRequest(), { recoveryClass: EffectRecoveryClass.idempotent });
+    await store.putEffectRecord({ ...observed, state: EffectState.running, attemptCount: 1 });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent, recover: false });
 
     const recovered = await journal.resolve({}, hostRequest(), driver);
 
@@ -388,6 +466,35 @@ describe('EffectJournal', () => {
     assert.equal(recovered.record.state, EffectState.resolved);
     assert.equal(driver.calls, 1);
     assert.equal(driver.recoverCalls, 1);
+  });
+
+  it('keeps pure driver failures recomputable before requiring operator recovery', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.pure, recover: false });
+    driver.resolve = async (_context, request) => {
+      driver.calls += 1;
+      if (driver.calls === 1) {
+        const error = new Error('pure result not produced');
+        error.code = 'ERR_PURE_TRANSIENT';
+        throw error;
+      }
+      return { resolutionInputBytes: fixtureResolutionInputBytes(request, fromUtf8('pure recomputed')) };
+    };
+
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest(), driver),
+      { code: 'ERR_PURE_TRANSIENT' },
+    );
+    const [running] = await store.listEffectRecords('run');
+    assert.equal(running.state, EffectState.running);
+    assert.equal(running.diagnostics.recoveryRequired, 'pure_resolve_failed');
+
+    const recovered = await journal.resolve({}, hostRequest(), driver);
+
+    assert.equal(recovered.record.state, EffectState.resolved);
+    assert.equal(driver.calls, 2);
+    assert.equal(driver.recoverCalls, 0);
   });
 
   it('keeps idempotent driver failures recoverable before retrying side effects', async () => {

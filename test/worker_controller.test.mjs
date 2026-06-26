@@ -84,6 +84,28 @@ describe('RunController and WorldWorker', () => {
     assert.equal(worker.restoreCount, 0);
   });
 
+  it('preflights installed application requirements before worker execution', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      applicationOverrides: {
+        requiredActuators: [{ actuatorRef: 'sandbox:file' }],
+      },
+    });
+    let workerCreated = false;
+    const controller = new RunController({
+      store,
+      workerFactory: async () => {
+        workerCreated = true;
+        return new ScriptedWorker();
+      },
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_CAPABILITY_PREFLIGHT_BLOCKED' },
+    );
+    assert.equal(workerCreated, false);
+  });
+
   it('rejects parent heads whose metadata does not match stored closure bytes', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headOverrides: { turnClosureWorldFingerprint: 'world:turn-closure:0000000000000bad' },
@@ -604,6 +626,62 @@ describe('RunController and WorldWorker', () => {
     assert.equal((await store.listEffectRecords(runId)).length, 0);
   });
 
+  it('skips HTTP drivers whose method coverage does not match the request', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const getOnly = policyDeniedHttpDriver({ origins: ['https://allowed.example'], methods: ['GET'] });
+    const postCapable = {
+      invocationCount: 0,
+      manifest() {
+        return {
+          ...getOnly.manifest(),
+          driverId: 'policy.http.post.driver',
+          diagnostics: { origins: ['https://allowed.example'], methods: ['POST'] },
+        };
+      },
+      async resolve() {
+        this.invocationCount += 1;
+        return {
+          resolutionInputBytes: encodeResolutionInputBytes({
+            targetHostRequestFingerprint: 0xa01n,
+            status: 0,
+            responseValueImageBytes: fixtureResponseValueBytes('response', 0xa01n),
+            hostClaimBytes: fromUtf8('claim'),
+            attemptNumber: 1,
+            metadata: fromUtf8('metadata'),
+          }),
+        };
+      },
+    };
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [getOnly, postCapable],
+      effectPolicy: {
+        allowedAuthorityLabels: new Set(['network:http']),
+        allowedHttpOrigins: new Set(['https://allowed.example']),
+      },
+      hostRequestMapper: () => ({
+        actuatorRef: 'http:json',
+        descriptorFingerprint: 'descriptor:http-json',
+        actuationClass: 'http',
+        responseSchema: { status: 'ok' },
+        idempotencyKeyBytes: fromUtf8('http-idempotency-key'),
+        idempotencyKeyWorldFingerprint: 'world:key:http',
+        requestBytes: fromUtf8(JSON.stringify({ url: 'https://allowed.example/path', method: 'POST' })),
+        hostRequestFingerprint: 'world:host-request:0000000000000a01',
+      }),
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(getOnly.invocationCount, 0);
+    assert.equal(postCapable.invocationCount, 1);
+  });
+
   it('rejects drivers that exceed receiver byte limits before resolving effects', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
@@ -752,6 +830,25 @@ describe('RunController and WorldWorker', () => {
     assert.deepEqual(await store.getBlob(result.nextHead.turnClosureRef), closureBytes);
   });
 
+  it('preserves archive-less RunHead anchors across archive-less advances', async () => {
+    const parentClosureBytes = fixtureTurnClosureBytes({ archiveLess: true });
+    const nextClosureBytes = fixtureTurnClosureBytes({ archiveLess: true });
+    const { store, runId, branchId } = await fixtureStore({
+      closureBytes: parentClosureBytes,
+      headOverrides: {
+        archiveMomentFingerprint: null,
+        archiveSealFingerprint: null,
+      },
+    });
+    const controller = new RunController({ store, workerFactory: async () => new ClosureOnlyWorker(nextClosureBytes) });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(result.nextHead.archiveMomentFingerprint, null);
+    assert.equal(result.nextHead.archiveSealFingerprint, null);
+  });
+
   it('maps World TurnClosure terminal statuses without shifting enum values', async () => {
     for (const [statusByte, statusLabel] of [
       [1, 'yielded_budget'],
@@ -863,9 +960,10 @@ async function fixtureStore(options = {}) {
     executableImageRef: imageRef,
     executableImageWorldFingerprint: 'world:image',
     applianceManifestRef: manifestRef,
-    requiredActuators: [],
-    requiredRuntimeLimits: {},
+    requiredActuators: options.applicationOverrides?.requiredActuators ?? [],
+    requiredRuntimeLimits: options.applicationOverrides?.requiredRuntimeLimits ?? {},
     installationDiagnostics: {},
+    ...options.applicationOverrides,
   });
   await store.createApplication(application);
   const head = createRunHead({
@@ -1097,6 +1195,7 @@ function policyDeniedHttpDriver(options = {}) {
         authorityLabels: ['network:http'],
         diagnostics: {
           ...(options.origins ? { origins: options.origins } : {}),
+          ...(options.methods ? { methods: options.methods } : {}),
         },
       };
     },
@@ -1209,8 +1308,8 @@ function fixtureTurnClosureBytes(options = {}) {
     optionalU64(null),
     u64(0xc01n),
     optionalU64(0xa00n),
-    optionalU64(0xa01n),
-    optionalU64(0xa02n),
+    optionalU64(options.archiveLess ? null : 0xa01n),
+    optionalU64(options.archiveLess ? null : 0xa02n),
     optionalU64(0xa03n),
     optionalU64(0xb01n),
     u8(2),

@@ -43,6 +43,11 @@ describe('migration, branching, and CLI diagnostics', () => {
   it('resumes fork metadata publication after matching branch head publication', async () => {
     const { store, run, head } = await fixtureStore();
     store.heads.set(`${run.runId}\0alternate`, JSON.parse(JSON.stringify(head)));
+    store.heads.set(`${run.runId}\0main`, JSON.parse(JSON.stringify({
+      ...head,
+      generation: head.generation + 1,
+      turnClosureWorldFingerprint: 'world:closure:advanced',
+    })));
 
     const branch = await forkRunBranch(store, {
       runId: run.runId,
@@ -52,6 +57,7 @@ describe('migration, branching, and CLI diagnostics', () => {
     });
 
     assert.equal(branch.parentBranchId, 'main');
+    assert.equal(branch.forkedFromTurnClosureFingerprint, head.turnClosureWorldFingerprint);
     assert.equal((await store.getRun(run.runId)).branches.some((item) => item.branchId === 'alternate'), true);
   });
 
@@ -130,6 +136,12 @@ describe('migration, branching, and CLI diagnostics', () => {
     const missingRunningRequest = JSON.parse(JSON.stringify(carrierExport.bundle));
     missingRunningRequest.effects = [fixtureImportEffect(missingRunningRequest, { state: 'running', attemptCount: 1 })];
     await assertImportsReject(missingRunningRequest, 'ERR_INVALID_EFFECT_RECORD');
+    const duplicateEffect = JSON.parse(JSON.stringify(carrierExport.bundle));
+    duplicateEffect.effects = [
+      fixtureImportEffect(duplicateEffect),
+      fixtureImportEffect(duplicateEffect, { state: 'operator_intervention_required' }),
+    ];
+    await assertImportsReject(duplicateEffect, 'ERR_IMPORT_EFFECT_DUPLICATE');
   });
 
   it('redacts credentials from CLI-shaped diagnostics', async () => {
@@ -734,6 +746,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-migrate-receiver-'));
       const packagePath = path.join(receiverRoot, 'carrier-export.json');
       let diagnosticRef = null;
+      let retainedDiagnosticRef = null;
       let unreferencedRef = null;
       try {
       const { run, head } = await fixtureDirectoryStore(sourceRoot);
@@ -778,11 +791,20 @@ describe('migration, branching, and CLI diagnostics', () => {
           hostRequestFingerprint: 'world:host-request:0000000000000b01',
         }, fixtureDriver());
         diagnosticRef = await sourceStore.putBlob(fromUtf8('diagnostic-input'));
+        retainedDiagnosticRef = await sourceStore.putBlob(fromUtf8('retained-diagnostic-input'));
         unreferencedRef = await sourceStore.putBlob(fromUtf8('unrelated-secret'));
+        const mainHead = await sourceStore.readHead(run.runId, 'main');
+        await sourceStore.writeHead(run.runId, 'main', {
+          ...mainHead,
+          updateDiagnostics: {
+            ...mainHead.updateDiagnostics,
+            archiveAppendBatchRef: retainedDiagnosticRef,
+          },
+        });
         const [mainEffect] = await sourceStore.listEffectRecords(run.runId);
         await sourceStore.putEffectRecord({
           ...mainEffect,
-          diagnostics: { retainedBlobRef: diagnosticRef },
+          diagnostics: { externalChecksumLikeObject: diagnosticRef },
         });
       } finally {
         await sourceStore.releaseLock();
@@ -809,7 +831,8 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(packageJson.authorityCarried, false);
       assert.equal(packageJson.bundle.application.applicationId, run.applicationId);
       assert.equal(Array.isArray(packageJson.bundle.blobs[0].bytes), true);
-      assert.equal(packageJson.bundle.blobs.some((blob) => blob.checksum === diagnosticRef.checksum), true);
+      assert.equal(packageJson.bundle.blobs.some((blob) => blob.checksum === retainedDiagnosticRef.checksum), true);
+      assert.equal(packageJson.bundle.blobs.some((blob) => blob.checksum === diagnosticRef.checksum), false);
       assert.equal(packageJson.bundle.blobs.some((blob) => blob.checksum === unreferencedRef.checksum), false);
       assert.equal(packageJson.bundle.effects.every((effect) => effect.branchId === 'main'), true);
       assert.doesNotMatch(output, /bytesHex|complete-world-idempotency-key/);
@@ -998,7 +1021,8 @@ describe('migration, branching, and CLI diagnostics', () => {
         const receiverHead = await receiverStore.readHead('receiver-run', 'main');
         assert.equal(receiverHead.turnClosureWorldFingerprint, head.turnClosureWorldFingerprint);
         assert.deepEqual([...await receiverStore.getBlob(receiverHead.turnClosureRef)], [...fixtureTurnClosureBytes()]);
-        assert.deepEqual([...await receiverStore.getBlob(diagnosticRef)], [...fromUtf8('diagnostic-input')]);
+        assert.deepEqual([...await receiverStore.getBlob(receiverHead.updateDiagnostics.archiveAppendBatchRef)], [...fromUtf8('retained-diagnostic-input')]);
+        await assert.rejects(() => receiverStore.getBlob(diagnosticRef), { code: 'ERR_BLOB_NOT_FOUND' });
         await assert.rejects(
           () => receiverStore.readHead('receiver-run', 'alternate'),
           { code: 'ERR_HEAD_NOT_FOUND' },
@@ -1054,6 +1078,29 @@ describe('migration, branching, and CLI diagnostics', () => {
         await rm(runCollisionRoot, { recursive: true, force: true });
       }
 
+      const effectCollisionRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-import-effect-collision-'));
+      try {
+        const effectCollisionStore = new DirectoryStore(effectCollisionRoot);
+        await effectCollisionStore.acquireLock();
+        try {
+          const effectCollisionBundle = JSON.parse(JSON.stringify(carrierExport.bundle));
+          effectCollisionBundle.effects = [fixtureImportEffect(effectCollisionBundle)];
+          await effectCollisionStore.putEffectRecord({ ...effectCollisionBundle.effects[0], diagnostics: { existing: true } });
+          await assert.rejects(() => effectCollisionStore.importRun(effectCollisionBundle), { code: 'ERR_IMPORT_EFFECT_EXISTS' });
+          await assert.rejects(
+            () => effectCollisionStore.getApplication(effectCollisionBundle.application.applicationId),
+            { code: 'ERR_APPLICATION_NOT_FOUND' },
+          );
+          await assert.rejects(() => effectCollisionStore.getRun(effectCollisionBundle.run.runId), { code: 'ERR_RUN_NOT_FOUND' });
+          const firstBlob = effectCollisionBundle.blobs.find((blob) => Array.isArray(blob.bytes));
+          assert.equal(await effectCollisionStore.hasBlob({ algorithm: 'sha256', checksum: firstBlob.checksum, byteLength: firstBlob.byteLength }), false);
+        } finally {
+          await effectCollisionStore.releaseLock();
+        }
+      } finally {
+        await rm(effectCollisionRoot, { recursive: true, force: true });
+      }
+
       const mismatchRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-import-mismatch-'));
       try {
         const mismatchStore = new DirectoryStore(mismatchRoot);
@@ -1083,6 +1130,13 @@ describe('migration, branching, and CLI diagnostics', () => {
       const effectScopeMismatchBundle = JSON.parse(JSON.stringify(carrierExport.bundle));
       effectScopeMismatchBundle.effects[0].runId = 'receiver-local-run';
       await assertImportsReject(effectScopeMismatchBundle, 'ERR_IMPORT_EFFECT_SCOPE_MISMATCH');
+
+      const selectedHeadMismatchBundle = JSON.parse(JSON.stringify(carrierExport.bundle));
+      selectedHeadMismatchBundle.run.branches[0].currentHead = {
+        ...selectedHeadMismatchBundle.head,
+        generation: selectedHeadMismatchBundle.head.generation + 1,
+      };
+      await assertImportsReject(selectedHeadMismatchBundle, 'ERR_IMPORT_BRANCH_HEAD_MISMATCH');
 
       const corruptRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-import-corrupt-'));
       try {
@@ -1488,7 +1542,16 @@ async function assertImportsReject(bundle, code) {
   await assert.rejects(() => new MemoryStore().importRun(JSON.parse(JSON.stringify(bundle))), { code });
   const root = await mkdtemp(path.join(tmpdir(), 'world-host-import-reject-'));
   try {
-    await assert.rejects(() => new DirectoryStore(root).importRun(JSON.parse(JSON.stringify(bundle))), { code });
+    const directory = new DirectoryStore(root);
+    const rejected = JSON.parse(JSON.stringify(bundle));
+    await assert.rejects(() => directory.importRun(rejected), { code });
+    if (rejected.application) await assert.rejects(() => directory.getApplication(rejected.application.applicationId), { code: 'ERR_APPLICATION_NOT_FOUND' });
+    await assert.rejects(() => directory.getRun(rejected.run.runId), { code: 'ERR_RUN_NOT_FOUND' });
+    await assert.rejects(() => directory.readHead(rejected.run.runId, rejected.branchId), { code: 'ERR_HEAD_NOT_FOUND' });
+    const firstImportedBlob = rejected.blobs?.find((blob) => Array.isArray(blob.bytes));
+    if (firstImportedBlob) {
+      assert.equal(await directory.hasBlob({ algorithm: 'sha256', checksum: firstImportedBlob.checksum, byteLength: firstImportedBlob.byteLength }), false);
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

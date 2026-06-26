@@ -1,11 +1,12 @@
 import { constants } from 'node:fs';
-import { mkdir, open, realpath, rename, lstat, rm } from 'node:fs/promises';
+import { mkdir, open, realpath, lstat, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { Buffer } from 'node:buffer';
 
 import { EffectRecoveryClass } from '../core/actuator.mjs';
 import { assertBytes, fail, fromUtf8, stableJson } from '../core/store.mjs';
 import { encodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
+import { encodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
 
 export class SandboxFileDriver {
   constructor({ root, allowAbsolute = false, symlinkPolicy = 'reject', maximumReadBytes = 1024 * 1024, maximumWriteBytes = 1024 * 1024 } = {}) {
@@ -27,7 +28,7 @@ export class SandboxFileDriver {
       supportedActuationClasses: ['file'],
       supportedResponseStatuses: ['ok', 'not_found'],
       maximumRequestBytes: encodedJsonStringEnvelopeLimit(this.maximumWriteBytes, 4096),
-      maximumResponseBytes: this.maximumReadBytes,
+      maximumResponseBytes: Math.max(encodedJsonStringEnvelopeLimit(this.maximumReadBytes, 256), MAXIMUM_WRITE_ACK_BYTES),
       recoveryClass: EffectRecoveryClass.bestEffort,
       concurrencyLimit: 2,
       authorityLabels: ['file:sandbox'],
@@ -57,7 +58,7 @@ export class SandboxFileDriver {
     if (handle === null) return { resolutionInputBytes: resolutionInput(hostRequest, { status: 'not_found' }, new Uint8Array(), 1) };
     let bytes;
     try {
-      await this.#assertOpenHandleWithinRoot(handle);
+      await this.#assertOpenHandleWithinRoot(handle, resolved);
       const info = await handle.stat();
       if (!info.isFile()) fail('ERR_SANDBOX_FILE_NOT_REGULAR');
       if (info.size > this.maximumReadBytes) fail('ERR_SANDBOX_FILE_READ_TOO_LARGE');
@@ -67,29 +68,29 @@ export class SandboxFileDriver {
     }
     if (bytes === null) return { resolutionInputBytes: resolutionInput(hostRequest, { status: 'not_found' }, new Uint8Array(), 1) };
     if (bytes.byteLength > this.maximumReadBytes) fail('ERR_SANDBOX_FILE_READ_TOO_LARGE');
-    return { resolutionInputBytes: resolutionInput(hostRequest, { status: 'ok' }, bytes) };
+    return { resolutionInputBytes: resolutionInput(hostRequest, { status: 'ok' }, readValueImage(bytes)) };
   }
 
   async #write(filePath, content, key, hostRequest) {
     const bytes = content instanceof Uint8Array ? content : fromUtf8(String(content));
     if (bytes.byteLength > this.maximumWriteBytes) fail('ERR_SANDBOX_FILE_WRITE_TOO_LARGE');
     const resolved = await this.#resolvePath(filePath);
+    const outcome = { status: 'ok', path: path.relative(this.root, resolved), byteLength: bytes.byteLength };
+    const responseBytes = fromUtf8(stableJson(outcome));
+    if (responseBytes.byteLength > MAXIMUM_WRITE_ACK_BYTES) fail('ERR_SANDBOX_FILE_ACK_TOO_LARGE');
     await mkdir(path.dirname(resolved), { recursive: true });
     if (this.symlinkPolicy === 'reject') await this.#rejectSymlinkComponents(path.dirname(resolved));
-    const tmp = path.join(path.dirname(resolved), `.${path.basename(resolved)}.${tempKey(key)}.tmp`);
-    const handle = await this.#openTempForWrite(tmp);
+    const handle = await this.#openForWrite(resolved);
     try {
-      await this.#assertOpenHandleWithinRoot(handle);
+      await this.#assertOpenHandleWithinRoot(handle, resolved);
+      await handle.truncate(0);
       await handle.writeFile(bytes);
     } finally {
       await handle.close();
     }
-    if (this.symlinkPolicy === 'reject') await this.#assertResolvedPathWithinRoot(path.dirname(resolved));
-    await rename(tmp, resolved);
     if (this.symlinkPolicy === 'reject') await this.#assertResolvedPathWithinRoot(resolved);
-    const outcome = { status: 'ok', path: path.relative(this.root, resolved), byteLength: bytes.byteLength };
     this.writeOutcomes.set(key, outcome);
-    return { resolutionInputBytes: resolutionInput(hostRequest, outcome), driverTransactionRef: key };
+    return { resolutionInputBytes: resolutionInput(hostRequest, outcome, responseBytes), driverTransactionRef: key };
   }
 
   async #openForRead(filePath) {
@@ -97,21 +98,8 @@ export class SandboxFileDriver {
     return await open(filePath, flags);
   }
 
-  async #openTempForWrite(tmp) {
-    try {
-      return await open(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollowFlag());
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      const info = await lstat(tmp).catch((statError) => {
-        if (statError.code === 'ENOENT') return null;
-        throw statError;
-      });
-      if (!info) return await open(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollowFlag());
-      if (info.isSymbolicLink()) fail('ERR_SANDBOX_SYMLINK_REJECTED');
-      if (!info.isFile()) fail('ERR_SANDBOX_TEMP_EXISTS');
-      await rm(tmp, { force: true });
-      return await open(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollowFlag());
-    }
+  async #openForWrite(filePath) {
+    return await open(filePath, constants.O_WRONLY | constants.O_CREAT | noFollowFlag(), 0o600);
   }
 
   async #resolvePath(filePath) {
@@ -146,13 +134,20 @@ export class SandboxFileDriver {
     if (actual !== root && !actual.startsWith(`${root}${path.sep}`)) fail('ERR_SANDBOX_PATH_ESCAPE');
   }
 
-  async #assertOpenHandleWithinRoot(handle) {
+  async #assertOpenHandleWithinRoot(handle, expectedPath) {
+    const fdInfo = await handle.stat();
+    if (fdInfo.isFile() && fdInfo.nlink > 1) fail('ERR_SANDBOX_HARDLINK_REJECTED');
     const fdPath = process.platform === 'linux' ? `/proc/self/fd/${handle.fd}` : `/dev/fd/${handle.fd}`;
     const actual = await realpath(fdPath).catch(() => null);
-    if (!actual) return;
-    if (actual === fdPath || actual.startsWith('/dev/fd/')) return;
     const root = await this.#canonicalRoot();
-    if (actual !== root && !actual.startsWith(`${root}${path.sep}`)) fail('ERR_SANDBOX_PATH_ESCAPE');
+    if (actual && actual !== fdPath && !actual.startsWith('/dev/fd/')) {
+      if (actual !== root && !actual.startsWith(`${root}${path.sep}`)) fail('ERR_SANDBOX_PATH_ESCAPE');
+      return;
+    }
+    const expectedActual = await realpath(expectedPath);
+    if (expectedActual !== root && !expectedActual.startsWith(`${root}${path.sep}`)) fail('ERR_SANDBOX_PATH_ESCAPE');
+    const pathInfo = await stat(expectedActual);
+    if (fdInfo.dev !== pathInfo.dev || fdInfo.ino !== pathInfo.ino) fail('ERR_SANDBOX_PATH_ESCAPE');
   }
 
   async #canonicalRoot() {
@@ -163,6 +158,19 @@ export class SandboxFileDriver {
 
 function noFollowFlag() {
   return constants.O_NOFOLLOW ?? 0;
+}
+
+const MAXIMUM_WRITE_ACK_BYTES = 4096;
+
+function readValueImage(contentBytes) {
+  return encodeCanonicalValueImage({
+    bytes: fromUtf8(stableJson({
+      contentBase64: Buffer.from(contentBytes).toString('base64'),
+      encoding: 'base64',
+      status: 'ok',
+    })),
+    dynamicSize: true,
+  });
 }
 
 function resolutionInput(hostRequest, payload, responseBytes = fromUtf8(stableJson(payload)), status = 0) {
@@ -193,8 +201,4 @@ function resolutionTarget(hostRequest = {}) {
 function parseJsonBytes(bytes) {
   assertBytes(bytes, 'requestBytes');
   return JSON.parse(new TextDecoder().decode(bytes));
-}
-
-function tempKey(value) {
-  return createHash('sha256').update(String(value)).digest('hex');
 }

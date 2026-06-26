@@ -126,6 +126,9 @@ export class MemoryStore extends ClosureStore {
   async importRun(bundle) {
     assertBundleApplicationMatchesRun(bundle);
     assertBundleEffectsScoped(bundle);
+    assertBundleSelectedHeadMatchesRun(bundle);
+    const effectRecords = (bundle.effects ?? []).map((effect) => assertEffectRecord(effect));
+    assertUniqueEffectRecords(effectRecords);
     const importedBlobs = new Map();
     for (const blob of bundle.blobs ?? []) {
       if (Array.isArray(blob.bytes)) {
@@ -151,7 +154,7 @@ export class MemoryStore extends ClosureStore {
     if (bundle.application && !this.applications.has(bundle.application.applicationId)) this.applications.set(bundle.application.applicationId, clone(bundle.application));
     this.runs.set(bundle.run.runId, clone(bundle.run));
     this.heads.set(headKey(bundle.run.runId, bundle.branchId), clone(bundle.head));
-    for (const effect of bundle.effects ?? []) await this.putEffectRecord(assertEffectRecord(effect));
+    for (const effect of effectRecords) await this.putEffectRecord(effect);
     return await this.getRun(bundle.run.runId);
   }
 }
@@ -164,30 +167,61 @@ function effectKey(runId, branchId, idempotencyKey) {
   return `${runId}\0${branchId}\0${stableJson(idempotencyKey)}`;
 }
 
+function assertUniqueEffectRecords(records) {
+  const seen = new Set();
+  for (const record of records) {
+    const key = effectKey(record.runId, record.branchId, record.idempotencyKey);
+    if (seen.has(key)) fail('ERR_IMPORT_EFFECT_DUPLICATE');
+    seen.add(key);
+  }
+}
+
 function collectBlobRefs(...values) {
   const refs = new Map();
-  const add = (value) => {
-    if (
-      value?.algorithm === 'sha256' &&
-      /^[0-9a-f]{64}$/.test(value?.checksum) &&
-      Number.isSafeInteger(value?.byteLength) &&
-      value.byteLength >= 0
-    ) {
-      refs.set(`${value.checksum}:${value.byteLength}`, value);
-    }
+  const add = (ref) => {
+    if (!ref) return;
+    const actual = assertBlobRef(ref);
+    refs.set(`${actual.checksum}:${actual.byteLength}`, actual);
   };
-  for (const value of values) visit(value);
+  for (const value of values) collectOwnedRefs(value);
   return [...refs.values()];
 
-  function visit(value) {
+  function collectOwnedRefs(value) {
     if (Array.isArray(value)) {
-      for (const child of value) visit(child);
+      for (const child of value) collectOwnedRefs(child);
       return;
     }
     if (!value || typeof value !== 'object') return;
-    add(value);
+    add(value.executableImageRef);
+    add(value.applianceManifestRef);
+    add(value.turnClosureRef);
+    add(value.requestBytesRef);
+    add(value.resolutionInputRef);
+    add(value.hostClaimRef);
     add(universalWasmRef(value));
-    for (const child of Object.values(value)) visit(child);
+    collectDiagnosticBlobRefs(value.diagnostics);
+    collectDiagnosticBlobRefs(value.installationDiagnostics);
+    collectDiagnosticBlobRefs(value.metadata);
+    collectDiagnosticBlobRefs(value.updateDiagnostics);
+    for (const branch of value.branches ?? []) collectOwnedRefs(branch.currentHead);
+  }
+
+  function collectDiagnosticBlobRefs(value, key = '') {
+    if (Array.isArray(value)) {
+      for (const child of value) collectDiagnosticBlobRefs(child, key.endsWith('Refs') ? 'Ref' : '');
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    if (key.endsWith('Ref')) addIfBlobRef(value);
+    for (const [childKey, child] of Object.entries(value)) collectDiagnosticBlobRefs(child, childKey);
+  }
+
+  function addIfBlobRef(value) {
+    try {
+      add(value);
+    } catch {
+      return;
+    }
   }
 }
 
@@ -211,6 +245,11 @@ function assertBundleApplicationMatchesRun(bundle) {
   if (!application) fail('ERR_IMPORT_APPLICATION_REQUIRED');
   createApplicationRecord(application);
   if (bundle.run?.applicationId !== application.applicationId) fail('ERR_IMPORT_APPLICATION_MISMATCH');
+}
+
+function assertBundleSelectedHeadMatchesRun(bundle) {
+  const branch = bundle?.run?.branches?.find((item) => item.branchId === bundle.branchId);
+  if (!branch || stableJson(branch.currentHead) !== stableJson(bundle.head)) fail('ERR_IMPORT_BRANCH_HEAD_MISMATCH');
 }
 
 function assertBundleEffectsScoped(bundle) {

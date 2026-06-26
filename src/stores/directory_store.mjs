@@ -162,16 +162,26 @@ export class DirectoryStore extends ClosureStore {
   async importRun(bundle) {
     assertBundleApplicationMatchesRun(bundle);
     assertBundleEffectsScoped(bundle);
+    assertBundleSelectedHeadMatchesRun(bundle);
+    const effectRecords = (bundle.effects ?? []).map((effect) => assertEffectRecord(effect));
+    assertUniqueEffectRecords(effectRecords);
+    const importedBlobBytes = new Map();
     for (const blob of bundle.blobs ?? []) {
       if (Array.isArray(blob.bytes)) {
-        const ref = await this.putBlob(Uint8Array.from(blob.bytes));
-        if (ref.checksum !== blob.checksum || ref.byteLength !== blob.byteLength) fail('ERR_IMPORT_BLOB_CHECKSUM_MISMATCH');
+        const bytes = Uint8Array.from(blob.bytes);
+        if (sha256(bytes) !== blob.checksum || bytes.byteLength !== blob.byteLength) fail('ERR_IMPORT_BLOB_CHECKSUM_MISMATCH');
+        importedBlobBytes.set(blob.checksum, bytes);
       } else {
         assertBlobRef(blob);
       }
     }
     for (const ref of collectBlobRefs(bundle.run, bundle.application, bundle.head, bundle.effects ?? [])) {
-      if (!await this.hasBlob(ref)) fail('ERR_IMPORT_BLOB_REF_MISSING');
+      const imported = importedBlobBytes.get(ref.checksum);
+      if (imported) {
+        if (imported.byteLength !== ref.byteLength) fail('ERR_IMPORT_BLOB_REF_MISSING');
+      } else if (!await this.hasBlob(ref)) {
+        fail('ERR_IMPORT_BLOB_REF_MISSING');
+      }
     }
     const runExists = await exists(runPath(this.root, bundle.run.runId));
     const headExists = await exists(this.headPath(bundle.run.runId, bundle.branchId));
@@ -181,11 +191,8 @@ export class DirectoryStore extends ClosureStore {
         if (stableJson(existing) !== stableJson(bundle.application)) fail('ERR_IMPORT_APPLICATION_MISMATCH');
       } else if (runExists || headExists) {
         fail('ERR_IMPORT_RUN_EXISTS');
-      } else {
-        await this.createApplication(bundle.application);
       }
     }
-    const effectRecords = (bundle.effects ?? []).map((effect) => assertEffectRecord(effect));
     let missingEffect = false;
     for (const record of effectRecords) {
       const existing = await this.getEffectRecord(record.runId, record.idempotencyKey, record.branchId);
@@ -204,6 +211,10 @@ export class DirectoryStore extends ClosureStore {
       if (stableJson(existing) !== stableJson(bundle.head)) fail('ERR_IMPORT_HEAD_EXISTS');
     }
     if (runExists && headExists && !missingEffect) fail('ERR_IMPORT_RUN_EXISTS');
+    for (const bytes of importedBlobBytes.values()) await this.putBlob(bytes);
+    if (bundle.application && !await exists(applicationPath(this.root, bundle.application.applicationId))) {
+      await this.createApplication(bundle.application);
+    }
     if (!runExists && !headExists) {
       await this.createRun(bundle.run);
     } else {
@@ -360,30 +371,61 @@ function safePathSegment(value, label) {
   return value;
 }
 
+function assertUniqueEffectRecords(records) {
+  const seen = new Set();
+  for (const record of records) {
+    const key = effectFileKey(record.branchId, record.idempotencyKey);
+    if (seen.has(key)) fail('ERR_IMPORT_EFFECT_DUPLICATE');
+    seen.add(key);
+  }
+}
+
 function collectBlobRefs(...values) {
   const refs = new Map();
-  const add = (value) => {
-    if (
-      value?.algorithm === 'sha256' &&
-      /^[0-9a-f]{64}$/.test(value?.checksum) &&
-      Number.isSafeInteger(value?.byteLength) &&
-      value.byteLength >= 0
-    ) {
-      refs.set(`${value.checksum}:${value.byteLength}`, makeBlobRef(value.checksum, value.byteLength));
-    }
+  const add = (ref) => {
+    if (!ref) return;
+    const actual = assertBlobRef(ref);
+    refs.set(`${actual.checksum}:${actual.byteLength}`, makeBlobRef(actual.checksum, actual.byteLength));
   };
-  for (const value of values) visit(value);
+  for (const value of values) collectOwnedRefs(value);
   return [...refs.values()];
 
-  function visit(value) {
+  function collectOwnedRefs(value) {
     if (Array.isArray(value)) {
-      for (const child of value) visit(child);
+      for (const child of value) collectOwnedRefs(child);
       return;
     }
     if (!value || typeof value !== 'object') return;
-    add(value);
+    add(value.executableImageRef);
+    add(value.applianceManifestRef);
+    add(value.turnClosureRef);
+    add(value.requestBytesRef);
+    add(value.resolutionInputRef);
+    add(value.hostClaimRef);
     add(universalWasmRef(value));
-    for (const child of Object.values(value)) visit(child);
+    collectDiagnosticBlobRefs(value.diagnostics);
+    collectDiagnosticBlobRefs(value.installationDiagnostics);
+    collectDiagnosticBlobRefs(value.metadata);
+    collectDiagnosticBlobRefs(value.updateDiagnostics);
+    for (const branch of value.branches ?? []) collectOwnedRefs(branch.currentHead);
+  }
+
+  function collectDiagnosticBlobRefs(value, key = '') {
+    if (Array.isArray(value)) {
+      for (const child of value) collectDiagnosticBlobRefs(child, key.endsWith('Refs') ? 'Ref' : '');
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    if (key.endsWith('Ref')) addIfBlobRef(value);
+    for (const [childKey, child] of Object.entries(value)) collectDiagnosticBlobRefs(child, childKey);
+  }
+
+  function addIfBlobRef(value) {
+    try {
+      add(value);
+    } catch {
+      return;
+    }
   }
 }
 
@@ -407,6 +449,11 @@ function assertBundleApplicationMatchesRun(bundle) {
   if (!application) fail('ERR_IMPORT_APPLICATION_REQUIRED');
   createApplicationRecord(application);
   if (bundle.run?.applicationId !== application.applicationId) fail('ERR_IMPORT_APPLICATION_MISMATCH');
+}
+
+function assertBundleSelectedHeadMatchesRun(bundle) {
+  const branch = bundle?.run?.branches?.find((item) => item.branchId === bundle.branchId);
+  if (!branch || stableJson(branch.currentHead) !== stableJson(bundle.head)) fail('ERR_IMPORT_BRANCH_HEAD_MISMATCH');
 }
 
 function assertBundleEffectsScoped(bundle) {

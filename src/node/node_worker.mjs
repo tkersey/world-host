@@ -63,7 +63,13 @@ export class NodeWorldWorker extends WorldWorker {
   async loadExecutable(imageBytes) {
     this.#assertInstantiated();
     const bytes = assertBytes(imageBytes, 'imageBytes');
-    const status = this.instance.exports.world_appliance_load_executable(this.#writeGuest(bytes), bytes.length);
+    const ptr = this.#writeGuest(bytes);
+    let status;
+    try {
+      status = this.instance.exports.world_appliance_load_executable(ptr, bytes.length);
+    } finally {
+      this.#free(ptr, bytes.length);
+    }
     if (status !== applianceStatus.ok) {
       fail('ERR_WORLD_EXECUTABLE_LOAD_FAILED', this.readLastError() || `status=${status}`, { status });
     }
@@ -89,7 +95,13 @@ export class NodeWorldWorker extends WorldWorker {
   async submitTurn(turnInputBytes) {
     this.#assertInstantiated();
     const bytes = assertBytes(turnInputBytes, 'turnInputBytes');
-    const status = this.instance.exports.world_appliance_submit_turn(this.#writeGuest(bytes), bytes.length);
+    const ptr = this.#writeGuest(bytes);
+    let status;
+    try {
+      status = this.instance.exports.world_appliance_submit_turn(ptr, bytes.length);
+    } finally {
+      this.#free(ptr, bytes.length);
+    }
     this.lastSubmitStatus = status;
     if (!closureProducingSubmitStatuses.has(status)) {
       fail('ERR_WORLD_TURN_SUBMIT_FAILED', this.readLastError() || `status=${status}`, { status });
@@ -154,9 +166,13 @@ export class NodeWorldWorker extends WorldWorker {
   #readExportedBytes(exportName, len) {
     this.#requireExport(exportName);
     const ptr = this.#alloc(len);
-    const copied = this.instance.exports[exportName](ptr, len);
-    if (copied !== len) fail('ERR_WORLD_EXPORT_READ_FAILED', `${exportName} copied ${copied} of ${len}`);
-    return new Uint8Array(this.memory.buffer, ptr, len).slice();
+    try {
+      const copied = this.instance.exports[exportName](ptr, len);
+      if (copied !== len) fail('ERR_WORLD_EXPORT_READ_FAILED', `${exportName} copied ${copied} of ${len}`);
+      return new Uint8Array(this.memory.buffer, ptr, len).slice();
+    } finally {
+      this.#free(ptr, len);
+    }
   }
 
   #writeGuest(bytes) {
@@ -170,6 +186,11 @@ export class NodeWorldWorker extends WorldWorker {
     const ptr = this.instance.exports.world_appliance_alloc(len);
     if (ptr === 0) fail('ERR_WORLD_GUEST_ALLOCATION_FAILED');
     return ptr;
+  }
+
+  #free(ptr, len) {
+    this.#requireExport('world_appliance_free');
+    this.instance.exports.world_appliance_free(ptr, len);
   }
 
   #readGuestText(bytes) {

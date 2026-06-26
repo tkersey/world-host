@@ -110,6 +110,8 @@ async function realWorldUniversalConformance(worldRepo) {
   assert.equal(coldRestore.advancedFromColdWorker, true);
   assert.equal(coldRestore.committedClosureMatchesFreshWorkerOutput, true);
   assert.equal(coldRestore.boundExactParentEvidence, true);
+  const guestAllocation = await runRealWorkerGuestAllocationConformance(artifacts, wasmBytes);
+  assert.equal(guestAllocation.exportReadBufferFreed, true);
   const journaledHostRequest = await runRealJournaledHostRequestRunControllerConformance(artifacts, wasmBytes);
   assert.equal(journaledHostRequest.bootedNeedsHost, true);
   assert.equal(journaledHostRequest.driverInvokedOnce, true);
@@ -133,6 +135,7 @@ async function realWorldUniversalConformance(worldRepo) {
   console.log('store_backed_runcontroller_boot_advance=true');
   console.log('runhead_from_turnclosure_inspection=true');
   console.log('cold_restore_from_committed_turnclosure=true');
+  console.log('guest_export_read_buffer_freed=true');
   console.log('journaled_host_request_continue=true');
   console.log('journaled_resolution_reused=true');
 }
@@ -358,6 +361,24 @@ async function runRealColdRestoreRunControllerConformance(artifacts, wasmBytes) 
     committedClosureMatchesFreshWorkerOutput: true,
     boundExactParentEvidence,
     restoredClosureSha256: sha256Hex(restoredClosureBytes),
+  };
+}
+
+async function runRealWorkerGuestAllocationConformance(artifacts, wasmBytes) {
+  const imageBytes = await readFile(artifacts.imageAPath);
+  const worker = new NodeWorldWorker();
+  await worker.instantiate(wasmBytes);
+  await worker.loadExecutable(imageBytes);
+  const manifestLen = worker.instance.exports.world_appliance_manifest_len();
+  const ptr = worker.instance.exports.world_appliance_alloc(manifestLen);
+  assert.notEqual(ptr, 0);
+  worker.instance.exports.world_appliance_free(ptr, manifestLen);
+  worker.readApplianceManifest();
+  const reusedPtr = worker.instance.exports.world_appliance_alloc(manifestLen);
+  worker.instance.exports.world_appliance_free(reusedPtr, manifestLen);
+  worker.dispose();
+  return {
+    exportReadBufferFreed: reusedPtr === ptr,
   };
 }
 

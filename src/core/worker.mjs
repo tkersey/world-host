@@ -1,5 +1,6 @@
 import { EffectJournal } from './effect_journal.mjs';
 import { assertDurableRecoveryAllowed } from './actuator.mjs';
+import { assertCapabilityReportAccepted, preflightCapabilities } from './capabilities.mjs';
 import { createRunHead } from './run.mjs';
 import { assertBytes, fail, fromUtf8, toHex } from './store.mjs';
 import { decodeResolutionInputBytes, encodeRestoreTurnInput, resolutionResponded } from '../protocol/world_appliance_wire_codec.mjs';
@@ -117,6 +118,13 @@ export class RunController {
     const run = await this.store.getRun(runId);
     const application = await this.store.getApplication(run.applicationId);
     const parentHead = await this.store.readHead(runId, branchId);
+    const policy = options.effectPolicy ?? this.effectPolicy;
+    assertCapabilityReportAccepted(preflightCapabilities({
+      application,
+      currentHead: parentHead,
+      drivers: this.effectDrivers,
+      policy,
+    }));
     const parentClosureBytes = await this.store.getBlob(parentHead.turnClosureRef);
     assertParentHeadMatchesClosure(parentHead, parentClosureBytes);
     const imageBytes = await this.store.getBlob(application.executableImageRef);
@@ -491,6 +499,11 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}) {
     const driverOrigins = Array.isArray(manifest.diagnostics?.origins) ? new Set(manifest.diagnostics.origins) : null;
     if (driverOrigins && (!origin || !driverOrigins.has(origin))) return false;
     if (allowedHttpOrigins.size && (!origin || !allowedHttpOrigins.has(origin))) return false;
+    const method = requestMethod(hostRequest);
+    const driverMethods = Array.isArray(manifest.diagnostics?.methods)
+      ? new Set(manifest.diagnostics.methods.map((item) => String(item).toUpperCase()))
+      : null;
+    if (driverMethods && (!method || !driverMethods.has(method))) return false;
   }
   const allowedFileRoots = policySet(policy.allowedFileRoots);
   if (allowedFileRoots.size && manifest.authorityLabels.includes('file:sandbox')) {
@@ -515,6 +528,15 @@ function requestOrigin(hostRequest) {
   try {
     const request = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
     return new URL(request.url).origin;
+  } catch {
+    return null;
+  }
+}
+
+function requestMethod(hostRequest) {
+  try {
+    const request = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
+    return String(request.method ?? 'GET').toUpperCase();
   } catch {
     return null;
   }

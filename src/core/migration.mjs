@@ -6,16 +6,6 @@ import { fail, stableJson } from './store.mjs';
 export async function forkRunBranch(store, { runId, sourceBranchId, sourceClosureFingerprint, newBranchId }) {
   const run = await store.getRun(runId);
   const sourceHead = await store.readHead(runId, sourceBranchId);
-  if (sourceClosureFingerprint && sourceHead.turnClosureWorldFingerprint !== sourceClosureFingerprint) {
-    fail('ERR_FORK_SOURCE_CLOSURE_NOT_CURRENT', 'v0 fork requires a stored source closure head');
-  }
-  const branch = createBranchRecord({
-    branchId: newBranchId,
-    parentBranchId: sourceBranchId,
-    forkedFromTurnClosureFingerprint: sourceHead.turnClosureWorldFingerprint,
-    currentHead: sourceHead,
-    diagnostics: { sourceRunId: run.runId },
-  });
   let existingHead = null;
   try {
     existingHead = await store.readHead(runId, newBranchId);
@@ -23,10 +13,24 @@ export async function forkRunBranch(store, { runId, sourceBranchId, sourceClosur
     if (error?.code !== 'ERR_HEAD_NOT_FOUND') throw error;
   }
   const branchAlreadyPublished = (run.branches ?? []).some((existing) => existing.branchId === newBranchId);
+  let forkHead = sourceHead;
+  if (sourceClosureFingerprint && sourceHead.turnClosureWorldFingerprint !== sourceClosureFingerprint) {
+    if (!existingHead || branchAlreadyPublished || existingHead.turnClosureWorldFingerprint !== sourceClosureFingerprint) {
+      fail('ERR_FORK_SOURCE_CLOSURE_NOT_CURRENT', 'v0 fork requires a stored source closure head');
+    }
+    forkHead = existingHead;
+  }
+  const branch = createBranchRecord({
+    branchId: newBranchId,
+    parentBranchId: sourceBranchId,
+    forkedFromTurnClosureFingerprint: forkHead.turnClosureWorldFingerprint,
+    currentHead: forkHead,
+    diagnostics: { sourceRunId: run.runId },
+  });
   if (existingHead) {
-    if (branchAlreadyPublished || stableJson(existingHead) !== stableJson(sourceHead)) fail('ERR_BRANCH_EXISTS');
+    if (branchAlreadyPublished || stableJson(existingHead) !== stableJson(forkHead)) fail('ERR_BRANCH_EXISTS');
   } else {
-    await writeBranchHead(store, runId, newBranchId, sourceHead);
+    await writeBranchHead(store, runId, newBranchId, forkHead);
   }
   await writeRunRecord(store, createRunRecord({
     ...run,

@@ -30,8 +30,8 @@ export function createRunHead(input) {
     turnClosureWorldFingerprint: assertWorldFingerprint(input.turnClosureWorldFingerprint, 'turnClosureWorldFingerprint'),
     resultingStateFingerprint: assertWorldFingerprint(input.resultingStateFingerprint, 'resultingStateFingerprint'),
     chronicleCursor: requiredString(input.chronicleCursor, 'chronicleCursor'),
-    archiveMomentFingerprint: assertWorldFingerprint(input.archiveMomentFingerprint, 'archiveMomentFingerprint'),
-    archiveSealFingerprint: assertWorldFingerprint(input.archiveSealFingerprint, 'archiveSealFingerprint'),
+    archiveMomentFingerprint: optionalWorldFingerprint(input.archiveMomentFingerprint, 'archiveMomentFingerprint'),
+    archiveSealFingerprint: optionalWorldFingerprint(input.archiveSealFingerprint, 'archiveSealFingerprint'),
     status: requiredString(input.status, 'status'),
     updateDiagnostics: input.updateDiagnostics ?? {},
   });
@@ -40,6 +40,10 @@ export function createRunHead(input) {
 function requiredString(value, label) {
   if (typeof value !== 'string' || value.length === 0) fail('ERR_REQUIRED_FIELD', `${label} is required`);
   return value;
+}
+
+function optionalWorldFingerprint(value, label) {
+  return value == null ? null : assertWorldFingerprint(value, label);
 }
 
 function integer(value, label) {

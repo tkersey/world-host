@@ -43,14 +43,15 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
 
   for (const required of application?.requiredActuators ?? []) {
     const actuatorRef = required.actuatorRef ?? required;
-    const route = manifests.find((manifest) => manifest.supportedActuatorRefs.includes(actuatorRef));
+    const route = findRequiredActuatorManifest(manifests, actuatorRef, policy);
     if (!route) {
-      blockers.push(`required-actuator-uncovered:${actuatorRef}`);
+      const structuralRoute = findRequiredActuatorManifest(manifests, actuatorRef);
+      if (structuralRoute) {
+        blockers.push(`required-actuator-policy-blocked:${actuatorRef}`, ...policyBlockers(structuralRoute, null, policy));
+      } else {
+        blockers.push(`required-actuator-uncovered:${actuatorRef}`);
+      }
       continue;
-    }
-    const routeBlockers = policyBlockers(route, null, policy);
-    if (routeBlockers.length) {
-      blockers.push(`required-actuator-policy-blocked:${actuatorRef}`, ...routeBlockers);
     }
   }
 
@@ -85,12 +86,21 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
     responseStatusesSupported: !blockers.some((item) => item.includes('RESPONSE_STATUS')),
     valueSizeLimitsSupported: !blockers.some((item) => item.startsWith('runtime-') || item === 'request-limit-exceeds-policy' || item === 'response-limit-exceeds-policy'),
     recoveryClassSufficient: !blockers.includes('ERR_BEST_EFFORT_REQUIRES_OPERATOR_OPT_IN'),
-    fileNetworkAuthoritiesAllowed: !blockers.some((item) => item.startsWith('authority-denied') || item.startsWith('http-origin-denied') || item.startsWith('http-origin-driver-denied') || item.startsWith('file-root-denied')),
+    fileNetworkAuthoritiesAllowed: !blockers.some((item) => item.startsWith('authority-denied') || item.startsWith('http-origin-denied') || item.startsWith('http-origin-driver-denied') || item.startsWith('http-method-driver-denied') || item.startsWith('file-root-denied')),
     supervisionPolicyAccepted: !blockers.includes('supervision-policy-rejected'),
     coveredRequests,
     blockers,
     warnings,
   });
+}
+
+function findRequiredActuatorManifest(manifests, actuatorRef, policy = null) {
+  for (const manifest of manifests) {
+    if (!manifest.supportedActuatorRefs.includes(actuatorRef)) continue;
+    if (policy && policyBlockers(manifest, null, policy).length) continue;
+    return manifest;
+  }
+  return null;
 }
 
 function policyBlockers(route, request, policy) {
@@ -114,6 +124,11 @@ function policyBlockers(route, request, policy) {
     const driverOrigins = Array.isArray(route.diagnostics?.origins) ? new Set(route.diagnostics.origins) : null;
     if (driverOrigins && (!origin || !driverOrigins.has(origin))) blockers.push(`http-origin-driver-denied:${origin ?? 'unknown'}`);
     if (!origin || policy.allowedHttpOrigins.size && !policy.allowedHttpOrigins.has(origin)) blockers.push(`http-origin-denied:${origin ?? 'unknown'}`);
+    const method = requestMethod(request);
+    const driverMethods = Array.isArray(route.diagnostics?.methods)
+      ? new Set(route.diagnostics.methods.map((item) => String(item).toUpperCase()))
+      : null;
+    if (driverMethods && (!method || !driverMethods.has(method))) blockers.push(`http-method-driver-denied:${method ?? 'unknown'}`);
   }
   return blockers;
 }
@@ -152,6 +167,16 @@ function requestOrigin(request) {
     const text = new TextDecoder().decode(request.requestBytes);
     const value = JSON.parse(text);
     return new URL(value.url).origin;
+  } catch {
+    return null;
+  }
+}
+
+function requestMethod(request) {
+  try {
+    const text = new TextDecoder().decode(request.requestBytes);
+    const value = JSON.parse(text);
+    return String(value.method ?? 'GET').toUpperCase();
   } catch {
     return null;
   }

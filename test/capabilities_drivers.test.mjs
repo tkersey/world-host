@@ -1,17 +1,18 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, symlink, rm, writeFile } from 'node:fs/promises';
+import { link, mkdtemp, readFile, symlink, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { createHash } from 'node:crypto';
 
 import { EffectRecoveryClass, assertDriverManifest } from '../src/core/actuator.mjs';
 import { createRunPolicy, preflightCapabilities } from '../src/core/capabilities.mjs';
+import { EffectJournal } from '../src/core/effect_journal.mjs';
 import { FixtureModelDriver } from '../src/drivers/fixture_model_driver.mjs';
 import { SandboxFileDriver } from '../src/drivers/sandbox_file_driver.mjs';
 import { HttpJsonDriver } from '../src/drivers/http_json_driver.mjs';
 import { fromUtf8, stableJson } from '../src/core/store.mjs';
 import { decodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
+import { MemoryStore } from '../src/stores/memory_store.mjs';
 
 describe('capability preflight and reference drivers', () => {
   it('accepts only exact driver manifest coverage under receiver-local policy', () => {
@@ -41,13 +42,14 @@ describe('capability preflight and reference drivers', () => {
 
   it('routes preflight through the first policy-allowed matching driver', () => {
     const report = preflightCapabilities({
-      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      application: { requiredActuators: [{ actuatorRef: 'fixture:model' }], requiredRuntimeLimits: {} },
       currentHead: { generation: 0 },
       pendingRequests: [fixtureRequest()],
       drivers: [policyDeniedFixtureDriver(), new FixtureModelDriver({ responses: ['ok'] })],
       policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture'] }),
     });
     assert.deepEqual(report.blockers, []);
+    assert.equal(report.everyRequiredActuatorCovered, true);
     assert.deepEqual(report.coveredRequests, [{
       actuatorRef: 'fixture:model',
       descriptorFingerprint: 'descriptor:fixture-model',
@@ -126,6 +128,32 @@ describe('capability preflight and reference drivers', () => {
     assert.deepEqual(report.blockers, []);
   });
 
+  it('keeps default HTTP driver response limits within the default policy', () => {
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path')],
+      drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'] })],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'], allowedHttpOrigins: ['https://allowed.example'] }),
+    });
+
+    assert.equal(report.valueSizeLimitsSupported, true);
+    assert.equal(report.blockers.includes('response-limit-exceeds-policy'), false);
+  });
+
+  it('blocks HTTP method mismatches during preflight', () => {
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path', 'POST')],
+      drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'], methods: ['GET'] })],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'], allowedHttpOrigins: ['https://allowed.example'] }),
+    });
+
+    assert.ok(report.blockers.includes('http-method-driver-denied:POST'));
+    assert.equal(report.fileNetworkAuthoritiesAllowed, false);
+  });
+
   it('rejects zero-concurrency driver manifests before preflight can cover requests', () => {
     assert.throws(
       () => assertDriverManifest({ ...policyDeniedFixtureDriver().manifest(), concurrencyLimit: 0 }),
@@ -142,7 +170,7 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(decoded.targetHostRequestFingerprint, 0xa1n);
   });
 
-  it('constrains sandbox file paths, symlinks, and atomic writes', async () => {
+  it('constrains sandbox file paths, symlinks, and writes', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-sandbox-'));
     const outside = await mkdtemp(path.join(tmpdir(), 'world-host-outside-'));
     try {
@@ -163,9 +191,25 @@ describe('capability preflight and reference drivers', () => {
         { code: 'ERR_SANDBOX_SYMLINK_REJECTED' },
       );
       await assert.rejects(
+        () => new SandboxFileDriver({ root, symlinkPolicy: 'allow' }).resolve({}, fileRequest('linkdir/secret.txt')),
+        { code: 'ERR_SANDBOX_PATH_ESCAPE' },
+      );
+      await assert.rejects(
         () => driver.resolve({}, fileRequest('linkdir/new.txt', { operation: 'write', content: 'nope' })),
         { code: 'ERR_SANDBOX_SYMLINK_REJECTED' },
       );
+      await writeFile(path.join(outside, 'hardlink-target.txt'), 'outside hardlink content');
+      await link(path.join(outside, 'hardlink-target.txt'), path.join(root, 'hardlink-read.txt'));
+      await link(path.join(outside, 'hardlink-target.txt'), path.join(root, 'hardlink-write.txt'));
+      await assert.rejects(
+        () => driver.resolve({}, fileRequest('hardlink-read.txt')),
+        { code: 'ERR_SANDBOX_HARDLINK_REJECTED' },
+      );
+      await assert.rejects(
+        () => driver.resolve({}, fileRequest('hardlink-write.txt', { operation: 'write', content: 'pwned' })),
+        { code: 'ERR_SANDBOX_HARDLINK_REJECTED' },
+      );
+      assert.equal(await readFile(path.join(outside, 'hardlink-target.txt'), 'utf8'), 'outside hardlink content');
       await driver.resolve({}, fileRequest('out.txt', { operation: 'write', content: 'world carrier updated the fixture' }));
       assert.equal(await readFile(path.join(root, 'out.txt'), 'utf8'), 'world carrier updated the fixture');
       await driver.resolve({}, fileRequest('nested/out.txt', { operation: 'write', content: 'nested write works' }));
@@ -176,28 +220,28 @@ describe('capability preflight and reference drivers', () => {
       assert.equal(edgeWrite.requestBytes.byteLength <= edgeDriver.manifest().maximumRequestBytes, true);
       await edgeDriver.resolve({}, edgeWrite);
       assert.equal(await readFile(path.join(root, 'edge.txt'), 'utf8'), '1234');
-      const symlinkKey = 'temp-symlink-key';
-      await symlink(path.join(outside, 'outside.tmp'), path.join(root, `.blocked.txt.${sha256(symlinkKey)}.tmp`));
-      await assert.rejects(
-        () => driver.resolve({}, fileRequest('blocked.txt', { operation: 'write', content: 'blocked' }, symlinkKey)),
-        { code: 'ERR_SANDBOX_SYMLINK_REJECTED' },
-      );
-      await assert.rejects(
-        () => readFile(path.join(outside, 'outside.tmp')),
-        { code: 'ENOENT' },
-      );
-      const staleKey = 'stale-temp-key';
-      await writeFile(path.join(root, `.stale.txt.${sha256(staleKey)}.tmp`), 'stale');
-      await driver.resolve({}, fileRequest('stale.txt', { operation: 'write', content: 'recovered from stale temp' }, staleKey));
-      assert.equal(await readFile(path.join(root, 'stale.txt'), 'utf8'), 'recovered from stale temp');
-      await assert.rejects(
-        () => readFile(path.join(root, `.stale.txt.${sha256(staleKey)}.tmp`)),
-        { code: 'ENOENT' },
-      );
       await driver.resolve({}, fileRequest('safe.txt', { operation: 'write', content: 'safe' }, '../../../../outside'));
       assert.equal(await readFile(path.join(root, 'safe.txt'), 'utf8'), 'safe');
       await assert.rejects(
         () => readFile(path.join(outside, 'outside.tmp')),
+        { code: 'ENOENT' },
+      );
+      const policyJournal = new EffectJournal({
+        store: new MemoryStore(),
+        runId: 'run',
+        branchId: 'main',
+        parentTurnClosureFingerprint: 'turn:0',
+        policy: { allowBestEffort: true, maximumResponseBytes: 1 },
+      });
+      await assert.rejects(
+        () => policyJournal.resolve({}, {
+          ...fileRequest('policy-blocked.txt', { operation: 'write', content: 'blocked-before-rename' }),
+          idempotencyKeyBytes: fromUtf8('policy-blocked-key'),
+        }, new SandboxFileDriver({ root })),
+        { code: 'ERR_EFFECT_RESPONSE_LIMIT_EXCEEDS_POLICY' },
+      );
+      await assert.rejects(
+        () => readFile(path.join(root, 'policy-blocked.txt')),
         { code: 'ENOENT' },
       );
       const recovered = await driver.recover({}, {
@@ -212,6 +256,23 @@ describe('capability preflight and reference drivers', () => {
       const missingDecoded = decodeResolutionInputBytes(missing.resolutionInputBytes);
       assert.equal(missingDecoded.status, 1);
       assert.equal(missingDecoded.responseValueImageBytes.byteLength, 0);
+      await writeFile(path.join(root, 'empty.txt'), '');
+      const emptyReadJournal = new EffectJournal({
+        store: new MemoryStore(),
+        runId: 'empty-read-run',
+        branchId: 'main',
+        parentTurnClosureFingerprint: 'turn:0',
+        policy: { allowBestEffort: true },
+      });
+      const emptyRead = await emptyReadJournal.resolve({}, {
+        ...fileRequest('empty.txt', { operation: 'read' }, 'key:empty-read'),
+        idempotencyKeyBytes: fromUtf8('empty-read-key'),
+      }, driver);
+      const emptyReadImage = decodeResolutionInputBytes(emptyRead.resolutionInputBytes).responseValueImageBytes;
+      const emptyReadView = new DataView(emptyReadImage.buffer, emptyReadImage.byteOffset, emptyReadImage.byteLength);
+      assert.equal(emptyRead.record.state, 'resolved');
+      assert.equal(emptyReadView.getUint32(0, true), 1);
+      assert.equal(emptyReadView.getUint32(4, true), 1);
       await writeFile(path.join(root, 'large.txt'), 'too-large');
       await assert.rejects(
         () => new SandboxFileDriver({ root, maximumReadBytes: 1 }).resolve({}, fileRequest('large.txt')),
@@ -267,6 +328,9 @@ describe('capability preflight and reference drivers', () => {
       globalThis.fetch = async () => new Response('1234');
       const edgeResult = await edge.resolve({}, httpRequest('https://allowed.example/edge'));
       const edgePayload = decodeResolutionInputBytes(edgeResult.resolutionInputBytes).responseValueImageBytes;
+      const edgePayloadView = new DataView(edgePayload.buffer, edgePayload.byteOffset, edgePayload.byteLength);
+      assert.equal(edgePayloadView.getUint32(0, true), 1);
+      assert.equal(edgePayloadView.getUint32(4, true), 1);
       assert.equal(edgePayload.byteLength > 4, true);
       assert.equal(edgePayload.byteLength <= edge.manifest().maximumResponseBytes, true);
       globalThis.fetch = async () => new Response('server failed', { status: 500 });
@@ -325,10 +389,6 @@ function fileRequest(filePath, request = { operation: 'read' }, idempotencyKeyWo
     idempotencyKeyWorldFingerprint,
     requestBytes: fromUtf8(stableJson({ path: filePath, ...request })),
   };
-}
-
-function sha256(value) {
-  return createHash('sha256').update(String(value)).digest('hex');
 }
 
 function httpRequest(url, method = 'GET', responseSchema = { status: 'ok' }) {

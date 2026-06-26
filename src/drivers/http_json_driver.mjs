@@ -1,9 +1,10 @@
 import { EffectRecoveryClass } from '../core/actuator.mjs';
 import { assertBytes, fail, fromUtf8, stableJson } from '../core/store.mjs';
 import { encodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
+import { encodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
 
 export class HttpJsonDriver {
-  constructor({ origins = [], methods = ['GET', 'POST'], timeoutMs = 5000, maximumRequestBytes = 64 * 1024, maximumResponseBytes = 1024 * 1024, idempotencyHeader = 'Idempotency-Key', credentials = {} } = {}) {
+  constructor({ origins = [], methods = ['GET', 'POST'], timeoutMs = 5000, maximumRequestBytes = 64 * 1024, maximumResponseBytes = DEFAULT_MAXIMUM_RESPONSE_BODY_BYTES, idempotencyHeader = 'Idempotency-Key', credentials = {} } = {}) {
     this.origins = new Set(origins);
     this.methods = new Set(methods.map((method) => method.toUpperCase()));
     this.timeoutMs = timeoutMs;
@@ -55,7 +56,7 @@ export class HttpJsonDriver {
           targetHostRequestFingerprint: resolutionTarget(hostRequest),
           status: response.ok ? 0 : 1,
           responseValueImageBytes: response.ok
-            ? fromUtf8(stableJson({ status: responseStatus, statusCode: response.status, body: text }))
+            ? encodeCanonicalValueImage({ bytes: fromUtf8(stableJson({ status: responseStatus, statusCode: response.status, body: text })), dynamicSize: true })
             : new Uint8Array(),
           hostClaimBytes: new Uint8Array(),
           attemptNumber: 1,
@@ -81,6 +82,9 @@ export class HttpJsonDriver {
     });
   }
 }
+
+const DEFAULT_MAXIMUM_RESPONSE_ENVELOPE_BYTES = 1024 * 1024;
+const DEFAULT_MAXIMUM_RESPONSE_BODY_BYTES = Math.floor((DEFAULT_MAXIMUM_RESPONSE_ENVELOPE_BYTES - 128) / 6);
 
 function encodedJsonStringEnvelopeLimit(logicalBytes, overheadBytes) {
   if (logicalBytes > Math.floor((Number.MAX_SAFE_INTEGER - overheadBytes) / 6)) return Number.MAX_SAFE_INTEGER;

@@ -27,6 +27,7 @@ const TERMINAL_WITH_OUTCOME = new Set([
 
 const EFFECT_STATES = new Set(Object.values(EffectState));
 const RECOVER_AFTER_RESOLVE_FAILURE = new Set([
+  EffectRecoveryClass.pure,
   EffectRecoveryClass.idempotent,
   EffectRecoveryClass.externallyRecoverable,
   EffectRecoveryClass.transactional,
@@ -99,17 +100,24 @@ export class EffectJournal {
     const prepared = await prepareHostRequest(hostRequest);
     const normalizedHostRequest = normalizePreparedHostRequest(hostRequest, prepared);
     assertPreparedRequestWithinLimits(prepared, manifest, this.policy);
+    assertDurableRecoveryAllowed(manifest.recoveryClass, this.policy);
     return await withEffectKeyLock(this.store, effectLockKey(this.runId, prepared.idempotencyKey), async () => {
       const observed = await this.observe(hostRequest, { manifest });
+      assertDurableRecoveryAllowed(observed.driverRecoveryClass, this.policy);
+      if (observed.state === EffectState.operatorInterventionRequired) {
+        return { record: observed, resolutionInputBytes: null, reused: false, operatorInterventionRequired: true };
+      }
+      if (observed.state === EffectState.failed) {
+        fail('ERR_EFFECT_FAILED_REQUIRES_OPERATOR', 'failed effects require explicit operator recovery before retry');
+      }
+      assertEffectRecoveryClassMatchesManifest(manifest, observed);
       const reused = await this.#resolutionFromRecord(observed);
       if (reused) {
         assertResolutionAccepted(reused.resolutionInputBytes, normalizedHostRequest, manifest, this.policy);
         return reused;
       }
       if (observed.state === EffectState.running) return await this.recover(context, observed, driver);
-      if (observed.state === EffectState.operatorInterventionRequired) {
-        return { record: observed, resolutionInputBytes: null, reused: false, operatorInterventionRequired: true };
-      }
+      assertManifestResponseWithinPolicy(manifest, this.policy);
 
       const running = await this.#put({
         ...observed,
@@ -204,7 +212,8 @@ export class EffectJournal {
 
     const recordWithRequestBytes = await this.#recordWithRequestBytes(record);
     assertRecoveredRequestWithinLimits(recordWithRequestBytes, manifest, this.policy);
-    if (typeof driver.recover === 'function' || record.driverRecoveryClass === EffectRecoveryClass.pure) {
+    assertManifestResponseWithinPolicy(manifest, this.policy);
+    if (typeof driver.recover === 'function' || canSafelyReResolve(record.driverRecoveryClass)) {
       const recovered = normalizeDriverResolution(typeof driver.recover === 'function'
         ? await driver.recover(context, recordWithRequestBytes)
         : await driver.resolve(context, recordWithRequestBytes));
@@ -384,11 +393,19 @@ function persistenceFailureDiagnostics(failureState, recoveryClass) {
   return {};
 }
 
+function canSafelyReResolve(recoveryClass) {
+  return recoveryClass === EffectRecoveryClass.pure || recoveryClass === EffectRecoveryClass.idempotent;
+}
+
 function assertDriverCanRecover(manifest, record) {
   if (!manifest.supportedActuatorRefs.includes(record.actuatorRef)) fail('ERR_ACTUATOR_REF_NOT_SUPPORTED');
   if (!manifest.supportedDescriptorFingerprints.includes(record.descriptorFingerprint)) fail('ERR_DESCRIPTOR_NOT_SUPPORTED');
   if (record.actuationClass && !manifest.supportedActuationClasses.includes(record.actuationClass)) fail('ERR_ACTUATION_CLASS_NOT_SUPPORTED');
   if (record.responseSchema && !manifest.supportedResponseStatuses.includes(record.responseSchema.status)) fail('ERR_RESPONSE_STATUS_NOT_SUPPORTED');
+  assertEffectRecoveryClassMatchesManifest(manifest, record);
+}
+
+function assertEffectRecoveryClassMatchesManifest(manifest, record) {
   if (manifest.recoveryClass !== record.driverRecoveryClass) fail('ERR_EFFECT_RECOVERY_CLASS_MISMATCH');
 }
 
@@ -514,6 +531,12 @@ function assertRecoveredRequestWithinLimits(record, manifest, policy) {
   if (!record.requestBytes) fail('ERR_EFFECT_REQUEST_BYTES_REQUIRED', 'effect recovery requires persisted request bytes');
   if (record.requestBytes.byteLength > manifest.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
   if (policy.maximumRequestBytes !== undefined && record.requestBytes.byteLength > policy.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
+}
+
+function assertManifestResponseWithinPolicy(manifest, policy) {
+  if (policy.maximumResponseBytes !== undefined && manifest.maximumResponseBytes > policy.maximumResponseBytes) {
+    fail('ERR_EFFECT_RESPONSE_LIMIT_EXCEEDS_POLICY');
+  }
 }
 
 function assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, policy) {

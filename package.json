@@ -4,6 +4,16 @@
   "private": true,
   "type": "module",
   "description": "Disposable, crash-recoverable reference host for World TurnClosure processes.",
+  "files": [
+    "bin/",
+    "docs/",
+    "examples/",
+    "scripts/",
+    "src/",
+    "test/",
+    "README.md",
+    "WORLD_CARRIER_V0_PLAN.md"
+  ],
   "bin": {
     "world-host": "./bin/world-host.mjs"
   },
