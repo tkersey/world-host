@@ -224,7 +224,21 @@ export class EffectJournal {
       const recovered = normalizeDriverResolution(typeof driver.recover === 'function'
         ? await driver.recover(context, recordWithRequestBytes)
         : await driver.resolve(context, recordWithRequestBytes));
-      assertResolutionAccepted(recovered.resolutionInputBytes, record, manifest, this.policy);
+      try {
+        assertResolutionAccepted(recovered.resolutionInputBytes, record, manifest, this.policy);
+      } catch (error) {
+        const failureState = invalidResolutionFailureState(record.driverRecoveryClass);
+        await this.#put({
+          ...record,
+          state: failureState,
+          diagnostics: {
+            ...record.diagnostics,
+            error: error.message,
+            ...resolutionFailureDiagnostics(failureState),
+          },
+        });
+        throw error;
+      }
       return await this.#recordRecoveredResolution(record, recovered);
     }
 

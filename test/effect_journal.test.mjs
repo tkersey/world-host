@@ -673,6 +673,32 @@ describe('EffectJournal', () => {
     assert.equal(driver.recoverCalls, 0);
   });
 
+  it('parks invalid recovery outputs instead of leaving effects running', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const observed = await journal.observe(hostRequest(), { recoveryClass: EffectRecoveryClass.idempotent });
+    const running = await store.putEffectRecord({ ...observed, state: EffectState.running, attemptCount: 1 });
+    const driver = fixtureDriver({
+      recoveryClass: EffectRecoveryClass.idempotent,
+      recoverResponse: encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xa2n,
+        status: 0,
+        responseValueImageBytes: fromUtf8('wrong target'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: new Uint8Array(),
+      }),
+    });
+
+    await assert.rejects(
+      () => journal.recover({}, running, driver),
+      { code: 'ERR_EFFECT_RESOLUTION_TARGET_MISMATCH' },
+    );
+    const record = await store.getEffectRecord('run', running.idempotencyKey, 'main');
+    assert.equal(record.state, EffectState.failed);
+    assert.equal(driver.recoverCalls, 1);
+  });
+
   it('reconciles resolved and submitted effects from the committed head without crossing branch or parent', async () => {
     const store = new MemoryStore();
     const mainJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
@@ -839,7 +865,7 @@ function httpHostRequest(overrides = {}) {
   };
 }
 
-function fixtureDriver({ recoveryClass, response = 'resolution', descriptorFingerprint = 'descriptor:fixture', recover = true, recoverHostClaim = false, delayMs = 0, maximumRequestBytes = 1024, maximumResponseBytes = Number.MAX_SAFE_INTEGER, supportedResponseStatuses = ['ok'] }) {
+function fixtureDriver({ recoveryClass, response = 'resolution', recoverResponse = null, descriptorFingerprint = 'descriptor:fixture', recover = true, recoverHostClaim = false, delayMs = 0, maximumRequestBytes = 1024, maximumResponseBytes = Number.MAX_SAFE_INTEGER, supportedResponseStatuses = ['ok'] }) {
   return {
     calls: 0,
     recoverCalls: 0,
@@ -867,7 +893,7 @@ function fixtureDriver({ recoveryClass, response = 'resolution', descriptorFinge
     recover: recover ? async function recoverFn(_context, record) {
       this.recoverCalls += 1;
       return {
-        resolutionInputBytes: fixtureResolutionInputBytes(record, fromUtf8(`recovered:${response}`)),
+        resolutionInputBytes: recoverResponse ?? fixtureResolutionInputBytes(record, fromUtf8(`recovered:${response}`)),
         hostClaimBytes: recoverHostClaim ? fromUtf8('recovered-host-claim') : undefined,
       };
     } : undefined,
