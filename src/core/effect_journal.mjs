@@ -611,7 +611,7 @@ function assertResolutionStatusAccepted(status, hostRequest) {
 function hostRequestTargetFingerprint(hostRequest) {
   const value = hostRequest.hostRequestFingerprint;
   if (typeof value === 'bigint' || typeof value === 'number') return BigInt(value);
-  const match = String(value ?? '').match(/(?:0x)?([0-9a-f]+)$/i);
+  const match = String(value ?? '').match(/^(?:world:host-request:|0x)([0-9a-f]+)$/i);
   if (!match) fail('ERR_HOST_REQUEST_FINGERPRINT_REQUIRED');
   return BigInt(`0x${match[1]}`);
 }

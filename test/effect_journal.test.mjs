@@ -285,6 +285,10 @@ describe('EffectJournal', () => {
       () => journal.resolve({}, hostRequest({ hostRequestFingerprint: 'not-a-world-fingerprint' }), driver),
       { code: 'ERR_HOST_REQUEST_FINGERPRINT_REQUIRED' },
     );
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest({ hostRequestFingerprint: 'not-a-world-prefix-deadbeef' }), driver),
+      { code: 'ERR_HOST_REQUEST_FINGERPRINT_REQUIRED' },
+    );
     assert.equal(driver.calls, 0);
     assert.equal((await store.listEffectRecords('run')).length, 0);
   });
