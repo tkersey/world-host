@@ -55,7 +55,7 @@ async function storedTurnClosureHead(store, run, sourceBranchId, sourceClosureFi
     const closureGeneration = summary.inspectionDiagnostics.turnSequenceNumber;
     if (!Number.isSafeInteger(closureGeneration) || closureGeneration < 0) fail('ERR_FORK_SOURCE_CLOSURE_NOT_STORED', 'stored source closure has an invalid turn sequence');
     return createRunHead({
-      generation: Math.max(1, closureGeneration),
+      generation: closureGeneration + 1,
       turnClosureRef: ref,
       turnClosureWorldFingerprint: summary.turnClosureWorldFingerprint,
       resultingStateFingerprint: summary.resultingStateFingerprint,

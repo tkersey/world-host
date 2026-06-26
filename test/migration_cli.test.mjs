@@ -95,14 +95,14 @@ describe('migration, branching, and CLI diagnostics', () => {
 
       assert.equal(branch.forkedFromTurnClosureFingerprint, head.turnClosureWorldFingerprint);
       assert.equal((await store.readHead(run.runId, 'historic')).turnClosureWorldFingerprint, head.turnClosureWorldFingerprint);
-      assert.equal((await store.readHead(run.runId, 'historic')).generation, head.generation);
+      assert.equal((await store.readHead(run.runId, 'historic')).generation, 2);
       assert.equal((await store.readHead(run.runId, 'main')).turnClosureWorldFingerprint, advancedHead.turnClosureWorldFingerprint);
       assert.equal((await store.getRun(run.runId)).branches.some((item) => item.branchId === 'historic'), true);
 
       const controller = new RunController({ store, workerFactory: async () => new DeterministicCliWorker('historic', { startSequence: 2n }) });
       const advancedHistoric = await controller.advance(run.runId, 'historic');
       assert.equal(advancedHistoric.status, 'advanced');
-      assert.equal(advancedHistoric.nextHead.generation, head.generation + 1);
+      assert.equal(advancedHistoric.nextHead.generation, 3);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -201,6 +201,7 @@ describe('migration, branching, and CLI diagnostics', () => {
 
   it('forks a sequence-zero boot closure after the branch advances again', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-sequence-zero-fork-'));
+    const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-sequence-one-fork-import-'));
     try {
       const store = new DirectoryStore(root);
       const imageRef = await store.putBlob(fromUtf8('image'));
@@ -237,15 +238,19 @@ describe('migration, branching, and CLI diagnostics', () => {
       await store.createRun(run);
       const worker = new SequencedCliWorker([
         { closureFingerprint: 0x900n, turnSequenceNumber: 0n, resultingStateFingerprint: 0x910n, chronicleResultingCursorFingerprint: 0x920n, status: 1 },
-        { closureFingerprint: 0x901n, turnSequenceNumber: 1n, resultingStateFingerprint: 0x911n, chronicleResultingCursorFingerprint: 0x921n },
+        { closureFingerprint: 0x901n, turnSequenceNumber: 1n, resultingStateFingerprint: 0x911n, chronicleResultingCursorFingerprint: 0x921n, status: 1 },
+        { closureFingerprint: 0x902n, turnSequenceNumber: 2n, resultingStateFingerprint: 0x912n, chronicleResultingCursorFingerprint: 0x922n },
       ]);
       const controller = new RunController({ store, workerFactory: async () => worker });
       const bootAdvance = await controller.advance(run.runId, 'main');
       const secondAdvance = await controller.advance(run.runId, 'main');
+      const thirdAdvance = await controller.advance(run.runId, 'main');
 
       assert.equal(bootAdvance.nextHead.generation, 1);
       assert.equal(bootAdvance.nextHead.updateDiagnostics.inspectedTurnClosure.turnSequenceNumber, 0);
       assert.equal(secondAdvance.status, 'advanced');
+      assert.equal(secondAdvance.nextHead.generation, 2);
+      assert.equal(thirdAdvance.status, 'advanced');
 
       const branch = await forkRunBranch(store, {
         runId: run.runId,
@@ -256,8 +261,50 @@ describe('migration, branching, and CLI diagnostics', () => {
 
       assert.equal(branch.forkedFromTurnClosureFingerprint, bootAdvance.nextHead.turnClosureWorldFingerprint);
       assert.equal((await store.readHead(run.runId, 'boot')).generation, 1);
+
+      const restoreBranch = await forkRunBranch(store, {
+        runId: run.runId,
+        sourceBranchId: 'main',
+        sourceClosureFingerprint: secondAdvance.nextHead.turnClosureWorldFingerprint,
+        newBranchId: 'restore',
+      });
+      const restoreHead = await store.readHead(run.runId, 'restore');
+      assert.equal(restoreBranch.forkedFromTurnClosureFingerprint, secondAdvance.nextHead.turnClosureWorldFingerprint);
+      assert.equal(restoreHead.generation, 2);
+
+      const packagePath = path.join(receiverRoot, 'restore-export.json');
+      let output = '';
+      assert.equal(await runBunCli([
+        'export',
+        '--json',
+        '--store', root,
+        '--run', run.runId,
+        '--branch', 'restore',
+        '--out', packagePath,
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      }), 0);
+      assert.doesNotMatch(output, /bytesHex/);
+
+      output = '';
+      assert.equal(await runBunCli([
+        'import',
+        '--json',
+        '--store', receiverRoot,
+        '--package', packagePath,
+        '--run', 'receiver-restore-run',
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      }), 0);
+      assert.equal(JSON.parse(output).runId, 'receiver-restore-run');
+      const receiverStore = new DirectoryStore(receiverRoot);
+      const receiverHead = await receiverStore.readHead('receiver-restore-run', 'restore');
+      assert.equal(receiverHead.generation, 2);
     } finally {
       await rm(root, { recursive: true, force: true });
+      await rm(receiverRoot, { recursive: true, force: true });
     }
   });
 
