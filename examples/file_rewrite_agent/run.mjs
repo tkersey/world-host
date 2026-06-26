@@ -152,6 +152,7 @@ async function installFixtureRun(store) {
   const imageRef = await store.putBlob(imageBytes);
   const manifestRef = await store.putBlob(manifestBytes);
   const parentClosureRef = await store.putBlob(parentClosureBytes);
+  const receiverPolicyRef = await store.putBlob(fromUtf8('local-sandbox-only'));
   const application = createApplicationRecord({
     applicationId: APPLICATION_ID,
     universalWasmChecksum: `sha256:${wasmRef.checksum}`,
@@ -188,7 +189,7 @@ async function installFixtureRun(store) {
     branches: [createBranchRecord({ branchId: BRANCH_ID, currentHead: parentHead })],
     effectJournalNamespace: `${RUN_ID}:effects`,
     creationMetadata: { example: 'file-rewrite-agent' },
-    receiverPolicyRef: 'local-sandbox-only',
+    receiverPolicyRef,
     diagnostics: { hostFixtureOnly: true },
   });
   await store.createRun(run);

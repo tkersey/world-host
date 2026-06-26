@@ -8,7 +8,7 @@ export function createRunRecord(input) {
     branches: Array.isArray(input.branches) ? input.branches : [],
     effectJournalNamespace: requiredString(input.effectJournalNamespace, 'effectJournalNamespace'),
     creationMetadata: input.creationMetadata ?? {},
-    receiverPolicyRef: input.receiverPolicyRef ?? null,
+    receiverPolicyRef: optionalBlobRef(input.receiverPolicyRef, 'receiverPolicyRef'),
     diagnostics: input.diagnostics ?? {},
   });
 }
@@ -24,14 +24,19 @@ export function createBranchRecord(input) {
 }
 
 export function createRunHead(input) {
+  const archiveMomentFingerprint = optionalWorldFingerprint(input.archiveMomentFingerprint, 'archiveMomentFingerprint');
+  const archiveSealFingerprint = optionalWorldFingerprint(input.archiveSealFingerprint, 'archiveSealFingerprint');
+  if ((archiveMomentFingerprint == null) !== (archiveSealFingerprint == null)) {
+    fail('ERR_ARCHIVE_ANCHOR_PAIR_REQUIRED', 'archive moment and seal must both be present or both be absent');
+  }
   return Object.freeze({
     generation: integer(input.generation, 'generation'),
     turnClosureRef: assertBlobRef(input.turnClosureRef),
     turnClosureWorldFingerprint: assertWorldFingerprint(input.turnClosureWorldFingerprint, 'turnClosureWorldFingerprint'),
     resultingStateFingerprint: assertWorldFingerprint(input.resultingStateFingerprint, 'resultingStateFingerprint'),
     chronicleCursor: requiredString(input.chronicleCursor, 'chronicleCursor'),
-    archiveMomentFingerprint: optionalWorldFingerprint(input.archiveMomentFingerprint, 'archiveMomentFingerprint'),
-    archiveSealFingerprint: optionalWorldFingerprint(input.archiveSealFingerprint, 'archiveSealFingerprint'),
+    archiveMomentFingerprint,
+    archiveSealFingerprint,
     status: requiredString(input.status, 'status'),
     updateDiagnostics: input.updateDiagnostics ?? {},
   });
@@ -44,6 +49,17 @@ function requiredString(value, label) {
 
 function optionalWorldFingerprint(value, label) {
   return value == null ? null : assertWorldFingerprint(value, label);
+}
+
+function optionalBlobRef(value, label) {
+  try {
+    return value == null ? null : assertBlobRef(value);
+  } catch (error) {
+    if (error?.code === 'ERR_INVALID_BLOB_REF') {
+      fail('ERR_INVALID_BLOB_REF', `${label} must be a BlobRef`);
+    }
+    throw error;
+  }
 }
 
 function integer(value, label) {

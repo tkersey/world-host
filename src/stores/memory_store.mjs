@@ -152,20 +152,30 @@ export class MemoryStore extends ClosureStore {
       const existing = this.applications.get(application.applicationId);
       if (stableJson(existing) !== stableJson(application)) fail('ERR_IMPORT_APPLICATION_MISMATCH');
     }
-    if (this.runs.has(runRecord.runId)) fail('ERR_IMPORT_RUN_EXISTS');
-    if (this.heads.has(headKey(runRecord.runId, bundle.branchId))) fail('ERR_IMPORT_HEAD_EXISTS');
+    const runExists = this.runs.has(runRecord.runId);
+    const headExists = this.heads.has(headKey(runRecord.runId, bundle.branchId));
     for (const record of effectRecords) {
       const existing = await this.getEffectRecord(record.runId, record.idempotencyKey, record.branchId);
       if (existing && stableJson(existing) !== stableJson(record)) fail('ERR_IMPORT_EFFECT_EXISTS');
     }
+    const missingEffect = effectRecords.some((record) => !this.effects.has(effectKey(record.runId, record.branchId, record.idempotencyKey)));
+    if (runExists) {
+      const existing = this.runs.get(runRecord.runId);
+      if (stableJson(existing) !== stableJson(runRecord)) fail('ERR_IMPORT_RUN_EXISTS');
+    }
+    if (headExists) {
+      const existing = this.heads.get(headKey(runRecord.runId, bundle.branchId));
+      if (stableJson(existing) !== stableJson(headRecord)) fail('ERR_IMPORT_HEAD_EXISTS');
+    }
+    if (runExists && headExists && !missingEffect) fail('ERR_IMPORT_RUN_EXISTS');
     for (const ref of requiredBlobRefs) {
       const bytes = importedBlobs.get(ref.checksum) ?? this.blobs.get(ref.checksum);
       if (!bytes || bytes.byteLength !== ref.byteLength) fail('ERR_IMPORT_BLOB_REF_MISSING');
     }
     for (const [checksum, bytes] of importedBlobs) this.blobs.set(checksum, new Uint8Array(bytes));
     if (application && !this.applications.has(application.applicationId)) this.applications.set(application.applicationId, clone(application));
-    this.runs.set(runRecord.runId, clone(runRecord));
-    this.heads.set(headKey(runRecord.runId, bundle.branchId), clone(headRecord));
+    if (!runExists) this.runs.set(runRecord.runId, clone(runRecord));
+    if (!headExists) this.heads.set(headKey(runRecord.runId, bundle.branchId), clone(headRecord));
     for (const effect of effectRecords) await this.putEffectRecord(effect);
     return await this.getRun(runRecord.runId);
   }

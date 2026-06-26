@@ -220,7 +220,7 @@ export class DirectoryStore extends ClosureStore {
       const existing = await this.readHead(runRecord.runId, bundle.branchId);
       if (stableJson(existing) !== stableJson(headRecord)) fail('ERR_IMPORT_HEAD_EXISTS');
     }
-    if (runExists && headExists) fail('ERR_IMPORT_RUN_EXISTS');
+    if (runExists && headExists && !missingEffect) fail('ERR_IMPORT_RUN_EXISTS');
     for (const bytes of importedBlobBytes.values()) await this.putBlob(bytes);
     if (application && !await exists(applicationPath(this.root, application.applicationId))) {
       await this.createApplication(application);

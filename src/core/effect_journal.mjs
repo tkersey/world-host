@@ -107,6 +107,7 @@ export class EffectJournal {
     const driver = defineActuatorDriver(driverLike);
     const manifest = driver.manifest();
     assertDriverCanResolve(manifest, hostRequest);
+    assertDriverRecoveryHookSufficient(manifest, driver);
     const prepared = await prepareHostRequest(hostRequest);
     const normalizedHostRequest = normalizePreparedHostRequest(hostRequest, prepared);
     assertPreparedRequestWithinLimits(prepared, manifest, this.policy);
@@ -446,6 +447,16 @@ function persistenceFailureDiagnostics(failureState, recoveryClass) {
 
 function canSafelyReResolve(recoveryClass) {
   return recoveryClass === EffectRecoveryClass.pure || recoveryClass === EffectRecoveryClass.idempotent;
+}
+
+function assertDriverRecoveryHookSufficient(manifest, driver) {
+  if (
+    (manifest.recoveryClass === EffectRecoveryClass.externallyRecoverable ||
+      manifest.recoveryClass === EffectRecoveryClass.transactional) &&
+    typeof driver.recover !== 'function'
+  ) {
+    fail('ERR_EFFECT_RECOVERY_HOOK_REQUIRED', 'externally recoverable and transactional drivers must expose recover before durable invocation');
+  }
 }
 
 function assertDriverCanRecover(manifest, record) {

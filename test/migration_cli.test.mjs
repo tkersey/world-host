@@ -367,6 +367,34 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('rejects half-paired archive anchors and malformed receiver policy refs at run boundaries', async () => {
+    const blobRef = { algorithm: 'sha256', checksum: '0'.repeat(64), byteLength: 0 };
+
+    assert.throws(
+      () => createRunHead({
+        generation: 1,
+        turnClosureRef: blobRef,
+        turnClosureWorldFingerprint: 'world:closure',
+        resultingStateFingerprint: 'world:state',
+        chronicleCursor: 'world:chronicle',
+        archiveMomentFingerprint: 'world:archive-moment',
+        archiveSealFingerprint: null,
+        status: 'needs_host',
+      }),
+      { code: 'ERR_ARCHIVE_ANCHOR_PAIR_REQUIRED' },
+    );
+    assert.throws(
+      () => createRunRecord({
+        runId: 'run',
+        applicationId: 'app',
+        branches: [],
+        effectJournalNamespace: 'run:effects',
+        receiverPolicyRef: 'local-policy-marker',
+      }),
+      { code: 'ERR_INVALID_BLOB_REF' },
+    );
+  });
+
   it('serializes DirectoryStore head CAS across instances with the same root', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-head-cas-'));
     try {
@@ -1115,8 +1143,9 @@ describe('migration, branching, and CLI diagnostics', () => {
         await receiverStore.createRun(bundle.run);
         assert.equal((await receiverStore.listEffectRecords(run.runId)).length, 0);
 
+        await receiverStore.importRun(bundle);
+        assert.equal((await receiverStore.listEffectRecords(run.runId)).length, bundle.effects.length);
         await assert.rejects(() => receiverStore.importRun(bundle), { code: 'ERR_IMPORT_RUN_EXISTS' });
-        assert.equal((await receiverStore.listEffectRecords(run.runId)).length, 0);
       } finally {
         await receiverStore.releaseLock();
       }
@@ -1607,6 +1636,12 @@ describe('migration, branching, and CLI diagnostics', () => {
       await memoryEffectCollision.putEffectRecord({ ...memoryEffectCollisionBundle.effects[0], diagnostics: { existing: true } });
       await assert.rejects(() => memoryEffectCollision.importRun(memoryEffectCollisionBundle), { code: 'ERR_IMPORT_EFFECT_EXISTS' });
       await assert.rejects(() => memoryEffectCollision.getRun(memoryEffectCollisionBundle.run.runId), { code: 'ERR_RUN_NOT_FOUND' });
+
+      const memoryPartialImport = new MemoryStore();
+      await memoryPartialImport.createApplication(carrierExport.bundle.application);
+      await memoryPartialImport.createRun(carrierExport.bundle.run);
+      await memoryPartialImport.importRun(carrierExport.bundle);
+      assert.equal((await memoryPartialImport.listEffectRecords(carrierExport.bundle.run.runId)).length, carrierExport.bundle.effects.length);
 
       const selectedHeadMismatchBundle = JSON.parse(JSON.stringify(carrierExport.bundle));
       selectedHeadMismatchBundle.run.branches[0].currentHead = {

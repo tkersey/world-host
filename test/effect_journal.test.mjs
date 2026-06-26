@@ -703,6 +703,32 @@ describe('EffectJournal', () => {
     assert.equal(driver.recoverCalls, 1);
   });
 
+  it('rejects externally recoverable drivers without recovery hooks before invocation', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.externallyRecoverable, recover: false });
+
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest({ recoveryClass: EffectRecoveryClass.externallyRecoverable }), driver),
+      { code: 'ERR_EFFECT_RECOVERY_HOOK_REQUIRED' },
+    );
+    assert.equal(driver.calls, 0);
+    assert.equal((await store.listEffectRecords('run')).length, 0);
+  });
+
+  it('rejects transactional drivers without recovery hooks before invocation', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.transactional, recover: false });
+
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest({ recoveryClass: EffectRecoveryClass.transactional }), driver),
+      { code: 'ERR_EFFECT_RECOVERY_HOOK_REQUIRED' },
+    );
+    assert.equal(driver.calls, 0);
+    assert.equal((await store.listEffectRecords('run')).length, 0);
+  });
+
   it('marks unresolved best_effort recovery for operator intervention', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({

@@ -53,15 +53,25 @@ export class BunStoreLock {
 }
 
 async function removeStaleLockPath(lockPath) {
+  let handle;
   let metadata;
   try {
-    metadata = JSON.parse(await readFile(lockPath, 'utf8'));
+    handle = await open(lockPath, 'r');
+    metadata = JSON.parse(await handle.readFile('utf8'));
   } catch (error) {
     if (error?.code === 'ENOENT') return;
     return;
+  } finally {
+    if (!metadata) await handle?.close().catch(() => {});
   }
-  if (isProcessAlive(metadata?.pid)) return;
-  await rm(lockPath, { force: true });
+  try {
+    if (isProcessAlive(metadata?.pid)) return;
+    await removeLockPathIfSameFile(lockPath, handle);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  } finally {
+    await handle.close().catch(() => {});
+  }
 }
 
 function isProcessAlive(pid) {
