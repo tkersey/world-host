@@ -503,11 +503,14 @@ describe('migration, branching, and CLI diagnostics', () => {
     assert.equal(redact({ diagnostics: { access_key: 'secret' } }).diagnostics.access_key, '[redacted]');
     assert.equal(redact({ diagnostics: { privateKey: 'secret' } }).diagnostics.privateKey, '[redacted]');
     assert.equal(redact({ diagnostics: { error: 'driver failed with bearer token sk-test-secret' } }).diagnostics.error, '[redacted]');
-    let output = '';
-    const code = await runBunCli(['inspect', '--json'], { stdout: { write: (text) => { output += text; } }, stderr: { write() {} } });
-    assert.equal(code, 0);
-    assert.match(output, /"command": "inspect"/);
-    assert.doesNotMatch(output, /secret|bearer/i);
+    await assert.rejects(
+      () => runBunCli(['inspect', '--json'], { stdout: { write() {} }, stderr: { write() {} } }),
+      /missing required option: --store/,
+    );
+    await assert.rejects(
+      () => runBunCli(['effects', '--json'], { stdout: { write() {} }, stderr: { write() {} } }),
+      /missing required option: --store/,
+    );
     await assert.rejects(
       () => runBunCli(['inspect', '--json', '--store', '.world-carrier'], { stdout: { write() {} }, stderr: { write() {} } }),
       /missing required option: --run/,

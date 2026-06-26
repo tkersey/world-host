@@ -34,16 +34,7 @@ export async function runBunCli(args, io, options = {}) {
     const storePath = valueAfter(args, '--store');
     const runId = valueAfter(args, '--run');
     if (storePath && runId) return await runStoreDiagnostics(command, args, io, storePath, runId);
-    if (args.includes('--store') || args.includes('--run')) {
-      throw new Error(`missing required option: ${storePath ? '--run' : '--store'}`);
-    }
-    io.stdout.write(`${JSON.stringify(redact({
-      command,
-      ok: true,
-      mode: args.includes('--json') ? 'json' : 'human',
-      diagnostics: { store: valueAfter(args, '--store') ?? null },
-    }), null, 2)}\n`);
-    return 0;
+    throw new Error(`missing required option: ${storePath ? '--run' : '--store'}`);
   }
   if (command === 'recover') {
     const storePath = valueAfter(args, '--store');
