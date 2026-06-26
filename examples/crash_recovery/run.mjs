@@ -38,7 +38,7 @@ function idempotentDriver() {
         supportedActuationClasses: ['fixture'],
         supportedResponseStatuses: ['ok'],
         maximumRequestBytes: 1024,
-        maximumResponseBytes: Number.MAX_SAFE_INTEGER,
+        maximumResponseBytes: 1024,
         recoveryClass: 'idempotent',
         concurrencyLimit: 1,
         authorityLabels: ['fixture'],
