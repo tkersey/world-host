@@ -332,25 +332,37 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
-  it('does not unlink a replacement store lock after stale break acquisition', async () => {
+  it('does not break an active store lock owner', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-lock-'));
     const lockPath = path.join(root, 'store.lock');
-    const staleOwner = new BunStoreLock(lockPath);
+    const owner = new BunStoreLock(lockPath);
     const replacement = new BunStoreLock(lockPath);
-    const contender = new BunStoreLock(lockPath);
     const afterRelease = new BunStoreLock(lockPath);
     try {
-      await staleOwner.acquire();
-      await replacement.acquire({ breakStale: true });
-      await staleOwner.release();
-      await assert.rejects(() => contender.acquire(), { code: 'EEXIST' });
-      await replacement.release();
+      await owner.acquire();
+      await assert.rejects(() => replacement.acquire({ breakStale: true }), { code: 'EEXIST' });
+      await owner.release();
       await afterRelease.acquire();
     } finally {
       await afterRelease.release();
+      await replacement.release();
+      await owner.release();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('breaks a lock only when the recorded owner is not alive', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-dead-lock-'));
+    const lockPath = path.join(root, 'store.lock');
+    const replacement = new BunStoreLock(lockPath);
+    const contender = new BunStoreLock(lockPath);
+    try {
+      await writeFile(lockPath, JSON.stringify({ ownerToken: 'dead-owner', pid: 999999999 }));
+      await replacement.acquire({ breakStale: true });
+      await assert.rejects(() => contender.acquire(), { code: 'EEXIST' });
+    } finally {
       await contender.release();
       await replacement.release();
-      await staleOwner.release();
       await rm(root, { recursive: true, force: true });
     }
   });

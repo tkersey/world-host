@@ -164,7 +164,9 @@ describe('RunController and WorldWorker', () => {
   });
 
   it('rejects parent closures from a different loaded appliance manifest', async () => {
-    const { store, runId, branchId } = await fixtureStore();
+    const { store, runId, branchId } = await fixtureStore({
+      manifestBytes: fixtureApplianceManifestBytes({ manifestFingerprint: 0x999n }),
+    });
     const controller = new RunController({
       store,
       workerFactory: async () => new ManifestCheckingWorker(fixtureTurnClosureBytes(), 0x999n),
@@ -173,6 +175,19 @@ describe('RunController and WorldWorker', () => {
     await assert.rejects(
       () => controller.advance(runId, branchId),
       { code: 'ERR_PARENT_HEAD_CLOSURE_MISMATCH' },
+    );
+  });
+
+  it('rejects corrupt stored appliance manifests for manifest-aware workers', async () => {
+    const { store, runId, branchId } = await fixtureStore({ manifestBytes: fromUtf8('not-an-appliance-manifest') });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ManifestCheckingWorker(fixtureTurnClosureBytes(), 0x211n),
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_APPLICATION_MANIFEST_INVALID' },
     );
   });
 
@@ -1068,7 +1083,7 @@ async function fixtureStore(options = {}) {
   const store = new MemoryStore();
   const imageRef = await store.putBlob(fromUtf8('image'));
   const wasmRef = await store.putBlob(fromUtf8('wasm'));
-  const manifestRef = await store.putBlob(fromUtf8('manifest'));
+  const manifestRef = await store.putBlob(options.manifestBytes ?? fixtureApplianceManifestBytes({ manifestFingerprint: 0x211n }));
   const closureBytes = options.closureBytes ?? (options.headStatus === 'genesis'
     ? fromUtf8('world-host:genesis')
     : fixtureTurnClosureBytes({ status: 1, turnSequenceNumber: 0n }));
@@ -1525,6 +1540,42 @@ function fixtureTurnClosureBytes(options = {}) {
   ]);
 }
 
+function fixtureApplianceManifestBytes(options = {}) {
+  return concat([
+    u32(3),
+    u32(3),
+    u64(options.manifestFingerprint ?? 0x211n),
+    u32(3),
+    u64(0x102n),
+    u64(0x103n),
+    u64(0x104n),
+    u64(0n),
+    u64(0n),
+    u64(0n),
+    u64Slice([]),
+    u64Slice([]),
+    u64(0n),
+    u64Slice([]),
+    u64Slice([]),
+    u64Slice([]),
+    u64Slice([]),
+    u64Slice([]),
+    u64Slice([]),
+    u8Slice([]),
+    u8Slice([]),
+    u64(0n),
+    u64Slice([]),
+    u64(0n),
+    u64(0n),
+    u8(0),
+    u16(0),
+    u64(0x105n),
+    u64(0x106n),
+    u8(0),
+    bytes(new Uint8Array()),
+  ]);
+}
+
 function receiptStatusForClosureStatus(status) {
   if (status === 0) return 0;
   if (status === 1) return 3;
@@ -1769,6 +1820,12 @@ function u32(value) {
   return out;
 }
 
+function u16(value) {
+  const out = new Uint8Array(2);
+  new DataView(out.buffer).setUint16(0, Number(value), true);
+  return out;
+}
+
 function u64(value) {
   const out = new Uint8Array(8);
   const actual = BigInt.asUintN(64, BigInt(value));
@@ -1788,6 +1845,10 @@ function bytes(value) {
 
 function u64Slice(values) {
   return concat([u64(values.length), ...values.map(u64)]);
+}
+
+function u8Slice(values) {
+  return concat([u64(values.length), Uint8Array.from(values)]);
 }
 
 function byteSlices(values) {

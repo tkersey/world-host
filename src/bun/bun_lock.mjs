@@ -13,7 +13,7 @@ export class BunStoreLock {
 
   async acquire({ breakStale = false } = {}) {
     await mkdir(path.dirname(this.lockPath), { recursive: true }).catch(() => {});
-    if (breakStale) await rm(this.lockPath, { force: true });
+    if (breakStale) await removeStaleLockPath(this.lockPath);
     const ownerToken = randomUUID();
     const handle = await open(this.lockPath, 'wx');
     try {
@@ -49,6 +49,29 @@ export class BunStoreLock {
       throw error;
     }
     if (currentToken === ownerToken) await rm(this.lockPath, { force: true });
+  }
+}
+
+async function removeStaleLockPath(lockPath) {
+  let metadata;
+  try {
+    metadata = JSON.parse(await readFile(lockPath, 'utf8'));
+  } catch (error) {
+    if (error?.code === 'ENOENT') return;
+    return;
+  }
+  if (isProcessAlive(metadata?.pid)) return;
+  await rm(lockPath, { force: true });
+}
+
+function isProcessAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ESRCH') return false;
+    return true;
   }
 }
 

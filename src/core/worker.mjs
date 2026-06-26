@@ -131,7 +131,6 @@ export class RunController {
     }));
     const parentClosureBytes = await this.store.getBlob(parentHead.turnClosureRef);
     assertParentHeadMatchesClosure(parentHead, parentClosureBytes);
-    const storedApplianceManifest = await storedApplianceManifestFingerprint(this.store, application);
     const needsHostEffectPlan = prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, this.hostRequestMapper, this.effectDrivers, policy);
     const imageBytes = await this.store.getBlob(application.executableImageRef);
     const executableHostFingerprint = `sha256:${await sha256Hex(imageBytes)}`;
@@ -149,7 +148,7 @@ export class RunController {
         workerMayBeDirty = true;
         await worker.loadExecutable(imageBytes);
       }
-      assertStoredApplicationManifestMatchesWorker(worker, storedApplianceManifest);
+      await assertStoredApplicationManifestMatchesWorker(worker, this.store, application);
       assertParentClosureManifestMatchesWorker(worker, parentHead, parentClosureBytes);
       if (!workerReused && parentHead.status !== 'genesis' && typeof worker.restoreFromTurnClosure === 'function') {
         workerMayBeDirty = true;
@@ -779,24 +778,20 @@ function assertParentClosureManifestMatchesWorker(worker, parentHead, parentClos
   }
 }
 
-async function storedApplianceManifestFingerprint(store, application) {
-  let bytes;
-  try {
-    bytes = await store.getBlob(application.applianceManifestRef);
-  } catch {
-    return null;
-  }
-  try {
-    return decodeApplianceManifest(bytes).manifestFingerprint;
-  } catch {
-    return null;
-  }
-}
-
-function assertStoredApplicationManifestMatchesWorker(worker, storedManifestFingerprint) {
-  if (storedManifestFingerprint == null || typeof worker.readApplianceManifest !== 'function') return;
+async function assertStoredApplicationManifestMatchesWorker(worker, store, application) {
+  if (typeof worker.readApplianceManifest !== 'function') return;
   const loaded = worker.readApplianceManifest()?.decoded?.manifestFingerprint;
-  if (loaded != null && loaded !== storedManifestFingerprint) {
+  if (loaded == null) return;
+  let stored;
+  try {
+    stored = decodeApplianceManifest(await store.getBlob(application.applianceManifestRef));
+  } catch (error) {
+    fail('ERR_APPLICATION_MANIFEST_INVALID', 'stored appliance manifest is not decodable', {
+      cause: error?.message ?? String(error),
+    });
+  }
+  const storedManifestFingerprint = stored.manifestFingerprint;
+  if (loaded !== storedManifestFingerprint) {
     fail('ERR_APPLICATION_MANIFEST_MISMATCH', 'stored appliance manifest does not match loaded executable manifest');
   }
 }
