@@ -19,7 +19,7 @@ export async function forkRunBranch(store, { runId, sourceBranchId, sourceClosur
     if (existingHead && !branchAlreadyPublished && existingHead.turnClosureWorldFingerprint === sourceClosureFingerprint) {
       forkHead = existingHead;
     } else {
-      forkHead = await storedTurnClosureHead(store, sourceClosureFingerprint);
+      forkHead = await storedTurnClosureHead(store, run, sourceBranchId, sourceClosureFingerprint);
       if (!forkHead) fail('ERR_FORK_SOURCE_CLOSURE_NOT_STORED', 'fork requires a stored source closure');
     }
   }
@@ -42,7 +42,8 @@ export async function forkRunBranch(store, { runId, sourceBranchId, sourceClosur
   return branch;
 }
 
-async function storedTurnClosureHead(store, sourceClosureFingerprint) {
+async function storedTurnClosureHead(store, run, sourceBranchId, sourceClosureFingerprint) {
+  if (!selectedBranchClosureFingerprints(run, sourceBranchId).has(sourceClosureFingerprint)) return null;
   for (const ref of await listStoredBlobRefs(store)) {
     let summary;
     try {
@@ -66,6 +67,20 @@ async function storedTurnClosureHead(store, sourceClosureFingerprint) {
     });
   }
   return null;
+}
+
+function selectedBranchClosureFingerprints(run, sourceBranchId) {
+  const fingerprints = new Set();
+  for (const branch of run.branches ?? []) {
+    if (branch.branchId !== sourceBranchId) continue;
+    addFingerprint(fingerprints, branch.currentHead?.turnClosureWorldFingerprint);
+    addFingerprint(fingerprints, branch.forkedFromTurnClosureFingerprint);
+  }
+  return fingerprints;
+}
+
+function addFingerprint(fingerprints, value) {
+  if (typeof value === 'string' && value.length > 0) fingerprints.add(value);
 }
 
 async function listStoredBlobRefs(store) {

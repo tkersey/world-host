@@ -85,10 +85,6 @@ describe('migration, branching, and CLI diagnostics', () => {
         status: advancedSummary.status,
       });
       await store.writeHead(run.runId, 'main', advancedHead);
-      await store.writeRun(createRunRecord({
-        ...run,
-        branches: [createBranchRecord({ branchId: 'main', currentHead: advancedHead })],
-      }));
 
       const branch = await forkRunBranch(store, {
         runId: run.runId,
@@ -107,6 +103,66 @@ describe('migration, branching, and CLI diagnostics', () => {
       const advancedHistoric = await controller.advance(run.runId, 'historic');
       assert.equal(advancedHistoric.status, 'advanced');
       assert.equal(advancedHistoric.nextHead.generation, head.generation + 1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects historical forks from another run in the same store', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-cross-run-fork-'));
+    try {
+      const { run } = await fixtureDirectoryStore(root);
+      const store = new DirectoryStore(root);
+      const otherImageRef = await store.putBlob(fromUtf8('other-image'));
+      const otherWasmRef = await store.putBlob(fromUtf8('other-wasm'));
+      const otherManifestRef = await store.putBlob(fromUtf8('other-manifest'));
+      const otherClosureBytes = fixtureTurnClosureBytes({
+        closureFingerprint: 0x333n,
+        turnSequenceNumber: 1n,
+        resultingStateFingerprint: 0x433n,
+        chronicleResultingCursorFingerprint: 0x434n,
+      });
+      const otherSummary = summarizeTurnClosureForRunHead(otherClosureBytes);
+      const otherClosureRef = await store.putBlob(otherClosureBytes);
+      const otherApp = createApplicationRecord({
+        applicationId: 'other-directory-app',
+        universalWasmChecksum: `sha256:${otherWasmRef.checksum}`,
+        worldProtocolVersion: 'v0.1.0',
+        applianceAbiVersion: 'v3',
+        executableImageRef: otherImageRef,
+        executableImageWorldFingerprint: 'world:image:other-directory',
+        applianceManifestRef: otherManifestRef,
+        requiredActuators: [],
+        requiredRuntimeLimits: {},
+        installationDiagnostics: {
+          wasmByteLength: otherWasmRef.byteLength,
+        },
+      });
+      await store.createApplication(otherApp);
+      const otherHead = createRunHead({
+        generation: 1,
+        turnClosureRef: otherClosureRef,
+        turnClosureWorldFingerprint: otherSummary.turnClosureWorldFingerprint,
+        resultingStateFingerprint: otherSummary.resultingStateFingerprint,
+        chronicleCursor: otherSummary.chronicleCursor,
+        archiveMomentFingerprint: otherSummary.archiveMomentFingerprint,
+        archiveSealFingerprint: otherSummary.archiveSealFingerprint,
+        status: otherSummary.status,
+      });
+      await store.createRun(createRunRecord({
+        runId: 'other-directory-run',
+        applicationId: otherApp.applicationId,
+        branches: [createBranchRecord({ branchId: 'main', currentHead: otherHead })],
+        effectJournalNamespace: 'other-directory-run:effects',
+      }));
+
+      await assert.rejects(() => forkRunBranch(store, {
+        runId: run.runId,
+        sourceBranchId: 'main',
+        sourceClosureFingerprint: otherSummary.turnClosureWorldFingerprint,
+        newBranchId: 'grafted',
+      }), { code: 'ERR_FORK_SOURCE_CLOSURE_NOT_STORED' });
+      await assert.rejects(() => store.readHead(run.runId, 'grafted'), { code: 'ERR_HEAD_NOT_FOUND' });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
