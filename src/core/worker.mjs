@@ -206,7 +206,7 @@ export class RunController {
       }
       const committedEffects = [];
       for (const effect of submittedEffects) committedEffects.push(await effectTurn.journal.markClosureCommitted(effect));
-      await recordBranchHeadProvenance(this.store, runId, branchId, cas.current);
+      await recordBranchHeadProvenance(this.store, runId, branchId, parentHead, cas.current);
       worker.bind({
         applicationId: run.applicationId,
         branchId,
@@ -328,7 +328,7 @@ export class RunController {
   }
 }
 
-async function recordBranchHeadProvenance(store, runId, branchId, nextHead) {
+async function recordBranchHeadProvenance(store, runId, branchId, parentHead, nextHead) {
   if (typeof store.writeRun !== 'function') return;
   await withRunMetadataLock(store, runId, async () => {
     const run = await store.getRun(runId);
@@ -337,12 +337,18 @@ async function recordBranchHeadProvenance(store, runId, branchId, nextHead) {
       if (branch.branchId !== branchId) return branch;
       updated = true;
       const historicalTurnClosureFingerprints = appendUnique(
-        branch.diagnostics?.historicalTurnClosureFingerprints,
-        branch.currentHead?.turnClosureWorldFingerprint,
+        appendUnique(
+          branch.diagnostics?.historicalTurnClosureFingerprints,
+          branch.currentHead?.turnClosureWorldFingerprint,
+        ),
+        parentHead.turnClosureWorldFingerprint,
       );
       const historicalTurnClosureRefs = appendUniqueRefs(
-        branch.diagnostics?.historicalTurnClosureRefs,
-        branch.currentHead?.turnClosureRef,
+        appendUniqueRefs(
+          branch.diagnostics?.historicalTurnClosureRefs,
+          branch.currentHead?.turnClosureRef,
+        ),
+        parentHead.turnClosureRef,
       );
       return createBranchRecord({
         ...branch,

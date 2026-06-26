@@ -262,6 +262,36 @@ describe('RunController and WorldWorker', () => {
     assert.equal(effects[0].state, EffectState.closureCommitted);
   });
 
+  it('preserves the actual parent closure when run metadata is stale', async () => {
+    const { store, runId, branchId, head } = await fixtureStore();
+    const parentClosureBytes = fixtureTurnClosureBytes({ status: 1, turnSequenceNumber: 1n });
+    const parentSummary = summarizeTurnClosureForRunHead(parentClosureBytes);
+    const parentClosureRef = await store.putBlob(parentClosureBytes);
+    const parentHead = createRunHead({
+      generation: head.generation + 1,
+      turnClosureRef: parentClosureRef,
+      turnClosureWorldFingerprint: parentSummary.turnClosureWorldFingerprint,
+      resultingStateFingerprint: parentSummary.resultingStateFingerprint,
+      chronicleCursor: parentSummary.chronicleCursor,
+      archiveMomentFingerprint: parentSummary.archiveMomentFingerprint,
+      archiveSealFingerprint: parentSummary.archiveSealFingerprint,
+      status: parentSummary.status,
+    });
+    const staged = await store.compareAndSwapHead(runId, branchId, head.generation, parentHead);
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes({ status: 2, turnSequenceNumber: 2n })),
+    });
+
+    const result = await controller.advance(runId, branchId);
+    const branch = (await store.getRun(runId)).branches.find((candidate) => candidate.branchId === branchId);
+
+    assert.equal(staged.ok, true);
+    assert.equal(result.status, 'advanced');
+    assert.equal(hasBlobRef(branch.diagnostics.historicalTurnClosureRefs, head.turnClosureRef), true);
+    assert.equal(hasBlobRef(branch.diagnostics.historicalTurnClosureRefs, parentHead.turnClosureRef), true);
+  });
+
   it('submits but does not commit effects on CAS conflict', async () => {
     const { store, runId, branchId, head } = await fixtureStore({
       headStatus: 'needs_host',
@@ -1083,6 +1113,10 @@ async function fixtureStore(options = {}) {
   const run = createRunRecord({ runId: 'run', applicationId: application.applicationId, branches: [branch], effectJournalNamespace: 'effects' });
   await store.createRun(run);
   return { store, runId: run.runId, branchId: branch.branchId, head };
+}
+
+function hasBlobRef(refs, expected) {
+  return (refs ?? []).some((ref) => ref.checksum === expected.checksum && ref.byteLength === expected.byteLength);
 }
 
 function needsHostHeadSummary() {
