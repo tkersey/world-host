@@ -24,7 +24,7 @@ describe('RunController and WorldWorker', () => {
     });
 
     assert.equal(result.status, 'advanced');
-    assert.equal(result.nextHead.generation, 1);
+    assert.equal(result.nextHead.generation, 2);
     assert.deepEqual(await store.getBlob(result.nextHead.turnClosureRef), closureBytes);
   });
 
@@ -47,7 +47,7 @@ describe('RunController and WorldWorker', () => {
     assert.equal(assertWarmWorkerBinding(worker, binding({
       turnClosureWorldFingerprint: 'world:turn-closure:0000000000000111',
       resultingStateFingerprint: 'world:state:0000000000000302',
-      turnSequence: 1,
+      turnSequence: 2,
     })), true);
   });
 
@@ -270,7 +270,7 @@ describe('RunController and WorldWorker', () => {
     const winningRef = await store.putBlob(fromUtf8('winner'));
     const winningHead = createRunHead({
       ...head,
-      generation: 1,
+      generation: head.generation + 1,
       turnClosureRef: winningRef,
       turnClosureWorldFingerprint: 'world:closure:winner',
       resultingStateFingerprint: 'world:state:winner',
@@ -847,7 +847,7 @@ describe('RunController and WorldWorker', () => {
     const winningRef = await store.putBlob(fromUtf8('winner'));
     const winningHead = createRunHead({
       ...head,
-      generation: 1,
+      generation: head.generation + 1,
       turnClosureRef: winningRef,
       turnClosureWorldFingerprint: 'world:closure:winner',
       resultingStateFingerprint: 'world:state:winner',
@@ -1037,6 +1037,7 @@ describe('RunController and WorldWorker', () => {
 async function fixtureStore(options = {}) {
   const store = new MemoryStore();
   const imageRef = await store.putBlob(fromUtf8('image'));
+  const wasmRef = await store.putBlob(fromUtf8('wasm'));
   const manifestRef = await store.putBlob(fromUtf8('manifest'));
   const closureBytes = options.closureBytes ?? (options.headStatus === 'genesis'
     ? fromUtf8('world-host:genesis')
@@ -1054,7 +1055,8 @@ async function fixtureStore(options = {}) {
   const archiveSealFingerprint = closureSummary.archiveSealFingerprint ?? 'world:archive-seal:retained';
   const application = createApplicationRecord({
     applicationId: 'app',
-    universalWasmChecksum: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
+    universalWasmChecksum: `sha256:${wasmRef.checksum}`,
+    universalWasmByteLength: wasmRef.byteLength,
     worldProtocolVersion: 'v0.1.0',
     applianceAbiVersion: 'v3',
     executableImageRef: imageRef,
@@ -1067,7 +1069,7 @@ async function fixtureStore(options = {}) {
   });
   await store.createApplication(application);
   const head = createRunHead({
-    generation: 0,
+    generation: options.headStatus === 'genesis' ? 0 : (closureSummary.inspectionDiagnostics?.turnSequenceNumber ?? 0) + 1,
     turnClosureRef: closureRef,
     turnClosureWorldFingerprint: closureSummary.turnClosureWorldFingerprint,
     resultingStateFingerprint: closureSummary.resultingStateFingerprint,

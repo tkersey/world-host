@@ -30,6 +30,7 @@ async function runStore(name, makeStore) {
   const store = await makeStore();
   try {
     const imageRef = await store.putBlob(text.encode(`${name}:image`));
+    const wasmRef = await store.putBlob(text.encode(`${name}:wasm`));
     const manifestRef = await store.putBlob(text.encode(`${name}:manifest`));
     const closureRef = await store.putBlob(text.encode(`${name}:closure:0`));
     const orphanRef = await store.putBlob(text.encode(`${name}:orphan`));
@@ -43,7 +44,8 @@ async function runStore(name, makeStore) {
 
     const app = createApplicationRecord({
       applicationId: `${name}-app`,
-      universalWasmChecksum: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
+      universalWasmChecksum: `sha256:${wasmRef.checksum}`,
+      universalWasmByteLength: wasmRef.byteLength,
       worldProtocolVersion: 'v0.1.0',
       applianceAbiVersion: 'v3',
       executableImageRef: imageRef,

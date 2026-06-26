@@ -127,6 +127,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       const otherApp = createApplicationRecord({
         applicationId: 'other-directory-app',
         universalWasmChecksum: `sha256:${otherWasmRef.checksum}`,
+        universalWasmByteLength: otherWasmRef.byteLength,
         worldProtocolVersion: 'v0.1.0',
         applianceAbiVersion: 'v3',
         executableImageRef: otherImageRef,
@@ -134,13 +135,11 @@ describe('migration, branching, and CLI diagnostics', () => {
         applianceManifestRef: otherManifestRef,
         requiredActuators: [],
         requiredRuntimeLimits: {},
-        installationDiagnostics: {
-          wasmByteLength: otherWasmRef.byteLength,
-        },
+        installationDiagnostics: {},
       });
       await store.createApplication(otherApp);
       const otherHead = createRunHead({
-        generation: 1,
+        generation: otherSummary.inspectionDiagnostics.turnSequenceNumber + 1,
         turnClosureRef: otherClosureRef,
         turnClosureWorldFingerprint: otherSummary.turnClosureWorldFingerprint,
         resultingStateFingerprint: otherSummary.resultingStateFingerprint,
@@ -205,11 +204,13 @@ describe('migration, branching, and CLI diagnostics', () => {
     try {
       const store = new DirectoryStore(root);
       const imageRef = await store.putBlob(fromUtf8('image'));
+      const wasmRef = await store.putBlob(fromUtf8('wasm'));
       const manifestRef = await store.putBlob(fromUtf8('manifest'));
       const genesisRef = await store.putBlob(fromUtf8('genesis'));
       const app = createApplicationRecord({
         applicationId: 'sequence-zero-app',
-        universalWasmChecksum: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
+        universalWasmChecksum: `sha256:${wasmRef.checksum}`,
+        universalWasmByteLength: wasmRef.byteLength,
         worldProtocolVersion: 'v0.1.0',
         applianceAbiVersion: 'v3',
         executableImageRef: imageRef,
@@ -549,6 +550,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(installed.applicationId, 'installed-app');
       assert.equal(installed.executableImageWorldFingerprint, 'world:image:installed');
       assert.equal(installed.universalWasmChecksum, `sha256:${installed.blobs.wasm.checksum}`);
+      assert.equal(installed.universalWasmByteLength, installed.blobs.wasm.byteLength);
       assert.equal(installed.diagnostics.authorityCarried, false);
       assert.equal(installed.diagnostics.worldFingerprintSource, '--image-fingerprint');
       assert.equal(installed.diagnostics.worldFingerprintDerivedFromSha256, false);
@@ -564,6 +566,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         const app = await store.getApplication('installed-app');
         assert.equal(app.applicationId, 'installed-app');
         assert.equal(app.universalWasmChecksum, `sha256:${installed.blobs.wasm.checksum}`);
+        assert.equal(app.universalWasmByteLength, installed.blobs.wasm.byteLength);
         assert.equal(app.worldProtocolVersion, 'v0.1.0');
         assert.equal(app.applianceAbiVersion, 'v3');
         assert.equal(app.executableImageWorldFingerprint, 'world:image:installed');
@@ -811,7 +814,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         const zeroClosureSummary = summarizeTurnClosureForRunHead(zeroClosureBytes);
         const zeroClosureRef = await store.putBlob(zeroClosureBytes);
         const zeroHead = createRunHead({
-          generation: 0,
+          generation: zeroClosureSummary.inspectionDiagnostics.turnSequenceNumber + 1,
           turnClosureRef: zeroClosureRef,
           turnClosureWorldFingerprint: zeroClosureSummary.turnClosureWorldFingerprint,
           resultingStateFingerprint: zeroClosureSummary.resultingStateFingerprint,
@@ -846,7 +849,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       });
       const zeroResumed = JSON.parse(output);
       assert.equal(zeroResumeCode, 0);
-      assert.equal(zeroResumed.head.generation, 1);
+      assert.equal(zeroResumed.head.generation, 2);
       assert.equal(zeroWorker.submittedTurnInputBytes[4], 1);
 
       output = '';
@@ -1975,11 +1978,13 @@ function concat(chunks) {
 async function fixtureStore() {
   const store = new MemoryStore();
   const imageRef = await store.putBlob(fromUtf8('image'));
+  const wasmRef = await store.putBlob(fromUtf8('wasm'));
   const manifestRef = await store.putBlob(fromUtf8('manifest'));
   const closureRef = await store.putBlob(fromUtf8('closure'));
   const app = createApplicationRecord({
     applicationId: 'app',
-    universalWasmChecksum: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
+    universalWasmChecksum: `sha256:${wasmRef.checksum}`,
+    universalWasmByteLength: wasmRef.byteLength,
     worldProtocolVersion: 'v0.1.0',
     applianceAbiVersion: 'v3',
     executableImageRef: imageRef,
@@ -2017,6 +2022,7 @@ async function fixtureDirectoryStore(root, options = {}) {
     const app = createApplicationRecord({
       applicationId: 'directory-app',
       universalWasmChecksum: `sha256:${wasmRef.checksum}`,
+      universalWasmByteLength: wasmRef.byteLength,
       worldProtocolVersion: 'v0.1.0',
       applianceAbiVersion: 'v3',
       executableImageRef: imageRef,
@@ -2024,13 +2030,11 @@ async function fixtureDirectoryStore(root, options = {}) {
       applianceManifestRef: manifestRef,
       requiredActuators: [],
       requiredRuntimeLimits: {},
-      installationDiagnostics: {
-        wasmByteLength: wasmRef.byteLength,
-      },
+      installationDiagnostics: {},
     });
     await store.createApplication(app);
     const head = createRunHead({
-      generation: 1,
+      generation: closureSummary.inspectionDiagnostics.turnSequenceNumber + 1,
       turnClosureRef: closureRef,
       turnClosureWorldFingerprint: closureSummary.turnClosureWorldFingerprint,
       resultingStateFingerprint: closureSummary.resultingStateFingerprint,

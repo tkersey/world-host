@@ -46,11 +46,13 @@ async function provesReceiverRejection() {
 async function fixtureStore() {
   const store = new MemoryStore();
   const imageRef = await store.putBlob(fromUtf8('image'));
+  const wasmRef = await store.putBlob(fromUtf8('wasm'));
   const manifestRef = await store.putBlob(fromUtf8('manifest'));
   const closureRef = await store.putBlob(fromUtf8('closure'));
   const app = createApplicationRecord({
     applicationId: 'app',
-    universalWasmChecksum: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
+    universalWasmChecksum: `sha256:${wasmRef.checksum}`,
+    universalWasmByteLength: wasmRef.byteLength,
     worldProtocolVersion: 'v0.1.0',
     applianceAbiVersion: 'v3',
     executableImageRef: imageRef,

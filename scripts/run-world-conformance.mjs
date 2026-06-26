@@ -164,12 +164,14 @@ async function runRealStoreBackedRunControllerBoot(artifacts, wasmBytes) {
   const imageBytes = await readFile(artifacts.imageBPath);
   const manifestBytes = await readApplianceManifestBytes(wasmBytes, imageBytes);
   const store = new MemoryStore();
+  const wasmRef = await store.putBlob(wasmBytes);
   const imageRef = await store.putBlob(imageBytes);
   const manifestRef = await store.putBlob(manifestBytes);
   const genesisClosureRef = await store.putBlob(fromUtf8('world-host:genesis'));
   const application = createApplicationRecord({
     applicationId: 'real-world-image-b',
-    universalWasmChecksum: `sha256:${sha256Hex(wasmBytes)}`,
+    universalWasmChecksum: `sha256:${wasmRef.checksum}`,
+    universalWasmByteLength: wasmRef.byteLength,
     worldProtocolVersion: 'v0.1.0',
     applianceAbiVersion: 'v3',
     executableImageRef: imageRef,
@@ -247,12 +249,14 @@ async function runRealColdRestoreRunControllerConformance(artifacts, wasmBytes) 
   const imageBytes = await readFile(artifacts.imageBPath);
   const manifestBytes = await readApplianceManifestBytes(wasmBytes, imageBytes);
   const store = new MemoryStore();
+  const wasmRef = await store.putBlob(wasmBytes);
   const imageRef = await store.putBlob(imageBytes);
   const manifestRef = await store.putBlob(manifestBytes);
   const genesisClosureRef = await store.putBlob(fromUtf8('world-host:genesis'));
   const application = createApplicationRecord({
     applicationId: 'real-world-cold-restore-image-b',
-    universalWasmChecksum: `sha256:${sha256Hex(wasmBytes)}`,
+    universalWasmChecksum: `sha256:${wasmRef.checksum}`,
+    universalWasmByteLength: wasmRef.byteLength,
     worldProtocolVersion: 'v0.1.0',
     applianceAbiVersion: 'v3',
     executableImageRef: imageRef,
@@ -352,12 +356,14 @@ async function runRealJournaledHostRequestRunControllerConformance(artifacts, wa
   const imageBytes = await readFile(artifacts.imageAPath);
   const manifestBytes = await readApplianceManifestBytes(wasmBytes, imageBytes);
   const store = new MemoryStore();
+  const wasmRef = await store.putBlob(wasmBytes);
   const imageRef = await store.putBlob(imageBytes);
   const manifestRef = await store.putBlob(manifestBytes);
   const genesisClosureRef = await store.putBlob(fromUtf8('world-host:genesis'));
   const application = createApplicationRecord({
     applicationId: 'real-world-journaled-host-request-image-a',
-    universalWasmChecksum: `sha256:${sha256Hex(wasmBytes)}`,
+    universalWasmChecksum: `sha256:${wasmRef.checksum}`,
+    universalWasmByteLength: wasmRef.byteLength,
     worldProtocolVersion: 'v0.1.0',
     applianceAbiVersion: 'v3',
     executableImageRef: imageRef,
@@ -683,13 +689,15 @@ function parseArgs(values) {
 async function fixtureStore(prefix = 'run') {
   const store = new MemoryStore();
   const imageRef = await store.putBlob(fromUtf8(`${prefix}:image`));
+  const wasmRef = await store.putBlob(fromUtf8(`${prefix}:wasm`));
   const manifestRef = await store.putBlob(fromUtf8(`${prefix}:manifest`));
   const closureBytes = fixtureTurnClosureBytes({ status: 1, turnSequenceNumber: 0n });
   const closureSummary = summarizeTurnClosureForRunHead(closureBytes);
   const closureRef = await store.putBlob(closureBytes);
   const application = createApplicationRecord({
     applicationId: `${prefix}:app`,
-    universalWasmChecksum: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
+    universalWasmChecksum: `sha256:${wasmRef.checksum}`,
+    universalWasmByteLength: wasmRef.byteLength,
     worldProtocolVersion: 'v0.1.0',
     applianceAbiVersion: 'v3',
     executableImageRef: imageRef,
@@ -701,7 +709,7 @@ async function fixtureStore(prefix = 'run') {
   });
   await store.createApplication(application);
   const head = createRunHead({
-    generation: 0,
+    generation: closureSummary.inspectionDiagnostics.turnSequenceNumber + 1,
     turnClosureRef: closureRef,
     turnClosureWorldFingerprint: closureSummary.turnClosureWorldFingerprint,
     resultingStateFingerprint: closureSummary.resultingStateFingerprint,

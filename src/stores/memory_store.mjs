@@ -241,7 +241,7 @@ function collectBlobRefs(...values) {
 
 function universalWasmRef(value) {
   const checksum = value?.universalWasmChecksum;
-  const byteLength = value?.installationDiagnostics?.wasmByteLength;
+  const byteLength = value?.universalWasmByteLength;
   if (
     typeof checksum !== 'string' ||
     !checksum.startsWith('sha256:') ||

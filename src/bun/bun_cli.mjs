@@ -161,6 +161,7 @@ async function runInstall(args, io, storePath) {
     const app = createApplicationRecord({
       applicationId,
       universalWasmChecksum: `sha256:${wasmRef.checksum}`,
+      universalWasmByteLength: wasmRef.byteLength,
       worldProtocolVersion: versions.world,
       applianceAbiVersion: versions.applianceAbi,
       executableImageRef: imageRef,
@@ -289,7 +290,7 @@ function wasmBlobRefFromApplication(application) {
   const checksum = application.universalWasmChecksum?.startsWith('sha256:')
     ? application.universalWasmChecksum.slice('sha256:'.length)
     : null;
-  const byteLength = application.installationDiagnostics?.wasmByteLength;
+  const byteLength = application.universalWasmByteLength;
   if (!checksum || !Number.isSafeInteger(byteLength)) {
     throw new Error('ERR_APPLICATION_WASM_BLOB_REF_MISSING');
   }
@@ -683,6 +684,7 @@ function summarizeApplicationInstall(app) {
   return {
     applicationId: app.applicationId,
     universalWasmChecksum: app.universalWasmChecksum,
+    universalWasmByteLength: app.universalWasmByteLength,
     worldProtocolVersion: app.worldProtocolVersion,
     applianceAbiVersion: app.applianceAbiVersion,
     executableImageWorldFingerprint: app.executableImageWorldFingerprint,
