@@ -187,28 +187,53 @@ function bytesOf(value) {
 }
 
 function u8(value) {
-  return Uint8Array.of(Number(value) & 0xff);
+  return Uint8Array.of(Number(assertUnsignedInteger(value, 8, 'u8')));
 }
 
 function u32(value) {
   const out = new Uint8Array(4);
-  new DataView(out.buffer).setUint32(0, Number(value), true);
+  new DataView(out.buffer).setUint32(0, Number(assertUnsignedInteger(value, 32, 'u32')), true);
   return out;
 }
 
 function i32(value) {
   const out = new Uint8Array(4);
-  new DataView(out.buffer).setInt32(0, Number(value), true);
+  new DataView(out.buffer).setInt32(0, Number(assertSignedInteger(value, 32, 'i32')), true);
   return out;
 }
 
 function u64(value) {
   const out = new Uint8Array(8);
-  const actual = BigInt.asUintN(64, BigInt(value));
+  const actual = assertUnsignedInteger(value, 64, 'u64');
   const view = new DataView(out.buffer);
   view.setUint32(0, Number(actual & 0xffff_ffffn), true);
   view.setUint32(4, Number((actual >> 32n) & 0xffff_ffffn), true);
   return out;
+}
+
+function assertUnsignedInteger(value, bits, label) {
+  let actual;
+  try {
+    actual = BigInt(value);
+  } catch {
+    throw new Error(`${label} out of range`);
+  }
+  const maximum = (1n << BigInt(bits)) - 1n;
+  if (actual < 0n || actual > maximum) throw new Error(`${label} out of range`);
+  return actual;
+}
+
+function assertSignedInteger(value, bits, label) {
+  let actual;
+  try {
+    actual = BigInt(value);
+  } catch {
+    throw new Error(`${label} out of range`);
+  }
+  const minimum = -(1n << BigInt(bits - 1));
+  const maximum = (1n << BigInt(bits - 1)) - 1n;
+  if (actual < minimum || actual > maximum) throw new Error(`${label} out of range`);
+  return actual;
 }
 
 function concat(chunks) {

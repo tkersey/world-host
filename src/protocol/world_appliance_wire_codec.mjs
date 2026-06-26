@@ -480,12 +480,12 @@ function bytes(value) {
 }
 
 function u8(value) {
-  return Uint8Array.of(Number(value) & 0xff);
+  return Uint8Array.of(Number(toUnsignedInteger(value, 8, 'u8')));
 }
 
 function u32(value) {
   const out = new Uint8Array(4);
-  new DataView(out.buffer).setUint32(0, Number(value), true);
+  new DataView(out.buffer).setUint32(0, Number(toUnsignedInteger(value, 32, 'u32')), true);
   return out;
 }
 
@@ -530,8 +530,18 @@ function compareU64(left, right) {
 }
 
 function toU64(value) {
-  const actual = BigInt(value);
-  if (actual < 0n || actual > 0xffff_ffff_ffff_ffffn) throw new Error('u64 out of range');
+  return toUnsignedInteger(value, 64, 'u64');
+}
+
+function toUnsignedInteger(value, bits, label) {
+  let actual;
+  try {
+    actual = BigInt(value);
+  } catch {
+    throw new Error(`${label} out of range`);
+  }
+  const maximum = (1n << BigInt(bits)) - 1n;
+  if (actual < 0n || actual > maximum) throw new Error(`${label} out of range`);
   return actual;
 }
 

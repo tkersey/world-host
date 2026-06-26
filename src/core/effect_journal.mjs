@@ -1,5 +1,6 @@
 import {
   EffectRecoveryClass,
+  ResponseStatusCode,
   assertDriverCanResolve,
   assertDurableRecoveryAllowed,
   assertRecoveryClass,
@@ -33,19 +34,17 @@ const RECOVER_AFTER_RESOLVE_FAILURE = new Set([
   EffectRecoveryClass.externallyRecoverable,
   EffectRecoveryClass.transactional,
 ]);
-const RESPONSE_STATUS_CODES = Object.freeze({
-  responded: 0,
-  ok: 0,
-  final: 0,
-  rejected: 1,
-  not_found: 1,
-  http_error: 1,
-  failed: 2,
-  pending: 3,
-  deferred: 4,
-  cancelled: 5,
-});
 const MAX_U64 = (1n << 64n) - 1n;
+const EFFECT_STATE_ORDER = Object.freeze({
+  [EffectState.observed]: 0,
+  [EffectState.claimed]: 1,
+  [EffectState.running]: 2,
+  [EffectState.resolved]: 3,
+  [EffectState.submitted]: 4,
+  [EffectState.closureCommitted]: 5,
+  [EffectState.operatorInterventionRequired]: 6,
+  [EffectState.failed]: 6,
+});
 const effectKeyLocksByStore = new WeakMap();
 const effectKeyLocksByStoreKey = new Map();
 
@@ -161,6 +160,7 @@ export class EffectJournal {
         await this.#put({
           ...running,
           state: failureState,
+          driverTransactionRef: resolved.driverTransactionRef ?? running.driverTransactionRef,
           diagnostics: {
             ...running.diagnostics,
             error: error.message,
@@ -191,6 +191,7 @@ export class EffectJournal {
         await this.#put({
           ...running,
           state: failureState,
+          driverTransactionRef: resolved.driverTransactionRef ?? running.driverTransactionRef,
           diagnostics: {
             ...running.diagnostics,
             error: error.message,
@@ -371,9 +372,18 @@ export class EffectJournal {
   }
 
   async #advance(record, state) {
-    const current = this.#assertRecordInScope(record);
-    if (!current.resolutionInputRef) fail('ERR_EFFECT_RESOLUTION_REF_MISSING');
-    return await this.#put({ ...current, state });
+    const requested = this.#assertRecordInScope(record);
+    return await withEffectKeyLock(this.store, effectLockKey(this.runId, requested.idempotencyKey), async () => {
+      const current = this.#assertRecordInScope(
+        await this.store.getEffectRecord(this.runId, requested.idempotencyKey, this.branchId) ?? requested,
+      );
+      const currentOrder = EFFECT_STATE_ORDER[current.state];
+      const nextOrder = EFFECT_STATE_ORDER[state];
+      if (nextOrder < currentOrder) fail('ERR_EFFECT_STATE_REGRESSION', 'effect state transitions must be monotonic');
+      if (nextOrder === currentOrder) return current;
+      if (!current.resolutionInputRef) fail('ERR_EFFECT_RESOLUTION_REF_MISSING');
+      return await this.#put({ ...current, state });
+    });
   }
 
   async #put(record) {
@@ -649,11 +659,11 @@ function assertDriverCarriedBytesAccepted(resolved, manifest, policy) {
 function assertResolutionStatusAccepted(status, hostRequest, manifest) {
   const expectedStatus = hostRequest.responseSchema?.status;
   if (expectedStatus === undefined) {
-    const manifestStatuses = new Set((manifest.supportedResponseStatuses ?? []).map((item) => RESPONSE_STATUS_CODES[item]));
+    const manifestStatuses = new Set((manifest.supportedResponseStatuses ?? []).map((item) => ResponseStatusCode[item]));
     if (!manifestStatuses.has(status)) fail('ERR_RESPONSE_STATUS_NOT_SUPPORTED', 'ResolutionInput status is not supported by the selected driver manifest');
     return;
   }
-  const expectedWireStatus = RESPONSE_STATUS_CODES[expectedStatus];
+  const expectedWireStatus = ResponseStatusCode[expectedStatus];
   if (expectedWireStatus === undefined) fail('ERR_RESPONSE_STATUS_NOT_SUPPORTED', 'response schema status is not mapped to a wire status');
   if (status !== expectedWireStatus) fail('ERR_EFFECT_RESPONSE_STATUS_MISMATCH', 'driver ResolutionInput status does not match the HostRequest response schema');
 }

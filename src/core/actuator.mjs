@@ -17,6 +17,19 @@ export const ActuationClass = Object.freeze({
 });
 
 const RECOVERY_CLASSES = new Set(Object.values(EffectRecoveryClass));
+export const ResponseStatusCode = Object.freeze({
+  responded: 0,
+  ok: 0,
+  final: 0,
+  rejected: 1,
+  not_found: 1,
+  http_error: 1,
+  failed: 2,
+  pending: 3,
+  deferred: 4,
+  cancelled: 5,
+});
+const RESPONSE_STATUSES = new Set(Object.keys(ResponseStatusCode));
 
 export function assertRecoveryClass(value) {
   if (!RECOVERY_CLASSES.has(value)) fail('ERR_INVALID_EFFECT_RECOVERY_CLASS', `invalid recovery class: ${value}`);
@@ -52,7 +65,7 @@ export function assertDriverManifest(manifest) {
   requiredList(manifest.supportedActuatorRefs, 'supportedActuatorRefs');
   requiredList(manifest.supportedDescriptorFingerprints, 'supportedDescriptorFingerprints');
   requiredList(manifest.supportedActuationClasses, 'supportedActuationClasses');
-  requiredList(manifest.supportedResponseStatuses, 'supportedResponseStatuses');
+  requiredKnownResponseStatusList(manifest.supportedResponseStatuses, 'supportedResponseStatuses');
   requiredSafeInteger(manifest.maximumRequestBytes, 'maximumRequestBytes');
   requiredSafeInteger(manifest.maximumResponseBytes, 'maximumResponseBytes');
   assertRecoveryClass(manifest.recoveryClass);
@@ -78,6 +91,9 @@ export function assertDriverCanResolve(manifest, hostRequest) {
   if (!manifest.supportedActuatorRefs.includes(hostRequest.actuatorRef)) fail('ERR_ACTUATOR_REF_NOT_SUPPORTED');
   if (!manifest.supportedDescriptorFingerprints.includes(hostRequest.descriptorFingerprint)) fail('ERR_DESCRIPTOR_NOT_SUPPORTED');
   if (!manifest.supportedActuationClasses.includes(hostRequest.actuationClass)) fail('ERR_ACTUATION_CLASS_NOT_SUPPORTED');
+  if (hostRequest.responseSchema?.status !== undefined && !RESPONSE_STATUSES.has(hostRequest.responseSchema.status)) {
+    fail('ERR_RESPONSE_STATUS_NOT_SUPPORTED');
+  }
   if (hostRequest.responseSchema && !manifest.supportedResponseStatuses.includes(hostRequest.responseSchema.status)) {
     fail('ERR_RESPONSE_STATUS_NOT_SUPPORTED');
   }
@@ -92,6 +108,13 @@ function requiredString(value, field) {
 function requiredList(value, field) {
   if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || item.length === 0)) {
     fail('ERR_INVALID_DRIVER_MANIFEST', `${field} must be a string list`);
+  }
+}
+
+function requiredKnownResponseStatusList(value, field) {
+  requiredList(value, field);
+  if (value.some((item) => !RESPONSE_STATUSES.has(item))) {
+    fail('ERR_INVALID_DRIVER_MANIFEST', `${field} must contain known response statuses`);
   }
 }
 

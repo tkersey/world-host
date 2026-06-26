@@ -253,6 +253,21 @@ describe('EffectJournal', () => {
     assert.equal(records[0].resolutionInputRef, undefined);
   });
 
+  it('rejects unknown response labels before invoking drivers', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({
+      recoveryClass: EffectRecoveryClass.idempotent,
+      supportedResponseStatuses: ['custom'],
+    });
+
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest({ responseSchema: { status: 'custom' } }), driver),
+      { code: 'ERR_INVALID_DRIVER_MANIFEST' },
+    );
+    assert.equal(driver.calls, 0);
+  });
+
   it('rejects non-responded ResolutionInputs that carry response bytes', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
@@ -686,7 +701,7 @@ describe('EffectJournal', () => {
   it('keeps idempotent persistence failures recoverable before retrying side effects', async () => {
     const store = new FailResolutionBlobStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
-    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent, driverTransactionRef: 'txn:persisted-before-ref' });
 
     await assert.rejects(
       () => journal.resolve({}, hostRequest(), driver),
@@ -694,6 +709,7 @@ describe('EffectJournal', () => {
     );
     const [running] = await store.listEffectRecords('run');
     assert.equal(running.state, EffectState.running);
+    assert.equal(running.driverTransactionRef, 'txn:persisted-before-ref');
     assert.equal(running.diagnostics.recoveryRequired, 'idempotent_persistence_failed');
 
     const recovered = await journal.resolve({}, hostRequest(), driver);
@@ -1007,6 +1023,23 @@ describe('EffectJournal', () => {
     assert.equal(driver.recoverCalls, 0);
     assert.deepEqual(await store.listEffectRecords('other-run'), []);
   });
+
+  it('re-reads current effect state before advancing transitions', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+    const resolved = (await journal.resolve({}, hostRequest(), driver)).record;
+    const submitted = await journal.markSubmitted(resolved);
+    await journal.markClosureCommitted(submitted);
+
+    await assert.rejects(
+      () => journal.markSubmitted(resolved),
+      { code: 'ERR_EFFECT_STATE_REGRESSION' },
+    );
+    const records = await store.listEffectRecords('run');
+    assert.equal(records.length, 1);
+    assert.equal(records[0].state, EffectState.closureCommitted);
+  });
 });
 
 function hostRequest(overrides = {}) {
@@ -1056,7 +1089,7 @@ function httpHostRequest(overrides = {}) {
   };
 }
 
-function fixtureDriver({ recoveryClass, response = 'resolution', recoverResponse = null, descriptorFingerprint = 'descriptor:fixture', recover = true, recoverHostClaim = false, delayMs = 0, maximumRequestBytes = 1024, maximumResponseBytes = 1024, supportedResponseStatuses = ['ok'] }) {
+function fixtureDriver({ recoveryClass, response = 'resolution', recoverResponse = null, descriptorFingerprint = 'descriptor:fixture', recover = true, recoverHostClaim = false, driverTransactionRef = undefined, delayMs = 0, maximumRequestBytes = 1024, maximumResponseBytes = 1024, supportedResponseStatuses = ['ok'] }) {
   return {
     calls: 0,
     recoverCalls: 0,
@@ -1079,7 +1112,10 @@ function fixtureDriver({ recoveryClass, response = 'resolution', recoverResponse
       this.calls += 1;
       this.requests.push(request);
       if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
-      return { resolutionInputBytes: response instanceof Uint8Array ? response : fixtureResolutionInputBytes(request, fromUtf8(response)) };
+      return {
+        resolutionInputBytes: response instanceof Uint8Array ? response : fixtureResolutionInputBytes(request, fromUtf8(response)),
+        driverTransactionRef,
+      };
     },
     recover: recover ? async function recoverFn(_context, record) {
       this.recoverCalls += 1;

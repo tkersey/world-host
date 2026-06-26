@@ -393,6 +393,15 @@ describe('migration, branching, and CLI diagnostics', () => {
       }),
       { code: 'ERR_INVALID_BLOB_REF' },
     );
+    assert.throws(
+      () => createRunRecord({
+        runId: 'run',
+        applicationId: 'app',
+        branches: [{ branchId: 'main' }],
+        effectJournalNamespace: 'run:effects',
+      }),
+      { code: 'ERR_INVALID_RUN_HEAD' },
+    );
   });
 
   it('serializes DirectoryStore head CAS across instances with the same root', async () => {

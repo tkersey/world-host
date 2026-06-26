@@ -5,7 +5,7 @@ export function createRunRecord(input) {
   return Object.freeze({
     runId: requiredString(input.runId, 'runId'),
     applicationId: requiredString(input.applicationId, 'applicationId'),
-    branches: Array.isArray(input.branches) ? input.branches : [],
+    branches: Array.isArray(input.branches) ? input.branches.map((branch) => createBranchRecord(branch)) : [],
     effectJournalNamespace: requiredString(input.effectJournalNamespace, 'effectJournalNamespace'),
     creationMetadata: input.creationMetadata ?? {},
     receiverPolicyRef: optionalBlobRef(input.receiverPolicyRef, 'receiverPolicyRef'),
@@ -24,6 +24,7 @@ export function createBranchRecord(input) {
 }
 
 export function createRunHead(input) {
+  if (!input || typeof input !== 'object') fail('ERR_INVALID_RUN_HEAD');
   const archiveMomentFingerprint = optionalWorldFingerprint(input.archiveMomentFingerprint, 'archiveMomentFingerprint');
   const archiveSealFingerprint = optionalWorldFingerprint(input.archiveSealFingerprint, 'archiveSealFingerprint');
   if ((archiveMomentFingerprint == null) !== (archiveSealFingerprint == null)) {

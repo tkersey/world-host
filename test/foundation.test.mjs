@@ -162,6 +162,33 @@ describe('repository foundation', () => {
     assert.equal(typeof loaded.encodeCanonicalValueImage, 'function');
   });
 
+  it('rejects out-of-range scalar codec values before encoding', () => {
+    const wire = requireReleasedWireCodec();
+    const loaded = requireReleasedLoadedValueCodec();
+
+    assert.throws(() => loaded.encodeU64Word(-1n), /u64 out of range/);
+    assert.throws(() => loaded.encodeI32(2n ** 31n), /i32 out of range/);
+    assert.throws(
+      () => loaded.encodeCanonicalValueImage({
+        boundaryValueFingerprint: (1n << 64n),
+        codecSchemaDescriptorFingerprint: 1n,
+        bytes: new Uint8Array(),
+      }),
+      /u64 out of range/,
+    );
+    assert.throws(
+      () => wire.encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xa1n,
+        status: 256,
+        responseValueImageBytes: new Uint8Array(),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: new Uint8Array(),
+      }),
+      /u8 out of range/,
+    );
+  });
+
   it('accepts only the pinned ApplianceManifest wire versions', () => {
     const wire = requireReleasedWireCodec();
     const manifest = applianceManifestBytes({ formatVersion: 3, fingerprintVersion: 3, abiVersion: 3 });
