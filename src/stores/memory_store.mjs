@@ -213,6 +213,7 @@ function collectBlobRefs(...values) {
     add(universalWasmRef(value));
     collectDiagnosticBlobRefs(value.diagnostics);
     collectDiagnosticBlobRefs(value.installationDiagnostics);
+    collectDiagnosticBlobRefs(value.creationMetadata);
     collectDiagnosticBlobRefs(value.metadata);
     collectDiagnosticBlobRefs(value.updateDiagnostics);
     for (const branch of value.branches ?? []) collectOwnedRefs(branch.currentHead);

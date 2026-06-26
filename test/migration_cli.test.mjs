@@ -1028,6 +1028,57 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('exports creation metadata input blobs after branch heads advance', async () => {
+    const memory = await fixtureStore();
+    const memoryInputBytes = fromUtf8('memory-creation-input');
+    const memoryInputRef = await memory.store.putBlob(memoryInputBytes);
+    await memory.store.writeRun({
+      ...memory.run,
+      creationMetadata: {
+        source: 'test.creation',
+        inputRef: memoryInputRef,
+      },
+    });
+    const memoryBundle = await memory.store.exportRun(memory.run.runId, 'main');
+    assert.equal(memoryBundle.blobs.some((blob) => blob.checksum === memoryInputRef.checksum), true);
+    const importedMemory = new MemoryStore();
+    await importedMemory.importRun(memoryBundle);
+    assert.deepEqual([...await importedMemory.getBlob(memoryInputRef)], [...memoryInputBytes]);
+
+    const sourceRoot = await mkdtemp(path.join(tmpdir(), 'world-host-creation-export-source-'));
+    const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-creation-export-receiver-'));
+    try {
+      const { run } = await fixtureDirectoryStore(sourceRoot);
+      const sourceStore = new DirectoryStore(sourceRoot);
+      await sourceStore.acquireLock();
+      let directoryInputRef;
+      try {
+        const runRecord = await sourceStore.getRun(run.runId);
+        const inputBytes = fromUtf8('directory-creation-input');
+        directoryInputRef = await sourceStore.putBlob(inputBytes);
+        await sourceStore.writeRun({
+          ...runRecord,
+          creationMetadata: {
+            source: 'test.creation',
+            inputRef: directoryInputRef,
+          },
+        });
+      } finally {
+        await sourceStore.releaseLock();
+      }
+
+      const bundle = await sourceStore.exportRun(run.runId, 'main');
+      assert.equal(bundle.blobs.some((blob) => blob.checksum === directoryInputRef.checksum), true);
+
+      const receiverStore = new DirectoryStore(receiverRoot);
+      await receiverStore.importRun(bundle);
+      assert.deepEqual([...await receiverStore.getBlob(directoryInputRef)], [...fromUtf8('directory-creation-input')]);
+    } finally {
+      await rm(sourceRoot, { recursive: true, force: true });
+      await rm(receiverRoot, { recursive: true, force: true });
+    }
+  });
+
   it('exports, imports, and forks DirectoryStore runs through redacted CLI operations', async () => {
       const sourceRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-migrate-source-'));
       const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-migrate-receiver-'));
