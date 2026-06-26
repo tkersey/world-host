@@ -49,13 +49,12 @@ node --version
 node --test
 npm test
 npm run proof
-node scripts/run-world-conformance.mjs --world-repo ../world
-node bin/world-host.mjs install --json
-node bin/world-host.mjs run --json
-node bin/world-host.mjs resume --json
-node bin/world-host.mjs inspect --json
-node bin/world-host.mjs recover --json
+npm run proof:world-real
+node bin/world-host.mjs doctor --json
+node scripts/run-store-conformance.mjs
+node scripts/run-crash-matrix.mjs
 node scripts/run-migration-conformance.mjs
+node scripts/run-security-conformance.mjs
 node bin/world-host.mjs run-example file-rewrite-agent
 node bin/world-host.mjs run-example crash-recovery
 node bin/world-host.mjs run-example migration

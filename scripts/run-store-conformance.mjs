@@ -116,9 +116,20 @@ async function runStore(name, makeStore) {
 
     const effect = {
       runId: run.runId,
-      idempotencyKey: { bytes: 'full-world-key' },
+      branchId: branch.branchId,
+      parentTurnClosureFingerprint: 'world:closure:1',
+      hostRequestFingerprint: 'world:host-request:00000000000000a1',
+      idempotencyKey: { format: 'world-idempotency-key-bytes.hex', bytesHex: '66756c6c2d776f726c642d6b6579' },
+      idempotencyKeyWorldFingerprint: 'world:idempotency-key:store-conformance',
+      actuatorRef: 'fixture:model',
+      descriptorFingerprint: 'descriptor:fixture',
+      actuationClass: 'fixture',
+      responseSchema: { status: 'ok' },
       requestBytesChecksum: 'sha256:req',
+      resolutionInputRef: await store.putBlob(text.encode(`${name}:resolution-input`)),
       state: 'resolved',
+      attemptCount: 1,
+      driverRecoveryClass: 'idempotent',
     };
     await store.putEffectRecord(effect);
     assert.equal((await store.getEffectRecord(run.runId, effect.idempotencyKey)).state, 'resolved');
@@ -126,11 +137,13 @@ async function runStore(name, makeStore) {
 
     const bundle = await store.exportRun(run.runId, branch.branchId);
     assert.equal(bundle.head.generation, 2);
+    assert.equal(bundle.effects.length, 1, `${name} exports selected branch effects`);
     assert.ok(bundle.blobs.length >= 3);
     const receiver = await makeStore();
     try {
       await receiver.importRun(bundle);
       assert.equal((await receiver.readHead(run.runId, branch.branchId)).generation, 2);
+      assert.equal((await receiver.listEffectRecords(run.runId)).length, 1, `${name} imports selected branch effects`);
     } finally {
       await receiver.cleanup?.();
     }
