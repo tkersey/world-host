@@ -967,6 +967,34 @@ describe('EffectJournal', () => {
     assert.equal(driver.calls, 1);
   });
 
+  it('prefers persisted same-key outcomes over running records after conflict scanning', async () => {
+    const store = new MemoryStore();
+    const mainJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const alternateJournal = new EffectJournal({ store, runId: 'run', branchId: 'alternate', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+
+    const main = await mainJournal.resolve({}, hostRequest(), driver);
+    await store.putEffectRecord({
+      ...main.record,
+      branchId: 'running',
+      state: EffectState.running,
+      resolutionInputRef: undefined,
+      diagnostics: { runningFirstFixture: true },
+    });
+    const listEffectRecords = store.listEffectRecords.bind(store);
+    store.listEffectRecords = async (runId) => (await listEffectRecords(runId)).sort((left, right) => {
+      if (left.state === EffectState.running) return -1;
+      if (right.state === EffectState.running) return 1;
+      return 0;
+    });
+
+    const alternate = await alternateJournal.resolve({}, hostRequest(), driver);
+
+    assert.equal(alternate.reused, true);
+    assert.equal(alternate.record.state, EffectState.resolved);
+    assert.equal(driver.calls, 1);
+  });
+
   it('reparents same-branch reused outcomes to the current parent', async () => {
     const store = new MemoryStore();
     const firstJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });

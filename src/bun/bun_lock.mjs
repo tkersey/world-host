@@ -64,7 +64,7 @@ async function removeStaleLockPath(lockPath) {
     await removeLockPathIfSameFile(lockPath, handle);
     return;
   } finally {
-    if (!metadata) await handle?.close().catch(() => {});
+    if (metadata === undefined) await handle?.close().catch(() => {});
   }
   try {
     if (isProcessAlive(metadata?.pid)) return;

@@ -446,6 +446,19 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('breaks falsy malformed stale lock metadata during explicit recovery', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-null-lock-'));
+    const lockPath = path.join(root, 'store.lock');
+    const replacement = new BunStoreLock(lockPath);
+    try {
+      await writeFile(lockPath, 'null');
+      await replacement.acquire({ breakStale: true });
+    } finally {
+      await replacement.release();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('rejects half-paired archive anchors and malformed receiver policy refs at run boundaries', async () => {
     const blobRef = { algorithm: 'sha256', checksum: '0'.repeat(64), byteLength: 0 };
 

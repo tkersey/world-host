@@ -349,7 +349,10 @@ export class EffectJournal {
           idempotencyKeyWorldFingerprint: record.idempotencyKeyWorldFingerprint,
         });
       }
-      if (reusable === null && (record.state === EffectState.running || (TERMINAL_WITH_OUTCOME.has(record.state) && record.resolutionInputRef))) {
+      const hasOutcome = TERMINAL_WITH_OUTCOME.has(record.state) && record.resolutionInputRef;
+      if (hasOutcome && (reusable === null || reusable.state === EffectState.running)) {
+        reusable = record;
+      } else if (reusable === null && record.state === EffectState.running) {
         reusable = record;
       }
     }
