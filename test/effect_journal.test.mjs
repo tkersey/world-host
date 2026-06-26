@@ -438,6 +438,23 @@ describe('EffectJournal', () => {
     assert.equal(driver.recoverCalls, 1);
   });
 
+  it('serializes concurrent direct recovery for the same effect key', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const observed = await journal.observe(hostRequest(), { recoveryClass: EffectRecoveryClass.idempotent });
+    const running = await store.putEffectRecord({ ...observed, state: EffectState.running, attemptCount: 1 });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent, recoverHostClaim: true, delayMs: 10 });
+
+    const [first, second] = await Promise.all([
+      journal.recover({}, running, driver),
+      journal.recover({}, running, driver),
+    ]);
+
+    assert.equal(driver.recoverCalls, 1);
+    assert.deepEqual([first.reused, second.reused].sort(), [false, true]);
+    assert.equal((await store.getEffectRecord('run', running.idempotencyKey, 'main')).state, EffectState.resolved);
+  });
+
   it('recomputes running pure effects when no recover hook exists', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });

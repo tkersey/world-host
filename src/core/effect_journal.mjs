@@ -123,7 +123,7 @@ export class EffectJournal {
         assertResolutionAccepted(reused.resolutionInputBytes, normalizedHostRequest, manifest, this.policy);
         return reused;
       }
-      if (observed.state === EffectState.running) return await this.recover(context, observed, driver);
+      if (observed.state === EffectState.running) return await this.#recoverLocked(context, observed, driver);
       assertManifestResponseWithinPolicy(manifest, this.policy);
 
       const running = await this.#put({
@@ -198,6 +198,14 @@ export class EffectJournal {
   }
 
   async recover(context, effectRecord, driverLike) {
+    const requested = assertEffectRecord(effectRecord);
+    return await withEffectKeyLock(this.store, effectLockKey(requested.runId, requested.idempotencyKey), async () => {
+      const current = await this.store.getEffectRecord(requested.runId, requested.idempotencyKey, requested.branchId);
+      return await this.#recoverLocked(context, current ?? requested, driverLike);
+    });
+  }
+
+  async #recoverLocked(context, effectRecord, driverLike) {
     const driver = defineActuatorDriver(driverLike);
     const record = assertEffectRecord(effectRecord);
     const manifest = driver.manifest();
