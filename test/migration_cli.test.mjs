@@ -404,6 +404,35 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('does not unlink a replacement lock after acquisition metadata write failure', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-lock-write-failure-replacement-'));
+    const lockPath = path.join(root, 'store.lock');
+    const replacement = new BunStoreLock(lockPath);
+    const failing = new BunStoreLock(lockPath, {
+      writeMetadata: async () => {
+        await rm(lockPath, { force: true });
+        await replacement.acquire();
+        const error = new Error('test metadata write failed after replacement');
+        error.code = 'ERR_TEST_LOCK_METADATA_WRITE_FAILED';
+        throw error;
+      },
+    });
+    const contender = new BunStoreLock(lockPath);
+    const afterRelease = new BunStoreLock(lockPath);
+    try {
+      await assert.rejects(() => failing.acquire(), { code: 'ERR_TEST_LOCK_METADATA_WRITE_FAILED' });
+      await assert.rejects(() => contender.acquire(), { code: 'EEXIST' });
+      await replacement.release();
+      await afterRelease.acquire();
+    } finally {
+      await afterRelease.release();
+      await contender.release();
+      await failing.release();
+      await replacement.release();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('exports and imports with receiver-local run id and no authority transfer', async () => {
     const source = await fixtureStore();
     await forkRunBranch(source.store, {

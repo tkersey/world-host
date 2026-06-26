@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, rm } from 'node:fs/promises';
+import { mkdir, open, readFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 
@@ -27,8 +27,8 @@ export class BunStoreLock {
       this.handle = handle;
       this.ownerToken = ownerToken;
     } catch (error) {
+      await removeLockPathIfSameFile(this.lockPath, handle).catch(() => {});
       await handle.close().catch(() => {});
-      await rm(this.lockPath, { force: true }).catch(() => {});
       throw error;
     }
     return this;
@@ -50,4 +50,13 @@ export class BunStoreLock {
     }
     if (currentToken === ownerToken) await rm(this.lockPath, { force: true });
   }
+}
+
+async function removeLockPathIfSameFile(lockPath, handle) {
+  const [handleStat, pathStat] = await Promise.all([
+    handle.stat(),
+    stat(lockPath),
+  ]);
+  if (handleStat.dev !== pathStat.dev || handleStat.ino !== pathStat.ino) return;
+  await rm(lockPath, { force: true });
 }
