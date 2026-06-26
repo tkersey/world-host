@@ -1,0 +1,31 @@
+{
+  "name": "@tkersey/world-host",
+  "version": "0.0.0-carrier-v0",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.3.2",
+  "description": "Disposable, crash-recoverable reference host for World TurnClosure processes.",
+  "files": [
+    "bin/",
+    "docs/",
+    "examples/",
+    "scripts/",
+    "src/",
+    "test/",
+    "README.md",
+    "WORLD_CARRIER_V0_PLAN.md"
+  ],
+  "bin": {
+    "world-host": "./bin/world-host.mjs"
+  },
+  "scripts": {
+    "test": "bun test",
+    "proof": "bun test && bun scripts/run-world-conformance.mjs && bun scripts/run-store-conformance.mjs && bun scripts/run-crash-matrix.mjs && bun scripts/run-migration-conformance.mjs && bun scripts/run-security-conformance.mjs",
+    "proof:world-real": "bun scripts/run-world-conformance.mjs --world-repo ../world"
+  },
+  "engines": {
+    "bun": ">=1.3.2"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
