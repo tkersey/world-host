@@ -765,7 +765,7 @@ function assertHeadGenerationMatchesClosure(head, summary) {
   const storedClosureGeneration = head.updateDiagnostics?.inspectedTurnClosure?.turnSequenceNumber;
   if (storedClosureGeneration !== undefined && !Number.isSafeInteger(storedClosureGeneration)) fail('ERR_PARENT_HEAD_CLOSURE_MISMATCH', 'parent RunHead generation is not inspectable');
   const generationMatches = storedClosureGeneration === undefined
-    ? closureGeneration === head.generation || closureGeneration === head.generation + 1
+    ? closureGeneration === head.generation
     : closureGeneration === storedClosureGeneration;
   if (!generationMatches) {
     fail('ERR_PARENT_HEAD_CLOSURE_MISMATCH', 'parent RunHead generation does not match selected TurnClosure bytes', {

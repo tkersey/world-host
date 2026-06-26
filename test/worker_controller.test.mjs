@@ -150,6 +150,19 @@ describe('RunController and WorldWorker', () => {
     );
   });
 
+  it('rejects stale parent head generations without inspected closure diagnostics', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      closureBytes: fixtureTurnClosureBytes({ status: 0, turnSequenceNumber: 1n }),
+      headOverrides: { generation: 0 },
+    });
+    const controller = new RunController({ store, workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes({ turnSequenceNumber: 2n })) });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_PARENT_HEAD_CLOSURE_MISMATCH' },
+    );
+  });
+
   it('rejects parent closures from a different loaded appliance manifest', async () => {
     const { store, runId, branchId } = await fixtureStore();
     const controller = new RunController({

@@ -91,10 +91,7 @@ export class SandboxFileDriver {
     const outcome = { status: 'ok', path: path.relative(this.root, resolved), byteLength: bytes.byteLength };
     const responseBytes = fromUtf8(stableJson(outcome));
     if (responseBytes.byteLength > MAXIMUM_WRITE_ACK_BYTES) fail('ERR_SANDBOX_FILE_ACK_TOO_LARGE');
-    await this.#assertWritableParentBeforeMkdir(path.dirname(resolved));
-    await mkdir(path.dirname(resolved), { recursive: true });
-    if (this.symlinkPolicy === 'reject') await this.#rejectSymlinkComponents(path.dirname(resolved));
-    await this.#assertResolvedPathWithinRoot(path.dirname(resolved));
+    await this.#ensureWritableParentDirectory(path.dirname(resolved));
     await this.#assertRegularPathBeforeOpen(resolved, { allowMissing: true });
     await this.#rejectCreateThroughFinalSymlink(resolved);
     const handle = await this.#openForWrite(resolved);
@@ -155,7 +152,7 @@ export class SandboxFileDriver {
     if (actual !== root && !actual.startsWith(`${root}${path.sep}`)) fail('ERR_SANDBOX_PATH_ESCAPE');
   }
 
-  async #assertWritableParentBeforeMkdir(parentPath) {
+  async #ensureWritableParentDirectory(parentPath) {
     await this.#assertResolvedPathWithinRoot(this.root);
     const relative = path.relative(this.root, parentPath);
     if (relative === '') return;
@@ -166,7 +163,14 @@ export class SandboxFileDriver {
         if (error.code === 'ENOENT') return null;
         throw error;
       });
-      if (!info) return;
+      if (!info) {
+        await mkdir(current).catch((error) => {
+          if (error.code !== 'EEXIST') throw error;
+        });
+      }
+      const currentInfo = await lstat(current);
+      if (this.symlinkPolicy === 'reject' && currentInfo.isSymbolicLink()) fail('ERR_SANDBOX_SYMLINK_REJECTED');
+      if (!currentInfo.isDirectory() && !currentInfo.isSymbolicLink()) fail('ERR_SANDBOX_FILE_NOT_REGULAR');
       await this.#assertResolvedPathWithinRoot(current);
     }
   }
