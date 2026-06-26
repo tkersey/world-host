@@ -428,7 +428,11 @@ function collectBlobRefs(...values) {
     collectDiagnosticBlobRefs(value.creationMetadata);
     collectDiagnosticBlobRefs(value.metadata);
     collectDiagnosticBlobRefs(value.updateDiagnostics);
-    for (const branch of value.branches ?? []) collectOwnedRefs(branch.currentHead);
+    for (const branch of value.branches ?? []) {
+      collectOwnedRefs(branch.currentHead);
+      collectDiagnosticBlobRefs(branch.diagnostics);
+      collectDiagnosticBlobRefs(branch.metadata);
+    }
   }
 
   function collectDiagnosticBlobRefs(value, key = '') {

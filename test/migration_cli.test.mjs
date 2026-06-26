@@ -193,6 +193,10 @@ describe('migration, branching, and CLI diagnostics', () => {
 
       assert.equal(branch.forkedFromTurnClosureFingerprint, firstAdvance.nextHead.turnClosureWorldFingerprint);
       assert.equal((await store.readHead(run.runId, 'midpoint')).turnClosureWorldFingerprint, firstAdvance.nextHead.turnClosureWorldFingerprint);
+      const exported = await store.exportRun(run.runId, 'main');
+      assert.equal(exported.blobs.some((blob) =>
+        blob.checksum === firstAdvance.nextHead.turnClosureRef.checksum &&
+        blob.byteLength === firstAdvance.nextHead.turnClosureRef.byteLength), true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
