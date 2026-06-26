@@ -202,16 +202,16 @@ export class EffectJournal {
   }
 
   async recover(context, effectRecord, driverLike) {
-    const requested = assertEffectRecord(effectRecord);
-    return await withEffectKeyLock(this.store, effectLockKey(requested.runId, requested.idempotencyKey), async () => {
-      const current = await this.store.getEffectRecord(requested.runId, requested.idempotencyKey, requested.branchId);
+    const requested = this.#assertRecordInScope(effectRecord);
+    return await withEffectKeyLock(this.store, effectLockKey(this.runId, requested.idempotencyKey), async () => {
+      const current = await this.store.getEffectRecord(this.runId, requested.idempotencyKey, this.branchId);
       return await this.#recoverLocked(context, current ?? requested, driverLike);
     });
   }
 
   async #recoverLocked(context, effectRecord, driverLike) {
     const driver = defineActuatorDriver(driverLike);
-    const record = assertEffectRecord(effectRecord);
+    const record = this.#assertRecordInScope(effectRecord);
     const manifest = driver.manifest();
     assertDriverCanRecover(manifest, record);
     const reused = await this.#resolutionFromRecord(record);
@@ -370,13 +370,26 @@ export class EffectJournal {
   }
 
   async #advance(record, state) {
-    assertEffectRecord(record);
-    if (!record.resolutionInputRef) fail('ERR_EFFECT_RESOLUTION_REF_MISSING');
-    return await this.#put({ ...record, state });
+    const current = this.#assertRecordInScope(record);
+    if (!current.resolutionInputRef) fail('ERR_EFFECT_RESOLUTION_REF_MISSING');
+    return await this.#put({ ...current, state });
   }
 
   async #put(record) {
-    return await this.store.putEffectRecord(assertEffectRecord(record));
+    return await this.store.putEffectRecord(this.#assertRecordInScope(record));
+  }
+
+  #assertRecordInScope(record) {
+    const current = assertEffectRecord(record);
+    if (current.runId !== this.runId || current.branchId !== this.branchId) {
+      fail('ERR_EFFECT_RECORD_SCOPE_MISMATCH', 'effect record does not belong to this journal scope', {
+        journalRunId: this.runId,
+        journalBranchId: this.branchId,
+        recordRunId: current.runId,
+        recordBranchId: current.branchId,
+      });
+    }
+    return current;
   }
 
   async #recordWithRequestBytes(record) {

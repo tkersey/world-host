@@ -955,6 +955,32 @@ describe('EffectJournal', () => {
       { code: 'ERR_EFFECT_RECONCILE_HEAD_PARENT_REQUIRED' },
     );
   });
+
+  it('rejects out-of-scope records before transition or recovery writes', async () => {
+    const store = new MemoryStore();
+    const mainJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+    const resolved = (await mainJournal.resolve({}, hostRequest(), driver)).record;
+
+    await assert.rejects(
+      () => mainJournal.markSubmitted({ ...resolved, branchId: 'alternate' }),
+      { code: 'ERR_EFFECT_RECORD_SCOPE_MISMATCH' },
+    );
+    await assert.rejects(
+      () => mainJournal.markClosureCommitted({ ...resolved, runId: 'other-run' }),
+      { code: 'ERR_EFFECT_RECORD_SCOPE_MISMATCH' },
+    );
+    await assert.rejects(
+      () => mainJournal.recover({}, { ...resolved, runId: 'other-run', state: EffectState.running, resolutionInputRef: undefined }, driver),
+      { code: 'ERR_EFFECT_RECORD_SCOPE_MISMATCH' },
+    );
+
+    const records = await store.listEffectRecords('run');
+    assert.equal(records.length, 1);
+    assert.equal(records[0].state, EffectState.resolved);
+    assert.equal(driver.recoverCalls, 0);
+    assert.deepEqual(await store.listEffectRecords('other-run'), []);
+  });
 });
 
 function hostRequest(overrides = {}) {
