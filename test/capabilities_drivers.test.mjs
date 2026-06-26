@@ -414,6 +414,10 @@ describe('capability preflight and reference drivers', () => {
       const failedDecoded = decodeResolutionInputBytes(failed.resolutionInputBytes);
       assert.equal(failedDecoded.status, 1);
       assert.equal(failedDecoded.responseValueImageBytes.byteLength, 0);
+      const failedSmall = new HttpJsonDriver({ origins: ['https://allowed.example'], maximumResponseBytes: 4 });
+      globalThis.fetch = async () => new Response('too-large-error-body', { status: 500 });
+      const failedSmallResult = await failedSmall.resolve({}, httpRequest('https://allowed.example/fail-small', 'GET', { status: 'http_error' }));
+      assert.equal(decodeResolutionInputBytes(failedSmallResult.resolutionInputBytes).status, 1);
       const small = new HttpJsonDriver({ origins: ['https://allowed.example'], maximumResponseBytes: 4 });
       globalThis.fetch = async () => new Response('too-large');
       await assert.rejects(

@@ -946,6 +946,27 @@ describe('EffectJournal', () => {
     assert.equal(records.filter((record) => record.branchId === 'alternate').length, 1);
   });
 
+  it('scans all same-key records for conflicts before reusing a branch-local outcome', async () => {
+    const store = new MemoryStore();
+    const mainJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const alternateJournal = new EffectJournal({ store, runId: 'run', branchId: 'alternate', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+
+    const main = await mainJournal.resolve({}, hostRequest(), driver);
+    await store.putEffectRecord({
+      ...main.record,
+      branchId: 'shadow',
+      requestBytesChecksum: 'sha256:shadow-conflict',
+      diagnostics: { conflictFixture: true },
+    });
+
+    await assert.rejects(
+      () => alternateJournal.resolve({}, hostRequest(), driver),
+      { code: 'ERR_EFFECT_IDEMPOTENCY_CONFLICT' },
+    );
+    assert.equal(driver.calls, 1);
+  });
+
   it('reparents same-branch reused outcomes to the current parent', async () => {
     const store = new MemoryStore();
     const firstJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });

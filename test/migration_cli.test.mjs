@@ -367,6 +367,22 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('breaks malformed stale lock metadata only during explicit recovery', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-malformed-lock-'));
+    const lockPath = path.join(root, 'store.lock');
+    const blocked = new BunStoreLock(lockPath);
+    const replacement = new BunStoreLock(lockPath);
+    try {
+      await writeFile(lockPath, '{not-json');
+      await assert.rejects(() => blocked.acquire(), { code: 'EEXIST' });
+      await replacement.acquire({ breakStale: true });
+    } finally {
+      await replacement.release();
+      await blocked.release();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('rejects half-paired archive anchors and malformed receiver policy refs at run boundaries', async () => {
     const blobRef = { algorithm: 'sha256', checksum: '0'.repeat(64), byteLength: 0 };
 

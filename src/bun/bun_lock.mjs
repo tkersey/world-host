@@ -60,6 +60,8 @@ async function removeStaleLockPath(lockPath) {
     metadata = JSON.parse(await handle.readFile('utf8'));
   } catch (error) {
     if (error?.code === 'ENOENT') return;
+    if (!handle) return;
+    await removeLockPathIfSameFile(lockPath, handle);
     return;
   } finally {
     if (!metadata) await handle?.close().catch(() => {});

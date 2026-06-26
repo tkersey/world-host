@@ -333,6 +333,7 @@ export class EffectJournal {
 
   async #branchLocalReusableRecord(prepared) {
     const idempotencyKeyJson = stableJson(prepared.idempotencyKey);
+    let reusable = null;
     for (const record of await this.list()) {
       assertEffectRecord(record);
       if (stableJson(record.idempotencyKey) !== idempotencyKeyJson) continue;
@@ -348,15 +349,18 @@ export class EffectJournal {
           idempotencyKeyWorldFingerprint: record.idempotencyKeyWorldFingerprint,
         });
       }
-      if (record.state === EffectState.running || (TERMINAL_WITH_OUTCOME.has(record.state) && record.resolutionInputRef)) {
-        return await this.#put({
-          ...record,
-          branchId: this.branchId,
-          parentTurnClosureFingerprint: this.parentTurnClosureFingerprint,
-          state: record.state === EffectState.running ? EffectState.running : EffectState.resolved,
-          diagnostics: { ...record.diagnostics, branchLocalReuse: record.branchId },
-        });
+      if (reusable === null && (record.state === EffectState.running || (TERMINAL_WITH_OUTCOME.has(record.state) && record.resolutionInputRef))) {
+        reusable = record;
       }
+    }
+    if (reusable) {
+      return await this.#put({
+        ...reusable,
+        branchId: this.branchId,
+        parentTurnClosureFingerprint: this.parentTurnClosureFingerprint,
+        state: reusable.state === EffectState.running ? EffectState.running : EffectState.resolved,
+        diagnostics: { ...reusable.diagnostics, branchLocalReuse: reusable.branchId },
+      });
     }
     return null;
   }

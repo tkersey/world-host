@@ -48,9 +48,11 @@ export class HttpJsonDriver {
       };
       const response = await fetch(url, { method, headers, body, signal: controller.signal, redirect: 'manual' });
       if (response.status >= 300 && response.status < 400 && response.headers.get('location')) fail('ERR_HTTP_REDIRECT_REJECTED');
-      const bytes = await readResponseBytes(response, this.maximumResponseBytes);
-      const text = new TextDecoder().decode(bytes);
       const responseStatus = response.ok ? 'ok' : 'http_error';
+      const bytes = response.ok
+        ? await readResponseBytes(response, this.maximumResponseBytes)
+        : await discardResponseBody(response);
+      const text = response.ok ? new TextDecoder().decode(bytes) : '';
       return {
         resolutionInputBytes: encodeResolutionInputBytes({
           targetHostRequestFingerprint: resolutionTarget(hostRequest),
@@ -81,6 +83,11 @@ export class HttpJsonDriver {
       hostRequestFingerprint: effectRecord.hostRequestFingerprint,
     });
   }
+}
+
+async function discardResponseBody(response) {
+  await response.body?.cancel().catch(() => {});
+  return new Uint8Array();
 }
 
 const DEFAULT_MAXIMUM_RESPONSE_ENVELOPE_BYTES = 1024 * 1024;
