@@ -152,7 +152,7 @@ async function installFixtureRun(store) {
   const parentClosureRef = await store.putBlob(parentClosureBytes);
   const application = createApplicationRecord({
     applicationId: APPLICATION_ID,
-    universalWasmChecksum: 'sha256:host-fixture',
+    universalWasmChecksum: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
     worldProtocolVersion: 'v0.1.0',
     applianceAbiVersion: 'v3',
     executableImageRef: imageRef,

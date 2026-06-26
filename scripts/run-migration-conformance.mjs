@@ -50,7 +50,7 @@ async function fixtureStore() {
   const closureRef = await store.putBlob(fromUtf8('closure'));
   const app = createApplicationRecord({
     applicationId: 'app',
-    universalWasmChecksum: 'sha256:fixture',
+    universalWasmChecksum: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
     worldProtocolVersion: 'v0.1.0',
     applianceAbiVersion: 'v3',
     executableImageRef: imageRef,

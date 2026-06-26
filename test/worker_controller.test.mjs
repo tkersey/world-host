@@ -118,6 +118,18 @@ describe('RunController and WorldWorker', () => {
     );
   });
 
+  it('rejects parent heads whose generation does not match stored closure bytes', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headOverrides: { generation: 99 },
+    });
+    const controller = new RunController({ store, workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes()) });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_PARENT_HEAD_CLOSURE_MISMATCH' },
+    );
+  });
+
   it('disposes dirty warm workers after failed turn submission before retry', async () => {
     const { store, runId, branchId } = await fixtureStore({ headStatus: 'genesis' });
     const workers = [];
@@ -955,7 +967,7 @@ async function fixtureStore(options = {}) {
   const archiveSealFingerprint = closureSummary.archiveSealFingerprint ?? 'world:archive-seal:retained';
   const application = createApplicationRecord({
     applicationId: 'app',
-    universalWasmChecksum: 'sha256:fixture',
+    universalWasmChecksum: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
     worldProtocolVersion: 'v0.1.0',
     applianceAbiVersion: 'v3',
     executableImageRef: imageRef,
@@ -1495,7 +1507,7 @@ function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()]
     u64(0x112n),
     u64(0x211n),
     optionalU64(null),
-    u64(0n),
+    u64(1n),
     u64(0x301n),
     u64(0x302n),
     u64(0x303n),

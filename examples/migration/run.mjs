@@ -22,7 +22,7 @@ async function fixtureStore(prefix) {
   const imageRef = await store.putBlob(fromUtf8('image'));
   const manifestRef = await store.putBlob(fromUtf8('manifest'));
   const closureRef = await store.putBlob(fromUtf8('closure'));
-  const app = createApplicationRecord({ applicationId: `${prefix}:app`, universalWasmChecksum: 'sha256:fixture', worldProtocolVersion: 'v0.1.0', applianceAbiVersion: 'v3', executableImageRef: imageRef, executableImageWorldFingerprint: 'world:image', applianceManifestRef: manifestRef, requiredActuators: [], requiredRuntimeLimits: {} });
+  const app = createApplicationRecord({ applicationId: `${prefix}:app`, universalWasmChecksum: 'sha256:0000000000000000000000000000000000000000000000000000000000000000', worldProtocolVersion: 'v0.1.0', applianceAbiVersion: 'v3', executableImageRef: imageRef, executableImageWorldFingerprint: 'world:image', applianceManifestRef: manifestRef, requiredActuators: [], requiredRuntimeLimits: {} });
   await store.createApplication(app);
   const head = createRunHead({ generation: 0, turnClosureRef: closureRef, turnClosureWorldFingerprint: 'world:closure:0', resultingStateFingerprint: 'world:state:0', chronicleCursor: 'cursor:0', archiveMomentFingerprint: 'archive:moment:0', archiveSealFingerprint: 'archive:seal:0', status: 'needs_host' });
   const run = createRunRecord({ runId: `${prefix}:run`, applicationId: app.applicationId, branches: [createBranchRecord({ branchId: 'main', currentHead: head })], effectJournalNamespace: `${prefix}:effects` });

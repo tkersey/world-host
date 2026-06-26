@@ -627,7 +627,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         applicationId: '../escape',
         worldProtocolVersion: 'v0.1.0',
         applianceAbiVersion: 'v3',
-        universalWasmChecksum: 'sha256:00',
+        universalWasmChecksum: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
         executableImageWorldFingerprint: 'world:image',
       };
       await assert.rejects(() => store.createApplication(app), { code: 'ERR_STORE_ID_PATH_UNSAFE' });
@@ -1597,7 +1597,7 @@ async function fixtureStore() {
   const closureRef = await store.putBlob(fromUtf8('closure'));
   const app = createApplicationRecord({
     applicationId: 'app',
-    universalWasmChecksum: 'sha256:fixture',
+    universalWasmChecksum: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
     worldProtocolVersion: 'v0.1.0',
     applianceAbiVersion: 'v3',
     executableImageRef: imageRef,

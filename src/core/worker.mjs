@@ -662,6 +662,7 @@ function assertParentHeadMatchesClosure(parentHead, parentClosureBytes) {
   } catch (error) {
     fail('ERR_PARENT_HEAD_CLOSURE_UNDECODABLE', 'parent RunHead closure bytes are not decodable', { cause: error?.message ?? String(error) });
   }
+  assertHeadGenerationMatchesClosure(parentHead, summarized);
   for (const field of [
     'turnClosureWorldFingerprint',
     'resultingStateFingerprint',
@@ -678,6 +679,20 @@ function assertParentHeadMatchesClosure(parentHead, parentClosureBytes) {
         closureValue: summarized[field],
       });
     }
+  }
+}
+
+function assertHeadGenerationMatchesClosure(head, summary) {
+  const closureGeneration = summary.inspectionDiagnostics?.turnSequenceNumber;
+  if (!Number.isSafeInteger(closureGeneration)) fail('ERR_PARENT_HEAD_CLOSURE_MISMATCH', 'parent TurnClosure sequence is not inspectable');
+  const expectedClosureGeneration = head.updateDiagnostics?.inspectedTurnClosure?.turnSequenceNumber ?? head.generation + 1;
+  if (!Number.isSafeInteger(expectedClosureGeneration)) fail('ERR_PARENT_HEAD_CLOSURE_MISMATCH', 'parent RunHead generation is not inspectable');
+  if (closureGeneration !== expectedClosureGeneration) {
+    fail('ERR_PARENT_HEAD_CLOSURE_MISMATCH', 'parent RunHead generation does not match selected TurnClosure bytes', {
+      field: 'generation',
+      headValue: head.generation,
+      closureValue: closureGeneration,
+    });
   }
 }
 

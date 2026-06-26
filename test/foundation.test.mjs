@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { createCarrierFoundation } from '../src/core/carrier.mjs';
+import { createApplicationRecord } from '../src/core/application.mjs';
 import { assertCarrierManifest, carrierManifest, carrierVersionSummary } from '../src/protocol/world_manifest.mjs';
 import { assertWireCodecBoundary, requireReleasedWireCodec } from '../src/protocol/world_appliance_wire_codec.mjs';
 import { assertLoadedValueCodecBoundary, requireReleasedLoadedValueCodec } from '../src/protocol/world_loaded_value_codec.mjs';
@@ -68,6 +69,24 @@ describe('repository foundation', () => {
     assert.equal(foundation.workerAuthority, 'cache-only');
     assert.equal(foundation.worldCoreMutationAllowed, false);
     assert.equal(carrierVersionSummary().universalWasmSha256, carrierManifest.universalWasm.sha256);
+  });
+
+  it('rejects malformed universal WASM checksums at the application boundary', () => {
+    const blobRef = { algorithm: 'sha256', checksum: '0'.repeat(64), byteLength: 0 };
+    assert.throws(
+      () => createApplicationRecord({
+        applicationId: 'app',
+        universalWasmChecksum: 'sha256:fixture',
+        worldProtocolVersion: 'v0.1.0',
+        applianceAbiVersion: 'v3',
+        executableImageRef: blobRef,
+        executableImageWorldFingerprint: 'world:image',
+        applianceManifestRef: blobRef,
+        requiredActuators: [],
+        requiredRuntimeLimits: {},
+      }),
+      { code: 'ERR_INVALID_SHA256_CHECKSUM' },
+    );
   });
 
   it('forbids native helper and child-process protocol encoding boundaries', () => {

@@ -43,7 +43,7 @@ async function runStore(name, makeStore) {
 
     const app = createApplicationRecord({
       applicationId: `${name}-app`,
-      universalWasmChecksum: 'sha256:fixture',
+      universalWasmChecksum: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
       worldProtocolVersion: 'v0.1.0',
       applianceAbiVersion: 'v3',
       executableImageRef: imageRef,
