@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import assert from 'node:assert/strict';
 
 import { EffectRecoveryClass } from '../src/core/actuator.mjs';
@@ -135,7 +135,7 @@ function driverFor(recoveryClass, response) {
         supportedActuationClasses: ['fixture'],
         supportedResponseStatuses: ['ok'],
         maximumRequestBytes: 1024,
-        maximumResponseBytes: Number.MAX_SAFE_INTEGER,
+        maximumResponseBytes: 1024,
         recoveryClass,
         concurrencyLimit: 1,
         authorityLabels: ['fixture'],

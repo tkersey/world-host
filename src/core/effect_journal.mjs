@@ -5,6 +5,7 @@ import {
   assertRecoveryClass,
   defineActuatorDriver,
 } from './actuator.mjs';
+import { createRunPolicy } from './capabilities.mjs';
 import { assertBlobRef, assertBytes, fail, fromUtf8, stableJson, toHex } from './store.mjs';
 import { decodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
 
@@ -56,7 +57,7 @@ export class EffectJournal {
     this.runId = runId;
     this.branchId = branchId;
     this.parentTurnClosureFingerprint = parentTurnClosureFingerprint;
-    this.policy = { durableAutomatic: true, ...policy };
+    this.policy = createRunPolicy(policy);
   }
 
   async observe(hostRequest, options = {}) {
@@ -435,6 +436,7 @@ function assertDriverCanRecover(manifest, record) {
   if (!manifest.supportedDescriptorFingerprints.includes(record.descriptorFingerprint)) fail('ERR_DESCRIPTOR_NOT_SUPPORTED');
   if (!record.actuationClass || !manifest.supportedActuationClasses.includes(record.actuationClass)) fail('ERR_ACTUATION_CLASS_NOT_SUPPORTED');
   if (record.responseSchema && !manifest.supportedResponseStatuses.includes(record.responseSchema.status)) fail('ERR_RESPONSE_STATUS_NOT_SUPPORTED');
+  hostRequestTargetFingerprint(record);
   assertEffectRecoveryClassMatchesManifest(manifest, record);
 }
 
@@ -581,7 +583,7 @@ function assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, p
   if (resolution.targetHostRequestFingerprint !== expectedTarget) {
     fail('ERR_EFFECT_RESOLUTION_TARGET_MISMATCH', 'driver ResolutionInput targets a different HostRequest');
   }
-  assertResolutionStatusAccepted(resolution.status, hostRequest);
+  assertResolutionStatusAccepted(resolution.status, hostRequest, manifest);
   if (resolution.status === 0 && resolution.responseValueImageBytes.byteLength === 0) {
     fail('ERR_EFFECT_RESPONSE_REQUIRED', 'responded ResolutionInput requires response bytes');
   }
@@ -597,10 +599,11 @@ function assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, p
   }
 }
 
-function assertResolutionStatusAccepted(status, hostRequest) {
+function assertResolutionStatusAccepted(status, hostRequest, manifest) {
   const expectedStatus = hostRequest.responseSchema?.status;
   if (expectedStatus === undefined) {
-    if (!Object.values(RESPONSE_STATUS_CODES).includes(status)) fail('ERR_RESPONSE_STATUS_NOT_SUPPORTED', 'ResolutionInput status is not mapped to a supported wire status');
+    const manifestStatuses = new Set((manifest.supportedResponseStatuses ?? []).map((item) => RESPONSE_STATUS_CODES[item]));
+    if (!manifestStatuses.has(status)) fail('ERR_RESPONSE_STATUS_NOT_SUPPORTED', 'ResolutionInput status is not supported by the selected driver manifest');
     return;
   }
   const expectedWireStatus = RESPONSE_STATUS_CODES[expectedStatus];

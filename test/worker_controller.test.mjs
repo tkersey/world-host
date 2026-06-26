@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 
@@ -12,7 +12,7 @@ import { encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire
 import { wyhash64 } from '../src/protocol/world_loaded_value_codec.mjs';
 import { summarizeTurnClosureForRunHead } from '../src/protocol/world_universal_appliance_codec.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
-import { NodeWorldWorker } from '../src/node/node_worker.mjs';
+import { BunWorldWorker } from '../src/bun/bun_worker.mjs';
 
 describe('RunController and WorldWorker', () => {
   it('advances a branch only after persisting the next closure blob', async () => {
@@ -959,8 +959,8 @@ describe('RunController and WorldWorker', () => {
     assert.throws(() => assertWarmWorkerBinding(worker, binding({ turnSequence: 1 })), { code: 'ERR_WARM_WORKER_IDENTITY_MISMATCH' });
   });
 
-  it('does not reinstantiate a disposed NodeWorldWorker', async () => {
-    const worker = new NodeWorldWorker();
+  it('does not reinstantiate a disposed BunWorldWorker', async () => {
+    const worker = new BunWorldWorker();
     worker.dispose();
 
     await assert.rejects(

@@ -17,7 +17,7 @@ Out of scope for Carrier v0: database engines, xitdb, SQLite, LMDB, hidden cloud
 - Driver API: `manifest() -> DriverManifest`, `resolve(context, hostRequest) -> ResolutionInput`, optional `recover`, `query`, `cancel`; routing uses exact `ActuatorRef`, descriptor fingerprint, Actuation class, and response schema.
 - Worker API: `instantiate`, `readRuntimeManifest`, `loadExecutable`, `readApplianceManifest`, `submitTurn`, `readTurnClosure`, `reset`, `unload`, `dispose`; validate zero imports, ABI version, memory bounds, and copy output before any mutating call.
 - CLI: `install`, `doctor`, `run`, `resume`, `inspect`, `effects`, `recover`, `fork`, `export`, `import`, plus `run-example` for file rewrite, crash recovery, migration, and branching.
-- File layout: use `src/core`, `src/stores`, `src/drivers`, `src/node`, `src/protocol`, `bin`, `examples`, and `test`; Node-only behavior stays in `src/node` and `src/stores/directory_store.mjs`.
+- File layout: use `src/core`, `src/stores`, `src/drivers`, `src/bun`, `src/protocol`, `bin`, `examples`, and `test`; Bun runtime behavior stays in `src/bun` and `src/stores/directory_store.mjs`.
 
 ## Data Flow
 1. Install application: verify pinned universal WASM checksum, read runtime/Appliance manifests, load sealed `Executable.Image`, record World fingerprints, required actuators, runtime limits, and diagnostics in `ApplicationRecord`.
@@ -39,7 +39,7 @@ Out of scope for Carrier v0: database engines, xitdb, SQLite, LMDB, hidden cloud
 
 ## Tests/Acceptance
 - World prerequisite: run `zig build check-world-v0`, `zig build world-universal-appliance-wasm`, record universal WASM SHA-256, and verify World v0.1.0 artifact versions before Carrier release.
-- Carrier commands: run `node --version`, `bun --version`, `bun run test`, `bun run proof`, `node scripts/run-world-conformance.mjs`, `node scripts/run-store-conformance.mjs`, `node scripts/run-crash-matrix.mjs`, `node scripts/run-migration-conformance.mjs`, `node scripts/run-security-conformance.mjs`.
+- Carrier commands: run `bun --version`, `bun run test`, `bun run proof`, `bun scripts/run-world-conformance.mjs`, `bun scripts/run-store-conformance.mjs`, `bun scripts/run-crash-matrix.mjs`, `bun scripts/run-migration-conformance.mjs`, `bun scripts/run-security-conformance.mjs`.
 - Store acceptance: MemoryStore and DirectoryStore pass immutable blob roundtrip, checksum mismatch, head create, CAS success/conflict, orphan blob, partial head file, restart recovery, import/export, exclusive lock, stale lock handling.
 - Effect acceptance: full-key equality, conflict on same key/different request, persisted outcome reuse, pure/idempotent/external/transactional recovery, `best_effort` intervention, partial batches, no duplicate idempotent write.
 - Flagship acceptance: `world-host run-example file-rewrite-agent` proves sandbox read/write, deterministic fixture model, final file content `world carrier updated the fixture`, root-result bytes, TurnReceipt, Archive.AppendBatch retention, restart inspection without World execution, and crash variants.
@@ -56,15 +56,14 @@ Out of scope for Carrier v0: database engines, xitdb, SQLite, LMDB, hidden cloud
 ## Required Proof
 - `zig build check-world-v0`
 - `zig build world-universal-appliance-wasm`
-- `node --version`
 - `bun --version`
 - `bun run test`
 - `bun run proof`
-- `node scripts/run-world-conformance.mjs`
-- `node scripts/run-store-conformance.mjs`
-- `node scripts/run-crash-matrix.mjs`
-- `node scripts/run-migration-conformance.mjs`
-- `node scripts/run-security-conformance.mjs`
+- `bun scripts/run-world-conformance.mjs`
+- `bun scripts/run-store-conformance.mjs`
+- `bun scripts/run-crash-matrix.mjs`
+- `bun scripts/run-migration-conformance.mjs`
+- `bun scripts/run-security-conformance.mjs`
 - `world-host run-example file-rewrite-agent`
 - `world-host run-example crash-recovery`
 - `world-host run-example migration`

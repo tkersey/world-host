@@ -1,6 +1,6 @@
-import { describe, it } from 'node:test';
+import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import { createCarrierFoundation } from '../src/core/carrier.mjs';
@@ -12,13 +12,22 @@ import { assertLoadedValueCodecBoundary, requireReleasedLoadedValueCodec } from 
 const root = new URL('../', import.meta.url);
 
 describe('repository foundation', () => {
+  it('runs the test suite under the Bun runtime', () => {
+    assert.equal(typeof process.versions.bun, 'string');
+    assert.match(process.execPath, /bun(?:\.exe)?$/);
+  });
+
   it('declares an ESM package with zero runtime dependencies', async () => {
     const packageJson = JSON.parse(await readFile(new URL('package.json', root), 'utf8'));
     assert.equal(packageJson.type, 'module');
     assert.equal(packageJson.packageManager, 'bun@1.3.2');
+    assert.equal(packageJson.engines?.bun, '>=1.3.2');
+    assert.equal(packageJson.engines?.node, undefined);
     assert.deepEqual(packageJson.dependencies, {});
     assert.deepEqual(packageJson.devDependencies, {});
-    assert.equal(packageJson.scripts.test, 'node --test');
+    assert.equal(packageJson.scripts.test, 'bun test');
+    assert.match(packageJson.scripts.proof, /^bun test && bun scripts\/run-world-conformance\.mjs/);
+    assert.equal(packageJson.scripts['proof:world-real'], 'bun scripts/run-world-conformance.mjs --world-repo ../world');
   });
 
   it('creates the requested source layout', async () => {
@@ -28,10 +37,10 @@ describe('repository foundation', () => {
       'src/protocol/world_manifest.mjs',
       'src/protocol/world_appliance_wire_codec.mjs',
       'src/protocol/world_loaded_value_codec.mjs',
-      'src/node/node_cli.mjs',
+      'src/bun/bun_cli.mjs',
       'src/stores/memory_store.mjs',
       'src/stores/directory_store.mjs',
-      'src/node/node_lock.mjs',
+      'src/bun/bun_lock.mjs',
       'src/stores',
       'src/drivers',
       'examples',
@@ -45,6 +54,52 @@ describe('repository foundation', () => {
         throw error;
       });
     }
+  });
+
+  it('rejects Node launchers and Node-labeled adapter leftovers without rejecting Bun-supported builtins', async () => {
+    const scannedFiles = await sourceFiles([
+      'package.json',
+      'README.md',
+      'WORLD_CARRIER_V0_PLAN.md',
+      'bin',
+      'docs',
+      'examples',
+      'scripts',
+      'src',
+      'test',
+    ]);
+    const nodeAdapterName = ['Node', 'World', 'Worker'].join('');
+    const nodeLockName = ['Node', 'Store', 'Lock'].join('');
+    const nodeCliName = ['run', 'Node', 'Cli'].join('');
+    const nodeWorkerKind = ['node', 'world', 'worker'].join('-');
+    const nodeManifestKind = ['world-host', nodeWorkerKind].join('.');
+    const forbidden = [
+      ['Node executable shebang', /^#!.*\bnode\b/m],
+      ['Node engine metadata', /"node"\s*:/],
+      ['Node test launcher', /\bnode\s+--test\b/],
+      ['Node bin or script launcher', /\bnode\s+(?:bin|scripts)\//],
+      ['hardcoded Node spawn', /\b(?:spawnSync|execFileSync|execSync)\(\s*['"]node['"]/],
+      ['Node worker adapter name', new RegExp(nodeAdapterName)],
+      ['Node store lock name', new RegExp(nodeLockName)],
+      ['Node CLI adapter name', new RegExp(nodeCliName)],
+      ['Node adapter path', new RegExp(['src', 'node'].join('/'))],
+      ['Node adapter filename', /\bnode_(?:cli|worker|lock)\.mjs\b/],
+      ['Node runtime manifest kind', new RegExp(`\\b${nodeWorkerKind}\\b|\\b${nodeManifestKind}\\b`)],
+    ];
+    const violations = [];
+    for (const file of scannedFiles) {
+      const text = await readFile(new URL(file, root), 'utf8');
+      for (const [label, pattern] of forbidden) {
+        if (pattern.test(text)) violations.push(`${file}: ${label}`);
+      }
+    }
+    assert.deepEqual(violations, []);
+
+    const builtinImportUsers = [];
+    for (const file of scannedFiles) {
+      if ((await readFile(new URL(file, root), 'utf8')).includes('node:')) builtinImportUsers.push(file);
+    }
+    assert.ok(builtinImportUsers.length > 0);
   });
 
   it('pins the reviewed World surface and requires release checksum verification', () => {
@@ -164,6 +219,25 @@ function applianceManifestBytes({ formatVersion, fingerprintVersion, abiVersion 
     u8(0),
     bytes(new Uint8Array()),
   ]);
+}
+
+async function sourceFiles(entries) {
+  const out = [];
+  for (const entry of entries) await collectSourceFiles(entry, out);
+  return out.sort();
+}
+
+async function collectSourceFiles(relative, out) {
+  const info = await stat(new URL(relative, root));
+  if (info.isFile()) {
+    if (/\.(?:json|md|mjs)$/.test(relative)) out.push(relative);
+    return;
+  }
+  if (!info.isDirectory()) return;
+  const children = await readdir(new URL(`${relative.replace(/\/$/, '')}/`, root), { withFileTypes: true });
+  for (const child of children) {
+    await collectSourceFiles(`${relative.replace(/\/$/, '')}/${child.name}`, out);
+  }
 }
 
 function u8(value) {

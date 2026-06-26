@@ -12,11 +12,11 @@ This repository owns host concerns only: storing World-authored bytes, choosing 
 
 ## Current Surface
 
-This repository contains the Carrier v0 host boundary: immutable blob stores, mutable branch heads, effect journal recovery classes, disposable worker/controller contracts, receiver-local capability preflight, constrained reference drivers, migration/fork helpers, redacted CLI diagnostics, deterministic examples, dependency-free World JS codecs, and a Node WebAssembly worker for the universal Appliance ABI.
+This repository contains the Carrier v0 host boundary: immutable blob stores, mutable branch heads, effect journal recovery classes, disposable worker/controller contracts, receiver-local capability preflight, constrained reference drivers, migration/fork helpers, redacted CLI diagnostics, deterministic examples, dependency-free World JS codecs, and a Bun WebAssembly worker for the universal Appliance ABI.
 
-`node scripts/run-world-conformance.mjs --world-repo ../world` executes real World universal Appliance fixture images through Carrier's `NodeWorldWorker` and protocol codecs. It also boots a no-host fixture through `RunController` and `MemoryStore`, verifies that the committed branch head points at the same immutable TurnClosure bytes returned by the real worker, then proves a completed head is rejected before a fresh worker is created. The same lane boots a needs-host fixture and lets `RunController` inspect the parent TurnClosure, resolve the real HostRequest through `EffectJournal`, persist the untrusted ResolutionInput before World submission, reuse that persisted outcome on a lost-output retry without invoking the deterministic driver again, and commit the completed TurnClosure. For closures with multiple pending HostRequests, the controller groups requests by exact driver and recovery class, enforces bounded driver concurrency, persists each outcome independently, and constructs one continue TurnInput through the released wire codec so host completion order is not authoritative. Missing driver coverage remains fail-closed by default; a receiver-local `allowPartialEffectBatch` policy may submit only covered persisted outcomes and record unresolved request diagnostics. The deterministic examples still prove Carrier host behavior around stores, effects, migration, and branching; the real World fixture lane is the proof that the worker/codecs/controller can produce, continue from persisted host outcomes, reject terminal heads, and commit World-authored TurnClosure bytes, root result bytes, and Archive append evidence without a native helper process.
+`bun scripts/run-world-conformance.mjs --world-repo ../world` executes real World universal Appliance fixture images through Carrier's `BunWorldWorker` and protocol codecs. It also boots a no-host fixture through `RunController` and `MemoryStore`, verifies that the committed branch head points at the same immutable TurnClosure bytes returned by the real worker, then proves a completed head is rejected before a fresh worker is created. The same lane boots a needs-host fixture and lets `RunController` inspect the parent TurnClosure, resolve the real HostRequest through `EffectJournal`, persist the untrusted ResolutionInput before World submission, reuse that persisted outcome on a lost-output retry without invoking the deterministic driver again, and commit the completed TurnClosure. For closures with multiple pending HostRequests, the controller groups requests by exact driver and recovery class, enforces bounded driver concurrency, persists each outcome independently, and constructs one continue TurnInput through the released wire codec so host completion order is not authoritative. Missing driver coverage remains fail-closed by default; a receiver-local `allowPartialEffectBatch` policy may submit only covered persisted outcomes and record unresolved request diagnostics. The deterministic examples still prove Carrier host behavior around stores, effects, migration, and branching; the real World fixture lane is the proof that the worker/codecs/controller can produce, continue from persisted host outcomes, reject terminal heads, and commit World-authored TurnClosure bytes, root result bytes, and Archive append evidence without a native helper process.
 
-`node bin/world-host.mjs run-example file-rewrite-agent` is a durable host-level flagship fixture. It creates a temporary `DirectoryStore`, installs application/run/head records and immutable blobs, resolves real sandbox file read/write requests through `EffectJournal`, retries the write by the same full World idempotency key without invoking the file driver again, commits the final host branch head, then reopens the store and inspects the completed run, effects, output file, closure blob, and retained archive-append fixture bytes without executing a driver. It is explicit host evidence only; World semantic TurnReceipt/root-result validation remains in the real World conformance lane above.
+`bun bin/world-host.mjs run-example file-rewrite-agent` is a durable host-level flagship fixture. It creates a temporary `DirectoryStore`, installs application/run/head records and immutable blobs, resolves real sandbox file read/write requests through `EffectJournal`, retries the write by the same full World idempotency key without invoking the file driver again, commits the final host branch head, then reopens the store and inspects the completed run, effects, output file, closure blob, and retained archive-append fixture bytes without executing a driver. It is explicit host evidence only; World semantic TurnReceipt/root-result validation remains in the real World conformance lane above.
 
 `RunController` can advance a branch from real worker output by inspecting World-authored TurnClosure bytes for the next `RunHead` fingerprints. That inspection is host metadata extraction only; Carrier does not validate or author World receipts, capsules, archive moments, chronicle events, or TurnClosures.
 
@@ -45,20 +45,19 @@ The checksum is from the local World universal Appliance cache artifact selected
 ## Proof
 
 ```sh
-node --version
 bun --version
 bun run test
 bun run proof
 bun run proof:world-real
-node bin/world-host.mjs doctor --json
-node scripts/run-store-conformance.mjs
-node scripts/run-crash-matrix.mjs
-node scripts/run-migration-conformance.mjs
-node scripts/run-security-conformance.mjs
-node bin/world-host.mjs run-example file-rewrite-agent
-node bin/world-host.mjs run-example crash-recovery
-node bin/world-host.mjs run-example migration
-node bin/world-host.mjs run-example branching
+bun bin/world-host.mjs doctor --json
+bun scripts/run-store-conformance.mjs
+bun scripts/run-crash-matrix.mjs
+bun scripts/run-migration-conformance.mjs
+bun scripts/run-security-conformance.mjs
+bun bin/world-host.mjs run-example file-rewrite-agent
+bun bin/world-host.mjs run-example crash-recovery
+bun bin/world-host.mjs run-example migration
+bun bin/world-host.mjs run-example branching
 ```
 
 ## Non-Claims

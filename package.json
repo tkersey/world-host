@@ -19,12 +19,12 @@
     "world-host": "./bin/world-host.mjs"
   },
   "scripts": {
-    "test": "node --test",
-    "proof": "node --test && node scripts/run-world-conformance.mjs && node scripts/run-store-conformance.mjs && node scripts/run-crash-matrix.mjs && node scripts/run-migration-conformance.mjs && node scripts/run-security-conformance.mjs",
-    "proof:world-real": "node scripts/run-world-conformance.mjs --world-repo ../world"
+    "test": "bun test",
+    "proof": "bun test && bun scripts/run-world-conformance.mjs && bun scripts/run-store-conformance.mjs && bun scripts/run-crash-matrix.mjs && bun scripts/run-migration-conformance.mjs && bun scripts/run-security-conformance.mjs",
+    "proof:world-real": "bun scripts/run-world-conformance.mjs --world-repo ../world"
   },
   "engines": {
-    "node": ">=26.0.0"
+    "bun": ">=1.3.2"
   },
   "dependencies": {},
   "devDependencies": {}

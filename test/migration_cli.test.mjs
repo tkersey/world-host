@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -12,8 +12,8 @@ import { exportCarrierRun, forkRunBranch, importCarrierRun } from '../src/core/m
 import { createBranchRecord, createRunHead, createRunRecord } from '../src/core/run.mjs';
 import { fromUtf8, stableJson } from '../src/core/store.mjs';
 import { RunController, WorldWorker } from '../src/core/worker.mjs';
-import { NodeStoreLock } from '../src/node/node_lock.mjs';
-import { redact, runNodeCli } from '../src/node/node_cli.mjs';
+import { BunStoreLock } from '../src/bun/bun_lock.mjs';
+import { redact, runBunCli } from '../src/bun/bun_cli.mjs';
 import { encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
 import { summarizeTurnClosureForRunHead } from '../src/protocol/world_universal_appliance_codec.mjs';
 import { DirectoryStore } from '../src/stores/directory_store.mjs';
@@ -264,9 +264,9 @@ describe('migration, branching, and CLI diagnostics', () => {
   it('does not unlink another store lock after failed acquisition cleanup', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-lock-'));
     const lockPath = path.join(root, 'store.lock');
-    const owner = new NodeStoreLock(lockPath);
-    const contender = new NodeStoreLock(lockPath);
-    const afterCleanup = new NodeStoreLock(lockPath);
+    const owner = new BunStoreLock(lockPath);
+    const contender = new BunStoreLock(lockPath);
+    const afterCleanup = new BunStoreLock(lockPath);
     try {
       await owner.acquire();
       await assert.rejects(() => contender.acquire(), { code: 'EEXIST' });
@@ -283,10 +283,10 @@ describe('migration, branching, and CLI diagnostics', () => {
   it('does not unlink a replacement store lock after stale break acquisition', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-lock-'));
     const lockPath = path.join(root, 'store.lock');
-    const staleOwner = new NodeStoreLock(lockPath);
-    const replacement = new NodeStoreLock(lockPath);
-    const contender = new NodeStoreLock(lockPath);
-    const afterRelease = new NodeStoreLock(lockPath);
+    const staleOwner = new BunStoreLock(lockPath);
+    const replacement = new BunStoreLock(lockPath);
+    const contender = new BunStoreLock(lockPath);
+    const afterRelease = new BunStoreLock(lockPath);
     try {
       await staleOwner.acquire();
       await replacement.acquire({ breakStale: true });
@@ -339,14 +339,14 @@ describe('migration, branching, and CLI diagnostics', () => {
   it('removes a lock file when acquisition metadata write fails', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-lock-write-failure-'));
     const lockPath = path.join(root, 'store.lock');
-    const failing = new NodeStoreLock(lockPath, {
+    const failing = new BunStoreLock(lockPath, {
       writeMetadata: async () => {
         const error = new Error('test metadata write failed');
         error.code = 'ERR_TEST_LOCK_METADATA_WRITE_FAILED';
         throw error;
       },
     });
-    const afterFailure = new NodeStoreLock(lockPath);
+    const afterFailure = new BunStoreLock(lockPath);
     try {
       await assert.rejects(() => failing.acquire(), { code: 'ERR_TEST_LOCK_METADATA_WRITE_FAILED' });
       await afterFailure.acquire();
@@ -428,16 +428,16 @@ describe('migration, branching, and CLI diagnostics', () => {
     assert.equal(redact({ diagnostics: { privateKey: 'secret' } }).diagnostics.privateKey, '[redacted]');
     assert.equal(redact({ diagnostics: { error: 'driver failed with bearer token sk-test-secret' } }).diagnostics.error, '[redacted]');
     let output = '';
-    const code = await runNodeCli(['inspect', '--json'], { stdout: { write: (text) => { output += text; } }, stderr: { write() {} } });
+    const code = await runBunCli(['inspect', '--json'], { stdout: { write: (text) => { output += text; } }, stderr: { write() {} } });
     assert.equal(code, 0);
     assert.match(output, /"command": "inspect"/);
     assert.doesNotMatch(output, /secret|bearer/i);
     await assert.rejects(
-      () => runNodeCli(['inspect', '--json', '--store', '.world-carrier'], { stdout: { write() {} }, stderr: { write() {} } }),
+      () => runBunCli(['inspect', '--json', '--store', '.world-carrier'], { stdout: { write() {} }, stderr: { write() {} } }),
       /missing required option: --run/,
     );
     await assert.rejects(
-      () => runNodeCli(['effects', '--json', '--store', '.world-carrier'], { stdout: { write() {} }, stderr: { write() {} } }),
+      () => runBunCli(['effects', '--json', '--store', '.world-carrier'], { stdout: { write() {} }, stderr: { write() {} } }),
       /missing required option: --run/,
     );
   });
@@ -451,7 +451,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       await writeFile(imagePath, fromUtf8('image-bytes-install'));
 
       let output = '';
-      const installCode = await runNodeCli([
+      const installCode = await runBunCli([
         'install',
         '--json',
         '--store', root,
@@ -515,7 +515,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       await writeFile(wasmPath, fromUtf8('wasm:relative'));
       await writeFile(imagePath, fromUtf8('image:relative'));
       let output = '';
-      const code = await runNodeCli([
+      const code = await runBunCli([
         'install',
         '--json',
         '--store', 'relative-store',
@@ -545,7 +545,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       const imagePath = path.join(root, 'file-agent.world-executable');
       await writeFile(wasmPath, fromUtf8('wasm:cli-run'));
       await writeFile(imagePath, fromUtf8('image:cli-run'));
-      await runNodeCli([
+      await runBunCli([
         'install',
         '--json',
         '--store', root,
@@ -560,7 +560,7 @@ describe('migration, branching, and CLI diagnostics', () => {
 
       let output = '';
       const runWorker = new DeterministicCliWorker('run');
-      const runCode = await runNodeCli([
+      const runCode = await runBunCli([
         'run',
         'run-app',
         '--json',
@@ -599,7 +599,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       }
 
       output = '';
-      const createOnlyCode = await runNodeCli([
+      const createOnlyCode = await runBunCli([
         'run',
         'run-app',
         '--json',
@@ -619,7 +619,7 @@ describe('migration, branching, and CLI diagnostics', () => {
 
       const genesisPackagePath = path.join(root, 'genesis-export.json');
       output = '';
-      const exportGenesisCode = await runNodeCli([
+      const exportGenesisCode = await runBunCli([
         'export',
         '--json',
         '--store', root,
@@ -635,7 +635,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(exportedGenesis.blobCount >= 3, true);
 
       output = '';
-      const importGenesisCode = await runNodeCli([
+      const importGenesisCode = await runBunCli([
         'import',
         '--json',
         '--store', receiverRoot,
@@ -663,7 +663,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       tamperedGenesisPackage.bundle.head.turnClosureWorldFingerprint = 'world:turn-closure:evil';
       await writeFile(tamperedGenesisPackagePath, JSON.stringify(tamperedGenesisPackage));
       await assert.rejects(
-        () => runNodeCli([
+        () => runBunCli([
           'import',
           '--json',
           '--store', receiverRoot,
@@ -677,7 +677,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       );
 
       output = '';
-      const recoverGenesisCode = await runNodeCli([
+      const recoverGenesisCode = await runBunCli([
         'recover',
         '--json',
         '--store', root,
@@ -694,7 +694,7 @@ describe('migration, branching, and CLI diagnostics', () => {
 
       output = '';
       const resumeWorker = new DecodableCliWorker({ status: 1 });
-      const resumeCode = await runNodeCli([
+      const resumeCode = await runBunCli([
         'resume',
         '--json',
         '--store', root,
@@ -753,7 +753,7 @@ describe('migration, branching, and CLI diagnostics', () => {
 
       output = '';
       const zeroWorker = new DecodableCliWorker({ turnSequenceNumber: 1n });
-      const zeroResumeCode = await runNodeCli([
+      const zeroResumeCode = await runBunCli([
         'resume',
         '--json',
         '--store', root,
@@ -772,7 +772,7 @@ describe('migration, branching, and CLI diagnostics', () => {
 
       output = '';
       const secondResumeWorker = new DeterministicCliWorker('resume-second', { startSequence: 1n });
-      const secondResumeCode = await runNodeCli([
+      const secondResumeCode = await runBunCli([
         'resume',
         '--json',
         '--store', root,
@@ -925,7 +925,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         await store.releaseLock();
       }
       let output = '';
-      const inspectCode = await runNodeCli(['inspect', '--json', '--store', root, '--run', run.runId, '--branch', 'main'], {
+      const inspectCode = await runBunCli(['inspect', '--json', '--store', root, '--run', run.runId, '--branch', 'main'], {
         stdout: { write: (text) => { output += text; } },
         stderr: { write() {} },
       });
@@ -943,7 +943,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(inspected.diagnostics.driversInvoked, false);
 
       output = '';
-      const effectsCode = await runNodeCli(['effects', '--json', '--store', root, '--run', run.runId], {
+      const effectsCode = await runBunCli(['effects', '--json', '--store', root, '--run', run.runId], {
         stdout: { write: (text) => { output += text; } },
         stderr: { write() {} },
       });
@@ -965,7 +965,7 @@ describe('migration, branching, and CLI diagnostics', () => {
     try {
       const { run } = await fixtureDirectoryStore(root, { effectState: 'submitted' });
       let output = '';
-      const recoverCode = await runNodeCli(['recover', '--json', '--store', root, '--run', run.runId, '--branch', 'main'], {
+      const recoverCode = await runBunCli(['recover', '--json', '--store', root, '--run', run.runId, '--branch', 'main'], {
         stdout: { write: (text) => { output += text; } },
         stderr: { write() {} },
       });
@@ -1032,18 +1032,23 @@ describe('migration, branching, and CLI diagnostics', () => {
     const memory = await fixtureStore();
     const memoryInputBytes = fromUtf8('memory-creation-input');
     const memoryInputRef = await memory.store.putBlob(memoryInputBytes);
+    const memoryPolicyBytes = fromUtf8('memory-receiver-policy');
+    const memoryPolicyRef = await memory.store.putBlob(memoryPolicyBytes);
     await memory.store.writeRun({
       ...memory.run,
       creationMetadata: {
         source: 'test.creation',
         inputRef: memoryInputRef,
       },
+      receiverPolicyRef: memoryPolicyRef,
     });
     const memoryBundle = await memory.store.exportRun(memory.run.runId, 'main');
     assert.equal(memoryBundle.blobs.some((blob) => blob.checksum === memoryInputRef.checksum), true);
+    assert.equal(memoryBundle.blobs.some((blob) => blob.checksum === memoryPolicyRef.checksum), true);
     const importedMemory = new MemoryStore();
     await importedMemory.importRun(memoryBundle);
     assert.deepEqual([...await importedMemory.getBlob(memoryInputRef)], [...memoryInputBytes]);
+    assert.deepEqual([...await importedMemory.getBlob(memoryPolicyRef)], [...memoryPolicyBytes]);
 
     const sourceRoot = await mkdtemp(path.join(tmpdir(), 'world-host-creation-export-source-'));
     const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-creation-export-receiver-'));
@@ -1052,16 +1057,20 @@ describe('migration, branching, and CLI diagnostics', () => {
       const sourceStore = new DirectoryStore(sourceRoot);
       await sourceStore.acquireLock();
       let directoryInputRef;
+      let directoryPolicyRef;
       try {
         const runRecord = await sourceStore.getRun(run.runId);
         const inputBytes = fromUtf8('directory-creation-input');
+        const policyBytes = fromUtf8('directory-receiver-policy');
         directoryInputRef = await sourceStore.putBlob(inputBytes);
+        directoryPolicyRef = await sourceStore.putBlob(policyBytes);
         await sourceStore.writeRun({
           ...runRecord,
           creationMetadata: {
             source: 'test.creation',
             inputRef: directoryInputRef,
           },
+          receiverPolicyRef: directoryPolicyRef,
         });
       } finally {
         await sourceStore.releaseLock();
@@ -1069,10 +1078,12 @@ describe('migration, branching, and CLI diagnostics', () => {
 
       const bundle = await sourceStore.exportRun(run.runId, 'main');
       assert.equal(bundle.blobs.some((blob) => blob.checksum === directoryInputRef.checksum), true);
+      assert.equal(bundle.blobs.some((blob) => blob.checksum === directoryPolicyRef.checksum), true);
 
       const receiverStore = new DirectoryStore(receiverRoot);
       await receiverStore.importRun(bundle);
       assert.deepEqual([...await receiverStore.getBlob(directoryInputRef)], [...fromUtf8('directory-creation-input')]);
+      assert.deepEqual([...await receiverStore.getBlob(directoryPolicyRef)], [...fromUtf8('directory-receiver-policy')]);
     } finally {
       await rm(sourceRoot, { recursive: true, force: true });
       await rm(receiverRoot, { recursive: true, force: true });
@@ -1087,9 +1098,9 @@ describe('migration, branching, and CLI diagnostics', () => {
       let retainedDiagnosticRef = null;
       let unreferencedRef = null;
       try {
-      const { run, head } = await fixtureDirectoryStore(sourceRoot);
+      const { run, head } = await fixtureDirectoryStore(sourceRoot, { closureOptions: { turnSequenceNumber: 0n } });
       let output = '';
-      const forkCode = await runNodeCli([
+      const forkCode = await runBunCli([
         'fork',
         '--json',
         '--store', sourceRoot,
@@ -1149,7 +1160,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       }
 
       output = '';
-      const exportCode = await runNodeCli([
+      const exportCode = await runBunCli([
         'export',
         '--json',
         '--store', sourceRoot,
@@ -1197,7 +1208,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         },
       }));
       await assert.rejects(
-        () => runNodeCli([
+        () => runBunCli([
           'import',
           '--json',
           '--store', receiverRoot,
@@ -1235,7 +1246,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         },
       }));
       await assert.rejects(
-        () => runNodeCli([
+        () => runBunCli([
           'import',
           '--json',
           '--store', receiverRoot,
@@ -1270,7 +1281,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         },
       }));
       await assert.rejects(
-        () => runNodeCli([
+        () => runBunCli([
           'import',
           '--json',
           '--store', receiverRoot,
@@ -1295,7 +1306,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         },
       }));
       await assert.rejects(
-        () => runNodeCli([
+        () => runBunCli([
           'import',
           '--json',
           '--store', receiverRoot,
@@ -1320,7 +1331,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         },
       }));
       await assert.rejects(
-        () => runNodeCli([
+        () => runBunCli([
           'import',
           '--json',
           '--store', receiverRoot,
@@ -1333,8 +1344,33 @@ describe('migration, branching, and CLI diagnostics', () => {
         { code: 'ERR_IMPORT_PREFLIGHT_HEAD_CLOSURE_MISMATCH' },
       );
 
+      const tamperedGenerationPackagePath = path.join(sourceRoot, 'tampered-generation-package.json');
+      await writeFile(tamperedGenerationPackagePath, JSON.stringify({
+        ...packageJson,
+        bundle: {
+          ...packageJson.bundle,
+          head: {
+            ...packageJson.bundle.head,
+            generation: packageJson.bundle.head.generation - 1,
+          },
+        },
+      }));
+      await assert.rejects(
+        () => runBunCli([
+          'import',
+          '--json',
+          '--store', receiverRoot,
+          '--package', tamperedGenerationPackagePath,
+          '--run', 'tampered-generation-run',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_IMPORT_PREFLIGHT_HEAD_GENERATION_MISMATCH' },
+      );
+
       output = '';
-      const importCode = await runNodeCli([
+      const importCode = await runBunCli([
         'import',
         '--json',
         '--store', receiverRoot,
@@ -1358,7 +1394,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         assert.equal((await receiverStore.getApplication(run.applicationId)).applicationId, run.applicationId);
         const receiverHead = await receiverStore.readHead('receiver-run', 'main');
         assert.equal(receiverHead.turnClosureWorldFingerprint, head.turnClosureWorldFingerprint);
-        assert.deepEqual([...await receiverStore.getBlob(receiverHead.turnClosureRef)], [...fixtureTurnClosureBytes()]);
+        assert.deepEqual([...await receiverStore.getBlob(receiverHead.turnClosureRef)], [...fixtureTurnClosureBytes({ turnSequenceNumber: 0n })]);
         assert.deepEqual([...await receiverStore.getBlob(receiverHead.updateDiagnostics.archiveAppendBatchRef)], [...fromUtf8('retained-diagnostic-input')]);
         await assert.rejects(() => receiverStore.getBlob(diagnosticRef), { code: 'ERR_BLOB_NOT_FOUND' });
         await assert.rejects(
@@ -1502,20 +1538,21 @@ describe('migration, branching, and CLI diagnostics', () => {
   });
 
   it('propagates executable CLI return codes to the process', async () => {
-    const result = spawnSync(process.execPath, [path.resolve('bin/world-host.mjs'), 'run-example', 'missing-example'], {
+    const bun = bunExecutable();
+    const result = spawnSync(bun, [path.resolve('bin/world-host.mjs'), 'run-example', 'missing-example'], {
       cwd: path.resolve('.'),
       encoding: 'utf8',
     });
     assert.equal(result.status, 2);
     assert.match(result.stderr, /unknown example: missing-example/);
 
-    const unknown = spawnSync(process.execPath, [path.resolve('bin/world-host.mjs'), 'resum'], {
+    const unknown = spawnSync(bun, [path.resolve('bin/world-host.mjs'), 'resum'], {
       cwd: path.resolve('.'),
       encoding: 'utf8',
     });
     assert.equal(unknown.status, 2);
 
-    const exportWithoutStore = spawnSync(process.execPath, [
+    const exportWithoutStore = spawnSync(bun, [
       path.resolve('bin/world-host.mjs'),
       'export',
       '--run', 'r',
@@ -1530,7 +1567,7 @@ describe('migration, branching, and CLI diagnostics', () => {
 
     const malformedRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-malformed-'));
     try {
-      const malformed = spawnSync(process.execPath, [
+      const malformed = spawnSync(bun, [
         path.resolve('bin/world-host.mjs'),
         'run',
         'app',
@@ -1551,6 +1588,12 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 });
+
+function bunExecutable() {
+  assert.equal(typeof process.versions.bun, 'string');
+  assert.match(process.execPath, /bun(?:\.exe)?$/);
+  return process.execPath;
+}
 
 class DeterministicCliWorker extends WorldWorker {
   constructor(label, options = {}) {
@@ -1993,7 +2036,7 @@ function fixtureDriver() {
         supportedActuationClasses: ['fixture'],
         supportedResponseStatuses: ['ok'],
         maximumRequestBytes: 1024,
-        maximumResponseBytes: Number.MAX_SAFE_INTEGER,
+        maximumResponseBytes: 1024,
         recoveryClass: 'idempotent',
         concurrencyLimit: 1,
         authorityLabels: ['fixture'],

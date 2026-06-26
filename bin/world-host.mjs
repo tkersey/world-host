@@ -1,7 +1,7 @@
-#!/usr/bin/env node
-import { runNodeCli } from '../src/node/node_cli.mjs';
+#!/usr/bin/env bun
+import { runBunCli } from '../src/bun/bun_cli.mjs';
 
-process.exitCode = await runNodeCli(process.argv.slice(2), {
+process.exitCode = await runBunCli(process.argv.slice(2), {
   stdout: process.stdout,
   stderr: process.stderr,
 });

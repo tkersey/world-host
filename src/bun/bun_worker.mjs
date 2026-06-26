@@ -23,7 +23,7 @@ const closureProducingSubmitStatuses = new Set([
 
 const textDecoder = new TextDecoder();
 
-export class NodeWorldWorker extends WorldWorker {
+export class BunWorldWorker extends WorldWorker {
   constructor() {
     super();
     this.module = null;
@@ -47,7 +47,7 @@ export class NodeWorldWorker extends WorldWorker {
       fail('ERR_WORLD_WASM_ABI_VERSION_MISMATCH', `expected ${carrierManifest.applianceAbiVersion}, got v${abiVersion}`);
     }
     this.runtimeManifest = Object.freeze({
-      kind: 'world-host.node-world-worker',
+      kind: 'world-host.bun-world-worker',
       wasmByteLength: bytes.byteLength,
       importCount: imports.length,
       abiVersion: `v${abiVersion}`,

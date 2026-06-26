@@ -7,7 +7,7 @@ import { assertEffectRecord } from '../core/effect_journal.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from '../core/run.mjs';
 import { ClosureStore, assertBlobRef, assertBytes, makeBlobRef, stableJson } from '../core/store.mjs';
 import { fail } from '../core/store.mjs';
-import { NodeStoreLock } from '../node/node_lock.mjs';
+import { BunStoreLock } from '../bun/bun_lock.mjs';
 
 const headCasQueuesByRoot = new Map();
 
@@ -16,7 +16,7 @@ export class DirectoryStore extends ClosureStore {
     super();
     this.root = root;
     this.concurrencyKey = `directory:${path.resolve(root)}`;
-    this.lock = new NodeStoreLock(path.join(root, 'locks', 'store.lock'));
+    this.lock = new BunStoreLock(path.join(root, 'locks', 'store.lock'));
     this.headCasQueues = headCasQueueForRoot(this.concurrencyKey);
   }
 
@@ -421,6 +421,7 @@ function collectBlobRefs(...values) {
     add(value.requestBytesRef);
     add(value.resolutionInputRef);
     add(value.hostClaimRef);
+    add(value.receiverPolicyRef);
     add(universalWasmRef(value));
     collectDiagnosticBlobRefs(value.diagnostics);
     collectDiagnosticBlobRefs(value.installationDiagnostics);

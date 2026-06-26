@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readdir, readFile, stat } from 'node:fs/promises';
@@ -12,7 +12,7 @@ import { RunController, WorldWorker, assertWarmWorkerBinding, worldHostRequestTo
 import { fromUtf8 } from '../src/core/store.mjs';
 import { encodeBootTurnInput, encodeContinueTurnInput, encodeResolutionInput, encodeResolutionInputBytes, encodeRestoreTurnInput } from '../src/protocol/world_appliance_wire_codec.mjs';
 import { inspectTurnOutput, summarizeTurnClosureForRunHead } from '../src/protocol/world_universal_appliance_codec.mjs';
-import { NodeWorldWorker, applianceStatus } from '../src/node/node_worker.mjs';
+import { BunWorldWorker, applianceStatus } from '../src/bun/bun_worker.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
 
 const args = parseArgs(process.argv.slice(2));
@@ -23,7 +23,7 @@ class DeterministicWorker extends WorldWorker {
   }
 }
 
-class TrackingNodeWorldWorker extends NodeWorldWorker {
+class TrackingBunWorldWorker extends BunWorldWorker {
   async submitTurn(turnInputBytes) {
     const result = await super.submitTurn(turnInputBytes);
     this.lastSubmitResult = {
@@ -144,7 +144,7 @@ async function runRealWorldUniversalCandidate(artifacts) {
   const imageA = await readFile(artifacts.imageAPath);
   const imageB = await readFile(artifacts.imageBPath);
   const proof = inspectTwoProgramProof(await readFile(artifacts.proofPath, 'utf8'));
-  const worker = new NodeWorldWorker();
+  const worker = new BunWorldWorker();
   await worker.instantiate(wasmBytes);
   const manifest = worker.readRuntimeManifest();
   assert.equal(manifest.importCount, 0);
@@ -209,7 +209,7 @@ async function runRealStoreBackedRunControllerBoot(artifacts, wasmBytes) {
     store,
     wasmBytes,
     workerFactory: async () => {
-      trackingWorker = new TrackingNodeWorldWorker();
+      trackingWorker = new TrackingBunWorldWorker();
       return trackingWorker;
     },
     turnInputFactory: async ({ worker }) => {
@@ -292,7 +292,7 @@ async function runRealColdRestoreRunControllerConformance(artifacts, wasmBytes) 
     store,
     wasmBytes,
     workerFactory: async () => {
-      bootWorker = new TrackingNodeWorldWorker();
+      bootWorker = new TrackingBunWorldWorker();
       return bootWorker;
     },
     turnInputFactory: async ({ worker }) => {
@@ -317,7 +317,7 @@ async function runRealColdRestoreRunControllerConformance(artifacts, wasmBytes) 
     wasmBytes,
     workerFactory: async () => {
       restoreWorkerCreated = true;
-      return new TrackingNodeWorldWorker();
+      return new TrackingBunWorldWorker();
     },
   });
   await assert.rejects(() => restoreController.advance(run.runId, branch.branchId), { code: 'ERR_BRANCH_HEAD_NOT_CONTINUABLE' });
@@ -332,7 +332,7 @@ async function runRealColdRestoreRunControllerConformance(artifacts, wasmBytes) 
 
 async function runRealWorkerGuestAllocationConformance(artifacts, wasmBytes) {
   const imageBytes = await readFile(artifacts.imageAPath);
-  const worker = new NodeWorldWorker();
+  const worker = new BunWorldWorker();
   await worker.instantiate(wasmBytes);
   await worker.loadExecutable(imageBytes);
   const manifestLen = worker.instance.exports.world_appliance_manifest_len();
@@ -398,7 +398,7 @@ async function runRealJournaledHostRequestRunControllerConformance(artifacts, wa
     wasmBytes,
     effectDrivers: [],
     workerFactory: async () => {
-      activeWorker = new TrackingNodeWorldWorker();
+      activeWorker = new TrackingBunWorldWorker();
       return activeWorker;
     },
     turnInputFactory: async ({ parentHead, parentClosureBytes }) => {
@@ -496,7 +496,7 @@ async function runRealJournaledHostRequestRunControllerConformance(artifacts, wa
 }
 
 async function readApplianceManifestBytes(wasmBytes, imageBytes) {
-  const worker = new NodeWorldWorker();
+  const worker = new BunWorldWorker();
   await worker.instantiate(wasmBytes);
   await worker.loadExecutable(imageBytes);
   const manifest = worker.readApplianceManifest();

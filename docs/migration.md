@@ -14,12 +14,12 @@ Receiver import:
 
 Branching is explicit. `forkRunBranch` creates a new branch head at the selected source closure and does not mutate the source branch. v0 has no branch merge semantics.
 
-The Node CLI exposes local file migration and branching over `DirectoryStore`:
+The Bun CLI exposes local file migration and branching over `DirectoryStore`:
 
 ```sh
-node bin/world-host.mjs fork --store STORE_DIR --run RUN_ID --from CLOSURE --branch NEW_BRANCH --source-branch main --json
-node bin/world-host.mjs export --store STORE_DIR --run RUN_ID --branch main --out carrier-export.json --json
-node bin/world-host.mjs import --store RECEIVER_DIR --package carrier-export.json --run RECEIVER_RUN_ID --json
+bun bin/world-host.mjs fork --store STORE_DIR --run RUN_ID --from CLOSURE --branch NEW_BRANCH --source-branch main --json
+bun bin/world-host.mjs export --store STORE_DIR --run RUN_ID --branch main --out carrier-export.json --json
+bun bin/world-host.mjs import --store RECEIVER_DIR --package carrier-export.json --run RECEIVER_RUN_ID --json
 ```
 
 These commands acquire the local store lock, emit redacted operational JSON, and do not execute workers, invoke drivers, transfer credentials, grant receiver authority, print complete idempotency key bytes, fabricate World evidence, or merge branches.

@@ -210,6 +210,7 @@ function collectBlobRefs(...values) {
     add(value.requestBytesRef);
     add(value.resolutionInputRef);
     add(value.hostClaimRef);
+    add(value.receiverPolicyRef);
     add(universalWasmRef(value));
     collectDiagnosticBlobRefs(value.diagnostics);
     collectDiagnosticBlobRefs(value.installationDiagnostics);

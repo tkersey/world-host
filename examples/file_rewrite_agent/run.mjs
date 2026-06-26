@@ -83,7 +83,7 @@ export async function runExample() {
         parentTurnClosureFingerprint: parentHead.turnClosureWorldFingerprint,
         archiveAppendBatchRef,
         hostFixtureOnly: true,
-        worldSemanticEvidenceSource: 'node scripts/run-world-conformance.mjs --world-repo ../world',
+        worldSemanticEvidenceSource: 'bun scripts/run-world-conformance.mjs --world-repo ../world',
       },
     });
     const cas = await store.compareAndSwapHead(RUN_ID, BRANCH_ID, parentHead.generation, finalHead);
@@ -128,7 +128,7 @@ export async function runExample() {
       restartInspectionInvokedDriver: false,
       restartInspectedCommittedClosure: sha256Hex(inspectedClosureBytes) === inspectedHead.turnClosureRef.checksum,
       hostFixtureOnly: true,
-      worldSemanticEvidenceSource: 'node scripts/run-world-conformance.mjs --world-repo ../world',
+      worldSemanticEvidenceSource: 'bun scripts/run-world-conformance.mjs --world-repo ../world',
     };
   } finally {
     if (restartedStore) await restartedStore.releaseLock().catch(() => {});

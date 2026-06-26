@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import path from 'node:path';
@@ -208,6 +208,25 @@ describe('EffectJournal', () => {
     assert.equal(records[0].resolutionInputRef, undefined);
   });
 
+  it('rejects schema-less ResolutionInput statuses outside the selected driver manifest', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const request = hostRequest({ responseSchema: undefined });
+
+    await assert.rejects(
+      () => journal.resolve({}, request, fixtureDriver({
+        recoveryClass: EffectRecoveryClass.idempotent,
+        supportedResponseStatuses: ['ok'],
+        response: fixtureResolutionInputBytes(request, new Uint8Array(), 1),
+      })),
+      { code: 'ERR_RESPONSE_STATUS_NOT_SUPPORTED' },
+    );
+    const records = await store.listEffectRecords('run');
+    assert.equal(records.length, 1);
+    assert.equal(records[0].state, EffectState.failed);
+    assert.equal(records[0].resolutionInputRef, undefined);
+  });
+
   it('rejects non-responded ResolutionInputs that carry response bytes', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
@@ -355,6 +374,27 @@ describe('EffectJournal', () => {
       () => resumed.resolve({}, hostRequest(), fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent })),
       { code: 'ERR_EFFECT_RESPONSE_TOO_LARGE' },
     );
+  });
+
+  it('normalizes direct journal policies before accepting driver response limits', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({
+      store,
+      runId: 'run',
+      branchId: 'main',
+      parentTurnClosureFingerprint: 'turn:0',
+      policy: {},
+    });
+    const driver = fixtureDriver({
+      recoveryClass: EffectRecoveryClass.idempotent,
+      maximumResponseBytes: 1024 * 1024 + 1,
+    });
+
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest(), driver),
+      { code: 'ERR_EFFECT_RESPONSE_LIMIT_EXCEEDS_POLICY' },
+    );
+    assert.equal(driver.calls, 0);
   });
 
   it('rejects the same full idempotency key with different request bytes', async () => {
@@ -694,6 +734,25 @@ describe('EffectJournal', () => {
     assert.equal(driver.recoverCalls, 0);
   });
 
+  it('validates recovered effect targets before invoking recovery drivers', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const observed = await journal.observe(hostRequest(), { recoveryClass: EffectRecoveryClass.idempotent });
+    const running = await store.putEffectRecord({
+      ...observed,
+      state: EffectState.running,
+      attemptCount: 1,
+      hostRequestFingerprint: 'not-a-world-fingerprint',
+    });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+
+    await assert.rejects(
+      () => journal.recover({}, running, driver),
+      { code: 'ERR_HOST_REQUEST_FINGERPRINT_REQUIRED' },
+    );
+    assert.equal(driver.recoverCalls, 0);
+  });
+
   it('parks invalid recovery outputs instead of leaving effects running', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
@@ -886,7 +945,7 @@ function httpHostRequest(overrides = {}) {
   };
 }
 
-function fixtureDriver({ recoveryClass, response = 'resolution', recoverResponse = null, descriptorFingerprint = 'descriptor:fixture', recover = true, recoverHostClaim = false, delayMs = 0, maximumRequestBytes = 1024, maximumResponseBytes = Number.MAX_SAFE_INTEGER, supportedResponseStatuses = ['ok'] }) {
+function fixtureDriver({ recoveryClass, response = 'resolution', recoverResponse = null, descriptorFingerprint = 'descriptor:fixture', recover = true, recoverHostClaim = false, delayMs = 0, maximumRequestBytes = 1024, maximumResponseBytes = 1024, supportedResponseStatuses = ['ok'] }) {
   return {
     calls: 0,
     recoverCalls: 0,

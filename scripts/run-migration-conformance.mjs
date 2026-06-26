@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import assert from 'node:assert/strict';
 
 import { createApplicationRecord } from '../src/core/application.mjs';

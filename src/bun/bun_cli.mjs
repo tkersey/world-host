@@ -11,10 +11,10 @@ import { encodeBootTurnInput, encodeRestoreTurnInput } from '../protocol/world_a
 import { inspectTurnOutput, summarizeTurnClosureForRunHead } from '../protocol/world_universal_appliance_codec.mjs';
 import { carrierVersionSummary } from '../protocol/world_manifest.mjs';
 import { EffectJournal } from '../core/effect_journal.mjs';
-import { NodeWorldWorker } from './node_worker.mjs';
+import { BunWorldWorker } from './bun_worker.mjs';
 import { DirectoryStore } from '../stores/directory_store.mjs';
 
-export async function runNodeCli(args, io, options = {}) {
+export async function runBunCli(args, io, options = {}) {
   const command = args[0] ?? 'help';
   if (command === '--version' || command === 'version') {
     io.stdout.write(`${carrierVersionSummary().carrierVersion}\n`);
@@ -282,7 +282,7 @@ async function advanceRunOnce(store, runId, branchId, options) {
   const controller = new RunController({
     store,
     wasmBytes,
-    workerFactory: options.workerFactory ?? (async () => new NodeWorldWorker()),
+    workerFactory: options.workerFactory ?? (async () => new BunWorldWorker()),
     turnInputFactory: options.turnInputFactory ?? cliTurnInputFactory,
     effectDrivers: options.effectDrivers ?? [],
     effectPolicy: options.effectPolicy ?? {},
@@ -495,6 +495,14 @@ function assertImportedGenesisHead(head, closureBytes) {
 }
 
 function assertImportedHeadMatchesClosure(head, summary) {
+  const expectedGeneration = summary.inspectionDiagnostics.turnSequenceNumber + 1;
+  if (head.generation !== expectedGeneration) {
+    fail('ERR_IMPORT_PREFLIGHT_HEAD_GENERATION_MISMATCH', 'receiver preflight requires imported head generation to match selected closure sequence', {
+      headGeneration: head.generation,
+      closureTurnSequenceNumber: summary.inspectionDiagnostics.turnSequenceNumber,
+      expectedGeneration,
+    });
+  }
   for (const field of [
     'turnClosureWorldFingerprint',
     'resultingStateFingerprint',

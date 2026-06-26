@@ -9,7 +9,7 @@ import { encodeResolutionInputBytes } from '../protocol/world_appliance_wire_cod
 import { encodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
 
 export class SandboxFileDriver {
-  constructor({ root, allowAbsolute = false, symlinkPolicy = 'reject', maximumReadBytes = 1024 * 1024, maximumWriteBytes = 1024 * 1024 } = {}) {
+  constructor({ root, allowAbsolute = false, symlinkPolicy = 'reject', maximumReadBytes = DEFAULT_MAXIMUM_READ_BYTES, maximumWriteBytes = 1024 * 1024 } = {}) {
     if (!root) fail('ERR_SANDBOX_ROOT_REQUIRED');
     this.root = path.resolve(root);
     this.allowAbsolute = allowAbsolute;
@@ -211,6 +211,8 @@ function nonBlockFlag() {
 }
 
 const MAXIMUM_WRITE_ACK_BYTES = 4096;
+const DEFAULT_MAXIMUM_RESPONSE_ENVELOPE_BYTES = 1024 * 1024;
+const DEFAULT_MAXIMUM_READ_BYTES = Math.floor((DEFAULT_MAXIMUM_RESPONSE_ENVELOPE_BYTES - 256) / 6);
 
 function writeValueImage(outcome) {
   return encodeCanonicalValueImage({

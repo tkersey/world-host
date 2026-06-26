@@ -3,7 +3,7 @@ import { mkdir, open, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 
-export class NodeStoreLock {
+export class BunStoreLock {
   constructor(lockPath, options = {}) {
     this.lockPath = lockPath;
     this.handle = null;

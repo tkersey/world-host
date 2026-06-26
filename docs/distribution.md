@@ -3,7 +3,7 @@
 `world-host-v0` consists of:
 
 - Carrier core modules under `src/core`;
-- Node CLI and worker adapter under `src/node`;
+- Bun CLI and worker adapter under `src/bun`;
 - MemoryStore and DirectoryStore under `src/stores`;
 - reference drivers under `src/drivers`;
 - protocol manifest, dependency-free World JS codecs, and TurnClosure inspection helpers under `src/protocol`;
@@ -24,7 +24,7 @@ Pinned versions:
 The real-World proof lane is:
 
 ```sh
-node scripts/run-world-conformance.mjs --world-repo ../world
+bun scripts/run-world-conformance.mjs --world-repo ../world
 ```
 
 That lane requires prebuilt World universal Appliance artifacts and fails closed if no compatible WASM/image fixture pair is found. It includes a store-backed `RunController` boot proof for a no-host fixture image: `MemoryStore` stores the actual image and Appliance manifest bytes, `RunController` submits one boot turn, and the resulting head is verified against the real worker's TurnClosure bytes.
@@ -42,15 +42,15 @@ For the crash window after `RunHead` CAS and before effect finalization, recover
 Operator inspection commands can read persisted `DirectoryStore` evidence:
 
 ```sh
-node bin/world-host.mjs inspect --store STORE_DIR --run RUN_ID --branch BRANCH_ID --json
-node bin/world-host.mjs effects --store STORE_DIR --run RUN_ID --json
-node bin/world-host.mjs recover --store STORE_DIR --run RUN_ID --branch BRANCH_ID --json
-node bin/world-host.mjs install --store STORE_DIR --name APP --wasm world_universal_appliance.wasm --image app.world-executable --image-fingerprint WORLD_FINGERPRINT --json
-node bin/world-host.mjs run APP --store STORE_DIR --run RUN_ID --branch BRANCH_ID --json
-node bin/world-host.mjs resume --store STORE_DIR --run RUN_ID --branch BRANCH_ID --json
-node bin/world-host.mjs fork --store STORE_DIR --run RUN_ID --from CLOSURE --branch NEW_BRANCH --source-branch BRANCH_ID --json
-node bin/world-host.mjs export --store STORE_DIR --run RUN_ID --branch BRANCH_ID --out PACKAGE.json --json
-node bin/world-host.mjs import --store RECEIVER_DIR --package PACKAGE.json --run RECEIVER_RUN_ID --json
+bun bin/world-host.mjs inspect --store STORE_DIR --run RUN_ID --branch BRANCH_ID --json
+bun bin/world-host.mjs effects --store STORE_DIR --run RUN_ID --json
+bun bin/world-host.mjs recover --store STORE_DIR --run RUN_ID --branch BRANCH_ID --json
+bun bin/world-host.mjs install --store STORE_DIR --name APP --wasm world_universal_appliance.wasm --image app.world-executable --image-fingerprint WORLD_FINGERPRINT --json
+bun bin/world-host.mjs run APP --store STORE_DIR --run RUN_ID --branch BRANCH_ID --json
+bun bin/world-host.mjs resume --store STORE_DIR --run RUN_ID --branch BRANCH_ID --json
+bun bin/world-host.mjs fork --store STORE_DIR --run RUN_ID --from CLOSURE --branch NEW_BRANCH --source-branch BRANCH_ID --json
+bun bin/world-host.mjs export --store STORE_DIR --run RUN_ID --branch BRANCH_ID --out PACKAGE.json --json
+bun bin/world-host.mjs import --store RECEIVER_DIR --package PACKAGE.json --run RECEIVER_RUN_ID --json
 ```
 
 These commands acquire the local store lock, read run/head/effect records, summarize operational diagnostics, redact secret-shaped fields, and release the lock. They do not execute workers, invoke drivers, mutate run heads, author World evidence, or print complete idempotency key bytes.
@@ -66,7 +66,7 @@ These commands acquire the local store lock, read run/head/effect records, summa
 The flagship file rewrite command:
 
 ```sh
-node bin/world-host.mjs run-example file-rewrite-agent
+bun bin/world-host.mjs run-example file-rewrite-agent
 ```
 
 uses a temporary `DirectoryStore` rather than an in-memory fixture. It persists application, run, branch head, closure-like, archive-append fixture, and effect records; executes real `SandboxFileDriver` read/write requests through `EffectJournal`; proves retry of the write request reuses the persisted ResolutionInput; and reopens the store to inspect completion without invoking any driver. The command intentionally reports `hostFixtureOnly: true`; World-authored TurnReceipt, root-result, and Archive semantic evidence are still supplied by the real World conformance script.
