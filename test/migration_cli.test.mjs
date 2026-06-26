@@ -61,6 +61,51 @@ describe('migration, branching, and CLI diagnostics', () => {
     assert.equal((await store.getRun(run.runId)).branches.some((item) => item.branchId === 'alternate'), true);
   });
 
+  it('forks a historical stored TurnClosure after the source branch advances', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-historical-fork-'));
+    try {
+      const { run, head } = await fixtureDirectoryStore(root);
+      const store = new DirectoryStore(root);
+      const advancedBytes = fixtureTurnClosureBytes({
+        closureFingerprint: 0x222n,
+        turnSequenceNumber: 2n,
+        resultingStateFingerprint: 0x402n,
+        chronicleResultingCursorFingerprint: 0x404n,
+      });
+      const advancedSummary = summarizeTurnClosureForRunHead(advancedBytes);
+      const advancedRef = await store.putBlob(advancedBytes);
+      const advancedHead = createRunHead({
+        generation: head.generation + 1,
+        turnClosureRef: advancedRef,
+        turnClosureWorldFingerprint: advancedSummary.turnClosureWorldFingerprint,
+        resultingStateFingerprint: advancedSummary.resultingStateFingerprint,
+        chronicleCursor: advancedSummary.chronicleCursor,
+        archiveMomentFingerprint: advancedSummary.archiveMomentFingerprint,
+        archiveSealFingerprint: advancedSummary.archiveSealFingerprint,
+        status: advancedSummary.status,
+      });
+      await store.writeHead(run.runId, 'main', advancedHead);
+      await store.writeRun(createRunRecord({
+        ...run,
+        branches: [createBranchRecord({ branchId: 'main', currentHead: advancedHead })],
+      }));
+
+      const branch = await forkRunBranch(store, {
+        runId: run.runId,
+        sourceBranchId: 'main',
+        sourceClosureFingerprint: head.turnClosureWorldFingerprint,
+        newBranchId: 'historic',
+      });
+
+      assert.equal(branch.forkedFromTurnClosureFingerprint, head.turnClosureWorldFingerprint);
+      assert.equal((await store.readHead(run.runId, 'historic')).turnClosureWorldFingerprint, head.turnClosureWorldFingerprint);
+      assert.equal((await store.readHead(run.runId, 'main')).turnClosureWorldFingerprint, advancedHead.turnClosureWorldFingerprint);
+      assert.equal((await store.getRun(run.runId)).branches.some((item) => item.branchId === 'historic'), true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('does not unlink another store lock after failed acquisition cleanup', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-lock-'));
     const lockPath = path.join(root, 'store.lock');
@@ -1309,7 +1354,7 @@ async function bytesToUtf8(bytes) {
   return new TextDecoder().decode(bytes);
 }
 
-function fixtureTurnClosureBytes() {
+function fixtureTurnClosureBytes(options = {}) {
   const turnReceiptBytes = concat([
     u32(1),
     u32(1),
@@ -1335,15 +1380,15 @@ function fixtureTurnClosureBytes() {
   return concat([
     u32(1),
     u32(1),
-    u64(0x111n),
+    u64(options.closureFingerprint ?? 0x111n),
     u64(0x112n),
     u64(0x211n),
     optionalU64(null),
-    u64(1n),
+    u64(options.turnSequenceNumber ?? 1n),
     u64(0x301n),
-    u64(0x302n),
+    u64(options.resultingStateFingerprint ?? 0x302n),
     u64(0x303n),
-    u64(0x304n),
+    u64(options.chronicleResultingCursorFingerprint ?? 0x304n),
     optionalU64(null),
     optionalU64(null),
     optionalU64(null),

@@ -1,7 +1,8 @@
 import { carrierVersionSummary } from '../protocol/world_manifest.mjs';
+import { summarizeTurnClosureForRunHead } from '../protocol/world_universal_appliance_codec.mjs';
 import { EffectRecoveryClass } from './actuator.mjs';
-import { createBranchRecord, createRunRecord } from './run.mjs';
-import { fail, stableJson } from './store.mjs';
+import { createBranchRecord, createRunHead, createRunRecord } from './run.mjs';
+import { fail, makeBlobRef, stableJson } from './store.mjs';
 
 export async function forkRunBranch(store, { runId, sourceBranchId, sourceClosureFingerprint, newBranchId }) {
   const run = await store.getRun(runId);
@@ -15,10 +16,12 @@ export async function forkRunBranch(store, { runId, sourceBranchId, sourceClosur
   const branchAlreadyPublished = (run.branches ?? []).some((existing) => existing.branchId === newBranchId);
   let forkHead = sourceHead;
   if (sourceClosureFingerprint && sourceHead.turnClosureWorldFingerprint !== sourceClosureFingerprint) {
-    if (!existingHead || branchAlreadyPublished || existingHead.turnClosureWorldFingerprint !== sourceClosureFingerprint) {
-      fail('ERR_FORK_SOURCE_CLOSURE_NOT_CURRENT', 'v0 fork requires a stored source closure head');
+    if (existingHead && !branchAlreadyPublished && existingHead.turnClosureWorldFingerprint === sourceClosureFingerprint) {
+      forkHead = existingHead;
+    } else {
+      forkHead = await storedTurnClosureHead(store, sourceClosureFingerprint);
+      if (!forkHead) fail('ERR_FORK_SOURCE_CLOSURE_NOT_STORED', 'fork requires a stored source closure');
     }
-    forkHead = existingHead;
   }
   const branch = createBranchRecord({
     branchId: newBranchId,
@@ -37,6 +40,38 @@ export async function forkRunBranch(store, { runId, sourceBranchId, sourceClosur
     branches: [...(run.branches ?? []).filter((existing) => existing.branchId !== newBranchId), branch],
   }));
   return branch;
+}
+
+async function storedTurnClosureHead(store, sourceClosureFingerprint) {
+  for (const ref of await listStoredBlobRefs(store)) {
+    let summary;
+    try {
+      summary = summarizeTurnClosureForRunHead(await store.getBlob(ref));
+    } catch {
+      continue;
+    }
+    if (summary.turnClosureWorldFingerprint !== sourceClosureFingerprint) continue;
+    return createRunHead({
+      generation: summary.inspectionDiagnostics.turnSequenceNumber,
+      turnClosureRef: ref,
+      turnClosureWorldFingerprint: summary.turnClosureWorldFingerprint,
+      resultingStateFingerprint: summary.resultingStateFingerprint,
+      chronicleCursor: summary.chronicleCursor,
+      archiveMomentFingerprint: summary.archiveMomentFingerprint,
+      archiveSealFingerprint: summary.archiveSealFingerprint,
+      status: summary.status,
+      updateDiagnostics: { selectedStoredClosure: true },
+    });
+  }
+  return null;
+}
+
+async function listStoredBlobRefs(store) {
+  if (typeof store.listBlobRefs === 'function') return await store.listBlobRefs();
+  if (store.blobs instanceof Map) {
+    return [...store.blobs.entries()].map(([checksum, bytes]) => makeBlobRef(checksum, bytes.byteLength));
+  }
+  return [];
 }
 
 export async function exportCarrierRun(store, runId, branchId, options = {}) {
