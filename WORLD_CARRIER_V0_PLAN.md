@@ -1,7 +1,7 @@
 # World Carrier v0 Implementation Plan
 
 ## Summary
-Build `world-host` as World Carrier v0: a zero-runtime-dependency ESM reference host where `Application identity + authoritative TurnClosure + persisted effect outcomes` is the complete recoverable process. The chosen path is store-first and proof-first: first pin released World v0.1.0 artifacts and implement immutable blobs, branch heads, codecs, and effect records; then add disposable workers, RunController, drivers, migration/branching, CLI, examples, and conformance. Done means `node --test`, all Carrier conformance scripts, flagship file rewrite crash variants, A to B migration, branch divergence, and the World prerequisite commands pass with no World dependency on `world-host`.
+Build `world-host` as World Carrier v0: a zero-runtime-dependency ESM reference host where `Application identity + authoritative TurnClosure + persisted effect outcomes` is the complete recoverable process. The chosen path is store-first and proof-first: first pin released World v0.1.0 artifacts and implement immutable blobs, branch heads, codecs, and effect records; then add disposable workers, RunController, drivers, migration/branching, CLI, examples, and conformance. Done means `bun run test`, all Carrier conformance scripts, flagship file rewrite crash variants, A to B migration, branch divergence, and the World prerequisite commands pass with no World dependency on `world-host`.
 
 Execution stays in a new repository. `world-host` consumes released `world_universal_appliance.wasm`, one sealed `Executable.Image`, latest committed `TurnClosure` or genesis, persisted host effect outcomes, and receiver-local drivers/policy. A warm worker is always a cache; RunHead is the mutable authority; immutable World-authored bytes and host effect outcomes are never edited in place.
 
@@ -39,7 +39,7 @@ Out of scope for Carrier v0: database engines, xitdb, SQLite, LMDB, hidden cloud
 
 ## Tests/Acceptance
 - World prerequisite: run `zig build check-world-v0`, `zig build world-universal-appliance-wasm`, record universal WASM SHA-256, and verify World v0.1.0 artifact versions before Carrier release.
-- Carrier commands: run `node --version`, `node --test`, `npm test` only as zero-dependency alias, `node scripts/run-world-conformance.mjs`, `node scripts/run-store-conformance.mjs`, `node scripts/run-crash-matrix.mjs`, `node scripts/run-migration-conformance.mjs`, `node scripts/run-security-conformance.mjs`.
+- Carrier commands: run `node --version`, `bun --version`, `bun run test`, `bun run proof`, `node scripts/run-world-conformance.mjs`, `node scripts/run-store-conformance.mjs`, `node scripts/run-crash-matrix.mjs`, `node scripts/run-migration-conformance.mjs`, `node scripts/run-security-conformance.mjs`.
 - Store acceptance: MemoryStore and DirectoryStore pass immutable blob roundtrip, checksum mismatch, head create, CAS success/conflict, orphan blob, partial head file, restart recovery, import/export, exclusive lock, stale lock handling.
 - Effect acceptance: full-key equality, conflict on same key/different request, persisted outcome reuse, pure/idempotent/external/transactional recovery, `best_effort` intervention, partial batches, no duplicate idempotent write.
 - Flagship acceptance: `world-host run-example file-rewrite-agent` proves sandbox read/write, deterministic fixture model, final file content `world carrier updated the fixture`, root-result bytes, TurnReceipt, Archive.AppendBatch retention, restart inspection without World execution, and crash variants.
@@ -57,7 +57,9 @@ Out of scope for Carrier v0: database engines, xitdb, SQLite, LMDB, hidden cloud
 - `zig build check-world-v0`
 - `zig build world-universal-appliance-wasm`
 - `node --version`
-- `node --test`
+- `bun --version`
+- `bun run test`
+- `bun run proof`
 - `node scripts/run-world-conformance.mjs`
 - `node scripts/run-store-conformance.mjs`
 - `node scripts/run-crash-matrix.mjs`

@@ -118,6 +118,7 @@ export class RunController {
     const run = await this.store.getRun(runId);
     const application = await this.store.getApplication(run.applicationId);
     const parentHead = await this.store.readHead(runId, branchId);
+    assertHeadContinuable(parentHead);
     const policy = createRunPolicy(options.effectPolicy ?? this.effectPolicy);
     assertCapabilityReportAccepted(preflightCapabilities({
       application,
@@ -143,7 +144,7 @@ export class RunController {
         workerMayBeDirty = true;
         await worker.loadExecutable(imageBytes);
       }
-      if (parentHead.status !== 'genesis' && typeof worker.restoreFromTurnClosure === 'function') {
+      if (!workerReused && parentHead.status !== 'genesis' && typeof worker.restoreFromTurnClosure === 'function') {
         workerMayBeDirty = true;
         await worker.restoreFromTurnClosure(parentClosureBytes, parentHead);
       }
@@ -154,6 +155,7 @@ export class RunController {
       const turnResult = options.turnResult ?? await worker.submitTurn(turnInputBytes);
       const nextClosureBytes = assertBytes(turnResult.turnClosureBytes ?? worker.readTurnClosure(), 'turnClosureBytes');
       const inspected = deriveTurnResult(turnResult, nextClosureBytes);
+      assertNextTurnSequence(parentHead, parentClosureBytes, inspected);
       const confirmedEffects = effectTurn ? confirmedTurnEffects(effectTurn.effects, inspected) : [];
       if ((inspected.archiveMomentFingerprint == null) !== (inspected.archiveSealFingerprint == null)) {
         fail('ERR_PARTIAL_ARCHIVE_ANCHOR', 'archive moment and seal must both be present or both be absent');
@@ -229,10 +231,15 @@ export class RunController {
       }
     }
     const worker = await this.workerFactory();
-    await worker.instantiate(this.wasmBytes);
-    worker.bind(binding);
-    this.warmWorker = worker;
-    return { worker, reused: false };
+    try {
+      await worker.instantiate(this.wasmBytes);
+      worker.bind(binding);
+      this.warmWorker = worker;
+      return { worker, reused: false };
+    } catch (error) {
+      worker.dispose?.();
+      throw error;
+    }
   }
 
   #disposeWarmWorker(worker) {
@@ -386,6 +393,25 @@ function deriveTurnResult(turnResult, nextClosureBytes) {
     return summarizeTurnClosureForRunHead(nextClosureBytes);
   } catch (error) {
     fail('ERR_TURN_CLOSURE_INSPECTION_FAILED', error?.message ?? String(error));
+  }
+}
+
+function assertHeadContinuable(parentHead) {
+  if (parentHead.status === 'genesis' || parentHead.status === 'needs_host' || parentHead.status === 'yielded_budget') return;
+  fail('ERR_BRANCH_HEAD_NOT_CONTINUABLE', `branch head status ${parentHead.status} cannot be advanced`);
+}
+
+function assertNextTurnSequence(parentHead, parentClosureBytes, inspected) {
+  const actual = inspected.inspectionDiagnostics?.turnSequenceNumber;
+  if (!Number.isSafeInteger(actual)) fail('ERR_TURN_CLOSURE_SEQUENCE_MISMATCH', 'next TurnClosure sequence is not inspectable');
+  const expected = parentHead.status === 'genesis'
+    ? 0
+    : summarizeTurnClosureForRunHead(parentClosureBytes).inspectionDiagnostics.turnSequenceNumber + 1;
+  if (actual !== expected) {
+    fail('ERR_TURN_CLOSURE_SEQUENCE_MISMATCH', 'next TurnClosure sequence does not match the parent turn', {
+      expected,
+      actual,
+    });
   }
 }
 
@@ -590,7 +616,7 @@ function unresolvedHostRequestDiagnostic(index, hostRequest) {
 function groupPendingEffects(pending) {
   const groups = new Map();
   for (const item of pending) {
-    const key = `${item.manifest.driverId}\0${item.manifest.recoveryClass}`;
+    const key = item.driver;
     let group = groups.get(key);
     if (!group) {
       group = [];

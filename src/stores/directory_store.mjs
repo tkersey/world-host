@@ -172,8 +172,11 @@ export class DirectoryStore extends ClosureStore {
     assertBundleSelectedHeadMatchesRun(normalizedBundle);
     const effectRecords = (bundle.effects ?? []).map((effect) => assertEffectRecord(effect));
     assertUniqueEffectRecords(effectRecords);
+    const requiredBlobRefs = collectBlobRefs(runRecord, application, headRecord, effectRecords);
+    const requiredBlobChecksums = new Set(requiredBlobRefs.map((ref) => ref.checksum));
     const importedBlobBytes = new Map();
     for (const blob of bundle.blobs ?? []) {
+      if (!requiredBlobChecksums.has(blob.checksum)) fail('ERR_IMPORT_BLOB_UNREFERENCED');
       if (Array.isArray(blob.bytes)) {
         const bytes = Uint8Array.from(blob.bytes);
         if (sha256(bytes) !== blob.checksum || bytes.byteLength !== blob.byteLength) fail('ERR_IMPORT_BLOB_CHECKSUM_MISMATCH');
@@ -182,7 +185,7 @@ export class DirectoryStore extends ClosureStore {
         assertBlobRef(blob);
       }
     }
-    for (const ref of collectBlobRefs(runRecord, application, headRecord, effectRecords)) {
+    for (const ref of requiredBlobRefs) {
       const imported = importedBlobBytes.get(ref.checksum);
       if (imported) {
         if (imported.byteLength !== ref.byteLength) fail('ERR_IMPORT_BLOB_REF_MISSING');
@@ -217,7 +220,7 @@ export class DirectoryStore extends ClosureStore {
       const existing = await this.readHead(runRecord.runId, bundle.branchId);
       if (stableJson(existing) !== stableJson(headRecord)) fail('ERR_IMPORT_HEAD_EXISTS');
     }
-    if (runExists && headExists && !missingEffect) fail('ERR_IMPORT_RUN_EXISTS');
+    if (runExists && headExists) fail('ERR_IMPORT_RUN_EXISTS');
     for (const bytes of importedBlobBytes.values()) await this.putBlob(bytes);
     if (application && !await exists(applicationPath(this.root, application.applicationId))) {
       await this.createApplication(application);
@@ -476,6 +479,7 @@ function createImportRunRecord(run) {
 }
 
 function assertBundleSelectedHeadMatchesRun(bundle) {
+  if ((bundle?.run?.branches ?? []).length !== 1) fail('ERR_IMPORT_BRANCH_SCOPE_MISMATCH');
   const branch = bundle?.run?.branches?.find((item) => item.branchId === bundle.branchId);
   if (!branch || stableJson(branch.currentHead) !== stableJson(bundle.head)) fail('ERR_IMPORT_BRANCH_HEAD_MISMATCH');
 }

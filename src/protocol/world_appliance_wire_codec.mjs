@@ -55,6 +55,8 @@ export const resolutionFailed = 2;
 export const resolutionPending = 3;
 export const resolutionDeferred = 4;
 export const resolutionCancelled = 5;
+export const applianceManifestFormatVersion = 3;
+export const applianceManifestFingerprintVersion = 3;
 
 export function encodeBootTurnInput({ manifestFingerprint, metadata = '' }) {
   return encodeTurnInput({
@@ -188,8 +190,37 @@ export function decodeApplianceManifest(bytes) {
     rootTargetRefFingerprint: reader.u64(),
     rootWorldSurfaceFingerprint: reader.u64(),
     rootTargetCertificateFingerprint: reader.u64(),
+    linkPlanFingerprint: reader.u64(),
+    linkCertificateFingerprint: reader.u64(),
+    assemblyFingerprint: reader.u64(),
+    providerTargetRefFingerprints: reader.u64Slice(),
+    fabricPlanFingerprints: reader.u64Slice(),
+    residualImportSetFingerprint: reader.u64(),
+    actuationDescriptorFingerprints: reader.u64Slice(),
+    actuationBindingFingerprints: reader.u64Slice(),
+    actuationActuatorRefFingerprints: reader.u64Slice(),
+    actuationWorldPortIds: reader.u64Slice(),
+    actuationPayloadValueRefFingerprints: reader.u64Slice(),
+    actuationResponseValueRefFingerprints: reader.u64Slice(),
+    actuationClasses: reader.u8Slice(),
+    actuationAllowedResponseStatuses: reader.u8Slice(),
+    supervisionPolicyFingerprint: reader.u64(),
+    defaultPermitRequirementFingerprints: reader.u64Slice(),
+    capsuleProfileFingerprint: reader.u64(),
+    archiveProfileFingerprint: reader.u64(),
+    supportedExecutionModes: reader.u8(),
+    enabledFeatures: reader.u16(),
+    capacityFingerprint: reader.u64(),
+    memoryPlanFingerprint: reader.u64(),
+    requiredHostCapabilities: reader.u8(),
+    metadata: reader.bytes(),
   };
-  return { ...manifest, trailingBytes: reader.remaining() };
+  const trailingBytes = reader.remaining();
+  if (manifest.formatVersion !== applianceManifestFormatVersion) throw new Error(`unsupported ApplianceManifest format version: ${manifest.formatVersion}`);
+  if (manifest.fingerprintVersion !== applianceManifestFingerprintVersion) throw new Error(`unsupported ApplianceManifest fingerprint version: ${manifest.fingerprintVersion}`);
+  if (`v${manifest.abiVersion}` !== carrierManifest.applianceAbiVersion) throw new Error(`unsupported Appliance ABI version: v${manifest.abiVersion}`);
+  if (trailingBytes !== 0) throw new Error('trailing ApplianceManifest bytes');
+  return { ...manifest, trailingBytes };
 }
 
 export function decodeHostRequest(reader) {
@@ -244,6 +275,13 @@ export class BinaryReader {
     return value;
   }
 
+  u16() {
+    this.require(2);
+    const value = this.view.getUint16(this.offset, true);
+    this.offset += 2;
+    return value;
+  }
+
   u32() {
     this.require(4);
     const value = this.view.getUint32(this.offset, true);
@@ -282,6 +320,13 @@ export class BinaryReader {
     const count = Number(this.u64());
     const values = [];
     for (let i = 0; i < count; i += 1) values.push(this.u64());
+    return values;
+  }
+
+  u8Slice() {
+    const count = Number(this.u64());
+    const values = [];
+    for (let i = 0; i < count; i += 1) values.push(this.u8());
     return values;
   }
 

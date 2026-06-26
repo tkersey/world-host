@@ -15,6 +15,7 @@ describe('repository foundation', () => {
   it('declares an ESM package with zero runtime dependencies', async () => {
     const packageJson = JSON.parse(await readFile(new URL('package.json', root), 'utf8'));
     assert.equal(packageJson.type, 'module');
+    assert.equal(packageJson.packageManager, 'bun@1.3.2');
     assert.deepEqual(packageJson.dependencies, {});
     assert.deepEqual(packageJson.devDependencies, {});
     assert.equal(packageJson.scripts.test, 'node --test');
@@ -105,4 +106,106 @@ describe('repository foundation', () => {
     assert.equal(typeof wire.encodeBootTurnInput, 'function');
     assert.equal(typeof loaded.encodeCanonicalValueImage, 'function');
   });
+
+  it('accepts only the pinned ApplianceManifest wire versions', () => {
+    const wire = requireReleasedWireCodec();
+    const manifest = applianceManifestBytes({ formatVersion: 3, fingerprintVersion: 3, abiVersion: 3 });
+    assert.equal(wire.decodeApplianceManifest(manifest).formatVersion, 3);
+    assert.throws(
+      () => wire.decodeApplianceManifest(applianceManifestBytes({ formatVersion: 4, fingerprintVersion: 3, abiVersion: 3 })),
+      /unsupported ApplianceManifest format version: 4/,
+    );
+    assert.throws(
+      () => wire.decodeApplianceManifest(applianceManifestBytes({ formatVersion: 3, fingerprintVersion: 4, abiVersion: 3 })),
+      /unsupported ApplianceManifest fingerprint version: 4/,
+    );
+    assert.throws(
+      () => wire.decodeApplianceManifest(applianceManifestBytes({ formatVersion: 3, fingerprintVersion: 3, abiVersion: 4 })),
+      /unsupported Appliance ABI version: v4/,
+    );
+    assert.throws(
+      () => wire.decodeApplianceManifest(concat([manifest, Uint8Array.of(0)])),
+      /trailing ApplianceManifest bytes/,
+    );
+  });
 });
+
+function applianceManifestBytes({ formatVersion, fingerprintVersion, abiVersion }) {
+  return concat([
+    u32(formatVersion),
+    u32(fingerprintVersion),
+    u64(0x101n),
+    u32(abiVersion),
+    u64(0x102n),
+    u64(0x103n),
+    u64(0x104n),
+    u64(0n),
+    u64(0n),
+    u64(0n),
+    u64Slice([]),
+    u64Slice([]),
+    u64(0n),
+    u64Slice([]),
+    u64Slice([]),
+    u64Slice([]),
+    u64Slice([]),
+    u64Slice([]),
+    u64Slice([]),
+    u8Slice([]),
+    u8Slice([]),
+    u64(0n),
+    u64Slice([]),
+    u64(0n),
+    u64(0n),
+    u8(0),
+    u16(0),
+    u64(0x105n),
+    u64(0x106n),
+    u8(0),
+    bytes(new Uint8Array()),
+  ]);
+}
+
+function u8(value) {
+  return Uint8Array.of(Number(value) & 0xff);
+}
+
+function u16(value) {
+  const out = new Uint8Array(2);
+  new DataView(out.buffer).setUint16(0, Number(value), true);
+  return out;
+}
+
+function u32(value) {
+  const out = new Uint8Array(4);
+  new DataView(out.buffer).setUint32(0, Number(value), true);
+  return out;
+}
+
+function u64(value) {
+  const out = new Uint8Array(8);
+  new DataView(out.buffer).setBigUint64(0, BigInt(value), true);
+  return out;
+}
+
+function u64Slice(values) {
+  return concat([u64(values.length), ...values.map(u64)]);
+}
+
+function u8Slice(values) {
+  return concat([u64(values.length), ...values.map(u8)]);
+}
+
+function bytes(value) {
+  return concat([u32(value.byteLength), value]);
+}
+
+function concat(chunks) {
+  const out = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.byteLength, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}

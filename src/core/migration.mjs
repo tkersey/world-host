@@ -168,7 +168,7 @@ function rewriteRunBundle(bundle, runId) {
 async function writeBranchHead(store, runId, branchId, head) {
   if (typeof store.writeHead === 'function') return await store.writeHead(runId, branchId, head);
   if (store.heads instanceof Map) {
-    store.heads.set(`${runId}\0${branchId}`, JSON.parse(JSON.stringify(head)));
+    store.heads.set(stableJson([runId, branchId]), JSON.parse(JSON.stringify(head)));
     return head;
   }
   fail('ERR_STORE_BRANCH_CREATE_UNSUPPORTED');

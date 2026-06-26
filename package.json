@@ -3,6 +3,7 @@
   "version": "0.0.0-carrier-v0",
   "private": true,
   "type": "module",
+  "packageManager": "bun@1.3.2",
   "description": "Disposable, crash-recoverable reference host for World TurnClosure processes.",
   "files": [
     "bin/",

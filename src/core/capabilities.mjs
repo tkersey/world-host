@@ -74,6 +74,7 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
   }
 
   const runtimeLimits = application?.requiredRuntimeLimits ?? {};
+  if (runtimeLimits.maximumConcurrentEffects > policy.maximumConcurrentEffects) blockers.push('runtime-concurrency-limit-exceeds-policy');
   if (runtimeLimits.maximumRequestBytes > policy.maximumRequestBytes) blockers.push('runtime-request-limit-exceeds-policy');
   if (runtimeLimits.maximumResponseBytes > policy.maximumResponseBytes) blockers.push('runtime-response-limit-exceeds-policy');
   if (applianceManifest.supervisionPolicy && !policy.acceptedSupervisionPolicies.has(applianceManifest.supervisionPolicy)) blockers.push('supervision-policy-rejected');
@@ -120,7 +121,7 @@ function policyBlockers(route, request, policy) {
     const root = route.diagnostics?.root;
     if (!root || !allowedFileRoots.has(root)) blockers.push(`file-root-denied:${root ?? 'unknown'}`);
   }
-  if (request?.actuationClass === 'http') {
+  if (request && (request.actuationClass === 'http' || route.authorityLabels.includes('network:http'))) {
     const origin = requestOrigin(request);
     const driverOrigins = Array.isArray(route.diagnostics?.origins) ? new Set(route.diagnostics.origins) : null;
     if (driverOrigins && (!origin || !driverOrigins.has(origin))) blockers.push(`http-origin-driver-denied:${origin ?? 'unknown'}`);

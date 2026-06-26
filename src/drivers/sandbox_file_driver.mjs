@@ -39,7 +39,10 @@ export class SandboxFileDriver {
   async resolve(context, hostRequest) {
     const request = parseJsonBytes(hostRequest.requestBytes);
     if (request.operation === 'read') return await this.#read(request.path, hostRequest);
-    if (request.operation === 'write') return await this.#write(request.path, request.content ?? '', hostRequest.idempotencyKeyWorldFingerprint, hostRequest);
+    if (request.operation === 'write') {
+      if (hostRequest.responseSchema?.status && hostRequest.responseSchema.status !== 'ok') fail('ERR_SANDBOX_FILE_RESPONSE_SCHEMA_UNSUPPORTED');
+      return await this.#write(request.path, request.content ?? '', hostRequest.idempotencyKeyWorldFingerprint, hostRequest);
+    }
     fail('ERR_SANDBOX_FILE_OPERATION_UNSUPPORTED');
   }
 
@@ -100,12 +103,16 @@ export class SandboxFileDriver {
   }
 
   async #openForRead(filePath) {
-    const flags = constants.O_RDONLY | noFollowFlag() | nonBlockFlag();
+    const flags = constants.O_RDONLY | this.#noFollowFlag() | nonBlockFlag();
     return await open(filePath, flags);
   }
 
   async #openForWrite(filePath) {
-    return await open(filePath, constants.O_WRONLY | constants.O_CREAT | noFollowFlag() | nonBlockFlag(), 0o600);
+    return await open(filePath, constants.O_WRONLY | constants.O_CREAT | this.#noFollowFlag() | nonBlockFlag(), 0o600);
+  }
+
+  #noFollowFlag() {
+    return this.symlinkPolicy === 'allow' ? 0 : noFollowFlag();
   }
 
   async #resolvePath(filePath) {

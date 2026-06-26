@@ -92,15 +92,16 @@ export class MemoryStore extends ClosureStore {
       const record = this.effects.get(effectKey(runId, branchId, idempotencyKey));
       return record ? clone(record) : null;
     }
-    const record = [...this.effects.entries()]
-      .find(([key]) => key.startsWith(`${runId}\0`) && key.endsWith(`\0${stableJson(idempotencyKey)}`))?.[1];
+    const idempotencyKeyJson = stableJson(idempotencyKey);
+    const record = [...this.effects.values()]
+      .find((value) => value.runId === runId && stableJson(value.idempotencyKey) === idempotencyKeyJson);
     return record ? clone(record) : null;
   }
 
   async listEffectRecords(runId) {
-    return [...this.effects.entries()]
-      .filter(([key]) => key.startsWith(`${runId}\0`))
-      .map(([, value]) => clone(value));
+    return [...this.effects.values()]
+      .filter((value) => value.runId === runId)
+      .map((value) => clone(value));
   }
 
   async exportRun(runId, branchId) {
@@ -133,8 +134,11 @@ export class MemoryStore extends ClosureStore {
     assertBundleSelectedHeadMatchesRun(normalizedBundle);
     const effectRecords = (bundle.effects ?? []).map((effect) => assertEffectRecord(effect));
     assertUniqueEffectRecords(effectRecords);
+    const requiredBlobRefs = collectBlobRefs(runRecord, application, headRecord, effectRecords);
+    const requiredBlobChecksums = new Set(requiredBlobRefs.map((ref) => ref.checksum));
     const importedBlobs = new Map();
     for (const blob of bundle.blobs ?? []) {
+      if (!requiredBlobChecksums.has(blob.checksum)) fail('ERR_IMPORT_BLOB_UNREFERENCED');
       if (Array.isArray(blob.bytes)) {
         const bytes = Uint8Array.from(blob.bytes);
         const checksum = await sha256(bytes);
@@ -154,7 +158,7 @@ export class MemoryStore extends ClosureStore {
       const existing = await this.getEffectRecord(record.runId, record.idempotencyKey, record.branchId);
       if (existing && stableJson(existing) !== stableJson(record)) fail('ERR_IMPORT_EFFECT_EXISTS');
     }
-    for (const ref of collectBlobRefs(runRecord, application, headRecord, effectRecords)) {
+    for (const ref of requiredBlobRefs) {
       const bytes = importedBlobs.get(ref.checksum) ?? this.blobs.get(ref.checksum);
       if (!bytes || bytes.byteLength !== ref.byteLength) fail('ERR_IMPORT_BLOB_REF_MISSING');
     }
@@ -168,11 +172,11 @@ export class MemoryStore extends ClosureStore {
 }
 
 function headKey(runId, branchId) {
-  return `${runId}\0${branchId}`;
+  return stableJson([runId, branchId]);
 }
 
 function effectKey(runId, branchId, idempotencyKey) {
-  return `${runId}\0${branchId}\0${stableJson(idempotencyKey)}`;
+  return stableJson([runId, branchId, idempotencyKey]);
 }
 
 function assertUniqueEffectRecords(records) {
@@ -264,6 +268,7 @@ function createImportRunRecord(run) {
 }
 
 function assertBundleSelectedHeadMatchesRun(bundle) {
+  if ((bundle?.run?.branches ?? []).length !== 1) fail('ERR_IMPORT_BRANCH_SCOPE_MISMATCH');
   const branch = bundle?.run?.branches?.find((item) => item.branchId === bundle.branchId);
   if (!branch || stableJson(branch.currentHead) !== stableJson(bundle.head)) fail('ERR_IMPORT_BRANCH_HEAD_MISMATCH');
 }

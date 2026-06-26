@@ -62,8 +62,8 @@ describe('RunController and WorldWorker', () => {
       },
     });
 
-    const first = await controller.advance(runId, branchId, { turnResult: turnResult(1) });
-    const second = await controller.advance(runId, branchId, { turnResult: turnResult(2) });
+    const first = await controller.advance(runId, branchId, { turnResult: turnResult(1, { status: 1, turnSequenceNumber: 1n }) });
+    const second = await controller.advance(runId, branchId, { turnResult: turnResult(2, { turnSequenceNumber: 2n }) });
 
     assert.equal(worker.loadCount, 1);
     assert.equal(first.workerStatus, 'cold');
@@ -72,7 +72,7 @@ describe('RunController and WorldWorker', () => {
 
   it('does not call restore hooks for genesis heads', async () => {
     const { store, runId, branchId } = await fixtureStore({ headStatus: 'genesis' });
-    const worker = new RestoringWorker(fixtureTurnClosureBytes());
+    const worker = new RestoringWorker(fixtureTurnClosureBytes({ turnSequenceNumber: 0n }));
     const controller = new RunController({
       store,
       workerFactory: async () => worker,
@@ -102,6 +102,26 @@ describe('RunController and WorldWorker', () => {
     await assert.rejects(
       () => controller.advance(runId, branchId),
       { code: 'ERR_CAPABILITY_PREFLIGHT_BLOCKED' },
+    );
+    assert.equal(workerCreated, false);
+  });
+
+  it('rejects terminal branch heads before creating a worker', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      closureBytes: fixtureTurnClosureBytes({ status: 2, turnSequenceNumber: 0n }),
+    });
+    let workerCreated = false;
+    const controller = new RunController({
+      store,
+      workerFactory: async () => {
+        workerCreated = true;
+        return new ScriptedWorker();
+      },
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_BRANCH_HEAD_NOT_CONTINUABLE' },
     );
     assert.equal(workerCreated, false);
   });
@@ -138,7 +158,7 @@ describe('RunController and WorldWorker', () => {
       workerFactory: async () => {
         const worker = workers.length === 0
           ? new ThrowingAfterSubmitWorker()
-          : new ClosureOnlyWorker(fixtureTurnClosureBytes());
+          : new ClosureOnlyWorker(fixtureTurnClosureBytes({ turnSequenceNumber: 0n }));
         workers.push(worker);
         return worker;
       },
@@ -844,13 +864,14 @@ describe('RunController and WorldWorker', () => {
   });
 
   it('preserves archive-less RunHead anchors across archive-less advances', async () => {
-    const parentClosureBytes = fixtureTurnClosureBytes({ archiveLess: true });
-    const nextClosureBytes = fixtureTurnClosureBytes({ archiveLess: true });
+    const parentClosureBytes = fixtureTurnClosureBytes({ archiveLess: true, status: 1, turnSequenceNumber: 0n });
+    const nextClosureBytes = fixtureTurnClosureBytes({ archiveLess: true, turnSequenceNumber: 1n });
     const { store, runId, branchId } = await fixtureStore({
       closureBytes: parentClosureBytes,
       headOverrides: {
         archiveMomentFingerprint: null,
         archiveSealFingerprint: null,
+        status: 'yielded_budget',
       },
     });
     const controller = new RunController({ store, workerFactory: async () => new ClosureOnlyWorker(nextClosureBytes) });
@@ -953,7 +974,9 @@ async function fixtureStore(options = {}) {
   const store = new MemoryStore();
   const imageRef = await store.putBlob(fromUtf8('image'));
   const manifestRef = await store.putBlob(fromUtf8('manifest'));
-  const closureBytes = options.closureBytes ?? (options.headStatus === 'genesis' ? fromUtf8('world-host:genesis') : fixtureTurnClosureBytes());
+  const closureBytes = options.closureBytes ?? (options.headStatus === 'genesis'
+    ? fromUtf8('world-host:genesis')
+    : fixtureTurnClosureBytes({ status: 0, turnSequenceNumber: 0n }));
   const closureRef = await store.putBlob(closureBytes);
   const closureSummary = options.headSummary ?? (options.headStatus === 'genesis' ? {
     turnClosureWorldFingerprint: 'world:turn-closure:genesis',
@@ -1219,15 +1242,15 @@ function policyDeniedHttpDriver(options = {}) {
   };
 }
 
-function turnResult(index) {
+function turnResult(index, options = {}) {
   return {
-    turnClosureBytes: fixtureTurnClosureBytes(),
+    turnClosureBytes: fixtureTurnClosureBytes(options),
     turnClosureWorldFingerprint: `world:closure:${index}`,
     resultingStateFingerprint: `world:state:${index}`,
     chronicleCursor: `cursor:${index}`,
     archiveMomentFingerprint: `archive:moment:${index}`,
     archiveSealFingerprint: `archive:seal:${index}`,
-    status: 'completed',
+    status: options.status === 1 ? 'yielded_budget' : 'completed',
   };
 }
 
@@ -1250,7 +1273,7 @@ class ScriptedWorker extends WorldWorker {
 
 class ThrowingAfterSubmitWorker extends WorldWorker {
   async submitTurn() {
-    this.lastTurnClosureBytes = fixtureTurnClosureBytes();
+    this.lastTurnClosureBytes = fixtureTurnClosureBytes({ turnSequenceNumber: 0n });
     const error = new Error('test submit failed');
     error.code = 'ERR_TEST_SUBMIT_FAILED';
     throw error;
@@ -1261,11 +1284,23 @@ class CountingLoadWorker extends ScriptedWorker {
   constructor() {
     super();
     this.loadCount = 0;
+    this.submitCount = 0;
   }
 
   async loadExecutable(imageBytes) {
     this.loadCount += 1;
     return await super.loadExecutable(imageBytes);
+  }
+
+  async submitTurn() {
+    this.submitCount += 1;
+    return {
+      status: this.submitCount === 1 ? 'yielded_budget' : 'completed',
+      turnClosureBytes: fixtureTurnClosureBytes({
+        status: this.submitCount === 1 ? 1 : 2,
+        turnSequenceNumber: BigInt(this.submitCount),
+      }),
+    };
   }
 }
 
@@ -1313,7 +1348,7 @@ function fixtureTurnClosureBytes(options = {}) {
     u32(options.receiptFingerprintVersion ?? 1),
     u64(0x701n),
     u64(0x211n),
-    u64(1n),
+    u64(options.turnSequenceNumber ?? 1n),
     u64(0x301n),
     optionalU64(null),
     u64Slice(options.appliedHostReplyFingerprints ?? defaultAppliedHostReplyFingerprints()),
@@ -1325,10 +1360,10 @@ function fixtureTurnClosureBytes(options = {}) {
     optionalU64(options.archiveLess ? null : 0xa02n),
     optionalU64(0xa03n),
     optionalU64(0xb01n),
-    u8(2),
+    u8(options.status ?? 2),
     optionalU64(null),
-    u64(0n),
-    u64(0n),
+    u64(1n),
+    u64(1n),
     ...(options.extraReceiptBytes ? [options.extraReceiptBytes] : []),
   ]);
   return concat([
@@ -1338,7 +1373,7 @@ function fixtureTurnClosureBytes(options = {}) {
     u64(0x112n),
     u64(0x211n),
     optionalU64(null),
-    u64(1n),
+    u64(options.turnSequenceNumber ?? 1n),
     u64(0x301n),
     u64(0x302n),
     u64(0x303n),
@@ -1507,7 +1542,7 @@ function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()]
     u64(0x112n),
     u64(0x211n),
     optionalU64(null),
-    u64(1n),
+    u64(0n),
     u64(0x301n),
     u64(0x302n),
     u64(0x303n),

@@ -10,7 +10,7 @@ import { createApplicationRecord } from '../src/core/application.mjs';
 import { EffectJournal } from '../src/core/effect_journal.mjs';
 import { exportCarrierRun, forkRunBranch, importCarrierRun } from '../src/core/migration.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from '../src/core/run.mjs';
-import { fromUtf8 } from '../src/core/store.mjs';
+import { fromUtf8, stableJson } from '../src/core/store.mjs';
 import { RunController, WorldWorker } from '../src/core/worker.mjs';
 import { NodeStoreLock } from '../src/node/node_lock.mjs';
 import { redact, runNodeCli } from '../src/node/node_cli.mjs';
@@ -42,8 +42,8 @@ describe('migration, branching, and CLI diagnostics', () => {
 
   it('resumes fork metadata publication after matching branch head publication', async () => {
     const { store, run, head } = await fixtureStore();
-    store.heads.set(`${run.runId}\0alternate`, JSON.parse(JSON.stringify(head)));
-    store.heads.set(`${run.runId}\0main`, JSON.parse(JSON.stringify({
+    store.heads.set(stableJson([run.runId, 'alternate']), JSON.parse(JSON.stringify(head)));
+    store.heads.set(stableJson([run.runId, 'main']), JSON.parse(JSON.stringify({
       ...head,
       generation: head.generation + 1,
       turnClosureWorldFingerprint: 'world:closure:advanced',
@@ -64,7 +64,7 @@ describe('migration, branching, and CLI diagnostics', () => {
   it('forks a historical stored TurnClosure after the source branch advances', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-historical-fork-'));
     try {
-      const { run, head } = await fixtureDirectoryStore(root);
+      const { run, head } = await fixtureDirectoryStore(root, { closureOptions: { status: 0 } });
       const store = new DirectoryStore(root);
       const advancedBytes = fixtureTurnClosureBytes({
         closureFingerprint: 0x222n,
@@ -99,7 +99,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal((await store.readHead(run.runId, 'main')).turnClosureWorldFingerprint, advancedHead.turnClosureWorldFingerprint);
       assert.equal((await store.getRun(run.runId)).branches.some((item) => item.branchId === 'historic'), true);
 
-      const controller = new RunController({ store, workerFactory: async () => new DeterministicCliWorker('historic') });
+      const controller = new RunController({ store, workerFactory: async () => new DeterministicCliWorker('historic', { startSequence: 2n }) });
       const advancedHistoric = await controller.advance(run.runId, 'historic');
       assert.equal(advancedHistoric.status, 'advanced');
       assert.equal(advancedHistoric.nextHead.generation, head.generation + 1);
@@ -111,7 +111,7 @@ describe('migration, branching, and CLI diagnostics', () => {
   it('rejects historical forks from another run in the same store', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-cross-run-fork-'));
     try {
-      const { run } = await fixtureDirectoryStore(root);
+      const { run } = await fixtureDirectoryStore(root, { closureOptions: { status: 0 } });
       const store = new DirectoryStore(root);
       const otherImageRef = await store.putBlob(fromUtf8('other-image'));
       const otherWasmRef = await store.putBlob(fromUtf8('other-wasm'));
@@ -171,10 +171,10 @@ describe('migration, branching, and CLI diagnostics', () => {
   it('forks an intermediate closure recorded by normal branch advancement', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-advanced-fork-'));
     try {
-      const { run } = await fixtureDirectoryStore(root);
+      const { run } = await fixtureDirectoryStore(root, { closureOptions: { status: 1 } });
       const store = new DirectoryStore(root);
       const worker = new SequencedCliWorker([
-        { closureFingerprint: 0x444n, turnSequenceNumber: 2n, resultingStateFingerprint: 0x504n, chronicleResultingCursorFingerprint: 0x604n },
+        { closureFingerprint: 0x444n, turnSequenceNumber: 2n, resultingStateFingerprint: 0x504n, chronicleResultingCursorFingerprint: 0x604n, status: 1 },
         { closureFingerprint: 0x555n, turnSequenceNumber: 3n, resultingStateFingerprint: 0x505n, chronicleResultingCursorFingerprint: 0x605n },
       ]);
       const controller = new RunController({ store, workerFactory: async () => worker });
@@ -236,7 +236,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       });
       await store.createRun(run);
       const worker = new SequencedCliWorker([
-        { closureFingerprint: 0x900n, turnSequenceNumber: 0n, resultingStateFingerprint: 0x910n, chronicleResultingCursorFingerprint: 0x920n },
+        { closureFingerprint: 0x900n, turnSequenceNumber: 0n, resultingStateFingerprint: 0x910n, chronicleResultingCursorFingerprint: 0x920n, status: 1 },
         { closureFingerprint: 0x901n, turnSequenceNumber: 1n, resultingStateFingerprint: 0x911n, chronicleResultingCursorFingerprint: 0x921n },
       ]);
       const controller = new RunController({ store, workerFactory: async () => worker });
@@ -593,7 +593,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       try {
         const head = await store.readHead('cli-run', 'main');
         assert.equal(head.generation, 1);
-        assert.deepEqual([...await store.getBlob(head.turnClosureRef)], [...fixtureTurnClosureBytes()]);
+        assert.deepEqual([...await store.getBlob(head.turnClosureRef)], [...fixtureTurnClosureBytes({ turnSequenceNumber: 0n })]);
       } finally {
         await store.releaseLock();
       }
@@ -693,7 +693,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(recoveredGenesis.effectReconciliation.parentTurnClosureFingerprint, null);
 
       output = '';
-      const resumeWorker = new DecodableCliWorker();
+      const resumeWorker = new DecodableCliWorker({ status: 1 });
       const resumeCode = await runNodeCli([
         'resume',
         '--json',
@@ -720,7 +720,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       try {
         const head = await store.readHead('cli-resume', 'main');
         assert.equal(head.generation, 1);
-        assert.deepEqual([...await store.getBlob(head.turnClosureRef)], [...fixtureTurnClosureBytes()]);
+        assert.deepEqual([...await store.getBlob(head.turnClosureRef)], [...fixtureTurnClosureBytes({ status: 1, turnSequenceNumber: 0n })]);
       } finally {
         await store.releaseLock();
       }
@@ -728,7 +728,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       store = new DirectoryStore(root);
       await store.acquireLock();
       try {
-        const zeroClosureBytes = fixtureTurnClosureBytes();
+        const zeroClosureBytes = fixtureTurnClosureBytes({ status: 1, turnSequenceNumber: 0n });
         const zeroClosureSummary = summarizeTurnClosureForRunHead(zeroClosureBytes);
         const zeroClosureRef = await store.putBlob(zeroClosureBytes);
         const zeroHead = createRunHead({
@@ -752,7 +752,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       }
 
       output = '';
-      const zeroWorker = new DecodableCliWorker();
+      const zeroWorker = new DecodableCliWorker({ turnSequenceNumber: 1n });
       const zeroResumeCode = await runNodeCli([
         'resume',
         '--json',
@@ -771,7 +771,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(zeroWorker.submittedTurnInputBytes[4], 1);
 
       output = '';
-      const secondResumeWorker = new DeterministicCliWorker('resume-second');
+      const secondResumeWorker = new DeterministicCliWorker('resume-second', { startSequence: 1n });
       const secondResumeCode = await runNodeCli([
         'resume',
         '--json',
@@ -1017,11 +1017,8 @@ describe('migration, branching, and CLI diagnostics', () => {
         await receiverStore.createRun(bundle.run);
         assert.equal((await receiverStore.listEffectRecords(run.runId)).length, 0);
 
-        await receiverStore.importRun(bundle);
-
-        const effects = await receiverStore.listEffectRecords(run.runId);
-        assert.equal(effects.length, bundle.effects.length);
-        assert.deepEqual(effects[0], bundle.effects[0]);
+        await assert.rejects(() => receiverStore.importRun(bundle), { code: 'ERR_IMPORT_RUN_EXISTS' });
+        assert.equal((await receiverStore.listEffectRecords(run.runId)).length, 0);
       } finally {
         await receiverStore.releaseLock();
       }
@@ -1374,7 +1371,6 @@ describe('migration, branching, and CLI diagnostics', () => {
         await effectCollisionStore.acquireLock();
         try {
           const effectCollisionBundle = JSON.parse(JSON.stringify(carrierExport.bundle));
-          effectCollisionBundle.effects = [fixtureImportEffect(effectCollisionBundle)];
           await effectCollisionStore.putEffectRecord({ ...effectCollisionBundle.effects[0], diagnostics: { existing: true } });
           await assert.rejects(() => effectCollisionStore.importRun(effectCollisionBundle), { code: 'ERR_IMPORT_EFFECT_EXISTS' });
           await assert.rejects(
@@ -1423,7 +1419,6 @@ describe('migration, branching, and CLI diagnostics', () => {
 
       const memoryEffectCollision = new MemoryStore();
       const memoryEffectCollisionBundle = JSON.parse(JSON.stringify(carrierExport.bundle));
-      memoryEffectCollisionBundle.effects = [fixtureImportEffect(memoryEffectCollisionBundle)];
       await memoryEffectCollision.putEffectRecord({ ...memoryEffectCollisionBundle.effects[0], diagnostics: { existing: true } });
       await assert.rejects(() => memoryEffectCollision.importRun(memoryEffectCollisionBundle), { code: 'ERR_IMPORT_EFFECT_EXISTS' });
       await assert.rejects(() => memoryEffectCollision.getRun(memoryEffectCollisionBundle.run.runId), { code: 'ERR_RUN_NOT_FOUND' });
@@ -1507,16 +1502,17 @@ describe('migration, branching, and CLI diagnostics', () => {
 });
 
 class DeterministicCliWorker extends WorldWorker {
-  constructor(label) {
+  constructor(label, options = {}) {
     super();
     this.label = label;
+    this.startSequence = options.startSequence ?? 0n;
     this.submitCount = 0;
   }
 
   async submitTurn(turnInputBytes) {
     assert.equal(turnInputBytes.byteLength > 0, true);
     this.submitCount += 1;
-    this.lastTurnClosureBytes = fixtureTurnClosureBytes();
+    this.lastTurnClosureBytes = fixtureTurnClosureBytes({ turnSequenceNumber: this.startSequence + BigInt(this.submitCount - 1) });
     return {
       turnClosureBytes: new Uint8Array(this.lastTurnClosureBytes),
       turnClosureWorldFingerprint: `world:closure:${this.label}:${this.submitCount}`,
@@ -1548,11 +1544,19 @@ class SequencedCliWorker extends WorldWorker {
 }
 
 class DecodableCliWorker extends WorldWorker {
+  constructor(options = {}) {
+    super();
+    this.options = options;
+  }
+
   async submitTurn(turnInputBytes) {
     assert.equal(turnInputBytes.byteLength > 0, true);
     this.submittedTurnInputBytes = turnInputBytes;
     return {
-      turnClosureBytes: fixtureTurnClosureBytes(),
+      turnClosureBytes: fixtureTurnClosureBytes({
+        status: this.options.status,
+        turnSequenceNumber: this.options.turnSequenceNumber ?? 0n,
+      }),
       turnClosureWorldFingerprint: 'world:closure:decodable',
       resultingStateFingerprint: 'world:state:decodable',
       chronicleCursor: 'world:chronicle:decodable',
@@ -1573,7 +1577,7 @@ function fixtureTurnClosureBytes(options = {}) {
     u32(1),
     u64(0x701n),
     u64(0x211n),
-    u64(1n),
+    u64(options.turnSequenceNumber ?? 1n),
     u64(0x301n),
     optionalU64(null),
     u64Slice([]),
@@ -1585,7 +1589,7 @@ function fixtureTurnClosureBytes(options = {}) {
     optionalU64(0xa02n),
     optionalU64(0xa03n),
     optionalU64(0xb01n),
-    u8(2),
+    u8(options.status ?? 2),
     optionalU64(null),
     u64(0n),
     u64(0n),
@@ -1629,7 +1633,7 @@ function fixtureTurnClosureBytes(options = {}) {
     u64Slice([]),
     u64Slice([]),
     bytes(new Uint8Array()),
-    u8(2),
+    u8(options.status ?? 2),
   ]);
 }
 
@@ -1823,7 +1827,7 @@ async function fixtureDirectoryStore(root, options = {}) {
     const imageRef = await store.putBlob(fromUtf8('image'));
     const wasmRef = await store.putBlob(fromUtf8('wasm'));
     const manifestRef = await store.putBlob(fromUtf8('manifest'));
-    const closureBytes = fixtureTurnClosureBytes();
+    const closureBytes = fixtureTurnClosureBytes(options.closureOptions);
     const closureSummary = summarizeTurnClosureForRunHead(closureBytes);
     const closureRef = await store.putBlob(closureBytes);
     const app = createApplicationRecord({

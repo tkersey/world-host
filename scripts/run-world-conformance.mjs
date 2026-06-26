@@ -107,9 +107,8 @@ async function realWorldUniversalConformance(worldRepo) {
   assert.equal(storeBackedBoot.committedClosureMatchesWorkerOutput, true);
   assert.equal(storeBackedBoot.runheadFromTurnClosureInspection, true);
   const coldRestore = await runRealColdRestoreRunControllerConformance(artifacts, wasmBytes);
-  assert.equal(coldRestore.advancedFromColdWorker, true);
-  assert.equal(coldRestore.committedClosureMatchesFreshWorkerOutput, true);
-  assert.equal(coldRestore.boundExactParentEvidence, true);
+  assert.equal(coldRestore.terminalAdvanceRejected, true);
+  assert.equal(coldRestore.workerCreatedAfterTerminalHead, false);
   const guestAllocation = await runRealWorkerGuestAllocationConformance(artifacts, wasmBytes);
   assert.equal(guestAllocation.exportReadBufferFreed, true);
   const journaledHostRequest = await runRealJournaledHostRequestRunControllerConformance(artifacts, wasmBytes);
@@ -134,7 +133,7 @@ async function realWorldUniversalConformance(worldRepo) {
   console.log('archive_append_batch_bytes_ready=true');
   console.log('store_backed_runcontroller_boot_advance=true');
   console.log('runhead_from_turnclosure_inspection=true');
-  console.log('cold_restore_from_committed_turnclosure=true');
+  console.log('terminal_committed_turnclosure_rejected_before_worker=true');
   console.log('guest_export_read_buffer_freed=true');
   console.log('journaled_host_request_continue=true');
   console.log('journaled_resolution_reused=true');
@@ -312,55 +311,22 @@ async function runRealColdRestoreRunControllerConformance(artifacts, wasmBytes) 
   assert.deepEqual(parentClosureBytes, bootWorker.lastSubmitResult.turnClosureBytes);
   bootWorker.dispose();
 
-  let restoreWorker = null;
-  let boundExactParentEvidence = false;
+  let restoreWorkerCreated = false;
   const restoreController = new RunController({
     store,
     wasmBytes,
     workerFactory: async () => {
-      restoreWorker = new TrackingNodeWorldWorker();
-      return restoreWorker;
-    },
-    turnInputFactory: async ({ worker, parentHead, parentClosureBytes: currentParentClosureBytes }) => {
-      assert.equal(worker, restoreWorker);
-      assert.notEqual(worker, bootWorker);
-      assert.equal(parentHead.generation, 1);
-      assert.deepEqual(currentParentClosureBytes, parentClosureBytes);
-      const applianceManifest = worker.readApplianceManifest();
-      assert.deepEqual(applianceManifest.bytes, manifestBytes);
-      const parentSummary = inspectTurnOutput(currentParentClosureBytes);
-      boundExactParentEvidence =
-        parentSummary.closureFingerprint !== 0n &&
-        parentSummary.resultingStateFingerprint !== 0n &&
-        parentSummary.turnReceipt.receiptFingerprint !== 0n &&
-        parentSummary.turnSequenceNumber + 1n === 1n;
-      return encodeRestoreTurnInput({
-        manifestFingerprint: applianceManifest.decoded.manifestFingerprint,
-        parentTurnClosureBytes: currentParentClosureBytes,
-        expectedParentClosureFingerprint: parentSummary.closureFingerprint,
-        expectedParentStateFingerprint: parentSummary.resultingStateFingerprint,
-        previousTurnReceiptFingerprint: parentSummary.turnReceipt.receiptFingerprint,
-        turnSequenceNumber: parentSummary.turnSequenceNumber + 1n,
-        metadata: 'carrier.cold-restore.restore',
-      });
+      restoreWorkerCreated = true;
+      return new TrackingNodeWorldWorker();
     },
   });
-  const restoreAdvance = await restoreController.advance(run.runId, branch.branchId);
-  assert.equal(restoreAdvance.status, 'advanced');
-  const restoredHead = await store.readHead(run.runId, branch.branchId);
-  const restoredClosureBytes = await store.getBlob(restoredHead.turnClosureRef);
-  const restoredSummary = inspectTurnOutput(restoredClosureBytes);
-  assert.equal(restoredHead.generation, 2);
-  assert.equal(restoredSummary.turnSequenceNumber, 1n);
-  assert.deepEqual(restoredClosureBytes, restoreWorker.lastSubmitResult.turnClosureBytes);
-  assert.notDeepEqual(restoredClosureBytes, parentClosureBytes);
-  const advancedFromColdWorker = bootWorker.disposed === true && restoreWorker !== bootWorker;
-  restoreWorker.dispose();
+  await assert.rejects(() => restoreController.advance(run.runId, branch.branchId), { code: 'ERR_BRANCH_HEAD_NOT_CONTINUABLE' });
+  const currentHead = await store.readHead(run.runId, branch.branchId);
+  assert.deepEqual(currentHead, bootHead);
+  assert.deepEqual(await store.getBlob(currentHead.turnClosureRef), parentClosureBytes);
   return {
-    advancedFromColdWorker,
-    committedClosureMatchesFreshWorkerOutput: true,
-    boundExactParentEvidence,
-    restoredClosureSha256: sha256Hex(restoredClosureBytes),
+    terminalAdvanceRejected: true,
+    workerCreatedAfterTerminalHead: restoreWorkerCreated,
   };
 }
 
@@ -718,7 +684,7 @@ async function fixtureStore(prefix = 'run') {
   const store = new MemoryStore();
   const imageRef = await store.putBlob(fromUtf8(`${prefix}:image`));
   const manifestRef = await store.putBlob(fromUtf8(`${prefix}:manifest`));
-  const closureBytes = fixtureTurnClosureBytes();
+  const closureBytes = fixtureTurnClosureBytes({ status: 1, turnSequenceNumber: 0n });
   const closureSummary = summarizeTurnClosureForRunHead(closureBytes);
   const closureRef = await store.putBlob(closureBytes);
   const application = createApplicationRecord({
@@ -760,25 +726,25 @@ function binding(turnSequence) {
   };
 }
 
-function turnResult(index) {
+function turnResult(index, options = {}) {
   return {
-    turnClosureBytes: fixtureTurnClosureBytes(),
+    turnClosureBytes: fixtureTurnClosureBytes(options),
     turnClosureWorldFingerprint: `world:closure:${index}`,
     resultingStateFingerprint: `world:state:${index}`,
     chronicleCursor: `cursor:${index}`,
     archiveMomentFingerprint: `archive:moment:${index}`,
     archiveSealFingerprint: `archive:seal:${index}`,
-    status: 'completed',
+    status: options.status === 1 ? 'yielded_budget' : 'completed',
   };
 }
 
-function fixtureTurnClosureBytes() {
+function fixtureTurnClosureBytes(options = {}) {
   const turnReceiptBytes = concat([
     u32(1),
     u32(1),
     u64(0x701n),
     u64(0x211n),
-    u64(1n),
+    u64(options.turnSequenceNumber ?? 1n),
     u64(0x301n),
     optionalU64(null),
     u64Slice([]),
@@ -790,7 +756,7 @@ function fixtureTurnClosureBytes() {
     optionalU64(0xa02n),
     optionalU64(0xa03n),
     optionalU64(0xb01n),
-    u8(2),
+    u8(options.status ?? 2),
     optionalU64(null),
     u64(0n),
     u64(0n),
@@ -802,7 +768,7 @@ function fixtureTurnClosureBytes() {
     u64(0x112n),
     u64(0x211n),
     optionalU64(null),
-    u64(1n),
+    u64(options.turnSequenceNumber ?? 1n),
     u64(0x301n),
     u64(0x302n),
     u64(0x303n),
@@ -834,7 +800,7 @@ function fixtureTurnClosureBytes() {
     u64Slice([]),
     u64Slice([]),
     bytes(new Uint8Array()),
-    u8(2),
+    u8(options.status ?? 2),
   ]);
 }
 

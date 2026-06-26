@@ -226,7 +226,7 @@ export class EffectJournal {
     }
 
     const recordWithRequestBytes = await this.#recordWithRequestBytes(record);
-    assertRecoveredRequestWithinLimits(recordWithRequestBytes, manifest, this.policy);
+    await assertRecoveredRequestWithinLimits(recordWithRequestBytes, manifest, this.policy);
     assertManifestResponseWithinPolicy(manifest, this.policy);
     if (typeof driver.recover === 'function' || canSafelyReResolve(record.driverRecoveryClass)) {
       const recovered = normalizeDriverResolution(typeof driver.recover === 'function'
@@ -433,7 +433,7 @@ function canSafelyReResolve(recoveryClass) {
 function assertDriverCanRecover(manifest, record) {
   if (!manifest.supportedActuatorRefs.includes(record.actuatorRef)) fail('ERR_ACTUATOR_REF_NOT_SUPPORTED');
   if (!manifest.supportedDescriptorFingerprints.includes(record.descriptorFingerprint)) fail('ERR_DESCRIPTOR_NOT_SUPPORTED');
-  if (record.actuationClass && !manifest.supportedActuationClasses.includes(record.actuationClass)) fail('ERR_ACTUATION_CLASS_NOT_SUPPORTED');
+  if (!record.actuationClass || !manifest.supportedActuationClasses.includes(record.actuationClass)) fail('ERR_ACTUATION_CLASS_NOT_SUPPORTED');
   if (record.responseSchema && !manifest.supportedResponseStatuses.includes(record.responseSchema.status)) fail('ERR_RESPONSE_STATUS_NOT_SUPPORTED');
   assertEffectRecoveryClassMatchesManifest(manifest, record);
 }
@@ -484,6 +484,7 @@ export function assertEffectRecord(record) {
   if (!record.idempotencyKey || record.idempotencyKey.format !== 'world-idempotency-key-bytes.hex' || !/^[0-9a-f]+$/.test(record.idempotencyKey.bytesHex)) {
     fail('ERR_INVALID_EFFECT_RECORD', 'complete idempotency key bytes are required');
   }
+  if (typeof record.actuationClass !== 'string' || record.actuationClass.length === 0) fail('ERR_INVALID_EFFECT_RECORD', 'actuationClass is required');
   if (!EFFECT_STATES.has(record.state)) fail('ERR_INVALID_EFFECT_STATE');
   if (!Number.isSafeInteger(record.attemptCount) || record.attemptCount < 0) fail('ERR_INVALID_EFFECT_RECORD', 'attemptCount must be non-negative');
   assertRecoveryClass(record.driverRecoveryClass);
@@ -560,8 +561,10 @@ function assertPreparedRequestWithinLimits(prepared, manifest, policy) {
   if (policy.maximumRequestBytes !== undefined && prepared.requestBytes.byteLength > policy.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
 }
 
-function assertRecoveredRequestWithinLimits(record, manifest, policy) {
+async function assertRecoveredRequestWithinLimits(record, manifest, policy) {
   if (!record.requestBytes) fail('ERR_EFFECT_REQUEST_BYTES_REQUIRED', 'effect recovery requires persisted request bytes');
+  const checksum = `sha256:${await sha256Hex(record.requestBytes)}`;
+  if (checksum !== record.requestBytesChecksum) fail('ERR_EFFECT_REQUEST_BYTES_CHECKSUM_MISMATCH');
   if (record.requestBytes.byteLength > manifest.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
   if (policy.maximumRequestBytes !== undefined && record.requestBytes.byteLength > policy.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
 }
@@ -596,7 +599,10 @@ function assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, p
 
 function assertResolutionStatusAccepted(status, hostRequest) {
   const expectedStatus = hostRequest.responseSchema?.status;
-  if (expectedStatus === undefined) return;
+  if (expectedStatus === undefined) {
+    if (!Object.values(RESPONSE_STATUS_CODES).includes(status)) fail('ERR_RESPONSE_STATUS_NOT_SUPPORTED', 'ResolutionInput status is not mapped to a supported wire status');
+    return;
+  }
   const expectedWireStatus = RESPONSE_STATUS_CODES[expectedStatus];
   if (expectedWireStatus === undefined) fail('ERR_RESPONSE_STATUS_NOT_SUPPORTED', 'response schema status is not mapped to a wire status');
   if (status !== expectedWireStatus) fail('ERR_EFFECT_RESPONSE_STATUS_MISMATCH', 'driver ResolutionInput status does not match the HostRequest response schema');

@@ -154,6 +154,7 @@ async function runInstall(args, io, storePath) {
   const store = new DirectoryStore(storePath);
   await store.acquireLock();
   try {
+    await assertApplicationDoesNotExist(store, applicationId);
     const wasmRef = await store.putBlob(new Uint8Array(wasmBytes));
     const imageRef = await store.putBlob(new Uint8Array(imageBytes));
     const manifestBytes = manifestPath
@@ -219,6 +220,16 @@ async function runInstall(args, io, storePath) {
   } finally {
     await store.releaseLock();
   }
+}
+
+async function assertApplicationDoesNotExist(store, applicationId) {
+  try {
+    await store.getApplication(applicationId);
+  } catch (error) {
+    if (error?.code === 'ERR_APPLICATION_NOT_FOUND') return;
+    throw error;
+  }
+  fail('ERR_APPLICATION_EXISTS');
 }
 
 async function getOrCreateInitialRun(store, { applicationId, runId, branchId, inputPath }) {
