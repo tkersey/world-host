@@ -96,6 +96,7 @@ export class SandboxFileDriver {
     if (this.symlinkPolicy === 'reject') await this.#rejectSymlinkComponents(path.dirname(resolved));
     await this.#assertResolvedPathWithinRoot(path.dirname(resolved));
     await this.#assertRegularPathBeforeOpen(resolved, { allowMissing: true });
+    await this.#rejectCreateThroughFinalSymlink(resolved);
     const handle = await this.#openForWrite(resolved);
     try {
       await this.#assertOpenHandleWithinRoot(handle, resolved);
@@ -194,6 +195,17 @@ export class SandboxFileDriver {
     if (!info) return false;
     if (!info.isFile()) fail('ERR_SANDBOX_FILE_NOT_REGULAR');
     return true;
+  }
+
+  async #rejectCreateThroughFinalSymlink(resolved) {
+    const info = await lstat(resolved).catch((error) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (info?.isSymbolicLink()) {
+      await this.#assertResolvedPathWithinRoot(resolved).catch(() => {});
+      fail('ERR_SANDBOX_SYMLINK_CREATE_REJECTED');
+    }
   }
 
   async #canonicalRoot() {

@@ -150,6 +150,19 @@ describe('RunController and WorldWorker', () => {
     );
   });
 
+  it('rejects parent closures from a different loaded appliance manifest', async () => {
+    const { store, runId, branchId } = await fixtureStore();
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ManifestCheckingWorker(fixtureTurnClosureBytes(), 0x999n),
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_PARENT_HEAD_CLOSURE_MISMATCH' },
+    );
+  });
+
   it('disposes dirty warm workers after failed turn submission before retry', async () => {
     const { store, runId, branchId } = await fixtureStore({ headStatus: 'genesis' });
     const workers = [];
@@ -950,6 +963,19 @@ describe('RunController and WorldWorker', () => {
     );
   });
 
+  it('fails closed when embedded TurnReceipt fields do not match the closure', async () => {
+    const { store, runId, branchId } = await fixtureStore();
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes({ receiptManifestFingerprint: 0x999n })),
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_TURN_CLOSURE_INSPECTION_FAILED' },
+    );
+  });
+
   it('rejects mismatched warm-worker identity before reuse', async () => {
     const worker = new WorldWorker();
     await worker.instantiate(fromUtf8('placeholder'));
@@ -1315,6 +1341,21 @@ class ClosureOnlyWorker extends WorldWorker {
   }
 }
 
+class ManifestCheckingWorker extends ClosureOnlyWorker {
+  constructor(closureBytes, manifestFingerprint) {
+    super(closureBytes);
+    this.manifestFingerprint = manifestFingerprint;
+  }
+
+  readApplianceManifest() {
+    return {
+      decoded: {
+        manifestFingerprint: this.manifestFingerprint,
+      },
+    };
+  }
+}
+
 class CaptureTurnInputWorker extends ClosureOnlyWorker {
   async submitTurn(turnInputBytes) {
     this.submittedTurnInputBytes = turnInputBytes;
@@ -1347,8 +1388,8 @@ function fixtureTurnClosureBytes(options = {}) {
     u32(options.receiptFormatVersion ?? 1),
     u32(options.receiptFingerprintVersion ?? 1),
     u64(0x701n),
-    u64(0x211n),
-    u64(options.turnSequenceNumber ?? 1n),
+    u64(options.receiptManifestFingerprint ?? 0x211n),
+    u64(options.receiptTurnSequenceNumber ?? options.turnSequenceNumber ?? 1n),
     u64(0x301n),
     optionalU64(null),
     u64Slice(options.appliedHostReplyFingerprints ?? defaultAppliedHostReplyFingerprints()),
@@ -1360,7 +1401,7 @@ function fixtureTurnClosureBytes(options = {}) {
     optionalU64(options.archiveLess ? null : 0xa02n),
     optionalU64(0xa03n),
     optionalU64(0xb01n),
-    u8(options.status ?? 2),
+    u8(options.receiptStatus ?? options.status ?? 2),
     optionalU64(null),
     u64(1n),
     u64(1n),

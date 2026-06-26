@@ -144,6 +144,7 @@ export class RunController {
         workerMayBeDirty = true;
         await worker.loadExecutable(imageBytes);
       }
+      assertParentClosureManifestMatchesWorker(worker, parentHead, parentClosureBytes);
       if (!workerReused && parentHead.status !== 'genesis' && typeof worker.restoreFromTurnClosure === 'function') {
         workerMayBeDirty = true;
         await worker.restoreFromTurnClosure(parentClosureBytes, parentHead);
@@ -739,6 +740,22 @@ function assertParentHeadMatchesClosure(parentHead, parentClosureBytes) {
         closureValue: summarized[field],
       });
     }
+  }
+}
+
+function assertParentClosureManifestMatchesWorker(worker, parentHead, parentClosureBytes) {
+  if (parentHead.status === 'genesis') return;
+  if (typeof worker.readApplianceManifest !== 'function') return;
+  const applianceManifest = worker.readApplianceManifest();
+  const loadedManifestFingerprint = applianceManifest?.decoded?.manifestFingerprint;
+  if (loadedManifestFingerprint == null) return;
+  const inspected = inspectTurnOutput(parentClosureBytes);
+  if (loadedManifestFingerprint !== inspected.manifestFingerprint) {
+    fail('ERR_PARENT_HEAD_CLOSURE_MISMATCH', 'parent TurnClosure manifest does not match loaded application manifest', {
+      field: 'manifestFingerprint',
+      headValue: `world:manifest:${inspected.manifestFingerprint.toString(16).padStart(16, '0')}`,
+      loadedValue: `world:manifest:${loadedManifestFingerprint.toString(16).padStart(16, '0')}`,
+    });
   }
 }
 

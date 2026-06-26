@@ -45,6 +45,7 @@ const RESPONSE_STATUS_CODES = Object.freeze({
   deferred: 4,
   cancelled: 5,
 });
+const MAX_U64 = (1n << 64n) - 1n;
 const effectKeyLocksByStore = new WeakMap();
 const effectKeyLocksByStoreKey = new Map();
 
@@ -78,6 +79,7 @@ export class EffectJournal {
     const recoveryClass = options.recoveryClass ?? manifest?.recoveryClass ?? hostRequest.recoveryClass;
     assertRecoveryClass(recoveryClass);
     assertDurableRecoveryAllowed(recoveryClass, this.policy);
+    assertPreparedRequestWithinLimits(prepared, manifest, this.policy);
     const requestBytesRef = await this.store.putBlob(prepared.requestBytes);
 
     const record = createEffectRecord({
@@ -152,6 +154,7 @@ export class EffectJournal {
 
       try {
         assertResolutionAccepted(resolved.resolutionInputBytes, normalizedHostRequest, manifest, this.policy);
+        assertDriverCarriedBytesAccepted(resolved, manifest, this.policy);
       } catch (error) {
         const failureState = invalidResolutionFailureState(manifest.recoveryClass);
         await this.#put({
@@ -235,6 +238,7 @@ export class EffectJournal {
         : await driver.resolve(context, recordWithRequestBytes));
       try {
         assertResolutionAccepted(recovered.resolutionInputBytes, record, manifest, this.policy);
+        assertDriverCarriedBytesAccepted(recovered, manifest, this.policy);
       } catch (error) {
         const failureState = invalidResolutionFailureState(record.driverRecoveryClass);
         await this.#put({
@@ -552,14 +556,14 @@ function normalizeDriverResolution(value) {
   assertBytes(resolutionInputBytes, 'resolutionInputBytes');
   return {
     resolutionInputBytes,
-    hostClaimBytes: value?.hostClaimBytes,
+    hostClaimBytes: value?.hostClaimBytes === undefined ? undefined : assertBytes(value.hostClaimBytes, 'hostClaimBytes'),
     driverTransactionRef: value?.driverTransactionRef,
     diagnostics: value?.diagnostics ?? {},
   };
 }
 
 function assertPreparedRequestWithinLimits(prepared, manifest, policy) {
-  if (prepared.requestBytes.byteLength > manifest.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
+  if (manifest && prepared.requestBytes.byteLength > manifest.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
   if (policy.maximumRequestBytes !== undefined && prepared.requestBytes.byteLength > policy.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
 }
 
@@ -597,6 +601,22 @@ function assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, p
   if (resolution.responseValueImageBytes.byteLength > maximumResponseBytes) {
     fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver ResolutionInput response exceeds byte limit');
   }
+  if (resolution.hostClaimBytes.byteLength > maximumResponseBytes) {
+    fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver ResolutionInput host claim exceeds byte limit');
+  }
+  if (resolution.metadata.byteLength > maximumResponseBytes) {
+    fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver ResolutionInput metadata exceeds byte limit');
+  }
+}
+
+function assertDriverCarriedBytesAccepted(resolved, manifest, policy) {
+  if (!resolved.hostClaimBytes) return;
+  const maximumResponseBytes = policy.maximumResponseBytes === undefined
+    ? manifest.maximumResponseBytes
+    : Math.min(manifest.maximumResponseBytes, policy.maximumResponseBytes);
+  if (maximumResponseBytes !== Number.MAX_SAFE_INTEGER && resolved.hostClaimBytes.byteLength > maximumResponseBytes) {
+    fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver host claim exceeds byte limit');
+  }
 }
 
 function assertResolutionStatusAccepted(status, hostRequest, manifest) {
@@ -613,10 +633,15 @@ function assertResolutionStatusAccepted(status, hostRequest, manifest) {
 
 function hostRequestTargetFingerprint(hostRequest) {
   const value = hostRequest.hostRequestFingerprint;
-  if (typeof value === 'bigint' || typeof value === 'number') return BigInt(value);
+  if (typeof value === 'bigint' || typeof value === 'number') return assertU64Fingerprint(BigInt(value));
   const match = String(value ?? '').match(/^(?:world:host-request:|0x)([0-9a-f]+)$/i);
   if (!match) fail('ERR_HOST_REQUEST_FINGERPRINT_REQUIRED');
-  return BigInt(`0x${match[1]}`);
+  return assertU64Fingerprint(BigInt(`0x${match[1]}`));
+}
+
+function assertU64Fingerprint(value) {
+  if (value < 0n || value > MAX_U64) fail('ERR_HOST_REQUEST_FINGERPRINT_RANGE', 'HostRequest fingerprint must fit the World u64 wire range');
+  return value;
 }
 
 async function withEffectKeyLock(store, key, fn) {

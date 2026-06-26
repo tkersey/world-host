@@ -136,6 +136,32 @@ describe('EffectJournal', () => {
     );
   });
 
+  it('rejects oversized ResolutionInput carried fields before persisting', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const request = hostRequest();
+
+    await assert.rejects(
+      () => journal.resolve({}, request, fixtureDriver({
+        recoveryClass: EffectRecoveryClass.idempotent,
+        maximumResponseBytes: 1,
+        response: encodeResolutionInputBytes({
+          targetHostRequestFingerprint: 0xa1n,
+          status: 0,
+          responseValueImageBytes: fromUtf8('x'),
+          hostClaimBytes: fromUtf8('too large claim'),
+          attemptNumber: 1,
+          metadata: new Uint8Array(),
+        }),
+      })),
+      { code: 'ERR_EFFECT_RESPONSE_TOO_LARGE' },
+    );
+    const records = await store.listEffectRecords('run');
+    assert.equal(records.length, 1);
+    assert.equal(records[0].state, EffectState.failed);
+    assert.equal(records[0].resolutionInputRef, undefined);
+  });
+
   it('rejects driver ResolutionInput targeting another HostRequest before persisting it', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
@@ -308,7 +334,32 @@ describe('EffectJournal', () => {
       () => journal.resolve({}, hostRequest({ hostRequestFingerprint: 'not-a-world-prefix-deadbeef' }), driver),
       { code: 'ERR_HOST_REQUEST_FINGERPRINT_REQUIRED' },
     );
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest({ hostRequestFingerprint: 'world:host-request:10000000000000000' }), driver),
+      { code: 'ERR_HOST_REQUEST_FINGERPRINT_RANGE' },
+    );
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest({ hostRequestFingerprint: -1n }), driver),
+      { code: 'ERR_HOST_REQUEST_FINGERPRINT_RANGE' },
+    );
     assert.equal(driver.calls, 0);
+    assert.equal((await store.listEffectRecords('run')).length, 0);
+  });
+
+  it('rejects oversized observed requests before storing request bytes', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({
+      store,
+      runId: 'run',
+      branchId: 'main',
+      parentTurnClosureFingerprint: 'turn:0',
+      policy: { maximumRequestBytes: 1 },
+    });
+
+    await assert.rejects(
+      () => journal.observe(hostRequest({ requestBytes: fromUtf8('too large') }), { recoveryClass: EffectRecoveryClass.idempotent }),
+      { code: 'ERR_HOST_REQUEST_TOO_LARGE' },
+    );
     assert.equal((await store.listEffectRecords('run')).length, 0);
   });
 

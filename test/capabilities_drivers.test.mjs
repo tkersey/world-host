@@ -203,6 +203,15 @@ describe('capability preflight and reference drivers', () => {
         () => readFile(path.join(outside, 'new.txt')),
         { code: 'ENOENT' },
       );
+      await symlink(path.join(outside, 'final-new.txt'), path.join(root, 'final-link'));
+      await assert.rejects(
+        () => new SandboxFileDriver({ root, symlinkPolicy: 'allow' }).resolve({}, fileRequest('final-link', { operation: 'write', content: 'nope' })),
+        { code: 'ERR_SANDBOX_SYMLINK_CREATE_REJECTED' },
+      );
+      await assert.rejects(
+        () => readFile(path.join(outside, 'final-new.txt')),
+        { code: 'ENOENT' },
+      );
       await assert.rejects(
         () => driver.resolve({}, fileRequest('linkdir/new.txt', { operation: 'write', content: 'nope' })),
         { code: 'ERR_SANDBOX_SYMLINK_REJECTED' },

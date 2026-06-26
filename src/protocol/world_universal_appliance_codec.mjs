@@ -47,6 +47,11 @@ export function inspectTurnOutput(bytes) {
   reader.skipU64Slice();
   reader.bytesLen();
   const status = reader.u8();
+  assertReceiptMatchesClosure(turnReceipt, {
+    manifestFingerprint,
+    turnSequenceNumber,
+    status,
+  });
   if (reader.remaining() !== 0) throw new Error('trailing TurnClosure bytes');
   return {
     outputFingerprint: closureFingerprint,
@@ -66,6 +71,12 @@ export function inspectTurnOutput(bytes) {
     archiveAppendBytesLen,
     turnReceipt,
   };
+}
+
+function assertReceiptMatchesClosure(receipt, closure) {
+  if (receipt.manifestFingerprint !== closure.manifestFingerprint) throw new Error('TurnReceipt manifest does not match TurnClosure manifest');
+  if (receipt.turnSequenceNumber !== closure.turnSequenceNumber) throw new Error('TurnReceipt sequence does not match TurnClosure sequence');
+  if (receipt.status !== closure.status) throw new Error('TurnReceipt status does not match TurnClosure status');
 }
 
 export function summarizeTurnClosureForRunHead(bytes) {
