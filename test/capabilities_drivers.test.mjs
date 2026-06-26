@@ -171,6 +171,24 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(decoded.targetHostRequestFingerprint, 0xa1n);
   });
 
+  it('recovers the same fixture model response for the same effect key', async () => {
+    const driver = new FixtureModelDriver({ responses: ['first', 'second'] });
+    const request = {
+      hostRequestFingerprint: 'world:host-request:00000000000000a1',
+      idempotencyKeyWorldFingerprint: 'world:key:first',
+    };
+
+    const resolved = await driver.resolve({}, request);
+    const recovered = await driver.recover({}, request);
+    const next = await driver.resolve({}, {
+      hostRequestFingerprint: 'world:host-request:00000000000000a2',
+      idempotencyKeyWorldFingerprint: 'world:key:second',
+    });
+
+    assert.deepEqual([...recovered.resolutionInputBytes], [...resolved.resolutionInputBytes]);
+    assert.notDeepEqual([...next.resolutionInputBytes], [...resolved.resolutionInputBytes]);
+  });
+
   it('constrains sandbox file paths, symlinks, and writes', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-sandbox-'));
     const outside = await mkdtemp(path.join(tmpdir(), 'world-host-outside-'));
