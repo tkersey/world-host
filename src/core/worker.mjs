@@ -189,6 +189,10 @@ export class RunController {
           unresolvedHostRequests: effectTurn?.unresolvedHostRequests ?? [],
         },
       });
+      const submittedEffects = [];
+      if (effectTurn) {
+        for (const effect of confirmedEffects) submittedEffects.push(await effectTurn.journal.markSubmitted(effect.record));
+      }
       const cas = await this.store.compareAndSwapHead(runId, branchId, parentHead.generation, nextHead);
       if (!cas.ok) {
         this.#disposeWarmWorker(worker);
@@ -196,13 +200,9 @@ export class RunController {
           status: 'branch_conflict',
           orphanClosureRef: turnClosureRef,
           winningHead: cas.current,
-          submittedEffects: [],
+          submittedEffects,
           unresolvedHostRequests: effectTurn?.unresolvedHostRequests ?? [],
         };
-      }
-      const submittedEffects = [];
-      if (effectTurn) {
-        for (const effect of confirmedEffects) submittedEffects.push(await effectTurn.journal.markSubmitted(effect.record));
       }
       const committedEffects = [];
       for (const effect of submittedEffects) committedEffects.push(await effectTurn.journal.markClosureCommitted(effect));

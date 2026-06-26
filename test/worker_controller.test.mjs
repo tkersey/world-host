@@ -262,7 +262,7 @@ describe('RunController and WorldWorker', () => {
     assert.equal(effects[0].state, EffectState.closureCommitted);
   });
 
-  it('does not mark resolved effects closure_committed on CAS conflict', async () => {
+  it('submits but does not commit effects on CAS conflict', async () => {
     const { store, runId, branchId, head } = await fixtureStore({
       headStatus: 'needs_host',
       closureBytes: fixtureNeedsHostTurnClosureBytes(),
@@ -285,9 +285,9 @@ describe('RunController and WorldWorker', () => {
     const effects = await store.listEffectRecords(runId);
 
     assert.equal(result.status, 'branch_conflict');
-    assert.equal(result.submittedEffects.length, 0);
+    assert.equal(result.submittedEffects.length, 1);
     assert.equal(effects.length, 1);
-    assert.equal(effects[0].state, EffectState.resolved);
+    assert.equal(effects[0].state, EffectState.submitted);
   });
 
   it('does not commit effects missing from the returned TurnReceipt', async () => {
