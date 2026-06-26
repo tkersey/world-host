@@ -53,9 +53,9 @@ async function storedTurnClosureHead(store, run, sourceBranchId, sourceClosureFi
     }
     if (summary.turnClosureWorldFingerprint !== sourceClosureFingerprint) continue;
     const closureGeneration = summary.inspectionDiagnostics.turnSequenceNumber;
-    if (!Number.isSafeInteger(closureGeneration) || closureGeneration < 1) fail('ERR_FORK_SOURCE_CLOSURE_NOT_STORED', 'stored source closure has an invalid turn sequence');
+    if (!Number.isSafeInteger(closureGeneration) || closureGeneration < 0) fail('ERR_FORK_SOURCE_CLOSURE_NOT_STORED', 'stored source closure has an invalid turn sequence');
     return createRunHead({
-      generation: closureGeneration,
+      generation: Math.max(1, closureGeneration),
       turnClosureRef: ref,
       turnClosureWorldFingerprint: summary.turnClosureWorldFingerprint,
       resultingStateFingerprint: summary.resultingStateFingerprint,
@@ -75,6 +75,7 @@ function selectedBranchClosureFingerprints(run, sourceBranchId) {
     if (branch.branchId !== sourceBranchId) continue;
     addFingerprint(fingerprints, branch.currentHead?.turnClosureWorldFingerprint);
     addFingerprint(fingerprints, branch.forkedFromTurnClosureFingerprint);
+    for (const fingerprint of branch.diagnostics?.historicalTurnClosureFingerprints ?? []) addFingerprint(fingerprints, fingerprint);
   }
   return fingerprints;
 }

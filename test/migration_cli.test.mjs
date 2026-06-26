@@ -168,6 +168,99 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('forks an intermediate closure recorded by normal branch advancement', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-advanced-fork-'));
+    try {
+      const { run } = await fixtureDirectoryStore(root);
+      const store = new DirectoryStore(root);
+      const worker = new SequencedCliWorker([
+        { closureFingerprint: 0x444n, turnSequenceNumber: 2n, resultingStateFingerprint: 0x504n, chronicleResultingCursorFingerprint: 0x604n },
+        { closureFingerprint: 0x555n, turnSequenceNumber: 3n, resultingStateFingerprint: 0x505n, chronicleResultingCursorFingerprint: 0x605n },
+      ]);
+      const controller = new RunController({ store, workerFactory: async () => worker });
+      const firstAdvance = await controller.advance(run.runId, 'main');
+      const secondAdvance = await controller.advance(run.runId, 'main');
+
+      assert.equal(firstAdvance.status, 'advanced');
+      assert.equal(secondAdvance.status, 'advanced');
+      assert.notEqual(firstAdvance.nextHead.turnClosureWorldFingerprint, secondAdvance.nextHead.turnClosureWorldFingerprint);
+
+      const branch = await forkRunBranch(store, {
+        runId: run.runId,
+        sourceBranchId: 'main',
+        sourceClosureFingerprint: firstAdvance.nextHead.turnClosureWorldFingerprint,
+        newBranchId: 'midpoint',
+      });
+
+      assert.equal(branch.forkedFromTurnClosureFingerprint, firstAdvance.nextHead.turnClosureWorldFingerprint);
+      assert.equal((await store.readHead(run.runId, 'midpoint')).turnClosureWorldFingerprint, firstAdvance.nextHead.turnClosureWorldFingerprint);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('forks a sequence-zero boot closure after the branch advances again', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-sequence-zero-fork-'));
+    try {
+      const store = new DirectoryStore(root);
+      const imageRef = await store.putBlob(fromUtf8('image'));
+      const manifestRef = await store.putBlob(fromUtf8('manifest'));
+      const genesisRef = await store.putBlob(fromUtf8('genesis'));
+      const app = createApplicationRecord({
+        applicationId: 'sequence-zero-app',
+        universalWasmChecksum: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
+        worldProtocolVersion: 'v0.1.0',
+        applianceAbiVersion: 'v3',
+        executableImageRef: imageRef,
+        executableImageWorldFingerprint: 'world:image:sequence-zero',
+        applianceManifestRef: manifestRef,
+        requiredActuators: [],
+        requiredRuntimeLimits: {},
+      });
+      await store.createApplication(app);
+      const genesisHead = createRunHead({
+        generation: 0,
+        turnClosureRef: genesisRef,
+        turnClosureWorldFingerprint: 'world:turn-closure:genesis',
+        resultingStateFingerprint: 'world:state:genesis',
+        chronicleCursor: 'world:chronicle:genesis',
+        archiveMomentFingerprint: 'world:archive-moment:genesis',
+        archiveSealFingerprint: 'world:archive-seal:genesis',
+        status: 'genesis',
+      });
+      const run = createRunRecord({
+        runId: 'sequence-zero-run',
+        applicationId: app.applicationId,
+        branches: [createBranchRecord({ branchId: 'main', currentHead: genesisHead })],
+        effectJournalNamespace: 'sequence-zero-run:effects',
+      });
+      await store.createRun(run);
+      const worker = new SequencedCliWorker([
+        { closureFingerprint: 0x900n, turnSequenceNumber: 0n, resultingStateFingerprint: 0x910n, chronicleResultingCursorFingerprint: 0x920n },
+        { closureFingerprint: 0x901n, turnSequenceNumber: 1n, resultingStateFingerprint: 0x911n, chronicleResultingCursorFingerprint: 0x921n },
+      ]);
+      const controller = new RunController({ store, workerFactory: async () => worker });
+      const bootAdvance = await controller.advance(run.runId, 'main');
+      const secondAdvance = await controller.advance(run.runId, 'main');
+
+      assert.equal(bootAdvance.nextHead.generation, 1);
+      assert.equal(bootAdvance.nextHead.updateDiagnostics.inspectedTurnClosure.turnSequenceNumber, 0);
+      assert.equal(secondAdvance.status, 'advanced');
+
+      const branch = await forkRunBranch(store, {
+        runId: run.runId,
+        sourceBranchId: 'main',
+        sourceClosureFingerprint: bootAdvance.nextHead.turnClosureWorldFingerprint,
+        newBranchId: 'boot',
+      });
+
+      assert.equal(branch.forkedFromTurnClosureFingerprint, bootAdvance.nextHead.turnClosureWorldFingerprint);
+      assert.equal((await store.readHead(run.runId, 'boot')).generation, 1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('does not unlink another store lock after failed acquisition cleanup', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-lock-'));
     const lockPath = path.join(root, 'store.lock');
@@ -1432,6 +1525,24 @@ class DeterministicCliWorker extends WorldWorker {
       archiveMomentFingerprint: `world:archive-moment:${this.label}:${this.submitCount}`,
       archiveSealFingerprint: `world:archive-seal:${this.label}:${this.submitCount}`,
       status: 'completed',
+    };
+  }
+}
+
+class SequencedCliWorker extends WorldWorker {
+  constructor(sequence) {
+    super();
+    this.sequence = [...sequence];
+    this.index = 0;
+  }
+
+  async submitTurn(turnInputBytes) {
+    assert.equal(turnInputBytes.byteLength > 0, true);
+    const next = this.sequence[this.index];
+    this.index += 1;
+    if (!next) throw new Error('sequence exhausted');
+    return {
+      turnClosureBytes: fixtureTurnClosureBytes(next),
     };
   }
 }

@@ -1,7 +1,7 @@
 import { EffectJournal } from './effect_journal.mjs';
 import { assertDurableRecoveryAllowed } from './actuator.mjs';
 import { assertCapabilityReportAccepted, createRunPolicy, preflightCapabilities } from './capabilities.mjs';
-import { createRunHead } from './run.mjs';
+import { createBranchRecord, createRunHead, createRunRecord } from './run.mjs';
 import { assertBytes, fail, fromUtf8, toHex } from './store.mjs';
 import { decodeResolutionInputBytes, encodeRestoreTurnInput, resolutionResponded } from '../protocol/world_appliance_wire_codec.mjs';
 import { inspectTurnOutput, summarizeTurnClosureForRunHead } from '../protocol/world_universal_appliance_codec.mjs';
@@ -196,6 +196,7 @@ export class RunController {
       }
       const committedEffects = [];
       for (const effect of submittedEffects) committedEffects.push(await effectTurn.journal.markClosureCommitted(effect));
+      await recordBranchHeadProvenance(this.store, runId, branchId, cas.current);
       worker.bind({
         applicationId: run.applicationId,
         branchId,
@@ -345,6 +346,39 @@ export class RunController {
     });
     return effects;
   }
+}
+
+async function recordBranchHeadProvenance(store, runId, branchId, nextHead) {
+  if (typeof store.writeRun !== 'function') return;
+  const run = await store.getRun(runId);
+  let updated = false;
+  const branches = (run.branches ?? []).map((branch) => {
+    if (branch.branchId !== branchId) return branch;
+    updated = true;
+    const historicalTurnClosureFingerprints = appendUnique(
+      branch.diagnostics?.historicalTurnClosureFingerprints,
+      branch.currentHead?.turnClosureWorldFingerprint,
+    );
+    return createBranchRecord({
+      ...branch,
+      currentHead: nextHead,
+      diagnostics: {
+        ...branch.diagnostics,
+        historicalTurnClosureFingerprints,
+      },
+    });
+  });
+  if (!updated) return;
+  await store.writeRun(createRunRecord({ ...run, branches }));
+}
+
+function appendUnique(values, next) {
+  const out = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    if (typeof value === 'string' && value.length > 0 && !out.includes(value)) out.push(value);
+  }
+  if (typeof next === 'string' && next.length > 0 && !out.includes(next)) out.push(next);
+  return out;
 }
 
 function deriveTurnResult(turnResult, nextClosureBytes) {
