@@ -530,7 +530,9 @@ function compareU64(left, right) {
 }
 
 function toU64(value) {
-  return BigInt.asUintN(64, BigInt(value));
+  const actual = BigInt(value);
+  if (actual < 0n || actual > 0xffff_ffff_ffff_ffffn) throw new Error('u64 out of range');
+  return actual;
 }
 
 function parseManifestText(text) {

@@ -2,7 +2,7 @@ import { carrierVersionSummary } from '../protocol/world_manifest.mjs';
 import { summarizeTurnClosureForRunHead } from '../protocol/world_universal_appliance_codec.mjs';
 import { EffectRecoveryClass } from './actuator.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from './run.mjs';
-import { fail, makeBlobRef, stableJson } from './store.mjs';
+import { fail, stableJson } from './store.mjs';
 
 export async function forkRunBranch(store, { runId, sourceBranchId, sourceClosureFingerprint, newBranchId }) {
   const run = await store.getRun(runId);
@@ -44,7 +44,8 @@ export async function forkRunBranch(store, { runId, sourceBranchId, sourceClosur
 
 async function storedTurnClosureHead(store, run, sourceBranchId, sourceClosureFingerprint) {
   if (!selectedBranchClosureFingerprints(run, sourceBranchId).has(sourceClosureFingerprint)) return null;
-  for (const ref of await listStoredBlobRefs(store)) {
+  const refs = selectedBranchClosureRefs(run, sourceBranchId);
+  for (const ref of refs) {
     let summary;
     try {
       summary = summarizeTurnClosureForRunHead(await store.getBlob(ref));
@@ -69,6 +70,16 @@ async function storedTurnClosureHead(store, run, sourceBranchId, sourceClosureFi
   return null;
 }
 
+function selectedBranchClosureRefs(run, sourceBranchId) {
+  const refs = [];
+  for (const branch of run.branches ?? []) {
+    if (branch.branchId !== sourceBranchId) continue;
+    addRef(refs, branch.currentHead?.turnClosureRef);
+    for (const ref of branch.diagnostics?.historicalTurnClosureRefs ?? []) addRef(refs, ref);
+  }
+  return refs;
+}
+
 function selectedBranchClosureFingerprints(run, sourceBranchId) {
   const fingerprints = new Set();
   for (const branch of run.branches ?? []) {
@@ -84,12 +95,9 @@ function addFingerprint(fingerprints, value) {
   if (typeof value === 'string' && value.length > 0) fingerprints.add(value);
 }
 
-async function listStoredBlobRefs(store) {
-  if (typeof store.listBlobRefs === 'function') return await store.listBlobRefs();
-  if (store.blobs instanceof Map) {
-    return [...store.blobs.entries()].map(([checksum, bytes]) => makeBlobRef(checksum, bytes.byteLength));
-  }
-  return [];
+function addRef(refs, value) {
+  if (!value || typeof value !== 'object') return;
+  if (!refs.some((item) => item.checksum === value.checksum && item.byteLength === value.byteLength)) refs.push(value);
 }
 
 export async function exportCarrierRun(store, runId, branchId, options = {}) {

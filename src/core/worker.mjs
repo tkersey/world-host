@@ -3,9 +3,12 @@ import { assertDurableRecoveryAllowed } from './actuator.mjs';
 import { assertCapabilityReportAccepted, createRunPolicy, preflightCapabilities } from './capabilities.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from './run.mjs';
 import { assertBytes, fail, fromUtf8, toHex } from './store.mjs';
-import { decodeResolutionInputBytes, encodeRestoreTurnInput, resolutionResponded } from '../protocol/world_appliance_wire_codec.mjs';
+import { decodeApplianceManifest, decodeResolutionInputBytes, encodeRestoreTurnInput, resolutionResponded } from '../protocol/world_appliance_wire_codec.mjs';
 import { inspectTurnOutput, summarizeTurnClosureForRunHead } from '../protocol/world_universal_appliance_codec.mjs';
 import { wyhash64 } from '../protocol/world_loaded_value_codec.mjs';
+
+const runMetadataLocksByStore = new WeakMap();
+const runMetadataLocksByKey = new Map();
 
 export class WorldWorker {
   constructor() {
@@ -128,6 +131,8 @@ export class RunController {
     }));
     const parentClosureBytes = await this.store.getBlob(parentHead.turnClosureRef);
     assertParentHeadMatchesClosure(parentHead, parentClosureBytes);
+    const storedApplianceManifest = await storedApplianceManifestFingerprint(this.store, application);
+    const needsHostEffectPlan = prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, this.hostRequestMapper, this.effectDrivers, policy);
     const imageBytes = await this.store.getBlob(application.executableImageRef);
     const executableHostFingerprint = `sha256:${await sha256Hex(imageBytes)}`;
     const { worker, reused: workerReused } = await this.#workerFor({
@@ -144,18 +149,20 @@ export class RunController {
         workerMayBeDirty = true;
         await worker.loadExecutable(imageBytes);
       }
+      assertStoredApplicationManifestMatchesWorker(worker, storedApplianceManifest);
       assertParentClosureManifestMatchesWorker(worker, parentHead, parentClosureBytes);
       if (!workerReused && parentHead.status !== 'genesis' && typeof worker.restoreFromTurnClosure === 'function') {
         workerMayBeDirty = true;
         await worker.restoreFromTurnClosure(parentClosureBytes, parentHead);
       }
 
-      const effectTurn = await this.#effectTurnInput({ run, branchId, application, parentHead, parentClosureBytes, worker, options });
+      const effectTurn = await this.#effectTurnInput({ run, branchId, application, parentHead, parentClosureBytes, worker, options, needsHostEffectPlan });
       const turnInputBytes = effectTurn?.turnInputBytes ?? await this.turnInputFactory({ run, branchId, application, parentHead, parentClosureBytes, worker, options });
       workerMayBeDirty = true;
       const turnResult = options.turnResult ?? await worker.submitTurn(turnInputBytes);
       const nextClosureBytes = assertBytes(turnResult.turnClosureBytes ?? worker.readTurnClosure(), 'turnClosureBytes');
       const inspected = deriveTurnResult(turnResult, nextClosureBytes);
+      assertNextClosureManifestMatchesWorker(worker, inspected);
       assertNextTurnSequence(parentHead, parentClosureBytes, inspected);
       const confirmedEffects = effectTurn ? confirmedTurnEffects(effectTurn.effects, inspected) : [];
       if ((inspected.archiveMomentFingerprint == null) !== (inspected.archiveSealFingerprint == null)) {
@@ -248,17 +255,10 @@ export class RunController {
     worker.dispose();
   }
 
-  async #effectTurnInput({ run, branchId, application, parentHead, parentClosureBytes, worker, options }) {
+  async #effectTurnInput({ run, branchId, application, parentHead, parentClosureBytes, worker, options, needsHostEffectPlan }) {
     if (parentHead.status !== 'needs_host') return null;
-    let parentSummary;
-    try {
-      parentSummary = inspectTurnOutput(parentClosureBytes);
-    } catch (error) {
-      fail('ERR_PARENT_TURN_CLOSURE_INSPECTION_FAILED', error?.message ?? String(error));
-    }
-    if (parentSummary.hostRequestCount === 0) return null;
-
     const policy = createRunPolicy(options.effectPolicy ?? this.effectPolicy);
+    const plan = needsHostEffectPlan ?? prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, this.hostRequestMapper, this.effectDrivers, policy);
     const journal = new EffectJournal({
       store: this.store,
       runId: run.runId,
@@ -266,43 +266,15 @@ export class RunController {
       parentTurnClosureFingerprint: parentHead.turnClosureWorldFingerprint,
       policy,
     });
-    const pending = [];
-    const unresolvedHostRequests = [];
-    for (let index = 0; index < parentSummary.hostRequests.length; index += 1) {
-      const worldHostRequest = parentSummary.hostRequests[index];
-      const hostRequest = this.hostRequestMapper(worldHostRequest);
-      const selection = selectEffectDriver(this.effectDrivers, hostRequest, policy);
-      if (!selection) {
-        unresolvedHostRequests.push(unresolvedHostRequestDiagnostic(index, hostRequest));
-        continue;
-      }
-      pending.push({ index, worldHostRequest, hostRequest, ...selection });
-    }
-    if (unresolvedHostRequests.length > 0 && policy.allowPartialEffectBatch !== true) {
-      const first = unresolvedHostRequests[0];
-      fail('ERR_HOST_REQUEST_DRIVER_UNAVAILABLE', 'no exact driver for pending HostRequest', {
-        actuatorRef: first.actuatorRef,
-        descriptorFingerprint: first.descriptorFingerprint,
-        actuationClass: first.actuationClass,
-        unresolvedHostRequestCount: unresolvedHostRequests.length,
-      });
-    }
-    if (pending.length === 0) {
-      if (unresolvedHostRequests.length > 0) {
-        fail('ERR_PARTIAL_EFFECT_BATCH_EMPTY', 'partial effect batch has no covered HostRequests', {
-          unresolvedHostRequestCount: unresolvedHostRequests.length,
-        });
-      }
-      return null;
-    }
-    if (unresolvedHostRequests.length > 0) {
-      for (const unresolved of unresolvedHostRequests) {
+    if (plan.pending.length === 0) return null;
+    if (plan.unresolvedHostRequests.length > 0) {
+      for (const unresolved of plan.unresolvedHostRequests) {
         unresolved.policy = 'allowPartialEffectBatch';
       }
     }
     const effects = await this.#resolveEffectBatch({
       journal,
-      pending,
+      pending: plan.pending,
       run,
       branchId,
       application,
@@ -312,18 +284,18 @@ export class RunController {
       options,
       policy,
     });
-    const resolutions = assertEffectTargetsPendingRequests(effects, pending);
+    const resolutions = assertEffectTargetsPendingRequests(effects, plan.pending);
     return {
       journal,
       effects,
-      unresolvedHostRequests,
+      unresolvedHostRequests: plan.unresolvedHostRequests,
       turnInputBytes: encodeRestoreTurnInput({
-        manifestFingerprint: parentSummary.manifestFingerprint,
+        manifestFingerprint: plan.parentSummary.manifestFingerprint,
         parentTurnClosureBytes: parentClosureBytes,
-        expectedParentClosureFingerprint: parentSummary.closureFingerprint,
-        expectedParentStateFingerprint: parentSummary.resultingStateFingerprint,
-        previousTurnReceiptFingerprint: parentSummary.turnReceipt.receiptFingerprint,
-        turnSequenceNumber: parentSummary.turnSequenceNumber + 1n,
+        expectedParentClosureFingerprint: plan.parentSummary.closureFingerprint,
+        expectedParentStateFingerprint: plan.parentSummary.resultingStateFingerprint,
+        previousTurnReceiptFingerprint: plan.parentSummary.turnReceipt.receiptFingerprint,
+        turnSequenceNumber: plan.parentSummary.turnSequenceNumber + 1n,
         resolutions,
         metadata: options.effectTurnMetadata ?? 'world-host.runcontroller.effects',
       }),
@@ -358,26 +330,33 @@ export class RunController {
 
 async function recordBranchHeadProvenance(store, runId, branchId, nextHead) {
   if (typeof store.writeRun !== 'function') return;
-  const run = await store.getRun(runId);
-  let updated = false;
-  const branches = (run.branches ?? []).map((branch) => {
-    if (branch.branchId !== branchId) return branch;
-    updated = true;
-    const historicalTurnClosureFingerprints = appendUnique(
-      branch.diagnostics?.historicalTurnClosureFingerprints,
-      branch.currentHead?.turnClosureWorldFingerprint,
-    );
-    return createBranchRecord({
-      ...branch,
-      currentHead: nextHead,
-      diagnostics: {
-        ...branch.diagnostics,
-        historicalTurnClosureFingerprints,
-      },
+  await withRunMetadataLock(store, runId, async () => {
+    const run = await store.getRun(runId);
+    let updated = false;
+    const branches = (run.branches ?? []).map((branch) => {
+      if (branch.branchId !== branchId) return branch;
+      updated = true;
+      const historicalTurnClosureFingerprints = appendUnique(
+        branch.diagnostics?.historicalTurnClosureFingerprints,
+        branch.currentHead?.turnClosureWorldFingerprint,
+      );
+      const historicalTurnClosureRefs = appendUniqueRefs(
+        branch.diagnostics?.historicalTurnClosureRefs,
+        branch.currentHead?.turnClosureRef,
+      );
+      return createBranchRecord({
+        ...branch,
+        currentHead: nextHead,
+        diagnostics: {
+          ...branch.diagnostics,
+          historicalTurnClosureFingerprints,
+          historicalTurnClosureRefs,
+        },
+      });
     });
+    if (!updated) return;
+    await store.writeRun(createRunRecord({ ...run, branches }));
   });
-  if (!updated) return;
-  await store.writeRun(createRunRecord({ ...run, branches }));
 }
 
 function appendUnique(values, next) {
@@ -387,6 +366,41 @@ function appendUnique(values, next) {
   }
   if (typeof next === 'string' && next.length > 0 && !out.includes(next)) out.push(next);
   return out;
+}
+
+function appendUniqueRefs(values, next) {
+  const out = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    if (value && typeof value === 'object' && !out.some((item) => item.checksum === value.checksum && item.byteLength === value.byteLength)) out.push(value);
+  }
+  if (next && typeof next === 'object' && !out.some((item) => item.checksum === next.checksum && item.byteLength === next.byteLength)) out.push(next);
+  return out;
+}
+
+async function withRunMetadataLock(store, runId, fn) {
+  const key = store.concurrencyKey ? `${store.concurrencyKey}:${runId}` : null;
+  if (key) return await withLockMap(runMetadataLocksByKey, key, fn);
+  let locks = runMetadataLocksByStore.get(store);
+  if (!locks) {
+    locks = new Map();
+    runMetadataLocksByStore.set(store, locks);
+  }
+  return await withLockMap(locks, runId, fn);
+}
+
+async function withLockMap(locks, key, fn) {
+  const previous = locks.get(key) ?? Promise.resolve();
+  let release;
+  const current = new Promise((resolve) => { release = resolve; });
+  const stored = previous.then(() => current, () => current);
+  locks.set(key, stored);
+  await previous.catch(() => {});
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (locks.get(key) === stored) locks.delete(key);
+  }
 }
 
 function deriveTurnResult(turnResult, nextClosureBytes) {
@@ -759,6 +773,80 @@ function assertParentClosureManifestMatchesWorker(worker, parentHead, parentClos
   }
 }
 
+async function storedApplianceManifestFingerprint(store, application) {
+  let bytes;
+  try {
+    bytes = await store.getBlob(application.applianceManifestRef);
+  } catch {
+    return null;
+  }
+  try {
+    return decodeApplianceManifest(bytes).manifestFingerprint;
+  } catch {
+    return null;
+  }
+}
+
+function assertStoredApplicationManifestMatchesWorker(worker, storedManifestFingerprint) {
+  if (storedManifestFingerprint == null || typeof worker.readApplianceManifest !== 'function') return;
+  const loaded = worker.readApplianceManifest()?.decoded?.manifestFingerprint;
+  if (loaded != null && loaded !== storedManifestFingerprint) {
+    fail('ERR_APPLICATION_MANIFEST_MISMATCH', 'stored appliance manifest does not match loaded executable manifest');
+  }
+}
+
+function assertNextClosureManifestMatchesWorker(worker, inspected) {
+  if (typeof worker.readApplianceManifest !== 'function') return;
+  const loaded = worker.readApplianceManifest()?.decoded?.manifestFingerprint;
+  const next = inspected.inspectionDiagnostics?.manifestFingerprint;
+  const expected = loaded == null ? null : `world:manifest:${loaded.toString(16).padStart(16, '0')}`;
+  if (expected != null && next !== expected) {
+    fail('ERR_TURN_CLOSURE_MANIFEST_MISMATCH', 'next TurnClosure manifest does not match loaded application manifest');
+  }
+}
+
+function prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, hostRequestMapper, effectDrivers, policy) {
+  if (parentHead.status !== 'needs_host') return null;
+  let parentSummary;
+  try {
+    parentSummary = inspectTurnOutput(parentClosureBytes);
+  } catch (error) {
+    fail('ERR_PARENT_TURN_CLOSURE_INSPECTION_FAILED', error?.message ?? String(error));
+  }
+  if (parentSummary.hostRequestCount === 0) fail('ERR_NEEDS_HOST_REQUESTS_EMPTY', 'needs_host TurnClosure has no pending HostRequests');
+  const pending = [];
+  const unresolvedHostRequests = [];
+  for (let index = 0; index < parentSummary.hostRequests.length; index += 1) {
+    const worldHostRequest = parentSummary.hostRequests[index];
+    let hostRequest;
+    try {
+      hostRequest = hostRequestMapper(worldHostRequest);
+    } catch (error) {
+      if (policy.allowPartialEffectBatch !== true) throw error;
+      unresolvedHostRequests.push(unresolvedHostRequestDiagnostic(index, { diagnostics: { mapperError: error?.message ?? String(error) } }));
+      continue;
+    }
+    const selection = selectEffectDriver(effectDrivers, hostRequest, policy);
+    if (selection) pending.push({ index, worldHostRequest, hostRequest, ...selection });
+    else unresolvedHostRequests.push(unresolvedHostRequestDiagnostic(index, hostRequest));
+  }
+  if (unresolvedHostRequests.length > 0 && policy.allowPartialEffectBatch !== true) {
+    const first = unresolvedHostRequests[0];
+    fail('ERR_HOST_REQUEST_DRIVER_UNAVAILABLE', 'no exact driver for pending HostRequest', {
+      actuatorRef: first.actuatorRef,
+      descriptorFingerprint: first.descriptorFingerprint,
+      actuationClass: first.actuationClass,
+      unresolvedHostRequestCount: unresolvedHostRequests.length,
+    });
+  }
+  if (pending.length === 0 && unresolvedHostRequests.length > 0) {
+    fail('ERR_PARTIAL_EFFECT_BATCH_EMPTY', 'partial effect batch has no covered HostRequests', {
+      unresolvedHostRequestCount: unresolvedHostRequests.length,
+    });
+  }
+  return { parentSummary, pending, unresolvedHostRequests };
+}
+
 function assertHeadGenerationMatchesClosure(head, summary) {
   const closureGeneration = summary.inspectionDiagnostics?.turnSequenceNumber;
   if (!Number.isSafeInteger(closureGeneration)) fail('ERR_PARENT_HEAD_CLOSURE_MISMATCH', 'parent TurnClosure sequence is not inspectable');
@@ -766,7 +854,7 @@ function assertHeadGenerationMatchesClosure(head, summary) {
   if (storedClosureGeneration !== undefined && !Number.isSafeInteger(storedClosureGeneration)) fail('ERR_PARENT_HEAD_CLOSURE_MISMATCH', 'parent RunHead generation is not inspectable');
   const generationMatches = storedClosureGeneration === undefined
     ? closureGeneration + 1 === head.generation
-    : closureGeneration === storedClosureGeneration;
+    : closureGeneration === storedClosureGeneration && closureGeneration + 1 === head.generation;
   if (!generationMatches) {
     fail('ERR_PARENT_HEAD_CLOSURE_MISMATCH', 'parent RunHead generation does not match selected TurnClosure bytes', {
       field: 'generation',

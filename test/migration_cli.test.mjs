@@ -64,7 +64,7 @@ describe('migration, branching, and CLI diagnostics', () => {
   it('forks a historical stored TurnClosure after the source branch advances', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-historical-fork-'));
     try {
-      const { run, head } = await fixtureDirectoryStore(root, { closureOptions: { status: 0 } });
+      const { run, head } = await fixtureDirectoryStore(root, { closureOptions: { status: 1 } });
       const store = new DirectoryStore(root);
       const advancedBytes = fixtureTurnClosureBytes({
         closureFingerprint: 0x222n,

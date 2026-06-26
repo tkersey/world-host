@@ -1,6 +1,7 @@
 import { EffectRecoveryClass } from '../core/actuator.mjs';
 import { fail, fromUtf8 } from '../core/store.mjs';
 import { encodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
+import { encodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
 
 export class FixtureModelDriver {
   constructor({ responses = [], actuatorRef = 'fixture:model', descriptorFingerprint = 'descriptor:fixture-model' } = {}) {
@@ -30,7 +31,7 @@ export class FixtureModelDriver {
     if (!this.responses.length) fail('ERR_FIXTURE_MODEL_RESPONSE_MISSING');
     const response = this.responses[Math.min(this.index, this.responses.length - 1)];
     this.index += 1;
-    return { resolutionInputBytes: resolutionInput(hostRequest, response instanceof Uint8Array ? response : fromUtf8(String(response))) };
+    return { resolutionInputBytes: resolutionInput(hostRequest, response instanceof Uint8Array ? response : encodeCanonicalValueImage({ bytes: fromUtf8(String(response)), dynamicSize: true })) };
   }
 
   async recover(context, effectRecord) {

@@ -830,7 +830,7 @@ describe('EffectJournal', () => {
     assert.equal(driver.recoverCalls, 1);
   });
 
-  it('reconciles resolved and submitted effects from the committed head without crossing branch or parent', async () => {
+  it('reconciles submitted effects from the committed head without crossing branch or parent', async () => {
     const store = new MemoryStore();
     const mainJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
     const otherParentJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:other' });
@@ -867,12 +867,11 @@ describe('EffectJournal', () => {
     });
     const records = await store.listEffectRecords('run');
 
-    assert.equal(result.committedCount, 2);
+    assert.equal(result.committedCount, 1);
     assert.deepEqual(result.committed.map((record) => record.idempotencyKey.bytesHex).sort(), [
       matching.idempotencyKey.bytesHex,
-      resolved.idempotencyKey.bytesHex,
     ].sort());
-    assert.equal(records.find((record) => record.idempotencyKey.bytesHex === resolved.idempotencyKey.bytesHex).state, EffectState.closureCommitted);
+    assert.equal(records.find((record) => record.idempotencyKey.bytesHex === resolved.idempotencyKey.bytesHex).state, EffectState.resolved);
     assert.equal(records.find((record) => record.idempotencyKey.bytesHex === uncommittedResolved.idempotencyKey.bytesHex).state, EffectState.resolved);
     assert.equal(records.find((record) => record.idempotencyKey.bytesHex === matching.idempotencyKey.bytesHex).state, EffectState.closureCommitted);
     assert.equal(records.find((record) => record.idempotencyKey.bytesHex === otherParent.idempotencyKey.bytesHex).state, EffectState.submitted);

@@ -1041,7 +1041,7 @@ async function fixtureStore(options = {}) {
   const manifestRef = await store.putBlob(fromUtf8('manifest'));
   const closureBytes = options.closureBytes ?? (options.headStatus === 'genesis'
     ? fromUtf8('world-host:genesis')
-    : fixtureTurnClosureBytes({ status: 0, turnSequenceNumber: 0n }));
+    : fixtureTurnClosureBytes({ status: 1, turnSequenceNumber: 0n }));
   const closureRef = await store.putBlob(closureBytes);
   const closureSummary = options.headSummary ?? (options.headStatus === 'genesis' ? {
     turnClosureWorldFingerprint: 'world:turn-closure:genesis',
