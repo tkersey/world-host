@@ -349,6 +349,13 @@ async function recordBranchHeadProvenance(store, runId, branchId, parentHead, ne
         ),
         parentHead.turnClosureRef,
       );
+      const historicalRunHeads = appendUniqueHeads(
+        appendUniqueHeads(
+          branch.diagnostics?.historicalRunHeads,
+          branch.currentHead,
+        ),
+        parentHead,
+      );
       return createBranchRecord({
         ...branch,
         currentHead: nextHead,
@@ -356,6 +363,7 @@ async function recordBranchHeadProvenance(store, runId, branchId, parentHead, ne
           ...branch.diagnostics,
           historicalTurnClosureFingerprints,
           historicalTurnClosureRefs,
+          historicalRunHeads,
         },
       });
     });
@@ -379,6 +387,19 @@ function appendUniqueRefs(values, next) {
     if (value && typeof value === 'object' && !out.some((item) => item.checksum === value.checksum && item.byteLength === value.byteLength)) out.push(value);
   }
   if (next && typeof next === 'object' && !out.some((item) => item.checksum === next.checksum && item.byteLength === next.byteLength)) out.push(next);
+  return out;
+}
+
+function appendUniqueHeads(values, next) {
+  const out = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    if (value && typeof value === 'object' && typeof value.turnClosureWorldFingerprint === 'string' && !out.some((item) => item.turnClosureWorldFingerprint === value.turnClosureWorldFingerprint)) {
+      out.push(createRunHead(value));
+    }
+  }
+  if (next && typeof next === 'object' && typeof next.turnClosureWorldFingerprint === 'string' && !out.some((item) => item.turnClosureWorldFingerprint === next.turnClosureWorldFingerprint)) {
+    out.push(createRunHead(next));
+  }
   return out;
 }
 

@@ -356,6 +356,8 @@ describe('RunController and WorldWorker', () => {
     assert.equal(result.status, 'advanced');
     assert.equal(hasBlobRef(branch.diagnostics.historicalTurnClosureRefs, head.turnClosureRef), true);
     assert.equal(hasBlobRef(branch.diagnostics.historicalTurnClosureRefs, parentHead.turnClosureRef), true);
+    assert.equal(branch.diagnostics.historicalRunHeads.some((item) => item.turnClosureWorldFingerprint === head.turnClosureWorldFingerprint), true);
+    assert.equal(branch.diagnostics.historicalRunHeads.some((item) => item.turnClosureWorldFingerprint === parentHead.turnClosureWorldFingerprint), true);
   });
 
   it('submits but does not commit effects on CAS conflict', async () => {

@@ -44,6 +44,20 @@ export async function forkRunBranch(store, { runId, sourceBranchId, sourceClosur
 
 async function storedTurnClosureHead(store, run, sourceBranchId, sourceClosureFingerprint) {
   if (!selectedBranchClosureFingerprints(run, sourceBranchId).has(sourceClosureFingerprint)) return null;
+  for (const head of selectedBranchHistoricalHeads(run, sourceBranchId)) {
+    if (head.turnClosureWorldFingerprint !== sourceClosureFingerprint) continue;
+    let summary;
+    try {
+      summary = summarizeTurnClosureForRunHead(await store.getBlob(head.turnClosureRef));
+    } catch {
+      continue;
+    }
+    if (summary.turnClosureWorldFingerprint !== sourceClosureFingerprint) continue;
+    return createRunHead({
+      ...head,
+      updateDiagnostics: { ...head.updateDiagnostics, selectedStoredClosure: true, inspectedTurnClosure: summary.inspectionDiagnostics },
+    });
+  }
   const refs = selectedBranchClosureRefs(run, sourceBranchId);
   for (const ref of refs) {
     let summary;
@@ -76,6 +90,7 @@ function selectedBranchClosureRefs(run, sourceBranchId) {
     if (branch.branchId !== sourceBranchId) continue;
     addRef(refs, branch.currentHead?.turnClosureRef);
     for (const ref of branch.diagnostics?.historicalTurnClosureRefs ?? []) addRef(refs, ref);
+    for (const head of branch.diagnostics?.historicalRunHeads ?? []) addRef(refs, head?.turnClosureRef);
   }
   return refs;
 }
@@ -87,8 +102,22 @@ function selectedBranchClosureFingerprints(run, sourceBranchId) {
     addFingerprint(fingerprints, branch.currentHead?.turnClosureWorldFingerprint);
     addFingerprint(fingerprints, branch.forkedFromTurnClosureFingerprint);
     for (const fingerprint of branch.diagnostics?.historicalTurnClosureFingerprints ?? []) addFingerprint(fingerprints, fingerprint);
+    for (const head of branch.diagnostics?.historicalRunHeads ?? []) addFingerprint(fingerprints, head?.turnClosureWorldFingerprint);
   }
   return fingerprints;
+}
+
+function selectedBranchHistoricalHeads(run, sourceBranchId) {
+  const heads = [];
+  for (const branch of run.branches ?? []) {
+    if (branch.branchId !== sourceBranchId) continue;
+    for (const head of branch.diagnostics?.historicalRunHeads ?? []) {
+      if (head && typeof head === 'object' && typeof head.turnClosureWorldFingerprint === 'string' && !heads.some((item) => item.turnClosureWorldFingerprint === head.turnClosureWorldFingerprint)) {
+        heads.push(createRunHead(head));
+      }
+    }
+  }
+  return heads;
 }
 
 function addFingerprint(fingerprints, value) {

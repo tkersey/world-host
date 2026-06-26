@@ -108,6 +108,69 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('preserves retained archive anchors when forking a historical archive-less closure', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-historical-archive-less-fork-'));
+    try {
+      const { run, head } = await fixtureDirectoryStore(root, { closureOptions: { status: 1, archiveLess: true } });
+      const store = new DirectoryStore(root);
+      const retainedHead = createRunHead({
+        ...head,
+        archiveMomentFingerprint: 'world:archive-moment:retained',
+        archiveSealFingerprint: 'world:archive-seal:retained',
+      });
+      const advancedBytes = fixtureTurnClosureBytes({
+        closureFingerprint: 0x322n,
+        turnSequenceNumber: 2n,
+        resultingStateFingerprint: 0x432n,
+        chronicleResultingCursorFingerprint: 0x434n,
+      });
+      const advancedSummary = summarizeTurnClosureForRunHead(advancedBytes);
+      const advancedRef = await store.putBlob(advancedBytes);
+      const advancedHead = createRunHead({
+        generation: retainedHead.generation + 1,
+        turnClosureRef: advancedRef,
+        turnClosureWorldFingerprint: advancedSummary.turnClosureWorldFingerprint,
+        resultingStateFingerprint: advancedSummary.resultingStateFingerprint,
+        chronicleCursor: advancedSummary.chronicleCursor,
+        archiveMomentFingerprint: advancedSummary.archiveMomentFingerprint,
+        archiveSealFingerprint: advancedSummary.archiveSealFingerprint,
+        status: advancedSummary.status,
+      });
+      await store.writeHead(run.runId, 'main', advancedHead);
+      const currentRun = await store.getRun(run.runId);
+      await store.writeRun(createRunRecord({
+        ...currentRun,
+        branches: currentRun.branches.map((branch) => branch.branchId === 'main'
+          ? createBranchRecord({
+              ...branch,
+              currentHead: advancedHead,
+              diagnostics: {
+                ...branch.diagnostics,
+                historicalTurnClosureFingerprints: [retainedHead.turnClosureWorldFingerprint],
+                historicalTurnClosureRefs: [retainedHead.turnClosureRef],
+                historicalRunHeads: [retainedHead],
+              },
+            })
+          : branch),
+      }));
+
+      const branch = await forkRunBranch(store, {
+        runId: run.runId,
+        sourceBranchId: 'main',
+        sourceClosureFingerprint: retainedHead.turnClosureWorldFingerprint,
+        newBranchId: 'historic-retained',
+      });
+      const forkedHead = await store.readHead(run.runId, 'historic-retained');
+
+      assert.equal(branch.forkedFromTurnClosureFingerprint, retainedHead.turnClosureWorldFingerprint);
+      assert.equal(forkedHead.archiveMomentFingerprint, 'world:archive-moment:retained');
+      assert.equal(forkedHead.archiveSealFingerprint, 'world:archive-seal:retained');
+      assert.equal(forkedHead.updateDiagnostics.selectedStoredClosure, true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('rejects historical forks from another run in the same store', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-cross-run-fork-'));
     try {
