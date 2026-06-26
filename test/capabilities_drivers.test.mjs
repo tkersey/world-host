@@ -262,9 +262,8 @@ describe('capability preflight and reference drivers', () => {
         hostRequestFingerprint: 'sha256:00000000000000a1',
       });
       const decoded = decodeResolutionInputBytes(recovered.resolutionInputBytes);
-      const payload = JSON.parse(new TextDecoder().decode(decoded.responseValueImageBytes));
       assert.equal(decoded.targetHostRequestFingerprint, 0xa1n);
-      assert.deepEqual(payload, { byteLength: 33, path: 'out.txt', status: 'ok' });
+      assert.deepEqual([...decoded.responseValueImageBytes], [...writeImage]);
       const missing = await driver.resolve({}, fileRequest('missing.txt'));
       const missingDecoded = decodeResolutionInputBytes(missing.resolutionInputBytes);
       assert.equal(missingDecoded.status, 1);
