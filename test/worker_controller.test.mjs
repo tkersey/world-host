@@ -84,6 +84,22 @@ describe('RunController and WorldWorker', () => {
     assert.equal(worker.restoreCount, 0);
   });
 
+  it('rejects nonzero genesis heads before worker execution', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'genesis',
+      headOverrides: { generation: 1 },
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes({ turnSequenceNumber: 0n })),
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_GENESIS_HEAD_GENERATION_INVALID' },
+    );
+  });
+
   it('preflights installed application requirements before worker execution', async () => {
     const { store, runId, branchId } = await fixtureStore({
       applicationOverrides: {
@@ -1069,6 +1085,29 @@ describe('RunController and WorldWorker', () => {
     );
   });
 
+  it('fails closed when embedded TurnReceipt result fields diverge from the closure', async () => {
+    const { store, runId, branchId } = await fixtureStore();
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes({ receiptRootResultFingerprint: 0xbadn })),
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_TURN_CLOSURE_INSPECTION_FAILED' },
+    );
+  });
+
+  it('fails closed when pending HostRequests are not receipt-emitted', () => {
+    assert.throws(
+      () => summarizeTurnClosureForRunHead(fixtureNeedsHostTurnClosureBytes(
+        [fixtureHostRequestBytes({ requestFingerprint: 0xa02n })],
+        { emittedHostRequestFingerprints: [0xa01n] },
+      )),
+      /TurnReceipt emitted HostRequests do not match TurnClosure pending requests/,
+    );
+  });
+
   it('accepts real TurnReceipt status mapping for completed closures', async () => {
     const { store, runId, branchId } = await fixtureStore();
     const controller = new RunController({
@@ -1520,12 +1559,12 @@ function fixtureTurnClosureBytes(options = {}) {
     u64Slice(options.appliedHostReplyFingerprints ?? defaultAppliedHostReplyFingerprints()),
     u64Slice([]),
     optionalU64(null),
-    u64(0xc01n),
-    optionalU64(0xa00n),
-    optionalU64(options.archiveLess ? null : 0xa01n),
-    optionalU64(options.archiveLess ? null : 0xa02n),
-    optionalU64(0xa03n),
-    optionalU64(0xb01n),
+    u64(options.receiptResultingCapsuleFingerprint ?? 0x501n),
+    optionalU64(options.receiptArchiveAppendBatchFingerprint ?? 0xa00n),
+    optionalU64(options.receiptArchiveMomentFingerprint ?? (options.archiveLess ? null : 0xa01n)),
+    optionalU64(options.receiptArchiveSealFingerprint ?? (options.archiveLess ? null : 0xa02n)),
+    optionalU64(options.receiptChronicleCursorFingerprint ?? 0x304n),
+    optionalU64(options.receiptRootResultFingerprint ?? 0xb01n),
     u8(options.receiptStatus ?? receiptStatusForClosureStatus(closureStatus)),
     optionalU64(null),
     u64(1n),
@@ -1546,8 +1585,8 @@ function fixtureTurnClosureBytes(options = {}) {
     u64(0x304n),
     optionalU64(null),
     optionalU64(null),
-    optionalU64(null),
-    optionalU64(null),
+    optionalU64(options.archiveLess ? null : 0xa01n),
+    optionalU64(options.archiveLess ? null : 0xa02n),
     u64(0x401n),
     bytes(new Uint8Array()),
     u64(0x501n),
@@ -1559,7 +1598,7 @@ function fixtureTurnClosureBytes(options = {}) {
     bytes(Uint8Array.of(1, 2, 3)),
     bytes(new Uint8Array()),
     optionalU64(0xb01n),
-    bytes(Uint8Array.of(4)),
+    bytes(rootResultValueBytes(options.rootResultValueFingerprint ?? 0xb01n)),
     optionalU64(null),
     optionalU64(null),
     bytes(new Uint8Array()),
@@ -1719,11 +1758,17 @@ function optionalHashU64(value) {
   return value == null ? u64(0n) : concat([u64(1n), u64(value)]);
 }
 
+function rootResultValueBytes(fingerprint) {
+  const label = fromUtf8('world.appliance.root_result.value_image');
+  return concat([u32(label.byteLength), label, u64(fingerprint)]);
+}
+
 function nonzero(value) {
   return value === 0n ? 1n : value;
 }
 
-function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()]) {
+function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()], options = {}) {
+  const emittedHostRequestFingerprints = options.emittedHostRequestFingerprints ?? requests.map(fixtureHostRequestFingerprint);
   const turnReceiptBytes = concat([
     u32(1),
     u32(1),
@@ -1733,13 +1778,13 @@ function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()]
     u64(0x301n),
     optionalU64(null),
     u64Slice([]),
-    u64Slice([0xa01n]),
+    u64Slice(emittedHostRequestFingerprints),
     optionalU64(null),
-    u64(0xc01n),
+    u64(0x501n),
     optionalU64(null),
     optionalU64(null),
-    optionalU64(0xa03n),
-    optionalU64(0xa04n),
+    optionalU64(null),
+    optionalU64(0x304n),
     optionalU64(null),
     u8(0),
     optionalU64(null),
@@ -1788,6 +1833,11 @@ function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()]
     bytes(new Uint8Array()),
     u8(0),
   ]);
+}
+
+function fixtureHostRequestFingerprint(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return view.getBigUint64(8, true);
 }
 
 function fixtureHostRequestBytes(options = {}) {

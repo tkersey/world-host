@@ -417,6 +417,9 @@ function deriveTurnResult(turnResult, nextClosureBytes) {
 }
 
 function assertHeadContinuable(parentHead) {
+  if (parentHead.status === 'genesis' && parentHead.generation !== 0) {
+    fail('ERR_GENESIS_HEAD_GENERATION_INVALID', 'genesis branch heads must have generation 0');
+  }
   if (parentHead.status === 'genesis' || parentHead.status === 'needs_host' || parentHead.status === 'yielded_budget') return;
   fail('ERR_BRANCH_HEAD_NOT_CONTINUABLE', `branch head status ${parentHead.status} cannot be advanced`);
 }

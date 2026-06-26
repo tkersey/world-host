@@ -21,7 +21,7 @@ export class HttpJsonDriver {
       supportedDescriptorFingerprints: ['descriptor:http-json'],
       supportedActuationClasses: ['http'],
       supportedResponseStatuses: ['ok', 'http_error'],
-      maximumRequestBytes: this.maximumRequestBytes,
+      maximumRequestBytes: encodedJsonStringEnvelopeLimit(this.maximumRequestBytes, 4096),
       maximumResponseBytes: encodedJsonStringEnvelopeLimit(this.maximumResponseBytes, 128),
       recoveryClass: EffectRecoveryClass.idempotent,
       concurrencyLimit: 4,

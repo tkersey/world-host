@@ -1826,11 +1826,11 @@ function fixtureTurnClosureBytes(options = {}) {
     u64Slice([]),
     u64Slice([]),
     optionalU64(null),
-    u64(0xc01n),
+    u64(0x501n),
     optionalU64(0xa00n),
     optionalU64(0xa01n),
     optionalU64(0xa02n),
-    optionalU64(0xa03n),
+    optionalU64(options.chronicleResultingCursorFingerprint ?? 0x304n),
     optionalU64(0xb01n),
     u8(receiptStatusForClosureStatus(closureStatus)),
     optionalU64(null),
@@ -1851,8 +1851,8 @@ function fixtureTurnClosureBytes(options = {}) {
     u64(options.chronicleResultingCursorFingerprint ?? 0x304n),
     optionalU64(null),
     optionalU64(null),
-    optionalU64(null),
-    optionalU64(null),
+    optionalU64(0xa01n),
+    optionalU64(0xa02n),
     u64(0x401n),
     bytes(new Uint8Array()),
     u64(0x501n),
@@ -1864,7 +1864,7 @@ function fixtureTurnClosureBytes(options = {}) {
     bytes(Uint8Array.of(1, 2, 3)),
     bytes(new Uint8Array()),
     optionalU64(0xb01n),
-    bytes(Uint8Array.of(4)),
+    bytes(rootResultValueBytes(0xb01n)),
     optionalU64(null),
     optionalU64(null),
     bytes(new Uint8Array()),
@@ -1900,13 +1900,13 @@ function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()]
     u64(0x301n),
     optionalU64(null),
     u64Slice([]),
-    u64Slice([0xa01n]),
+    u64Slice(requests.map(fixtureHostRequestFingerprint)),
     optionalU64(null),
-    u64(0xc01n),
+    u64(0x501n),
     optionalU64(null),
     optionalU64(null),
-    optionalU64(0xa03n),
-    optionalU64(0xa04n),
+    optionalU64(null),
+    optionalU64(0x304n),
     optionalU64(null),
     u8(0),
     optionalU64(null),
@@ -1955,6 +1955,11 @@ function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()]
     bytes(new Uint8Array()),
     u8(0),
   ]);
+}
+
+function fixtureHostRequestFingerprint(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return view.getBigUint64(8, true);
 }
 
 function fixtureHostRequestBytes() {
@@ -2028,6 +2033,11 @@ function u64Slice(values) {
 
 function byteSlices(values) {
   return concat([u64(values.length), ...values.map(bytes)]);
+}
+
+function rootResultValueBytes(fingerprint) {
+  const label = fromUtf8('world.appliance.root_result.value_image');
+  return concat([u32(label.byteLength), label, u64(fingerprint)]);
 }
 
 function concat(chunks) {

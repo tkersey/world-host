@@ -19,11 +19,16 @@ export function createRunPolicy(input = {}) {
     allowedAuthorityLabels: new Set(input.allowedAuthorityLabels ?? []),
     allowedFileRoots: new Set(input.allowedFileRoots ?? []),
     allowedHttpOrigins: new Set(input.allowedHttpOrigins ?? []),
-    maximumConcurrentEffects: input.maximumConcurrentEffects ?? 1,
-    maximumRequestBytes: input.maximumRequestBytes ?? 1024 * 1024,
-    maximumResponseBytes: input.maximumResponseBytes ?? 1024 * 1024,
+    maximumConcurrentEffects: positiveSafeInteger(input.maximumConcurrentEffects ?? 1, 'maximumConcurrentEffects'),
+    maximumRequestBytes: positiveSafeInteger(input.maximumRequestBytes ?? 1024 * 1024, 'maximumRequestBytes'),
+    maximumResponseBytes: positiveSafeInteger(input.maximumResponseBytes ?? 1024 * 1024, 'maximumResponseBytes'),
     acceptedSupervisionPolicies: new Set(input.acceptedSupervisionPolicies ?? ['default']),
   });
+}
+
+function positiveSafeInteger(value, field) {
+  if (!Number.isSafeInteger(value) || value < 1) fail('ERR_RUN_POLICY_LIMIT_INVALID', `${field} must be a positive safe integer`);
+  return value;
 }
 
 export function createHostCapabilityManifest(input = {}) {

@@ -23,7 +23,7 @@ export function inspectTurnOutput(bytes) {
   const archiveResultingSealFingerprint = reader.optionalU64();
   reader.u64();
   reader.bytesLen();
-  reader.u64();
+  const capsuleFingerprint = reader.u64();
   reader.bytesLen();
   reader.u64();
   const turnReceiptBytes = reader.bytes();
@@ -34,7 +34,8 @@ export function inspectTurnOutput(bytes) {
   const pendingHostRequestBytes = reader.bytes();
   const hostRequests = decodeHostRequestsImage(pendingHostRequestBytes);
   const rootResultFingerprint = reader.optionalU64();
-  const rootResultBytesLen = reader.bytesLen();
+  const rootResultBytes = reader.bytes();
+  const rootResultBytesLen = rootResultBytes.byteLength;
   reader.optionalU64();
   reader.optionalU64();
   reader.bytesLen();
@@ -50,7 +51,16 @@ export function inspectTurnOutput(bytes) {
   assertReceiptMatchesClosure(turnReceipt, {
     manifestFingerprint,
     turnSequenceNumber,
+    resultingStateFingerprint,
+    capsuleFingerprint,
+    chronicleResultingCursorFingerprint,
+    archiveAppendFingerprint,
+    archiveResultingMomentFingerprint,
+    archiveResultingSealFingerprint,
+    rootResultFingerprint,
+    rootResultBytes,
     status,
+    hostRequests,
   });
   if (reader.remaining() !== 0) throw new Error('trailing TurnClosure bytes');
   return {
@@ -59,6 +69,7 @@ export function inspectTurnOutput(bytes) {
     manifestFingerprint,
     turnSequenceNumber,
     resultingStateFingerprint,
+    capsuleFingerprint,
     chronicleResultingCursorFingerprint,
     archiveResultingMomentFingerprint,
     archiveResultingSealFingerprint,
@@ -76,7 +87,45 @@ export function inspectTurnOutput(bytes) {
 function assertReceiptMatchesClosure(receipt, closure) {
   if (receipt.manifestFingerprint !== closure.manifestFingerprint) throw new Error('TurnReceipt manifest does not match TurnClosure manifest');
   if (receipt.turnSequenceNumber !== closure.turnSequenceNumber) throw new Error('TurnReceipt sequence does not match TurnClosure sequence');
+  if (receipt.resultingCapsuleFingerprint !== closure.capsuleFingerprint) throw new Error('TurnReceipt resulting capsule does not match TurnClosure capsule');
+  if (receipt.resultingChronicleCursorFingerprint != null && receipt.resultingChronicleCursorFingerprint !== closure.chronicleResultingCursorFingerprint) throw new Error('TurnReceipt chronicle cursor does not match TurnClosure chronicle cursor');
+  assertOptionalFingerprintMatches(receipt.archiveAppendBatchFingerprint, closure.archiveAppendFingerprint, 'TurnReceipt archive append does not match TurnClosure archive append');
+  assertOptionalFingerprintMatches(receipt.resultingArchiveMomentFingerprint, closure.archiveResultingMomentFingerprint, 'TurnReceipt archive moment does not match TurnClosure archive moment');
+  assertOptionalFingerprintMatches(receipt.resultingArchiveSealFingerprint, closure.archiveResultingSealFingerprint, 'TurnReceipt archive seal does not match TurnClosure archive seal');
+  assertRootResultMatchesClosure(receipt.rootResultFingerprint, closure.rootResultFingerprint, closure.rootResultBytes);
   if (closureStatusForReceiptStatus(receipt.status) !== closure.status) throw new Error('TurnReceipt status does not map to TurnClosure status');
+  assertEmittedHostRequestsMatch(receipt.emittedHostRequestFingerprints, closure.hostRequests);
+}
+
+function assertOptionalFingerprintMatches(receiptValue, closureValue, message) {
+  if (receiptValue == null && closureValue == null) return;
+  if (receiptValue === closureValue) return;
+  throw new Error(message);
+}
+
+function assertEmittedHostRequestsMatch(emittedFingerprints, hostRequests) {
+  if (emittedFingerprints.length !== hostRequests.length) throw new Error('TurnReceipt emitted HostRequest count does not match TurnClosure pending request count');
+  const emitted = new Set(emittedFingerprints.map((value) => value.toString()));
+  for (const request of hostRequests) {
+    if (!emitted.has(request.requestFingerprint.toString())) throw new Error('TurnReceipt emitted HostRequests do not match TurnClosure pending requests');
+  }
+}
+
+function assertRootResultMatchesClosure(receiptValue, closureValue, rootResultBytes) {
+  if (receiptValue == null) {
+    if (closureValue == null && rootResultBytes.byteLength === 0) return;
+    throw new Error('TurnReceipt root result does not match TurnClosure root result');
+  }
+  if (closureValue == null || rootResultBytes.byteLength === 0) throw new Error('TurnReceipt root result does not match TurnClosure root result');
+  const reader = new BinaryReader(rootResultBytes);
+  const labelLength = reader.u32();
+  reader.require(labelLength);
+  const label = textDecoder.decode(rootResultBytes.slice(reader.offset, reader.offset + labelLength));
+  reader.offset += labelLength;
+  const value = reader.u64();
+  if (reader.remaining() !== 0 || label !== 'world.appliance.root_result.value_image' || value !== receiptValue) {
+    throw new Error('TurnReceipt root result does not match TurnClosure root result');
+  }
 }
 
 function closureStatusForReceiptStatus(status) {

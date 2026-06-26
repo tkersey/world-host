@@ -129,6 +129,17 @@ describe('capability preflight and reference drivers', () => {
     assert.deepEqual(report.blockers, []);
   });
 
+  it('rejects non-numeric receiver byte limits before preflight comparisons', () => {
+    assert.throws(
+      () => createRunPolicy({ maximumResponseBytes: '1048576' }),
+      { code: 'ERR_RUN_POLICY_LIMIT_INVALID' },
+    );
+    assert.throws(
+      () => createRunPolicy({ maximumRequestBytes: Number.NaN }),
+      { code: 'ERR_RUN_POLICY_LIMIT_INVALID' },
+    );
+  });
+
   it('keeps default HTTP driver response limits within the default policy', () => {
     const report = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },
@@ -140,6 +151,14 @@ describe('capability preflight and reference drivers', () => {
 
     assert.equal(report.valueSizeLimitsSupported, true);
     assert.equal(report.blockers.includes('response-limit-exceeds-policy'), false);
+  });
+
+  it('advertises HTTP request envelope limits separately from body limits', () => {
+    const request = httpRequest('https://allowed.example/path', 'POST');
+    const driver = new HttpJsonDriver({ origins: ['https://allowed.example'], maximumRequestBytes: 4 });
+
+    assert.equal(request.requestBytes.byteLength > 4, true);
+    assert.equal(request.requestBytes.byteLength <= driver.manifest().maximumRequestBytes, true);
   });
 
   it('blocks HTTP method mismatches during preflight', () => {
