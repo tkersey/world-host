@@ -739,6 +739,7 @@ function turnResult(index, options = {}) {
 }
 
 function fixtureTurnClosureBytes(options = {}) {
+  const closureStatus = options.status ?? 2;
   const turnReceiptBytes = concat([
     u32(1),
     u32(1),
@@ -756,7 +757,7 @@ function fixtureTurnClosureBytes(options = {}) {
     optionalU64(0xa02n),
     optionalU64(0xa03n),
     optionalU64(0xb01n),
-    u8(options.status ?? 2),
+    u8(receiptStatusForClosureStatus(closureStatus)),
     optionalU64(null),
     u64(0n),
     u64(0n),
@@ -800,8 +801,18 @@ function fixtureTurnClosureBytes(options = {}) {
     u64Slice([]),
     u64Slice([]),
     bytes(new Uint8Array()),
-    u8(options.status ?? 2),
+    u8(closureStatus),
   ]);
+}
+
+function receiptStatusForClosureStatus(status) {
+  if (status === 0) return 0;
+  if (status === 1) return 3;
+  if (status === 2) return 1;
+  if (status === 3) return 2;
+  if (status === 4) return 4;
+  if (status === 5) return 5;
+  return status;
 }
 
 function u8(value) {

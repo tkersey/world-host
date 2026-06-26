@@ -989,6 +989,31 @@ describe('RunController and WorldWorker', () => {
     );
   });
 
+  it('accepts real TurnReceipt status mapping for completed closures', async () => {
+    const { store, runId, branchId } = await fixtureStore();
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes({ status: 2, receiptStatus: 1 })),
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.nextHead.status, 'completed');
+  });
+
+  it('fails closed when embedded TurnReceipt status does not map to the closure status', async () => {
+    const { store, runId, branchId } = await fixtureStore();
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes({ status: 2, receiptStatus: 2 })),
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_TURN_CLOSURE_INSPECTION_FAILED' },
+    );
+  });
+
   it('rejects mismatched warm-worker identity before reuse', async () => {
     const worker = new WorldWorker();
     await worker.instantiate(fromUtf8('placeholder'));
@@ -1397,6 +1422,7 @@ class ThrowingRestoreWorker extends RestoringWorker {
 }
 
 function fixtureTurnClosureBytes(options = {}) {
+  const closureStatus = options.status ?? 2;
   const turnReceiptBytes = concat([
     u32(options.receiptFormatVersion ?? 1),
     u32(options.receiptFingerprintVersion ?? 1),
@@ -1414,7 +1440,7 @@ function fixtureTurnClosureBytes(options = {}) {
     optionalU64(options.archiveLess ? null : 0xa02n),
     optionalU64(0xa03n),
     optionalU64(0xb01n),
-    u8(options.receiptStatus ?? options.status ?? 2),
+    u8(options.receiptStatus ?? receiptStatusForClosureStatus(closureStatus)),
     optionalU64(null),
     u64(1n),
     u64(1n),
@@ -1459,8 +1485,18 @@ function fixtureTurnClosureBytes(options = {}) {
     u64Slice([]),
     u64Slice([]),
     bytes(new Uint8Array()),
-    u8(options.status ?? 2),
+    u8(closureStatus),
   ]);
+}
+
+function receiptStatusForClosureStatus(status) {
+  if (status === 0) return 0;
+  if (status === 1) return 3;
+  if (status === 2) return 1;
+  if (status === 3) return 2;
+  if (status === 4) return 4;
+  if (status === 5) return 5;
+  return status;
 }
 
 function defaultAppliedHostReplyFingerprints() {

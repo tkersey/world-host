@@ -76,7 +76,17 @@ export function inspectTurnOutput(bytes) {
 function assertReceiptMatchesClosure(receipt, closure) {
   if (receipt.manifestFingerprint !== closure.manifestFingerprint) throw new Error('TurnReceipt manifest does not match TurnClosure manifest');
   if (receipt.turnSequenceNumber !== closure.turnSequenceNumber) throw new Error('TurnReceipt sequence does not match TurnClosure sequence');
-  if (receipt.status !== closure.status) throw new Error('TurnReceipt status does not match TurnClosure status');
+  if (closureStatusForReceiptStatus(receipt.status) !== closure.status) throw new Error('TurnReceipt status does not map to TurnClosure status');
+}
+
+function closureStatusForReceiptStatus(status) {
+  if (status === 0) return 0;
+  if (status === 1) return 2;
+  if (status === 2) return 3;
+  if (status === 3) return 1;
+  if (status === 4) return 4;
+  if (status === 5) return 5;
+  return null;
 }
 
 export function summarizeTurnClosureForRunHead(bytes) {
