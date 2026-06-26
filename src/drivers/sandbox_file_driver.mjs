@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { mkdir, open, realpath, lstat, stat } from 'node:fs/promises';
+import { open, realpath, lstat, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { Buffer } from 'node:buffer';
 
@@ -91,9 +91,11 @@ export class SandboxFileDriver {
     const outcome = { status: 'ok', path: path.relative(this.root, resolved), byteLength: bytes.byteLength };
     const responseBytes = fromUtf8(stableJson(outcome));
     if (responseBytes.byteLength > MAXIMUM_WRITE_ACK_BYTES) fail('ERR_SANDBOX_FILE_ACK_TOO_LARGE');
-    await this.#ensureWritableParentDirectory(path.dirname(resolved));
-    await this.#assertRegularPathBeforeOpen(resolved, { allowMissing: true });
+    await this.#assertExistingParentWithinRoot(path.dirname(resolved));
     await this.#rejectCreateThroughFinalSymlink(resolved);
+    if (!await this.#assertRegularPathBeforeOpen(resolved, { allowMissing: true })) {
+      fail('ERR_SANDBOX_FILE_NOT_FOUND', 'sandbox writes require an existing regular file');
+    }
     const handle = await this.#openForWrite(resolved);
     try {
       await this.#assertOpenHandleWithinRoot(handle, resolved);
@@ -113,7 +115,7 @@ export class SandboxFileDriver {
   }
 
   async #openForWrite(filePath) {
-    return await open(filePath, constants.O_WRONLY | constants.O_CREAT | this.#noFollowFlag() | nonBlockFlag(), 0o600);
+    return await open(filePath, constants.O_WRONLY | this.#noFollowFlag() | nonBlockFlag());
   }
 
   #noFollowFlag() {
@@ -152,27 +154,11 @@ export class SandboxFileDriver {
     if (actual !== root && !actual.startsWith(`${root}${path.sep}`)) fail('ERR_SANDBOX_PATH_ESCAPE');
   }
 
-  async #ensureWritableParentDirectory(parentPath) {
-    await this.#assertResolvedPathWithinRoot(this.root);
-    const relative = path.relative(this.root, parentPath);
-    if (relative === '') return;
-    let current = this.root;
-    for (const component of relative.split(path.sep)) {
-      current = path.join(current, component);
-      const info = await lstat(current).catch((error) => {
-        if (error.code === 'ENOENT') return null;
-        throw error;
-      });
-      if (!info) {
-        await mkdir(current).catch((error) => {
-          if (error.code !== 'EEXIST') throw error;
-        });
-      }
-      const currentInfo = await lstat(current);
-      if (this.symlinkPolicy === 'reject' && currentInfo.isSymbolicLink()) fail('ERR_SANDBOX_SYMLINK_REJECTED');
-      if (!currentInfo.isDirectory() && !currentInfo.isSymbolicLink()) fail('ERR_SANDBOX_FILE_NOT_REGULAR');
-      await this.#assertResolvedPathWithinRoot(current);
-    }
+  async #assertExistingParentWithinRoot(parentPath) {
+    await this.#assertResolvedPathWithinRoot(parentPath).catch((error) => {
+      if (error.code === 'ENOENT') fail('ERR_SANDBOX_FILE_NOT_FOUND', 'sandbox writes require an existing parent directory');
+      throw error;
+    });
   }
 
   async #assertOpenHandleWithinRoot(handle, expectedPath) {

@@ -25,6 +25,7 @@ export async function runExample() {
   try {
     await mkdir(sandboxRoot, { recursive: true });
     await writeFile(path.join(sandboxRoot, 'input.txt'), 'rewrite this file through the agent loop\n');
+    await writeFile(path.join(sandboxRoot, 'output.txt'), '');
     store = new DirectoryStore(storeRoot);
     await store.acquireLock();
 

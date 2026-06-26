@@ -1,7 +1,7 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { link, mkdtemp, readFile, symlink, rm, writeFile } from 'node:fs/promises';
+import { link, mkdir, mkdtemp, readFile, symlink, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -228,20 +228,25 @@ describe('capability preflight and reference drivers', () => {
         { code: 'ERR_SANDBOX_HARDLINK_REJECTED' },
       );
       assert.equal(await readFile(path.join(outside, 'hardlink-target.txt'), 'utf8'), 'outside hardlink content');
+      await writeFile(path.join(root, 'out.txt'), '');
       const write = await driver.resolve({}, fileRequest('out.txt', { operation: 'write', content: 'world carrier updated the fixture' }));
       const writeImage = decodeResolutionInputBytes(write.resolutionInputBytes).responseValueImageBytes;
       const writeImageView = new DataView(writeImage.buffer, writeImage.byteOffset, writeImage.byteLength);
       assert.equal(writeImageView.getUint32(0, true), 1);
       assert.equal(writeImageView.getUint32(4, true), 1);
       assert.equal(await readFile(path.join(root, 'out.txt'), 'utf8'), 'world carrier updated the fixture');
+      await mkdir(path.join(root, 'nested'));
+      await writeFile(path.join(root, 'nested', 'out.txt'), '');
       await driver.resolve({}, fileRequest('nested/out.txt', { operation: 'write', content: 'nested write works' }));
       assert.equal(await readFile(path.join(root, 'nested', 'out.txt'), 'utf8'), 'nested write works');
       const edgeWrite = fileRequest('edge.txt', { operation: 'write', content: '1234' }, 'key:edge');
       const edgeDriver = new SandboxFileDriver({ root, maximumWriteBytes: 4 });
       assert.equal(edgeWrite.requestBytes.byteLength > 4, true);
       assert.equal(edgeWrite.requestBytes.byteLength <= edgeDriver.manifest().maximumRequestBytes, true);
+      await writeFile(path.join(root, 'edge.txt'), '');
       await edgeDriver.resolve({}, edgeWrite);
       assert.equal(await readFile(path.join(root, 'edge.txt'), 'utf8'), '1234');
+      await writeFile(path.join(root, 'safe.txt'), '');
       await driver.resolve({}, fileRequest('safe.txt', { operation: 'write', content: 'safe' }, '../../../../outside'));
       assert.equal(await readFile(path.join(root, 'safe.txt'), 'utf8'), 'safe');
       await assert.rejects(
