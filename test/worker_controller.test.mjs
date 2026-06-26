@@ -191,6 +191,41 @@ describe('RunController and WorldWorker', () => {
     );
   });
 
+  it('rejects decodable manifest mismatches despite host-generated install diagnostics', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      manifestBytes: fixtureApplianceManifestBytes({ manifestFingerprint: 0x999n }),
+      applicationOverrides: {
+        installationDiagnostics: { manifestSource: 'host-generated-install-summary' },
+      },
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ManifestCheckingWorker(fixtureTurnClosureBytes(), 0x211n),
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_APPLICATION_MANIFEST_MISMATCH' },
+    );
+  });
+
+  it('allows non-manifest host-generated install summaries for manifest-aware workers', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      manifestBytes: fromUtf8('world-host install summary'),
+      applicationOverrides: {
+        installationDiagnostics: { manifestSource: 'host-generated-install-summary' },
+      },
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ManifestCheckingWorker(fixtureTurnClosureBytes(), 0x211n),
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+  });
+
   it('disposes dirty warm workers after failed turn submission before retry', async () => {
     const { store, runId, branchId } = await fixtureStore({ headStatus: 'genesis' });
     const workers = [];
