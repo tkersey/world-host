@@ -103,6 +103,39 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('serializes DirectoryStore head CAS across instances with the same root', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-head-cas-'));
+    try {
+      const { run, head } = await fixtureDirectoryStore(root);
+      const first = new DirectoryStore(root);
+      const second = new DirectoryStore(root);
+      const firstClosureRef = await first.putBlob(fromUtf8('next-one'));
+      const secondClosureRef = await second.putBlob(fromUtf8('next-two'));
+      const nextOne = createRunHead({
+        ...head,
+        generation: head.generation + 1,
+        turnClosureRef: firstClosureRef,
+        turnClosureWorldFingerprint: 'world:closure:next-one',
+      });
+      const nextTwo = createRunHead({
+        ...head,
+        generation: head.generation + 1,
+        turnClosureRef: secondClosureRef,
+        turnClosureWorldFingerprint: 'world:closure:next-two',
+      });
+
+      const results = await Promise.all([
+        first.compareAndSwapHead(run.runId, 'main', head.generation, nextOne),
+        second.compareAndSwapHead(run.runId, 'main', head.generation, nextTwo),
+      ]);
+
+      assert.equal(results.filter((result) => result.ok).length, 1);
+      assert.equal((await first.readHead(run.runId, 'main')).generation, head.generation + 1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('exports and imports with receiver-local run id and no authority transfer', async () => {
     const source = await fixtureStore();
     await forkRunBranch(source.store, {
@@ -127,6 +160,10 @@ describe('migration, branching, and CLI diagnostics', () => {
     const corrupt = JSON.parse(JSON.stringify(carrierExport.bundle));
     corrupt.blobs[0].byteLength += 1;
     await assert.rejects(() => new MemoryStore().importRun(corrupt), { code: 'ERR_IMPORT_BLOB_CHECKSUM_MISMATCH' });
+    const malformedHead = JSON.parse(JSON.stringify(carrierExport.bundle));
+    malformedHead.head = { turnClosureRef: malformedHead.head.turnClosureRef };
+    malformedHead.run.branches[0].currentHead = malformedHead.head;
+    await assertImportsReject(malformedHead, 'ERR_REQUIRED_INTEGER');
     const malformedEffect = JSON.parse(JSON.stringify(carrierExport.bundle));
     malformedEffect.effects = [{ runId: malformedEffect.run.runId, branchId: malformedEffect.branchId, state: 'not-an-effect-record' }];
     await assertImportsReject(malformedEffect, 'ERR_INVALID_EFFECT_RECORD');
@@ -151,10 +188,18 @@ describe('migration, branching, and CLI diagnostics', () => {
     assert.equal(redact({ diagnostics: { privateKey: 'secret' } }).diagnostics.privateKey, '[redacted]');
     assert.equal(redact({ diagnostics: { error: 'driver failed with bearer token sk-test-secret' } }).diagnostics.error, '[redacted]');
     let output = '';
-    const code = await runNodeCli(['inspect', '--json', '--store', '.world-carrier'], { stdout: { write: (text) => { output += text; } }, stderr: { write() {} } });
+    const code = await runNodeCli(['inspect', '--json'], { stdout: { write: (text) => { output += text; } }, stderr: { write() {} } });
     assert.equal(code, 0);
     assert.match(output, /"command": "inspect"/);
     assert.doesNotMatch(output, /secret|bearer/i);
+    await assert.rejects(
+      () => runNodeCli(['inspect', '--json', '--store', '.world-carrier'], { stdout: { write() {} }, stderr: { write() {} } }),
+      /missing required option: --run/,
+    );
+    await assert.rejects(
+      () => runNodeCli(['effects', '--json', '--store', '.world-carrier'], { stdout: { write() {} }, stderr: { write() {} } }),
+      /missing required option: --run/,
+    );
   });
 
   it('installs DirectoryStore application records from immutable CLI bytes', async () => {
@@ -631,6 +676,11 @@ describe('migration, branching, and CLI diagnostics', () => {
             },
           },
         });
+        await store.putEffectRecord({
+          ...effect,
+          branchId: 'alternate',
+          state: 'submitted',
+        });
       } finally {
         await store.releaseLock();
       }
@@ -660,7 +710,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       const effects = JSON.parse(output);
 
       assert.equal(effectsCode, 0);
-      assert.equal(effects.effects.length, 1);
+      assert.equal(effects.effects.length, 2);
       assert.equal(effects.effects[0].completeIdempotencyKeyBytesOmitted, true);
       assert.equal(effects.effects[0].idempotencyKeyWorldFingerprint, 'world:key:cli');
       assert.equal(effects.diagnostics.workerExecuted, false);
@@ -1131,6 +1181,13 @@ describe('migration, branching, and CLI diagnostics', () => {
       effectScopeMismatchBundle.effects[0].runId = 'receiver-local-run';
       await assertImportsReject(effectScopeMismatchBundle, 'ERR_IMPORT_EFFECT_SCOPE_MISMATCH');
 
+      const memoryEffectCollision = new MemoryStore();
+      const memoryEffectCollisionBundle = JSON.parse(JSON.stringify(carrierExport.bundle));
+      memoryEffectCollisionBundle.effects = [fixtureImportEffect(memoryEffectCollisionBundle)];
+      await memoryEffectCollision.putEffectRecord({ ...memoryEffectCollisionBundle.effects[0], diagnostics: { existing: true } });
+      await assert.rejects(() => memoryEffectCollision.importRun(memoryEffectCollisionBundle), { code: 'ERR_IMPORT_EFFECT_EXISTS' });
+      await assert.rejects(() => memoryEffectCollision.getRun(memoryEffectCollisionBundle.run.runId), { code: 'ERR_RUN_NOT_FOUND' });
+
       const selectedHeadMismatchBundle = JSON.parse(JSON.stringify(carrierExport.bundle));
       selectedHeadMismatchBundle.run.branches[0].currentHead = {
         ...selectedHeadMismatchBundle.head,
@@ -1158,7 +1215,7 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
-  it('propagates executable CLI return codes to the process', () => {
+  it('propagates executable CLI return codes to the process', async () => {
     const result = spawnSync(process.execPath, [path.resolve('bin/world-host.mjs'), 'run-example', 'missing-example'], {
       cwd: path.resolve('.'),
       encoding: 'utf8',
@@ -1171,6 +1228,41 @@ describe('migration, branching, and CLI diagnostics', () => {
       encoding: 'utf8',
     });
     assert.equal(unknown.status, 2);
+
+    const exportWithoutStore = spawnSync(process.execPath, [
+      path.resolve('bin/world-host.mjs'),
+      'export',
+      '--run', 'r',
+      '--out', 'pkg.json',
+      '--json',
+    ], {
+      cwd: path.resolve('.'),
+      encoding: 'utf8',
+    });
+    assert.equal(exportWithoutStore.status, 1);
+    assert.match(exportWithoutStore.stderr, /missing required option: --store/);
+
+    const malformedRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-malformed-'));
+    try {
+      const malformed = spawnSync(process.execPath, [
+        path.resolve('bin/world-host.mjs'),
+        'run',
+        'app',
+        '--store',
+        '--run',
+        'r',
+        '--no-execute',
+        '--json',
+      ], {
+        cwd: malformedRoot,
+        encoding: 'utf8',
+      });
+      assert.equal(malformed.status, 1);
+      assert.match(malformed.stderr, /missing required option: --store/);
+      assert.equal((await readdir(malformedRoot)).includes('--run'), false);
+    } finally {
+      await rm(malformedRoot, { recursive: true, force: true });
+    }
   });
 });
 

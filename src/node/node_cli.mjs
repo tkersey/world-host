@@ -34,6 +34,9 @@ export async function runNodeCli(args, io, options = {}) {
     const storePath = valueAfter(args, '--store');
     const runId = valueAfter(args, '--run');
     if (storePath && runId) return await runStoreDiagnostics(command, args, io, storePath, runId);
+    if (args.includes('--store') || args.includes('--run')) {
+      throw new Error(`missing required option: ${storePath ? '--run' : '--store'}`);
+    }
     io.stdout.write(`${JSON.stringify(redact({
       command,
       ok: true,
@@ -45,34 +48,29 @@ export async function runNodeCli(args, io, options = {}) {
   if (command === 'recover') {
     const storePath = valueAfter(args, '--store');
     if (storePath) return await runRecover(args, io, storePath);
-    io.stdout.write(`${JSON.stringify(redact({ command, accepted: true, transport: 'local', authorityCarried: false }), null, 2)}\n`);
-    return 0;
+    throw new Error('missing required option: --store');
   }
   if (command === 'fork' || command === 'export' || command === 'import') {
     const storePath = valueAfter(args, '--store');
     if (storePath && command === 'fork') return await runFork(args, io, storePath);
     if (storePath && command === 'export') return await runExport(args, io, storePath);
     if (storePath && command === 'import') return await runImport(args, io, storePath);
-    io.stdout.write(`${JSON.stringify(redact({ command, accepted: true, transport: 'local', authorityCarried: false }), null, 2)}\n`);
-    return 0;
+    throw new Error('missing required option: --store');
   }
   if (command === 'install') {
     const storePath = valueAfter(args, '--store');
     if (storePath) return await runInstall(args, io, storePath);
-    io.stdout.write(`${JSON.stringify(redact({ command, accepted: true, transport: 'local', authorityCarried: false }), null, 2)}\n`);
-    return 0;
+    throw new Error('missing required option: --store');
   }
   if (command === 'run') {
     const storePath = valueAfter(args, '--store');
     if (storePath) return await runStoreRun(args, io, storePath, options);
-    io.stdout.write(`${JSON.stringify(redact({ command, accepted: true, transport: 'local', authorityCarried: false }), null, 2)}\n`);
-    return 0;
+    throw new Error('missing required option: --store');
   }
   if (command === 'resume') {
     const storePath = valueAfter(args, '--store');
     if (storePath) return await runStoreResume(args, io, storePath, options);
-    io.stdout.write(`${JSON.stringify(redact({ command, accepted: true, transport: 'local', authorityCarried: false }), null, 2)}\n`);
-    return 0;
+    throw new Error('missing required option: --store');
   }
   if (command === 'run-example') return await runExample(args[1], io);
   io.stdout.write('world-host commands: install, doctor, run, resume, inspect, effects, recover, fork, export, import, run-example, version\n');
@@ -588,7 +586,7 @@ async function recoverEffects(store, runId, branchId) {
 async function inspectStore(store, storePath, runId, branchId) {
   const run = await store.getRun(runId);
   const head = await store.readHead(runId, branchId);
-  const effects = await store.listEffectRecords(runId);
+  const effects = (await store.listEffectRecords(runId)).filter((effect) => effect.branchId === branchId);
   const closureBytes = await store.getBlob(head.turnClosureRef);
   return {
     command: 'inspect',
@@ -820,7 +818,9 @@ export function redact(value) {
 
 function valueAfter(args, name) {
   const index = args.indexOf(name);
-  return index >= 0 ? args[index + 1] : null;
+  if (index < 0) return null;
+  const value = args[index + 1];
+  return value && !value.startsWith('--') ? value : null;
 }
 
 function positionalAfterCommand(args) {

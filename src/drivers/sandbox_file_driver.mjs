@@ -28,7 +28,7 @@ export class SandboxFileDriver {
       supportedActuationClasses: ['file'],
       supportedResponseStatuses: ['ok', 'not_found'],
       maximumRequestBytes: encodedJsonStringEnvelopeLimit(this.maximumWriteBytes, 4096),
-      maximumResponseBytes: Math.max(encodedJsonStringEnvelopeLimit(this.maximumReadBytes, 256), MAXIMUM_WRITE_ACK_BYTES),
+      maximumResponseBytes: Math.max(encodedJsonStringEnvelopeLimit(this.maximumReadBytes, 256), encodedJsonStringEnvelopeLimit(MAXIMUM_WRITE_ACK_BYTES, 256)),
       recoveryClass: EffectRecoveryClass.bestEffort,
       concurrencyLimit: 2,
       authorityLabels: ['file:sandbox'],
@@ -51,6 +51,9 @@ export class SandboxFileDriver {
 
   async #read(filePath, hostRequest) {
     const resolved = await this.#resolvePath(filePath);
+    if (!await this.#assertRegularPathBeforeOpen(resolved, { allowMissing: true })) {
+      return { resolutionInputBytes: resolutionInput(hostRequest, { status: 'not_found' }, new Uint8Array(), 1) };
+    }
     const handle = await this.#openForRead(resolved).catch((error) => {
       if (error.code === 'ENOENT') return null;
       throw error;
@@ -78,8 +81,11 @@ export class SandboxFileDriver {
     const outcome = { status: 'ok', path: path.relative(this.root, resolved), byteLength: bytes.byteLength };
     const responseBytes = fromUtf8(stableJson(outcome));
     if (responseBytes.byteLength > MAXIMUM_WRITE_ACK_BYTES) fail('ERR_SANDBOX_FILE_ACK_TOO_LARGE');
+    await this.#assertWritableParentBeforeMkdir(path.dirname(resolved));
     await mkdir(path.dirname(resolved), { recursive: true });
     if (this.symlinkPolicy === 'reject') await this.#rejectSymlinkComponents(path.dirname(resolved));
+    await this.#assertResolvedPathWithinRoot(path.dirname(resolved));
+    await this.#assertRegularPathBeforeOpen(resolved, { allowMissing: true });
     const handle = await this.#openForWrite(resolved);
     try {
       await this.#assertOpenHandleWithinRoot(handle, resolved);
@@ -90,16 +96,16 @@ export class SandboxFileDriver {
     }
     if (this.symlinkPolicy === 'reject') await this.#assertResolvedPathWithinRoot(resolved);
     this.writeOutcomes.set(key, outcome);
-    return { resolutionInputBytes: resolutionInput(hostRequest, outcome, responseBytes), driverTransactionRef: key };
+    return { resolutionInputBytes: resolutionInput(hostRequest, outcome, writeValueImage(outcome)), driverTransactionRef: key };
   }
 
   async #openForRead(filePath) {
-    const flags = constants.O_RDONLY | noFollowFlag();
+    const flags = constants.O_RDONLY | noFollowFlag() | nonBlockFlag();
     return await open(filePath, flags);
   }
 
   async #openForWrite(filePath) {
-    return await open(filePath, constants.O_WRONLY | constants.O_CREAT | noFollowFlag(), 0o600);
+    return await open(filePath, constants.O_WRONLY | constants.O_CREAT | noFollowFlag() | nonBlockFlag(), 0o600);
   }
 
   async #resolvePath(filePath) {
@@ -134,6 +140,22 @@ export class SandboxFileDriver {
     if (actual !== root && !actual.startsWith(`${root}${path.sep}`)) fail('ERR_SANDBOX_PATH_ESCAPE');
   }
 
+  async #assertWritableParentBeforeMkdir(parentPath) {
+    await this.#assertResolvedPathWithinRoot(this.root);
+    const relative = path.relative(this.root, parentPath);
+    if (relative === '') return;
+    let current = this.root;
+    for (const component of relative.split(path.sep)) {
+      current = path.join(current, component);
+      const info = await lstat(current).catch((error) => {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+      });
+      if (!info) return;
+      await this.#assertResolvedPathWithinRoot(current);
+    }
+  }
+
   async #assertOpenHandleWithinRoot(handle, expectedPath) {
     const fdInfo = await handle.stat();
     if (fdInfo.isFile() && fdInfo.nlink > 1) fail('ERR_SANDBOX_HARDLINK_REJECTED');
@@ -150,6 +172,16 @@ export class SandboxFileDriver {
     if (fdInfo.dev !== pathInfo.dev || fdInfo.ino !== pathInfo.ino) fail('ERR_SANDBOX_PATH_ESCAPE');
   }
 
+  async #assertRegularPathBeforeOpen(resolved, { allowMissing = false } = {}) {
+    const info = await stat(resolved).catch((error) => {
+      if (allowMissing && error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!info) return false;
+    if (!info.isFile()) fail('ERR_SANDBOX_FILE_NOT_REGULAR');
+    return true;
+  }
+
   async #canonicalRoot() {
     this.canonicalRoot ??= await realpath(this.root);
     return this.canonicalRoot;
@@ -160,7 +192,18 @@ function noFollowFlag() {
   return constants.O_NOFOLLOW ?? 0;
 }
 
+function nonBlockFlag() {
+  return constants.O_NONBLOCK ?? 0;
+}
+
 const MAXIMUM_WRITE_ACK_BYTES = 4096;
+
+function writeValueImage(outcome) {
+  return encodeCanonicalValueImage({
+    bytes: fromUtf8(stableJson(outcome)),
+    dynamicSize: true,
+  });
+}
 
 function readValueImage(contentBytes) {
   return encodeCanonicalValueImage({

@@ -1,6 +1,6 @@
 import { EffectJournal } from './effect_journal.mjs';
 import { assertDurableRecoveryAllowed } from './actuator.mjs';
-import { assertCapabilityReportAccepted, preflightCapabilities } from './capabilities.mjs';
+import { assertCapabilityReportAccepted, createRunPolicy, preflightCapabilities } from './capabilities.mjs';
 import { createRunHead } from './run.mjs';
 import { assertBytes, fail, fromUtf8, toHex } from './store.mjs';
 import { decodeResolutionInputBytes, encodeRestoreTurnInput, resolutionResponded } from '../protocol/world_appliance_wire_codec.mjs';
@@ -118,7 +118,7 @@ export class RunController {
     const run = await this.store.getRun(runId);
     const application = await this.store.getApplication(run.applicationId);
     const parentHead = await this.store.readHead(runId, branchId);
-    const policy = options.effectPolicy ?? this.effectPolicy;
+    const policy = createRunPolicy(options.effectPolicy ?? this.effectPolicy);
     assertCapabilityReportAccepted(preflightCapabilities({
       application,
       currentHead: parentHead,
@@ -249,7 +249,7 @@ export class RunController {
     }
     if (parentSummary.hostRequestCount === 0) return null;
 
-    const policy = options.effectPolicy ?? this.effectPolicy;
+    const policy = createRunPolicy(options.effectPolicy ?? this.effectPolicy);
     const journal = new EffectJournal({
       store: this.store,
       runId: run.runId,

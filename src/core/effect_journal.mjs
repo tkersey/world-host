@@ -44,7 +44,8 @@ const RESPONSE_STATUS_CODES = Object.freeze({
   deferred: 4,
   cancelled: 5,
 });
-const effectKeyLocks = new WeakMap();
+const effectKeyLocksByStore = new WeakMap();
+const effectKeyLocksByStoreKey = new Map();
 
 export class EffectJournal {
   constructor({ store, runId, branchId, parentTurnClosureFingerprint, policy = {} }) {
@@ -60,6 +61,12 @@ export class EffectJournal {
 
   async observe(hostRequest, options = {}) {
     const prepared = await prepareHostRequest(hostRequest);
+    return await withEffectKeyLock(this.store, effectLockKey(this.runId, prepared.idempotencyKey), async () => {
+      return await this.#observePrepared(hostRequest, prepared, options);
+    });
+  }
+
+  async #observePrepared(hostRequest, prepared, options = {}) {
     const existing = await this.store.getEffectRecord(this.runId, prepared.idempotencyKey, this.branchId);
     if (existing) return await this.#reuseOrConflict(existing, prepared);
 
@@ -102,7 +109,7 @@ export class EffectJournal {
     assertPreparedRequestWithinLimits(prepared, manifest, this.policy);
     assertDurableRecoveryAllowed(manifest.recoveryClass, this.policy);
     return await withEffectKeyLock(this.store, effectLockKey(this.runId, prepared.idempotencyKey), async () => {
-      const observed = await this.observe(hostRequest, { manifest });
+      const observed = await this.#observePrepared(hostRequest, prepared, { manifest });
       assertDurableRecoveryAllowed(observed.driverRecoveryClass, this.policy);
       if (observed.state === EffectState.operatorInterventionRequired) {
         return { record: observed, resolutionInputBytes: null, reused: false, operatorInterventionRequired: true };
@@ -578,11 +585,7 @@ function hostRequestTargetFingerprint(hostRequest) {
 }
 
 async function withEffectKeyLock(store, key, fn) {
-  let locks = effectKeyLocks.get(store);
-  if (!locks) {
-    locks = new Map();
-    effectKeyLocks.set(store, locks);
-  }
+  const locks = effectLockMap(store);
   const previous = locks.get(key) ?? Promise.resolve();
   const current = previous.catch(() => {}).then(fn);
   const stored = current.catch(() => {});
@@ -592,6 +595,24 @@ async function withEffectKeyLock(store, key, fn) {
   } finally {
     if (locks.get(key) === stored) locks.delete(key);
   }
+}
+
+function effectLockMap(store) {
+  const storeKey = store?.concurrencyKey;
+  if (typeof storeKey === 'string' && storeKey.length > 0) {
+    let locks = effectKeyLocksByStoreKey.get(storeKey);
+    if (!locks) {
+      locks = new Map();
+      effectKeyLocksByStoreKey.set(storeKey, locks);
+    }
+    return locks;
+  }
+  let locks = effectKeyLocksByStore.get(store);
+  if (!locks) {
+    locks = new Map();
+    effectKeyLocksByStore.set(store, locks);
+  }
+  return locks;
 }
 
 function effectLockKey(runId, idempotencyKey) {

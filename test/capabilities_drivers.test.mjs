@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { link, mkdtemp, readFile, symlink, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
@@ -195,6 +196,14 @@ describe('capability preflight and reference drivers', () => {
         { code: 'ERR_SANDBOX_PATH_ESCAPE' },
       );
       await assert.rejects(
+        () => new SandboxFileDriver({ root, symlinkPolicy: 'allow' }).resolve({}, fileRequest('linkdir/new.txt', { operation: 'write', content: 'nope' })),
+        { code: 'ERR_SANDBOX_PATH_ESCAPE' },
+      );
+      await assert.rejects(
+        () => readFile(path.join(outside, 'new.txt')),
+        { code: 'ENOENT' },
+      );
+      await assert.rejects(
         () => driver.resolve({}, fileRequest('linkdir/new.txt', { operation: 'write', content: 'nope' })),
         { code: 'ERR_SANDBOX_SYMLINK_REJECTED' },
       );
@@ -210,7 +219,11 @@ describe('capability preflight and reference drivers', () => {
         { code: 'ERR_SANDBOX_HARDLINK_REJECTED' },
       );
       assert.equal(await readFile(path.join(outside, 'hardlink-target.txt'), 'utf8'), 'outside hardlink content');
-      await driver.resolve({}, fileRequest('out.txt', { operation: 'write', content: 'world carrier updated the fixture' }));
+      const write = await driver.resolve({}, fileRequest('out.txt', { operation: 'write', content: 'world carrier updated the fixture' }));
+      const writeImage = decodeResolutionInputBytes(write.resolutionInputBytes).responseValueImageBytes;
+      const writeImageView = new DataView(writeImage.buffer, writeImage.byteOffset, writeImage.byteLength);
+      assert.equal(writeImageView.getUint32(0, true), 1);
+      assert.equal(writeImageView.getUint32(4, true), 1);
       assert.equal(await readFile(path.join(root, 'out.txt'), 'utf8'), 'world carrier updated the fixture');
       await driver.resolve({}, fileRequest('nested/out.txt', { operation: 'write', content: 'nested write works' }));
       assert.equal(await readFile(path.join(root, 'nested', 'out.txt'), 'utf8'), 'nested write works');
@@ -278,6 +291,19 @@ describe('capability preflight and reference drivers', () => {
         () => new SandboxFileDriver({ root, maximumReadBytes: 1 }).resolve({}, fileRequest('large.txt')),
         { code: 'ERR_SANDBOX_FILE_READ_TOO_LARGE' },
       );
+      if (process.platform !== 'win32') {
+        const fifoPath = path.join(root, 'pipe');
+        const fifo = spawnSync('mkfifo', [fifoPath], { encoding: 'utf8' });
+        assert.equal(fifo.status, 0, fifo.stderr);
+        await assert.rejects(
+          () => driver.resolve({}, fileRequest('pipe')),
+          { code: 'ERR_SANDBOX_FILE_NOT_REGULAR' },
+        );
+        await assert.rejects(
+          () => driver.resolve({}, fileRequest('pipe', { operation: 'write', content: 'blocked' })),
+          { code: 'ERR_SANDBOX_FILE_NOT_REGULAR' },
+        );
+      }
       const restarted = new SandboxFileDriver({ root });
       await assert.rejects(() => restarted.recover({}, {
         actuatorRef: 'sandbox:file',

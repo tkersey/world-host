@@ -15,6 +15,7 @@ export function createRunPolicy(input = {}) {
   return Object.freeze({
     durableAutomatic: input.durableAutomatic !== false,
     allowBestEffort: input.allowBestEffort === true,
+    allowPartialEffectBatch: input.allowPartialEffectBatch === true,
     allowedAuthorityLabels: new Set(input.allowedAuthorityLabels ?? []),
     allowedFileRoots: new Set(input.allowedFileRoots ?? []),
     allowedHttpOrigins: new Set(input.allowedHttpOrigins ?? []),

@@ -1,11 +1,15 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import path from 'node:path';
+import { tmpdir } from 'node:os';
 
 import { EffectRecoveryClass } from '../src/core/actuator.mjs';
 import { EffectJournal, EffectState, prepareHostRequest } from '../src/core/effect_journal.mjs';
 import { fromUtf8 } from '../src/core/store.mjs';
 import { HttpJsonDriver } from '../src/drivers/http_json_driver.mjs';
 import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
+import { DirectoryStore } from '../src/stores/directory_store.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
 
 describe('EffectJournal', () => {
@@ -34,6 +38,50 @@ describe('EffectJournal', () => {
     assert.equal(driver.calls, 1);
     assert.deepEqual([first.reused, second.reused].sort(), [false, true]);
     assert.deepEqual(decodeResolutionInputBytes(second.resolutionInputBytes).responseValueImageBytes, fromUtf8('resolution:one'));
+  });
+
+  it('serializes same-key resolutions across DirectoryStore instances with the same root', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-effect-lock-'));
+    try {
+      const firstJournal = new EffectJournal({
+        store: new DirectoryStore(root),
+        runId: 'run',
+        branchId: 'main',
+        parentTurnClosureFingerprint: 'turn:0',
+      });
+      const secondJournal = new EffectJournal({
+        store: new DirectoryStore(root),
+        runId: 'run',
+        branchId: 'main',
+        parentTurnClosureFingerprint: 'turn:0',
+      });
+      const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent, response: 'resolution:one', delayMs: 10 });
+
+      const [first, second] = await Promise.all([
+        firstJournal.resolve({}, hostRequest(), driver),
+        secondJournal.resolve({}, hostRequest(), driver),
+      ]);
+
+      assert.equal(driver.calls, 1);
+      assert.deepEqual([first.reused, second.reused].sort(), [false, true]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('serializes concurrent same-key observations before idempotency checks', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+
+    const results = await Promise.allSettled([
+      journal.observe(hostRequest({ recoveryClass: EffectRecoveryClass.idempotent, requestBytes: fromUtf8('request:one') })),
+      journal.observe(hostRequest({ recoveryClass: EffectRecoveryClass.idempotent, requestBytes: fromUtf8('request:two') })),
+    ]);
+
+    assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+    const rejected = results.find((result) => result.status === 'rejected');
+    assert.equal(rejected.reason.code, 'ERR_EFFECT_IDEMPOTENCY_CONFLICT');
+    assert.equal((await store.listEffectRecords('run')).length, 1);
   });
 
   it('rejects driver response limits outside receiver policy before execution', async () => {

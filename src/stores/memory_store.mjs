@@ -1,5 +1,6 @@
 import { createApplicationRecord } from '../core/application.mjs';
 import { assertEffectRecord } from '../core/effect_journal.mjs';
+import { createBranchRecord, createRunHead, createRunRecord } from '../core/run.mjs';
 import { ClosureStore, assertBlobRef, assertBytes, fromUtf8, makeBlobRef, sameBlobRef, stableJson, toHex } from '../core/store.mjs';
 import { fail } from '../core/store.mjs';
 
@@ -124,9 +125,12 @@ export class MemoryStore extends ClosureStore {
   }
 
   async importRun(bundle) {
-    assertBundleApplicationMatchesRun(bundle);
-    assertBundleEffectsScoped(bundle);
-    assertBundleSelectedHeadMatchesRun(bundle);
+    const application = assertBundleApplicationMatchesRun(bundle);
+    const runRecord = createImportRunRecord(bundle.run);
+    const headRecord = createRunHead(bundle.head);
+    const normalizedBundle = { ...bundle, application, run: runRecord, head: headRecord };
+    assertBundleEffectsScoped(normalizedBundle);
+    assertBundleSelectedHeadMatchesRun(normalizedBundle);
     const effectRecords = (bundle.effects ?? []).map((effect) => assertEffectRecord(effect));
     assertUniqueEffectRecords(effectRecords);
     const importedBlobs = new Map();
@@ -140,22 +144,26 @@ export class MemoryStore extends ClosureStore {
         assertBlobRef(blob);
       }
     }
-    if (bundle.application && this.applications.has(bundle.application.applicationId)) {
-      const existing = this.applications.get(bundle.application.applicationId);
-      if (stableJson(existing) !== stableJson(bundle.application)) fail('ERR_IMPORT_APPLICATION_MISMATCH');
+    if (application && this.applications.has(application.applicationId)) {
+      const existing = this.applications.get(application.applicationId);
+      if (stableJson(existing) !== stableJson(application)) fail('ERR_IMPORT_APPLICATION_MISMATCH');
     }
-    if (this.runs.has(bundle.run.runId)) fail('ERR_IMPORT_RUN_EXISTS');
-    if (this.heads.has(headKey(bundle.run.runId, bundle.branchId))) fail('ERR_IMPORT_HEAD_EXISTS');
-    for (const ref of collectBlobRefs(bundle.run, bundle.application, bundle.head, bundle.effects ?? [])) {
+    if (this.runs.has(runRecord.runId)) fail('ERR_IMPORT_RUN_EXISTS');
+    if (this.heads.has(headKey(runRecord.runId, bundle.branchId))) fail('ERR_IMPORT_HEAD_EXISTS');
+    for (const record of effectRecords) {
+      const existing = await this.getEffectRecord(record.runId, record.idempotencyKey, record.branchId);
+      if (existing && stableJson(existing) !== stableJson(record)) fail('ERR_IMPORT_EFFECT_EXISTS');
+    }
+    for (const ref of collectBlobRefs(runRecord, application, headRecord, effectRecords)) {
       const bytes = importedBlobs.get(ref.checksum) ?? this.blobs.get(ref.checksum);
       if (!bytes || bytes.byteLength !== ref.byteLength) fail('ERR_IMPORT_BLOB_REF_MISSING');
     }
     for (const [checksum, bytes] of importedBlobs) this.blobs.set(checksum, new Uint8Array(bytes));
-    if (bundle.application && !this.applications.has(bundle.application.applicationId)) this.applications.set(bundle.application.applicationId, clone(bundle.application));
-    this.runs.set(bundle.run.runId, clone(bundle.run));
-    this.heads.set(headKey(bundle.run.runId, bundle.branchId), clone(bundle.head));
+    if (application && !this.applications.has(application.applicationId)) this.applications.set(application.applicationId, clone(application));
+    this.runs.set(runRecord.runId, clone(runRecord));
+    this.heads.set(headKey(runRecord.runId, bundle.branchId), clone(headRecord));
     for (const effect of effectRecords) await this.putEffectRecord(effect);
-    return await this.getRun(bundle.run.runId);
+    return await this.getRun(runRecord.runId);
   }
 }
 
@@ -243,8 +251,16 @@ function universalWasmRef(value) {
 function assertBundleApplicationMatchesRun(bundle) {
   const application = bundle?.application;
   if (!application) fail('ERR_IMPORT_APPLICATION_REQUIRED');
-  createApplicationRecord(application);
+  const record = createApplicationRecord(application);
   if (bundle.run?.applicationId !== application.applicationId) fail('ERR_IMPORT_APPLICATION_MISMATCH');
+  return record;
+}
+
+function createImportRunRecord(run) {
+  return createRunRecord({
+    ...run,
+    branches: (run?.branches ?? []).map((branch) => createBranchRecord(branch)),
+  });
 }
 
 function assertBundleSelectedHeadMatchesRun(bundle) {

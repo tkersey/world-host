@@ -350,6 +350,7 @@ describe('RunController and WorldWorker', () => {
         sharedConcurrencyDriver({ driverId: 'test.effect.driver.slow', descriptorFingerprint: 'world:descriptor:0000000000000a0b', tracker: slowTracker, concurrencyLimit: 1 }),
         sharedConcurrencyDriver({ driverId: 'test.effect.driver.fast', descriptorFingerprint: 'world:descriptor:0000000000000a0c', tracker: fastTracker, concurrencyLimit: 2 }),
       ],
+      effectPolicy: { maximumConcurrentEffects: 3 },
     });
 
     const result = await controller.advance(runId, branchId);

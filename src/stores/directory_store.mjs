@@ -4,16 +4,20 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import { createApplicationRecord } from '../core/application.mjs';
 import { assertEffectRecord } from '../core/effect_journal.mjs';
+import { createBranchRecord, createRunHead, createRunRecord } from '../core/run.mjs';
 import { ClosureStore, assertBlobRef, assertBytes, makeBlobRef, stableJson } from '../core/store.mjs';
 import { fail } from '../core/store.mjs';
 import { NodeStoreLock } from '../node/node_lock.mjs';
+
+const headCasQueuesByRoot = new Map();
 
 export class DirectoryStore extends ClosureStore {
   constructor(root) {
     super();
     this.root = root;
+    this.concurrencyKey = `directory:${path.resolve(root)}`;
     this.lock = new NodeStoreLock(path.join(root, 'locks', 'store.lock'));
-    this.headCasQueues = new Map();
+    this.headCasQueues = headCasQueueForRoot(this.concurrencyKey);
   }
 
   async acquireLock(options) {
@@ -160,9 +164,12 @@ export class DirectoryStore extends ClosureStore {
   }
 
   async importRun(bundle) {
-    assertBundleApplicationMatchesRun(bundle);
-    assertBundleEffectsScoped(bundle);
-    assertBundleSelectedHeadMatchesRun(bundle);
+    const application = assertBundleApplicationMatchesRun(bundle);
+    const runRecord = createImportRunRecord(bundle.run);
+    const headRecord = createRunHead(bundle.head);
+    const normalizedBundle = { ...bundle, application, run: runRecord, head: headRecord };
+    assertBundleEffectsScoped(normalizedBundle);
+    assertBundleSelectedHeadMatchesRun(normalizedBundle);
     const effectRecords = (bundle.effects ?? []).map((effect) => assertEffectRecord(effect));
     assertUniqueEffectRecords(effectRecords);
     const importedBlobBytes = new Map();
@@ -175,7 +182,7 @@ export class DirectoryStore extends ClosureStore {
         assertBlobRef(blob);
       }
     }
-    for (const ref of collectBlobRefs(bundle.run, bundle.application, bundle.head, bundle.effects ?? [])) {
+    for (const ref of collectBlobRefs(runRecord, application, headRecord, effectRecords)) {
       const imported = importedBlobBytes.get(ref.checksum);
       if (imported) {
         if (imported.byteLength !== ref.byteLength) fail('ERR_IMPORT_BLOB_REF_MISSING');
@@ -183,12 +190,12 @@ export class DirectoryStore extends ClosureStore {
         fail('ERR_IMPORT_BLOB_REF_MISSING');
       }
     }
-    const runExists = await exists(runPath(this.root, bundle.run.runId));
-    const headExists = await exists(this.headPath(bundle.run.runId, bundle.branchId));
-    if (bundle.application) {
-      if (await exists(applicationPath(this.root, bundle.application.applicationId))) {
-        const existing = await this.getApplication(bundle.application.applicationId);
-        if (stableJson(existing) !== stableJson(bundle.application)) fail('ERR_IMPORT_APPLICATION_MISMATCH');
+    const runExists = await exists(runPath(this.root, runRecord.runId));
+    const headExists = await exists(this.headPath(runRecord.runId, bundle.branchId));
+    if (application) {
+      if (await exists(applicationPath(this.root, application.applicationId))) {
+        const existing = await this.getApplication(application.applicationId);
+        if (stableJson(existing) !== stableJson(application)) fail('ERR_IMPORT_APPLICATION_MISMATCH');
       } else if (runExists || headExists) {
         fail('ERR_IMPORT_RUN_EXISTS');
       }
@@ -203,26 +210,26 @@ export class DirectoryStore extends ClosureStore {
       }
     }
     if (runExists) {
-      const existing = await this.getRun(bundle.run.runId);
-      if (stableJson(existing) !== stableJson(bundle.run)) fail('ERR_IMPORT_RUN_EXISTS');
+      const existing = await this.getRun(runRecord.runId);
+      if (stableJson(existing) !== stableJson(runRecord)) fail('ERR_IMPORT_RUN_EXISTS');
     }
     if (headExists) {
-      const existing = await this.readHead(bundle.run.runId, bundle.branchId);
-      if (stableJson(existing) !== stableJson(bundle.head)) fail('ERR_IMPORT_HEAD_EXISTS');
+      const existing = await this.readHead(runRecord.runId, bundle.branchId);
+      if (stableJson(existing) !== stableJson(headRecord)) fail('ERR_IMPORT_HEAD_EXISTS');
     }
     if (runExists && headExists && !missingEffect) fail('ERR_IMPORT_RUN_EXISTS');
     for (const bytes of importedBlobBytes.values()) await this.putBlob(bytes);
-    if (bundle.application && !await exists(applicationPath(this.root, bundle.application.applicationId))) {
-      await this.createApplication(bundle.application);
+    if (application && !await exists(applicationPath(this.root, application.applicationId))) {
+      await this.createApplication(application);
     }
     if (!runExists && !headExists) {
-      await this.createRun(bundle.run);
+      await this.createRun(runRecord);
     } else {
-      if (!headExists) await this.writeHead(bundle.run.runId, bundle.branchId, bundle.head);
-      if (!runExists) await writeJsonNew(runPath(this.root, bundle.run.runId), bundle.run, 'ERR_IMPORT_RUN_EXISTS');
+      if (!headExists) await this.writeHead(runRecord.runId, bundle.branchId, headRecord);
+      if (!runExists) await writeJsonNew(runPath(this.root, runRecord.runId), runRecord, 'ERR_IMPORT_RUN_EXISTS');
     }
     for (const record of effectRecords) await this.putEffectRecord(record);
-    return await this.getRun(bundle.run.runId);
+    return await this.getRun(runRecord.runId);
   }
 
   async recover() {
@@ -340,6 +347,15 @@ export class DirectoryStore extends ClosureStore {
   }
 }
 
+function headCasQueueForRoot(rootKey) {
+  let queues = headCasQueuesByRoot.get(rootKey);
+  if (!queues) {
+    queues = new Map();
+    headCasQueuesByRoot.set(rootKey, queues);
+  }
+  return queues;
+}
+
 function applicationPath(root, applicationId) {
   return path.join(root, 'applications', `${safePathSegment(applicationId, 'applicationId')}.json`);
 }
@@ -447,8 +463,16 @@ function universalWasmRef(value) {
 function assertBundleApplicationMatchesRun(bundle) {
   const application = bundle?.application;
   if (!application) fail('ERR_IMPORT_APPLICATION_REQUIRED');
-  createApplicationRecord(application);
+  const record = createApplicationRecord(application);
   if (bundle.run?.applicationId !== application.applicationId) fail('ERR_IMPORT_APPLICATION_MISMATCH');
+  return record;
+}
+
+function createImportRunRecord(run) {
+  return createRunRecord({
+    ...run,
+    branches: (run?.branches ?? []).map((branch) => createBranchRecord(branch)),
+  });
 }
 
 function assertBundleSelectedHeadMatchesRun(bundle) {
