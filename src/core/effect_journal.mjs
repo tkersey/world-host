@@ -286,12 +286,16 @@ export class EffectJournal {
     }
     if (
       existing.parentTurnClosureFingerprint !== this.parentTurnClosureFingerprint &&
-      (existing.state === EffectState.running || (TERMINAL_WITH_OUTCOME.has(existing.state) && existing.resolutionInputRef))
+      (
+        existing.state === EffectState.observed ||
+        existing.state === EffectState.running ||
+        (TERMINAL_WITH_OUTCOME.has(existing.state) && existing.resolutionInputRef)
+      )
     ) {
       return await this.#put({
         ...existing,
         parentTurnClosureFingerprint: this.parentTurnClosureFingerprint,
-        state: existing.state === EffectState.running ? EffectState.running : EffectState.resolved,
+        state: existing.state === EffectState.observed || existing.state === EffectState.running ? existing.state : EffectState.resolved,
         diagnostics: { ...existing.diagnostics, parentReboundFrom: existing.parentTurnClosureFingerprint },
       });
     }

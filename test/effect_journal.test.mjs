@@ -760,6 +760,28 @@ describe('EffectJournal', () => {
     assert.equal(driver.calls, 1);
   });
 
+  it('reparents same-branch observed effects before resolving under the current parent', async () => {
+    const store = new MemoryStore();
+    const firstJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const nextJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:1' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+
+    await firstJournal.observe(hostRequest(), { recoveryClass: EffectRecoveryClass.idempotent });
+    const resolved = await nextJournal.resolve({}, hostRequest(), driver);
+    const submitted = await nextJournal.markSubmitted(resolved.record);
+    const result = await nextJournal.reconcileCommittedHead({
+      updateDiagnostics: { parentTurnClosureFingerprint: 'turn:1' },
+    });
+    const records = await store.listEffectRecords('run');
+
+    assert.equal(resolved.record.parentTurnClosureFingerprint, 'turn:1');
+    assert.equal(submitted.parentTurnClosureFingerprint, 'turn:1');
+    assert.equal(result.committedCount, 1);
+    assert.equal(records[0].state, EffectState.closureCommitted);
+    assert.equal(records[0].parentTurnClosureFingerprint, 'turn:1');
+    assert.equal(driver.calls, 1);
+  });
+
   it('fails closed when committed-head recovery lacks a parent fingerprint', async () => {
     const journal = new EffectJournal({ store: new MemoryStore(), runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
 
