@@ -782,6 +782,7 @@ async function assertStoredApplicationManifestMatchesWorker(worker, store, appli
   if (typeof worker.readApplianceManifest !== 'function') return;
   const loaded = worker.readApplianceManifest()?.decoded?.manifestFingerprint;
   if (loaded == null) return;
+  if (application.installationDiagnostics?.manifestSource === 'host-generated-install-summary') return;
   let stored;
   try {
     stored = decodeApplianceManifest(await store.getBlob(application.applianceManifestRef));

@@ -657,7 +657,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       });
 
       let output = '';
-      const runWorker = new DeterministicCliWorker('run');
+      const runWorker = new DeterministicCliWorker('run', { manifestFingerprint: 0x211n });
       const runCode = await runBunCli([
         'run',
         'run-app',
@@ -1698,7 +1698,13 @@ class DeterministicCliWorker extends WorldWorker {
     super();
     this.label = label;
     this.startSequence = options.startSequence ?? 0n;
+    this.manifestFingerprint = options.manifestFingerprint ?? null;
     this.submitCount = 0;
+  }
+
+  readApplianceManifest() {
+    if (this.manifestFingerprint == null) return super.readApplianceManifest();
+    return { decoded: { manifestFingerprint: this.manifestFingerprint } };
   }
 
   async submitTurn(turnInputBytes) {
