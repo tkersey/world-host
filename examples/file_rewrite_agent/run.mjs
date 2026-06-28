@@ -8,6 +8,7 @@ import { EffectJournal, EffectState } from '../../src/core/effect_journal.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from '../../src/core/run.mjs';
 import { fromUtf8, stableJson } from '../../src/core/store.mjs';
 import { SandboxFileDriver } from '../../src/drivers/sandbox_file_driver.mjs';
+import { carrierVersionSummary } from '../../src/protocol/world_manifest.mjs';
 import { DirectoryStore } from '../../src/stores/directory_store.mjs';
 
 const RUN_ID = 'file-agent-run';
@@ -158,7 +159,7 @@ async function installFixtureRun(store) {
     universalWasmChecksum: `sha256:${wasmRef.checksum}`,
     universalWasmByteLength: wasmRef.byteLength,
     worldProtocolVersion: 'v0.1.0',
-    applianceAbiVersion: 'v3',
+    applianceAbiVersion: carrierVersionSummary().applianceAbi,
     executableImageRef: imageRef,
     executableImageWorldFingerprint: `world:executable-image:file-agent:${sha256Hex(imageBytes)}`,
     applianceManifestRef: manifestRef,

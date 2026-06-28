@@ -28,6 +28,7 @@ describe('repository foundation', () => {
     assert.equal(packageJson.scripts.test, 'bun test');
     assert.match(packageJson.scripts.proof, /^bun test && bun scripts\/run-world-conformance\.mjs/);
     assert.equal(packageJson.scripts['proof:world-real'], 'bun scripts/run-world-conformance.mjs --world-repo ../world');
+    assert.equal(packageJson.scripts['proof:agent'], 'bun scripts/run-agent-closure-conformance.mjs');
   });
 
   it('creates the requested source layout', async () => {
@@ -105,8 +106,8 @@ describe('repository foundation', () => {
   it('pins the reviewed World surface and requires release checksum verification', () => {
     const manifest = assertCarrierManifest();
     assert.equal(manifest.supportedWorldRelease, 'v0.1.0');
-    assert.equal(manifest.supportedBoundaryRelease, 'v0.5.0');
-    assert.equal(manifest.applianceAbiVersion, 'v3');
+    assert.equal(manifest.supportedBoundaryRelease, 'v0.6.2');
+    assert.equal(manifest.applianceAbiVersion, 'v4');
     assert.equal(manifest.turnClosureFormatVersion, 'v1');
     assert.match(manifest.universalWasm.sha256, /^[0-9a-f]{64}$/);
     assert.equal(manifest.universalWasm.releaseVerificationRequired, true);
@@ -134,7 +135,7 @@ describe('repository foundation', () => {
         applicationId: 'app',
         universalWasmChecksum: 'sha256:fixture',
         worldProtocolVersion: 'v0.1.0',
-        applianceAbiVersion: 'v3',
+        applianceAbiVersion: 'v4',
         executableImageRef: blobRef,
         executableImageWorldFingerprint: 'world:image',
         applianceManifestRef: blobRef,
@@ -191,19 +192,19 @@ describe('repository foundation', () => {
 
   it('accepts only the pinned ApplianceManifest wire versions', () => {
     const wire = requireReleasedWireCodec();
-    const manifest = applianceManifestBytes({ formatVersion: 3, fingerprintVersion: 3, abiVersion: 3 });
+    const manifest = applianceManifestBytes({ formatVersion: 3, fingerprintVersion: 3, abiVersion: 4 });
     assert.equal(wire.decodeApplianceManifest(manifest).formatVersion, 3);
     assert.throws(
-      () => wire.decodeApplianceManifest(applianceManifestBytes({ formatVersion: 4, fingerprintVersion: 3, abiVersion: 3 })),
+      () => wire.decodeApplianceManifest(applianceManifestBytes({ formatVersion: 4, fingerprintVersion: 3, abiVersion: 4 })),
       /unsupported ApplianceManifest format version: 4/,
     );
     assert.throws(
-      () => wire.decodeApplianceManifest(applianceManifestBytes({ formatVersion: 3, fingerprintVersion: 4, abiVersion: 3 })),
+      () => wire.decodeApplianceManifest(applianceManifestBytes({ formatVersion: 3, fingerprintVersion: 4, abiVersion: 4 })),
       /unsupported ApplianceManifest fingerprint version: 4/,
     );
     assert.throws(
-      () => wire.decodeApplianceManifest(applianceManifestBytes({ formatVersion: 3, fingerprintVersion: 3, abiVersion: 4 })),
-      /unsupported Appliance ABI version: v4/,
+      () => wire.decodeApplianceManifest(applianceManifestBytes({ formatVersion: 3, fingerprintVersion: 3, abiVersion: 3 })),
+      /unsupported Appliance ABI version: v3/,
     );
     assert.throws(
       () => wire.decodeApplianceManifest(concat([manifest, Uint8Array.of(0)])),

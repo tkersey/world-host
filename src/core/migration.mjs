@@ -147,12 +147,18 @@ export async function importCarrierRun(store, carrierExport, options = {}) {
   if (carrierExport?.carrierExportVersion !== 'CarrierExport-v0') fail('ERR_INVALID_CARRIER_EXPORT');
   if (stableJson(carrierExport.release) !== stableJson(carrierVersionSummary())) fail('ERR_IMPORT_RELEASE_MISMATCH');
   rejectUnrecoverableEffects(carrierExport.bundle.effects ?? []);
-  if (typeof options.preflight === 'function') {
-    const report = await options.preflight(carrierExport);
-    if (report?.blockers?.length) fail('ERR_IMPORT_PREFLIGHT_BLOCKED', 'receiver capability preflight rejected import', { blockers: report.blockers });
-  }
   const receiverRunId = options.runId ?? `${carrierExport.bundle.run.runId}:imported`;
   const bundle = rewriteRunBundle(carrierExport.bundle, receiverRunId);
+  const importCandidate = {
+    ...carrierExport,
+    selectedRunId: receiverRunId,
+    selectedBranchId: bundle.branchId,
+    bundle,
+  };
+  if (typeof options.preflight === 'function') {
+    const report = await options.preflight(importCandidate);
+    if (report?.blockers?.length) fail('ERR_IMPORT_PREFLIGHT_BLOCKED', 'receiver capability preflight rejected import', { blockers: report.blockers });
+  }
   await store.importRun(bundle);
   return {
     run: await store.getRun(receiverRunId),
@@ -187,19 +193,109 @@ function rejectUnrecoverableEffects(effects) {
 
 function rewriteRunBundle(bundle, runId) {
   const selectedBranch = (bundle.run.branches ?? []).find((branch) => branch.branchId === bundle.branchId);
+  const head = scrubReceiverPolicyRefs(bundle.head);
   const branch = createBranchRecord({
     ...(selectedBranch ?? { branchId: bundle.branchId }),
-    currentHead: bundle.head,
+    currentHead: head,
   });
-  return {
+  const effects = (bundle.effects ?? [])
+    .filter((effect) => effect.branchId === bundle.branchId)
+    .map((effect) => scrubReceiverPolicyRefs({ ...effect, runId }));
+  const application = scrubReceiverPolicyRefs(bundle.application);
+  const run = scrubReceiverPolicyRefs({
+    ...bundle.run,
+    runId,
+    branches: [branch],
+    receiverPolicyRef: null,
+  });
+  const rewritten = {
     ...bundle,
-    run: { ...bundle.run, runId, branches: [branch] },
-    head: bundle.head,
-    effects: (bundle.effects ?? [])
-      .filter((effect) => effect.branchId === bundle.branchId)
-      .map((effect) => ({ ...effect, runId })),
+    application,
+    run,
+    head,
+    effects,
     branchId: bundle.branchId,
   };
+  return {
+    ...rewritten,
+    blobs: filterReferencedBlobs(rewritten),
+  };
+}
+
+function filterReferencedBlobs(bundle) {
+  const required = new Set();
+  collectBlobRefs(required, bundle.run, bundle.application, bundle.head, bundle.effects ?? []);
+  return (bundle.blobs ?? []).filter((blob) => required.has(`${blob.checksum}:${blob.byteLength}`));
+}
+
+function scrubReceiverPolicyRefs(value) {
+  if (Array.isArray(value)) return value.map((child) => scrubReceiverPolicyRefs(child));
+  if (!value || typeof value !== 'object') return value;
+  const out = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (key === 'receiverPolicyRef' || key === 'receiverPolicyRefs') continue;
+    out[key] = scrubReceiverPolicyRefs(child);
+  }
+  return out;
+}
+
+function collectBlobRefs(required, ...values) {
+  for (const value of values) collectOwnedRefs(value);
+
+  function add(ref) {
+    if (!ref || typeof ref !== 'object') return;
+    if (typeof ref.checksum === 'string' && Number.isSafeInteger(ref.byteLength)) {
+      required.add(`${ref.checksum}:${ref.byteLength}`);
+    }
+  }
+
+  function collectOwnedRefs(value) {
+    if (Array.isArray(value)) {
+      for (const child of value) collectOwnedRefs(child);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    add(value.executableImageRef);
+    add(value.applianceManifestRef);
+    add(value.turnClosureRef);
+    add(value.requestBytesRef);
+    add(value.resolutionInputRef);
+    add(value.hostClaimRef);
+    add(value.receiverPolicyRef);
+    add(universalWasmRef(value));
+    collectDiagnosticBlobRefs(value.diagnostics);
+    collectDiagnosticBlobRefs(value.installationDiagnostics);
+    collectDiagnosticBlobRefs(value.creationMetadata);
+    collectDiagnosticBlobRefs(value.metadata);
+    collectDiagnosticBlobRefs(value.updateDiagnostics);
+    for (const branch of value.branches ?? []) {
+      collectOwnedRefs(branch.currentHead);
+      collectDiagnosticBlobRefs(branch.diagnostics);
+      collectDiagnosticBlobRefs(branch.metadata);
+    }
+  }
+
+  function collectDiagnosticBlobRefs(value, key = '') {
+    if (Array.isArray(value)) {
+      for (const child of value) collectDiagnosticBlobRefs(child, key.endsWith('Refs') ? 'Ref' : '');
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    if (key.endsWith('Ref')) add(value);
+    for (const [childKey, child] of Object.entries(value)) {
+      if ((childKey.endsWith('Ref') || key.endsWith('Ref')) && child && typeof child === 'object') {
+        add(child);
+      }
+      collectDiagnosticBlobRefs(child, childKey);
+    }
+  }
+}
+
+function universalWasmRef(value) {
+  if (typeof value.universalWasmChecksum === 'string' && value.universalWasmChecksum.startsWith('sha256:') && Number.isSafeInteger(value.universalWasmByteLength)) {
+    return { algorithm: 'sha256', checksum: value.universalWasmChecksum.slice('sha256:'.length), byteLength: value.universalWasmByteLength };
+  }
+  return null;
 }
 
 async function writeBranchHead(store, runId, branchId, head) {

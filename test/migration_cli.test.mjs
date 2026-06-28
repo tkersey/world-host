@@ -192,7 +192,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         universalWasmChecksum: `sha256:${otherWasmRef.checksum}`,
         universalWasmByteLength: otherWasmRef.byteLength,
         worldProtocolVersion: 'v0.1.0',
-        applianceAbiVersion: 'v3',
+        applianceAbiVersion: 'v4',
         executableImageRef: otherImageRef,
         executableImageWorldFingerprint: 'world:image:other-directory',
         applianceManifestRef: otherManifestRef,
@@ -279,7 +279,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         universalWasmChecksum: `sha256:${wasmRef.checksum}`,
         universalWasmByteLength: wasmRef.byteLength,
         worldProtocolVersion: 'v0.1.0',
-        applianceAbiVersion: 'v3',
+        applianceAbiVersion: 'v4',
         executableImageRef: imageRef,
         executableImageWorldFingerprint: 'world:image:sequence-zero',
         applianceManifestRef: manifestRef,
@@ -581,6 +581,67 @@ describe('migration, branching, and CLI diagnostics', () => {
 
   it('exports and imports with receiver-local run id and no authority transfer', async () => {
     const source = await fixtureStore();
+    const senderPolicyRef = await source.store.putBlob(fromUtf8('sender-local-policy'));
+    const historicalDiagnosticBytes = fromUtf8('historical closure retained by branch diagnostics');
+    const historicalDiagnosticRef = await source.store.putBlob(historicalDiagnosticBytes);
+    const sourceApplication = await source.store.getApplication(source.run.applicationId);
+    source.store.applications.set(sourceApplication.applicationId, JSON.parse(JSON.stringify(createApplicationRecord({
+      ...sourceApplication,
+      installationDiagnostics: {
+        ...sourceApplication.installationDiagnostics,
+        receiverPolicyRef: senderPolicyRef,
+      },
+    }))));
+    const diagnosticHead = createRunHead({
+      ...source.head,
+      updateDiagnostics: {
+        ...source.head.updateDiagnostics,
+        receiverPolicyRef: senderPolicyRef,
+        historicalTurnClosureRefs: [historicalDiagnosticRef],
+      },
+    });
+    assert.equal((await source.store.compareAndSwapHead(source.run.runId, 'main', source.head.generation, diagnosticHead)).ok, true);
+    await source.store.writeRun(createRunRecord({
+      ...source.run,
+      branches: source.run.branches.map((branch) => branch.branchId === 'main'
+        ? createBranchRecord({
+            ...branch,
+            diagnostics: {
+              ...branch.diagnostics,
+              receiverPolicyRef: senderPolicyRef,
+              historicalTurnClosureRefs: [historicalDiagnosticRef],
+            },
+          })
+        : branch),
+      creationMetadata: {
+        ...source.run.creationMetadata,
+        receiverPolicyRef: senderPolicyRef,
+      },
+      receiverPolicyRef: senderPolicyRef,
+    }));
+    const journal = new EffectJournal({
+      store: source.store,
+      runId: source.run.runId,
+      branchId: 'main',
+      parentTurnClosureFingerprint: 'world:closure:parent',
+    });
+    const resolved = await journal.resolve({}, {
+      actuatorRef: 'fixture:model',
+      descriptorFingerprint: 'descriptor:fixture',
+      actuationClass: 'fixture',
+      responseSchema: { status: 'ok' },
+      idempotencyKeyBytes: fromUtf8('sender-policy-effect-key'),
+      idempotencyKeyWorldFingerprint: 'world:key:sender-policy-effect',
+      requestBytes: fromUtf8('request:sender-policy-effect'),
+      hostRequestFingerprint: 'world:host-request:0000000000000c01',
+    }, fixtureDriver());
+    await source.store.putEffectRecord({
+      ...resolved.record,
+      diagnostics: {
+        ...resolved.record.diagnostics,
+        receiverPolicyRef: senderPolicyRef,
+      },
+    });
     await forkRunBranch(source.store, {
       runId: source.run.runId,
       sourceBranchId: 'main',
@@ -589,9 +650,32 @@ describe('migration, branching, and CLI diagnostics', () => {
     });
     const carrierExport = await exportCarrierRun(source.store, source.run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
     const receiver = new MemoryStore();
-    const imported = await importCarrierRun(receiver, carrierExport, { runId: 'receiver-run', preflight: async () => ({ blockers: [] }) });
+    let preflightCandidate;
+    const imported = await importCarrierRun(receiver, carrierExport, {
+      runId: 'receiver-run',
+      preflight: async (candidate) => {
+        preflightCandidate = candidate;
+        return { blockers: [] };
+      },
+    });
     assert.equal(imported.run.runId, 'receiver-run');
     assert.equal(imported.authorityImported, false);
+    assert.equal(carrierExport.bundle.run.receiverPolicyRef.checksum, senderPolicyRef.checksum);
+    assert.equal(preflightCandidate.selectedRunId, 'receiver-run');
+    assert.equal(preflightCandidate.bundle.run.receiverPolicyRef, undefined);
+    assert.equal(preflightCandidate.bundle.run.creationMetadata.receiverPolicyRef, undefined);
+    assert.equal(preflightCandidate.bundle.run.branches[0].diagnostics.receiverPolicyRef, undefined);
+    assert.equal(preflightCandidate.bundle.head.updateDiagnostics.receiverPolicyRef, undefined);
+    assert.equal(preflightCandidate.bundle.effects[0].diagnostics.receiverPolicyRef, undefined);
+    assert.equal(preflightCandidate.bundle.application.installationDiagnostics.receiverPolicyRef, undefined);
+    assert.equal(imported.run.receiverPolicyRef, null);
+    assert.equal(imported.run.creationMetadata.receiverPolicyRef, undefined);
+    assert.equal(imported.run.branches[0].diagnostics.receiverPolicyRef, undefined);
+    assert.equal((await receiver.readHead('receiver-run', 'main')).updateDiagnostics.receiverPolicyRef, undefined);
+    assert.equal((await receiver.listEffectRecords('receiver-run'))[0].diagnostics.receiverPolicyRef, undefined);
+    assert.equal((await receiver.getApplication(source.run.applicationId)).installationDiagnostics.receiverPolicyRef, undefined);
+    await assert.rejects(() => receiver.getBlob(senderPolicyRef), { code: 'ERR_BLOB_NOT_FOUND' });
+    assert.deepEqual([...await receiver.getBlob(historicalDiagnosticRef)], [...historicalDiagnosticBytes]);
     assert.equal(carrierExport.bundle.application.applicationId, source.run.applicationId);
     assert.deepEqual(carrierExport.bundle.run.branches.map((branch) => branch.branchId), ['main']);
     assert.equal((await receiver.getApplication(source.run.applicationId)).applicationId, source.run.applicationId);
@@ -713,7 +797,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         assert.equal(app.universalWasmChecksum, `sha256:${installed.blobs.wasm.checksum}`);
         assert.equal(app.universalWasmByteLength, installed.blobs.wasm.byteLength);
         assert.equal(app.worldProtocolVersion, 'v0.1.0');
-        assert.equal(app.applianceAbiVersion, 'v3');
+        assert.equal(app.applianceAbiVersion, 'v4');
         assert.equal(app.executableImageWorldFingerprint, 'world:image:installed');
         assert.equal(app.installationDiagnostics.wasmPath, undefined);
         assert.equal(app.installationDiagnostics.imagePath, undefined);
@@ -1029,7 +1113,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       const app = {
         applicationId: '../escape',
         worldProtocolVersion: 'v0.1.0',
-        applianceAbiVersion: 'v3',
+        applianceAbiVersion: 'v4',
         universalWasmChecksum: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
         executableImageWorldFingerprint: 'world:image',
       };
@@ -2154,7 +2238,7 @@ async function fixtureStore() {
     universalWasmChecksum: `sha256:${wasmRef.checksum}`,
     universalWasmByteLength: wasmRef.byteLength,
     worldProtocolVersion: 'v0.1.0',
-    applianceAbiVersion: 'v3',
+    applianceAbiVersion: 'v4',
     executableImageRef: imageRef,
     executableImageWorldFingerprint: 'world:image',
     applianceManifestRef: manifestRef,
@@ -2192,7 +2276,7 @@ async function fixtureDirectoryStore(root, options = {}) {
       universalWasmChecksum: `sha256:${wasmRef.checksum}`,
       universalWasmByteLength: wasmRef.byteLength,
       worldProtocolVersion: 'v0.1.0',
-      applianceAbiVersion: 'v3',
+      applianceAbiVersion: 'v4',
       executableImageRef: imageRef,
       executableImageWorldFingerprint: 'world:image:directory',
       applianceManifestRef: manifestRef,
