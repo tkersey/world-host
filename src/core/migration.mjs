@@ -147,12 +147,18 @@ export async function importCarrierRun(store, carrierExport, options = {}) {
   if (carrierExport?.carrierExportVersion !== 'CarrierExport-v0') fail('ERR_INVALID_CARRIER_EXPORT');
   if (stableJson(carrierExport.release) !== stableJson(carrierVersionSummary())) fail('ERR_IMPORT_RELEASE_MISMATCH');
   rejectUnrecoverableEffects(carrierExport.bundle.effects ?? []);
-  if (typeof options.preflight === 'function') {
-    const report = await options.preflight(carrierExport);
-    if (report?.blockers?.length) fail('ERR_IMPORT_PREFLIGHT_BLOCKED', 'receiver capability preflight rejected import', { blockers: report.blockers });
-  }
   const receiverRunId = options.runId ?? `${carrierExport.bundle.run.runId}:imported`;
   const bundle = rewriteRunBundle(carrierExport.bundle, receiverRunId);
+  const importCandidate = {
+    ...carrierExport,
+    selectedRunId: receiverRunId,
+    selectedBranchId: bundle.branchId,
+    bundle,
+  };
+  if (typeof options.preflight === 'function') {
+    const report = await options.preflight(importCandidate);
+    if (report?.blockers?.length) fail('ERR_IMPORT_PREFLIGHT_BLOCKED', 'receiver capability preflight rejected import', { blockers: report.blockers });
+  }
   await store.importRun(bundle);
   return {
     run: await store.getRun(receiverRunId),

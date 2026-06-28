@@ -650,10 +650,24 @@ describe('migration, branching, and CLI diagnostics', () => {
     });
     const carrierExport = await exportCarrierRun(source.store, source.run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
     const receiver = new MemoryStore();
-    const imported = await importCarrierRun(receiver, carrierExport, { runId: 'receiver-run', preflight: async () => ({ blockers: [] }) });
+    let preflightCandidate;
+    const imported = await importCarrierRun(receiver, carrierExport, {
+      runId: 'receiver-run',
+      preflight: async (candidate) => {
+        preflightCandidate = candidate;
+        return { blockers: [] };
+      },
+    });
     assert.equal(imported.run.runId, 'receiver-run');
     assert.equal(imported.authorityImported, false);
     assert.equal(carrierExport.bundle.run.receiverPolicyRef.checksum, senderPolicyRef.checksum);
+    assert.equal(preflightCandidate.selectedRunId, 'receiver-run');
+    assert.equal(preflightCandidate.bundle.run.receiverPolicyRef, undefined);
+    assert.equal(preflightCandidate.bundle.run.creationMetadata.receiverPolicyRef, undefined);
+    assert.equal(preflightCandidate.bundle.run.branches[0].diagnostics.receiverPolicyRef, undefined);
+    assert.equal(preflightCandidate.bundle.head.updateDiagnostics.receiverPolicyRef, undefined);
+    assert.equal(preflightCandidate.bundle.effects[0].diagnostics.receiverPolicyRef, undefined);
+    assert.equal(preflightCandidate.bundle.application.installationDiagnostics.receiverPolicyRef, undefined);
     assert.equal(imported.run.receiverPolicyRef, null);
     assert.equal(imported.run.creationMetadata.receiverPolicyRef, undefined);
     assert.equal(imported.run.branches[0].diagnostics.receiverPolicyRef, undefined);
