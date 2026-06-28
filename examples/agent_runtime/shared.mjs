@@ -316,27 +316,36 @@ export async function runBranchingExample() {
   });
   const mainRef = await store.putBlob(turnClosureBytes({ runId: installed.run.runId, branchId: 'main', result: 'tool(actuate)' }));
   const alternateRef = await store.putBlob(turnClosureBytes({ runId: installed.run.runId, branchId: 'alternate', result: 'final=alternate branch complete' }));
-  await store.compareAndSwapHead(installed.run.runId, 'main', 0, createRunHead({
+  const mainHead = createRunHead({
     ...sourceHead,
     generation: 1,
     turnClosureRef: mainRef,
     turnClosureWorldFingerprint: worldFingerprint('turn-closure', installed.run.runId, 'main-tool'),
     resultingStateFingerprint: worldFingerprint('state', installed.run.runId, 'main-tool'),
     status: 'needs_host',
-  }));
-  await store.compareAndSwapHead(installed.run.runId, 'alternate', 0, createRunHead({
+  });
+  const mainCas = await store.compareAndSwapHead(installed.run.runId, 'main', 0, mainHead);
+  if (!mainCas.ok) throw new Error('agent branching example main branch CAS failed');
+  const alternateHead = createRunHead({
     ...sourceHead,
     generation: 1,
     turnClosureRef: alternateRef,
     turnClosureWorldFingerprint: worldFingerprint('turn-closure', installed.run.runId, 'alternate-final'),
     resultingStateFingerprint: worldFingerprint('state', installed.run.runId, 'alternate-final'),
     status: 'completed',
-  }));
+  });
+  const alternateCas = await store.compareAndSwapHead(installed.run.runId, 'alternate', 0, alternateHead);
+  if (!alternateCas.ok) throw new Error('agent branching example alternate branch CAS failed');
   const main = await store.readHead(installed.run.runId, 'main');
   const alternate = await store.readHead(installed.run.runId, 'alternate');
   return {
     example: 'agent-branching',
-    branchesValid: main.status === 'needs_host' && alternate.status === 'completed',
+    branchesValid: main.generation === 1 &&
+      alternate.generation === 1 &&
+      main.status === 'needs_host' &&
+      alternate.status === 'completed' &&
+      main.turnClosureWorldFingerprint === mainHead.turnClosureWorldFingerprint &&
+      alternate.turnClosureWorldFingerprint === alternateHead.turnClosureWorldFingerprint,
     sourceBranchUnchangedByFork: sourceHead.turnClosureWorldFingerprint === installed.parentHead.turnClosureWorldFingerprint,
     sourceBranchImplicitlyMerged: false,
     main: main.turnClosureWorldFingerprint,
