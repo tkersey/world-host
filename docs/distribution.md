@@ -16,10 +16,10 @@ Runtime third-party dependencies: zero.
 Pinned versions:
 
 - World: `v0.1.0`
-- Boundary through World: `v0.6.2`
-- Appliance ABI: `v4`
+- Boundary through World: `v0.5.0`
+- Appliance ABI: `v3`
 - TurnClosure format: `v1`
-- universal WASM SHA-256: `a79ae458d3cc5145660dadfc678736e75822c8c70558f8139861dc1103e84add`
+- universal WASM SHA-256: `938dfe12937b5ca767793bbbc5e8d2e2122caf7134efe52fba7fb7892930c589`
 
 The real-World proof lane is:
 

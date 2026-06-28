@@ -148,7 +148,7 @@ async function runRealWorldUniversalCandidate(artifacts) {
   await worker.instantiate(wasmBytes);
   const manifest = worker.readRuntimeManifest();
   assert.equal(manifest.importCount, 0);
-  assert.equal(manifest.abiVersion, 'v4');
+  assert.equal(manifest.abiVersion, 'v3');
   assert.equal(manifest.nativeHelperProcess, false);
   assert.equal(manifest.childProcessProtocolEncoding, false);
 
@@ -173,7 +173,7 @@ async function runRealStoreBackedRunControllerBoot(artifacts, wasmBytes) {
     universalWasmChecksum: `sha256:${wasmRef.checksum}`,
     universalWasmByteLength: wasmRef.byteLength,
     worldProtocolVersion: 'v0.1.0',
-    applianceAbiVersion: 'v4',
+    applianceAbiVersion: 'v3',
     executableImageRef: imageRef,
     executableImageWorldFingerprint: `world:executable-image:${sha256Hex(imageBytes)}`,
     applianceManifestRef: manifestRef,
@@ -258,7 +258,7 @@ async function runRealColdRestoreRunControllerConformance(artifacts, wasmBytes) 
     universalWasmChecksum: `sha256:${wasmRef.checksum}`,
     universalWasmByteLength: wasmRef.byteLength,
     worldProtocolVersion: 'v0.1.0',
-    applianceAbiVersion: 'v4',
+    applianceAbiVersion: 'v3',
     executableImageRef: imageRef,
     executableImageWorldFingerprint: `world:executable-image:${sha256Hex(imageBytes)}`,
     applianceManifestRef: manifestRef,
@@ -365,7 +365,7 @@ async function runRealJournaledHostRequestRunControllerConformance(artifacts, wa
     universalWasmChecksum: `sha256:${wasmRef.checksum}`,
     universalWasmByteLength: wasmRef.byteLength,
     worldProtocolVersion: 'v0.1.0',
-    applianceAbiVersion: 'v4',
+    applianceAbiVersion: 'v3',
     executableImageRef: imageRef,
     executableImageWorldFingerprint: `world:executable-image:${sha256Hex(imageBytes)}`,
     applianceManifestRef: manifestRef,
@@ -699,7 +699,7 @@ async function fixtureStore(prefix = 'run') {
     universalWasmChecksum: `sha256:${wasmRef.checksum}`,
     universalWasmByteLength: wasmRef.byteLength,
     worldProtocolVersion: 'v0.1.0',
-    applianceAbiVersion: 'v4',
+    applianceAbiVersion: 'v3',
     executableImageRef: imageRef,
     executableImageWorldFingerprint: 'world:image',
     applianceManifestRef: manifestRef,

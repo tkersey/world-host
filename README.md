@@ -18,8 +18,6 @@ This repository contains the Carrier v0 host boundary: immutable blob stores, mu
 
 `bun bin/world-host.mjs run-example file-rewrite-agent` is a durable host-level flagship fixture. It creates a temporary `DirectoryStore`, installs application/run/head records and immutable blobs, resolves real sandbox file read/write requests through `EffectJournal`, retries the write by the same full World idempotency key without invoking the file driver again, commits the final host branch head, then reopens the store and inspects the completed run, effects, output file, closure blob, and retained archive-append fixture bytes without executing a driver. It is explicit host evidence only; World semantic TurnReceipt/root-result validation remains in the real World conformance lane above.
 
-`bun run proof:agent` runs the Agent Closure host proof. It first validates the sibling World `dist-world-agent-v0` gate, then exercises Carrier-side skeleton, fixture file rewrite, replay, retry, migration, branching, and negative lanes. The agent loop remains Boundary/World-owned; world-host only installs the image, resolves external model/file HostRequests through deterministic drivers, persists `ResolutionInput` bytes, advances retained branch heads, and inspects stored results.
-
 `RunController` can advance a branch from real worker output by inspecting World-authored TurnClosure bytes for the next `RunHead` fingerprints. That inspection is host metadata extraction only; Carrier does not validate or author World receipts, capsules, archive moments, chronicle events, or TurnClosures.
 
 If a host dies after advancing `RunHead` but before finalizing effect records, `EffectJournal` can reconcile `submitted` records from the committed head's parent TurnClosure fingerprint. This recovery only marks matching run/branch effects `closure_committed`; it does not rerun drivers or create World evidence.
@@ -37,10 +35,10 @@ If a host dies after advancing `RunHead` but before finalizing effect records, `
 ## Pinned World Surface
 
 - World release: `v0.1.0`
-- Boundary through World: `v0.6.2`
-- Appliance ABI: `v4`
+- Boundary through World: `v0.5.0`
+- Appliance ABI: `v3`
 - TurnClosure format: `v1`
-- Universal WASM SHA-256: `a79ae458d3cc5145660dadfc678736e75822c8c70558f8139861dc1103e84add`
+- Universal WASM SHA-256: `938dfe12937b5ca767793bbbc5e8d2e2122caf7134efe52fba7fb7892930c589`
 
 The checksum is from the local World universal Appliance cache artifact selected by the real Carrier conformance proof and must be reverified against the published World v0.1.0 release before Carrier release.
 
@@ -51,17 +49,12 @@ bun --version
 bun run test
 bun run proof
 bun run proof:world-real
-bun run proof:agent
 bun bin/world-host.mjs doctor --json
 bun scripts/run-store-conformance.mjs
 bun scripts/run-crash-matrix.mjs
 bun scripts/run-migration-conformance.mjs
 bun scripts/run-security-conformance.mjs
 bun bin/world-host.mjs run-example file-rewrite-agent
-bun bin/world-host.mjs run-example agent-skeleton
-bun bin/world-host.mjs run-example agent-fixture
-bun bin/world-host.mjs run-example agent-replay
-bun bin/world-host.mjs run-example agent-migration
 bun bin/world-host.mjs run-example crash-recovery
 bun bin/world-host.mjs run-example migration
 bun bin/world-host.mjs run-example branching

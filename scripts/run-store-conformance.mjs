@@ -47,7 +47,7 @@ async function runStore(name, makeStore) {
       universalWasmChecksum: `sha256:${wasmRef.checksum}`,
       universalWasmByteLength: wasmRef.byteLength,
       worldProtocolVersion: 'v0.1.0',
-      applianceAbiVersion: 'v4',
+      applianceAbiVersion: 'v3',
       executableImageRef: imageRef,
       executableImageWorldFingerprint: 'world:image:fingerprint',
       applianceManifestRef: manifestRef,

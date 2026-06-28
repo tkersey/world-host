@@ -21,8 +21,7 @@
   "scripts": {
     "test": "bun test",
     "proof": "bun test && bun scripts/run-world-conformance.mjs && bun scripts/run-store-conformance.mjs && bun scripts/run-crash-matrix.mjs && bun scripts/run-migration-conformance.mjs && bun scripts/run-security-conformance.mjs",
-    "proof:world-real": "bun scripts/run-world-conformance.mjs --world-repo ../world",
-    "proof:agent": "bun scripts/run-agent-closure-conformance.mjs"
+    "proof:world-real": "bun scripts/run-world-conformance.mjs --world-repo ../world"
   },
   "engines": {
     "bun": ">=1.3.2"
