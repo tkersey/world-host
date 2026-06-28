@@ -35,10 +35,10 @@ If a host dies after advancing `RunHead` but before finalizing effect records, `
 ## Pinned World Surface
 
 - World release: `v0.1.0`
-- Boundary through World: `v0.5.0`
-- Appliance ABI: `v3`
+- Boundary through World: `v0.6.2`
+- Appliance ABI: `v4`
 - TurnClosure format: `v1`
-- Universal WASM SHA-256: `938dfe12937b5ca767793bbbc5e8d2e2122caf7134efe52fba7fb7892930c589`
+- Universal WASM SHA-256: `a79ae458d3cc5145660dadfc678736e75822c8c70558f8139861dc1103e84add`
 
 The checksum is from the local World universal Appliance cache artifact selected by the real Carrier conformance proof and must be reverified against the published World v0.1.0 release before Carrier release.
 
