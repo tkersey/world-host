@@ -195,6 +195,7 @@ function rewriteRunBundle(bundle, runId) {
   const effects = (bundle.effects ?? [])
     .filter((effect) => effect.branchId === bundle.branchId)
     .map((effect) => scrubReceiverPolicyRefs({ ...effect, runId }));
+  const application = scrubReceiverPolicyRefs(bundle.application);
   const run = scrubReceiverPolicyRefs({
     ...bundle.run,
     runId,
@@ -203,6 +204,7 @@ function rewriteRunBundle(bundle, runId) {
   });
   const rewritten = {
     ...bundle,
+    application,
     run,
     head,
     effects,

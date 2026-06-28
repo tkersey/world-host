@@ -584,6 +584,14 @@ describe('migration, branching, and CLI diagnostics', () => {
     const senderPolicyRef = await source.store.putBlob(fromUtf8('sender-local-policy'));
     const historicalDiagnosticBytes = fromUtf8('historical closure retained by branch diagnostics');
     const historicalDiagnosticRef = await source.store.putBlob(historicalDiagnosticBytes);
+    const sourceApplication = await source.store.getApplication(source.run.applicationId);
+    source.store.applications.set(sourceApplication.applicationId, JSON.parse(JSON.stringify(createApplicationRecord({
+      ...sourceApplication,
+      installationDiagnostics: {
+        ...sourceApplication.installationDiagnostics,
+        receiverPolicyRef: senderPolicyRef,
+      },
+    }))));
     const diagnosticHead = createRunHead({
       ...source.head,
       updateDiagnostics: {
@@ -651,6 +659,7 @@ describe('migration, branching, and CLI diagnostics', () => {
     assert.equal(imported.run.branches[0].diagnostics.receiverPolicyRef, undefined);
     assert.equal((await receiver.readHead('receiver-run', 'main')).updateDiagnostics.receiverPolicyRef, undefined);
     assert.equal((await receiver.listEffectRecords('receiver-run'))[0].diagnostics.receiverPolicyRef, undefined);
+    assert.equal((await receiver.getApplication(source.run.applicationId)).installationDiagnostics.receiverPolicyRef, undefined);
     await assert.rejects(() => receiver.getBlob(senderPolicyRef), { code: 'ERR_BLOB_NOT_FOUND' });
     assert.deepEqual([...await receiver.getBlob(historicalDiagnosticRef)], [...historicalDiagnosticBytes]);
     assert.equal(carrierExport.bundle.application.applicationId, source.run.applicationId);
