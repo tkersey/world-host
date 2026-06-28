@@ -1,0 +1,11 @@
+{
+  "manifest_len": 2898,
+  "abi_version": 4,
+  "protocol_manifest_fingerprint_lo": "0xdeaadbe889dbe92a",
+  "protocol_manifest_fingerprint_hi": "0xc6fb4236a4b64302",
+  "import_count": 0,
+  "export_count": 23,
+  "required_signature_count": 19,
+  "memory_bytes": 67108864,
+  "actual_webassembly_execution": true
+}

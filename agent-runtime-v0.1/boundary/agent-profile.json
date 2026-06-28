@@ -1,0 +1,16 @@
+{
+  "profile_format_version": 0,
+  "profile_fingerprint_version": 1,
+  "profile_fingerprint": "0xdc1981503eeeb739",
+  "boundary_protocol_manifest_fingerprint": "0xc7fcc7c8c79ed8cb",
+  "agent_root_module_fingerprint": "0xa663b81aa6df6f3e",
+  "agent_root_full_module_byte_fingerprint": "0x371bf8460c5e9649",
+  "toolbox_module_fingerprint": "0x4a4c934becaf32ae",
+  "toolbox_full_module_byte_fingerprint": "0x8ece9b217aeedb44",
+  "tool_ids": [
+    "actuate",
+    "read_file",
+    "write_file"
+  ],
+  "metadata": "agent-root-module"
+}

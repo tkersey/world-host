@@ -1,0 +1,29 @@
+{
+  "receiptFormatVersion": 1,
+  "receiptFingerprintVersion": 1,
+  "agentRuntimeManifestFingerprint": "agent-runtime:fc37d72a2edbb46d4fbf4e419087194b",
+  "boundaryModuleFingerprints": [
+    "0xa663b81aa6df6f3e",
+    "0x4a4c934becaf32ae"
+  ],
+  "worldExecutableImageFingerprint": "0x56623af1b7581f29",
+  "universalWasmChecksum": "a79ae458d3cc5145660dadfc678736e75822c8c70558f8139861dc1103e84add",
+  "worldHostCarrierManifestFingerprint": "agent-runtime:132a4d1bd786256457272a8d2dda815c",
+  "conformanceCorpusFingerprint": "agent-runtime:a3b7adf4c54ac31d87db8094e6b54c70",
+  "proofReceiptFingerprints": [
+    "agent-runtime:bf1543a5a3baf589d46eff7ddc334e5d",
+    "agent-runtime:aa5e96b305bba9f532ac4e92b6dc89a4",
+    "agent-runtime:d9f3bfc2e8197c9fbbc8b4ba6d55dccd"
+  ],
+  "skeletonProofPassed": true,
+  "fixtureProofPassed": true,
+  "replayProofPassed": true,
+  "retryProofPassed": true,
+  "migrationProofPassed": true,
+  "branchingProofPassed": true,
+  "negativeProofPassed": true,
+  "complete": true,
+  "blockers": [],
+  "warnings": [],
+  "receiptFingerprint": "agent-runtime:7eb2325ade1cc72acc2beaef6d829183"
+}

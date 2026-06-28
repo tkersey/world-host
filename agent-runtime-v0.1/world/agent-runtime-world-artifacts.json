@@ -1,0 +1,29 @@
+{
+  "world_package_version": "v0.1.0",
+  "world_executable_image_format_version": 2,
+  "world_executable_image_fingerprint_version": 2,
+  "world_executable_image_fingerprint": "0x56623af1b7581f29",
+  "world_appliance_manifest_fingerprint": "0x7f8c4eb99552c9d1",
+  "world_appliance_abi_version": 4,
+  "world_turn_closure_format_version": 1,
+  "world_archive_format_version": 1,
+  "root_module_fingerprint": "0xdeb791ecdd643b92",
+  "dispatch_fingerprint": "0x5f16645af4253563",
+  "required_actuator_refs": [
+    "fixture:agent-model",
+    "sandbox:file"
+  ],
+  "required_descriptor_fingerprints": [
+    "0xbe73177924a6b377",
+    "0x74afc8c3b2fe4c33"
+  ],
+  "required_actuator_ref_fingerprints": [
+    "0x4f0c7160f25c4c62",
+    "0xd5e4b1b427522cf2"
+  ],
+  "required_world_port_ids": [
+    "0x0000000000000001",
+    "0x0000000000000000"
+  ],
+  "metadata": "world-owned agent runtime export"
+}

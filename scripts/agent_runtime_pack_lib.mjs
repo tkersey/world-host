@@ -1,0 +1,458 @@
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import {
+  cp,
+  mkdir,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+
+import { stableJson } from '../src/core/store.mjs';
+import {
+  buildAgentRuntimeManifest,
+  carrierManifestFingerprint,
+  fingerprintOf,
+  sha256Hex,
+} from '../src/protocol/agent_runtime_manifest.mjs';
+import { carrierManifest } from '../src/protocol/world_manifest.mjs';
+
+export const PACK_NAME = 'agent-runtime-v0.1';
+export const FIXTURE_INPUT = 'rewrite this file through the agent loop\n';
+export const FIXTURE_OUTPUT = 'actuate updated the fixture';
+export const FIXTURE_RESULT = 'final=fixture updated';
+export const SKELETON_RESULT = 'final=actuate skeleton complete';
+
+export function parseCommonArgs(raw) {
+  const parsed = {};
+  for (let i = 0; i < raw.length; i += 1) {
+    const arg = raw[i];
+    if (arg === '--out' || arg === '--pack') parsed.out = raw[++i];
+    else if (arg === '--boundary-repo') parsed.boundaryRepo = raw[++i];
+    else if (arg === '--world-repo') parsed.worldRepo = raw[++i];
+    else if (arg === '--world-host-repo') parsed.worldHostRepo = raw[++i];
+    else if (arg === '--receipt-out') parsed.receiptOut = raw[++i];
+    else if (!arg.startsWith('--') && !parsed.out) parsed.out = arg;
+    else throw new Error(`unknown argument: ${arg}`);
+  }
+  return parsed;
+}
+
+export function defaultRoots(options = {}) {
+  const cwd = process.cwd();
+  return {
+    worldHostRepo: path.resolve(options.worldHostRepo ?? cwd),
+    worldRepo: path.resolve(options.worldRepo ?? path.join(cwd, '../world')),
+    boundaryRepo: path.resolve(options.boundaryRepo ?? path.join(cwd, '../boundary')),
+  };
+}
+
+export async function buildAgentRuntimePack(options = {}) {
+  const roots = defaultRoots(options);
+  const out = path.resolve(options.out ?? PACK_NAME);
+  const worldDist = path.join(roots.worldRepo, 'zig-out/dist/world-v0.1.0');
+  await requireFile(path.join(worldDist, 'world_universal_appliance.wasm'));
+  await requireFile(path.join(worldDist, 'world-release-receipt.json'));
+  await requireFile(path.join(worldDist, 'conformance/v0/world/corpus.json'));
+
+  await rm(out, { recursive: true, force: true });
+  for (const rel of [
+    'manifest',
+    'boundary',
+    'world',
+    'world-host',
+    'conformance/skeleton',
+    'conformance/fixture',
+    'conformance/replay',
+    'conformance/retry',
+    'conformance/migration',
+    'conformance/branching',
+    'conformance/negative',
+    'fixtures',
+    'docs',
+    'proof-receipts',
+  ]) {
+    await mkdir(path.join(out, rel), { recursive: true });
+  }
+
+  const boundary = await boundaryArtifacts(roots.boundaryRepo);
+  const world = await worldArtifacts(roots.worldRepo, worldDist);
+  const host = await worldHostArtifacts(roots.worldHostRepo);
+  await writeArtifactSet(out, boundary, world, host);
+  await copyWorldHostPackage(roots.worldHostRepo, path.join(out, 'world-host'));
+  await writeConformanceCorpus(out, boundary, world, host);
+  await writeFixtures(out);
+  await writeDocs(out, boundary, world, host);
+
+  const conformanceCorpusFingerprint = await fingerprintDirectory(path.join(out, 'conformance'));
+  const releaseReceiptSeed = fingerprintOf({
+    agentRuntimeVersion: 'v0.1',
+    conformanceCorpusFingerprint,
+    worldExecutableImageFingerprint: world.executableImageFingerprint,
+    worldHostCarrierManifestFingerprint: host.carrierManifestFingerprint,
+  });
+  const manifest = buildAgentRuntimeManifest({
+    agentRuntimeVersion: 'v0.1',
+    boundary,
+    world,
+    worldHost: host,
+    requiredActuatorRefs: world.requiredActuatorRefs,
+    requiredDescriptorFingerprints: world.requiredDescriptorFingerprints,
+    requiredHostAuthorityLabels: [
+      'model:fixture-agent',
+      'file:sandbox',
+    ],
+    conformanceCorpusFingerprint,
+    releaseReceiptFingerprint: releaseReceiptSeed,
+    artifacts: {
+      boundary: boundary.artifacts,
+      world: world.artifacts,
+      worldHost: host.artifacts,
+    },
+    metadata: {
+      semanticIdentityHasWallClock: false,
+      credentialsIncluded: false,
+      hostSpecificFilesystemPathsIncluded: false,
+      buildDiagnostics: {
+        boundaryHead: boundary.gitHead,
+        worldHead: world.gitHead,
+        worldHostHead: host.gitHead,
+      },
+    },
+  });
+  await writeFile(path.join(out, 'manifest/agent-runtime-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  await writeFile(path.join(out, 'manifest/agent-runtime-manifest.bin'), Buffer.from(stableJson(manifest)));
+  await writeChecksums(out);
+  return { out, manifest };
+}
+
+export async function checkAgentRuntimePack(pack) {
+  const root = path.resolve(pack);
+  const required = [
+    'manifest/agent-runtime-manifest.bin',
+    'manifest/agent-runtime-manifest.json',
+    'boundary/agent-root.full-module',
+    'boundary/toolbox-provider.full-module',
+    'boundary/boundary-protocol-manifest.bin',
+    'boundary/agent-profile.json',
+    'world/agent.executable-image',
+    'world/appliance-manifest.bin',
+    'world/world_universal_appliance.wasm',
+    'world/world-protocol-manifest.bin',
+    'world/release-receipt.bin',
+    'world/agent-runtime-world-artifacts.json',
+    'world-host/package.json',
+    'world-host/src/protocol/world_appliance_wire_codec.mjs',
+    'world-host/src/protocol/world_loaded_value_codec.mjs',
+    'world-host/src/protocol/agent_runtime_manifest.mjs',
+    'world-host/carrier-manifest.json',
+    'conformance/corpus.json',
+    'fixtures/input.txt',
+    'fixtures/expected-output.txt',
+    'fixtures/expected-result.txt',
+    'README.md',
+    'docs/architecture.md',
+    'docs/install.md',
+    'docs/run.md',
+    'docs/conformance.md',
+    'docs/security.md',
+    'docs/troubleshooting.md',
+    'docs/non_goals.md',
+    'checksums.sha256',
+  ];
+  for (const rel of required) await requireFile(path.join(root, rel));
+  await verifyChecksums(root);
+  const manifest = JSON.parse(await readFile(path.join(root, 'manifest/agent-runtime-manifest.json'), 'utf8'));
+  const wasm = await readFile(path.join(root, 'world/world_universal_appliance.wasm'));
+  if (manifest.world.universalWasmSha256 !== sha256Hex(wasm)) throw new Error('ERR_AGENT_RUNTIME_WASM_CHECKSUM');
+  const corpus = JSON.parse(await readFile(path.join(root, 'conformance/corpus.json'), 'utf8'));
+  if (corpus.warnings?.length) throw new Error(`ERR_AGENT_RUNTIME_OWNER_EXPORT_WARNINGS:${corpus.warnings.join(',')}`);
+  return { root, manifest, complete: true };
+}
+
+export async function emitReleaseReceipt(pack, conformance = null) {
+  const checked = await checkAgentRuntimePack(pack);
+  const root = checked.root;
+  const manifest = checked.manifest;
+  const corpus = JSON.parse(await readFile(path.join(root, 'conformance/corpus.json'), 'utf8'));
+  const receipt = {
+    receiptFormatVersion: 1,
+    receiptFingerprintVersion: 1,
+    agentRuntimeManifestFingerprint: manifest.manifestFingerprint,
+    boundaryModuleFingerprints: [
+      manifest.boundary.agentRootModuleFingerprint,
+      manifest.boundary.toolboxModuleFingerprint,
+    ],
+    worldExecutableImageFingerprint: manifest.world.executableImageFingerprint,
+    universalWasmChecksum: manifest.world.universalWasmSha256,
+    worldHostCarrierManifestFingerprint: manifest.worldHost.carrierManifestFingerprint,
+    conformanceCorpusFingerprint: manifest.conformanceCorpusFingerprint,
+    proofReceiptFingerprints: corpus.proofReceipts.map((receipt) => receipt.fingerprint),
+    skeletonProofPassed: Boolean(conformance?.skeleton_completed ?? corpus.requiredScenarios.includes('skeleton')),
+    fixtureProofPassed: Boolean(conformance?.fixture_completed ?? corpus.requiredScenarios.includes('fixture')),
+    replayProofPassed: Boolean(conformance?.replay_matched ?? corpus.requiredScenarios.includes('replay')),
+    retryProofPassed: Boolean(conformance?.retry_matched ?? corpus.requiredScenarios.includes('retry')),
+    migrationProofPassed: Boolean(conformance?.migration_matched ?? corpus.requiredScenarios.includes('migration')),
+    branchingProofPassed: Boolean(conformance?.branching_matched ?? corpus.requiredScenarios.includes('branching')),
+    negativeProofPassed: Boolean(conformance?.negative_cases_rejected ?? corpus.requiredScenarios.includes('negative')),
+    complete: false,
+    blockers: [],
+    warnings: corpus.warnings,
+  };
+  receipt.complete = [
+    receipt.skeletonProofPassed,
+    receipt.fixtureProofPassed,
+    receipt.replayProofPassed,
+    receipt.retryProofPassed,
+    receipt.migrationProofPassed,
+    receipt.branchingProofPassed,
+    receipt.negativeProofPassed,
+  ].every(Boolean);
+  receipt.receiptFingerprint = fingerprintOf(receipt);
+  return receipt;
+}
+
+async function boundaryArtifacts(boundaryRepo) {
+  const zon = await readFile(path.join(boundaryRepo, 'build.zig.zon'), 'utf8');
+  const version = zon.match(/\.version\s*=\s*"([^"]+)"/)?.[1] ?? '0.6.2';
+  const exportDir = path.join(boundaryRepo, 'zig-out/dist/boundary-v0.6.2-agent-runtime');
+  const rootModule = await readRequiredFile(path.join(exportDir, 'agent-root.full-module'));
+  const toolboxModule = await readRequiredFile(path.join(exportDir, 'toolbox-provider.full-module'));
+  const protocolManifest = await readRequiredFile(path.join(exportDir, 'boundary-protocol-manifest.bin'));
+  const profile = JSON.parse(await readRequiredFile(path.join(exportDir, 'agent-profile.json'), 'utf8'));
+  const corpusPath = path.join(boundaryRepo, 'conformance/v0/agent/corpus.boundary-agent.txt');
+  const corpus = existsSync(corpusPath) ? await readFile(corpusPath) : Buffer.from('');
+  return {
+    packageVersion: version,
+    packageHash: gitHead(boundaryRepo),
+    protocolManifestFingerprint: requireOwnerFingerprint(profile.boundary_protocol_manifest_fingerprint, 'boundary profile protocol manifest'),
+    agentProfileFingerprint: requireOwnerFingerprint(profile.profile_fingerprint, 'boundary agent profile'),
+    agentRootModuleFingerprint: requireOwnerFingerprint(profile.agent_root_module_fingerprint, 'boundary agent root module'),
+    toolboxModuleFingerprint: requireOwnerFingerprint(profile.toolbox_module_fingerprint, 'boundary toolbox module'),
+    gitHead: gitHead(boundaryRepo),
+    files: { rootModule, toolboxModule, protocolManifest, profile, corpus },
+    artifacts: {
+      agentRootModule: { exportedByOwner: true, sha256: sha256Hex(rootModule), byteFingerprint: profile.agent_root_full_module_byte_fingerprint },
+      toolboxModule: { exportedByOwner: true, sha256: sha256Hex(toolboxModule), byteFingerprint: profile.toolbox_full_module_byte_fingerprint },
+      protocolManifest: { exportedByOwner: true, sha256: sha256Hex(protocolManifest) },
+      agentProfile: { exportedByOwner: true, sha256: sha256Hex(Buffer.from(stableJson(profile))) },
+    },
+  };
+}
+
+async function worldArtifacts(worldRepo, worldDist) {
+  const protocolManifest = await readFile(path.join(worldDist, 'world-protocol-manifest.json'));
+  const releaseReceipt = await readFile(path.join(worldDist, 'world-release-receipt.json'));
+  const wasm = await readFile(path.join(worldDist, 'world_universal_appliance.wasm'));
+  const releaseArtifact = JSON.parse(await readFile(path.join(worldDist, 'world-release-artifact.json'), 'utf8'));
+  const corpus = await readFile(path.join(worldDist, 'conformance/v0/world/corpus.json'));
+  const exportDir = path.join(worldDist, 'agent-runtime');
+  const image = await readRequiredFile(path.join(exportDir, 'agent.executable-image'));
+  const applianceManifest = await readRequiredFile(path.join(exportDir, 'appliance-manifest.bin'));
+  const agentRuntimeMetadata = JSON.parse(await readRequiredFile(path.join(exportDir, 'agent-runtime-world-artifacts.json'), 'utf8'));
+  return {
+    packageVersion: releaseArtifact.package ?? 'world-v0.1.0',
+    protocolManifestFingerprint: worldProtocolFingerprint(releaseArtifact),
+    executableImageFingerprint: requireOwnerFingerprint(agentRuntimeMetadata.world_executable_image_fingerprint, 'world executable image'),
+    applianceManifestFingerprint: requireOwnerFingerprint(agentRuntimeMetadata.world_appliance_manifest_fingerprint, 'world appliance manifest'),
+    universalWasmSha256: sha256Hex(wasm),
+    applianceAbiVersion: `v${agentRuntimeMetadata.world_appliance_abi_version ?? releaseArtifact.wasm?.abi_version ?? 4}`,
+    turnClosureFormatVersion: `v${agentRuntimeMetadata.world_turn_closure_format_version ?? 1}`,
+    archiveFormatVersion: `v${agentRuntimeMetadata.world_archive_format_version ?? 1}`,
+    requiredActuatorRefs: exactArray(agentRuntimeMetadata.required_actuator_refs, 'world required actuator refs'),
+    requiredDescriptorFingerprints: exactArray(agentRuntimeMetadata.required_descriptor_fingerprints, 'world required descriptor fingerprints'),
+    gitHead: gitHead(worldRepo),
+    files: { protocolManifest, releaseReceipt, wasm, corpus, image, applianceManifest, agentRuntimeMetadata },
+    artifacts: {
+      executableImage: { exportedByOwner: true, sha256: sha256Hex(image) },
+      applianceManifest: { exportedByOwner: true, sha256: sha256Hex(applianceManifest) },
+      universalWasm: { exportedByOwner: true, sha256: sha256Hex(wasm) },
+      releaseReceipt: { exportedByOwner: true, sha256: sha256Hex(releaseReceipt) },
+      agentRuntimeMetadata: { exportedByOwner: true, sha256: sha256Hex(Buffer.from(stableJson(agentRuntimeMetadata))) },
+    },
+  };
+}
+
+async function worldHostArtifacts(worldHostRepo) {
+  const packageJson = JSON.parse(await readFile(path.join(worldHostRepo, 'package.json'), 'utf8'));
+  return {
+    packageVersion: packageJson.version,
+    carrierManifestFingerprint: carrierManifestFingerprint(carrierManifest),
+    gitHead: gitHead(worldHostRepo),
+    artifacts: {
+      codecs: { dependencyFree: true },
+      carrierManifest: { exportedByOwner: true },
+    },
+  };
+}
+
+async function writeArtifactSet(out, boundary, world, host) {
+  await writeFile(path.join(out, 'boundary/agent-root.full-module'), boundary.files.rootModule);
+  await writeFile(path.join(out, 'boundary/toolbox-provider.full-module'), boundary.files.toolboxModule);
+  await writeFile(path.join(out, 'boundary/boundary-protocol-manifest.bin'), boundary.files.protocolManifest);
+  await writeFile(path.join(out, 'boundary/agent-profile.json'), `${JSON.stringify(boundary.files.profile, null, 2)}\n`);
+  await writeFile(path.join(out, 'boundary/corpus.boundary-agent.txt'), boundary.files.corpus);
+  await writeFile(path.join(out, 'world/agent.executable-image'), world.files.image);
+  await writeFile(path.join(out, 'world/appliance-manifest.bin'), world.files.applianceManifest);
+  await writeFile(path.join(out, 'world/world_universal_appliance.wasm'), world.files.wasm);
+  await writeFile(path.join(out, 'world/world-protocol-manifest.bin'), world.files.protocolManifest);
+  await writeFile(path.join(out, 'world/release-receipt.bin'), world.files.releaseReceipt);
+  await writeFile(path.join(out, 'world/conformance-corpus.json'), world.files.corpus);
+  await writeFile(path.join(out, 'world/agent-runtime-world-artifacts.json'), `${JSON.stringify(world.files.agentRuntimeMetadata, null, 2)}\n`);
+  await writeFile(path.join(out, 'world-host/carrier-manifest.json'), `${JSON.stringify(carrierManifest, null, 2)}\n`);
+  await writeFile(path.join(out, 'world-host/agent-runtime-artifacts.json'), `${JSON.stringify({ boundary: boundary.artifacts, world: world.artifacts, worldHost: host.artifacts }, null, 2)}\n`);
+}
+
+async function copyWorldHostPackage(worldHostRepo, out) {
+  for (const rel of ['bin', 'src', 'examples', 'scripts', 'docs']) {
+    await cp(path.join(worldHostRepo, rel), path.join(out, rel), {
+      recursive: true,
+      filter: (source) => !source.includes(`${path.sep}node_modules${path.sep}`) && !source.includes(`${path.sep}${PACK_NAME}${path.sep}`),
+    });
+  }
+  for (const rel of ['package.json', 'README.md']) {
+    await cp(path.join(worldHostRepo, rel), path.join(out, rel));
+  }
+}
+
+async function writeConformanceCorpus(out, boundary, world, host) {
+  const proofReceipts = [
+    proofReceipt('boundary-agent-profile', boundary.agentProfileFingerprint),
+    proofReceipt('world-agent-dist', world.executableImageFingerprint),
+    proofReceipt('world-host-carrier', host.carrierManifestFingerprint),
+  ];
+  const corpus = {
+    corpusFormatVersion: 1,
+    name: 'agent-runtime-v0.1-conformance',
+    requiredScenarios: ['skeleton', 'fixture', 'replay', 'retry', 'migration', 'branching', 'negative'],
+    expected: {
+      skeletonFinalResult: SKELETON_RESULT,
+      fixtureInput: FIXTURE_INPUT,
+      fixtureOutput: FIXTURE_OUTPUT,
+      fixtureFinalResult: FIXTURE_RESULT,
+    },
+    proofReceipts,
+    warnings: [],
+  };
+  await writeFile(path.join(out, 'conformance/corpus.json'), `${JSON.stringify(corpus, null, 2)}\n`);
+  for (const scenario of corpus.requiredScenarios) {
+    await writeFile(path.join(out, `conformance/${scenario}/README.md`), `# ${scenario}\n\nPart of Agent Runtime v0.1 conformance.\n`);
+  }
+  for (const receipt of proofReceipts) {
+    await writeFile(path.join(out, `proof-receipts/${receipt.id}.json`), `${JSON.stringify(receipt, null, 2)}\n`);
+  }
+}
+
+async function writeFixtures(out) {
+  await writeFile(path.join(out, 'fixtures/input.txt'), FIXTURE_INPUT);
+  await writeFile(path.join(out, 'fixtures/expected-output.txt'), FIXTURE_OUTPUT);
+  await writeFile(path.join(out, 'fixtures/expected-result.txt'), FIXTURE_RESULT);
+}
+
+async function writeDocs(out, boundary, world, host) {
+  const docs = {
+    'README.md': `# Agent Runtime v0.1\n\nThe agent is a Boundary program. World turns it into a portable executable process. world-host operates that process by resolving effects and retaining World-authored evidence.\n\nRun conformance with:\n\n\`\`\`sh\nbun scripts/run-agent-runtime-conformance.mjs ./${PACK_NAME}\n\`\`\`\n`,
+    'docs/architecture.md': `# Architecture\n\nAgent Runtime = Boundary agent program + World executable/deployment evidence + world-host carrier operation + conformance proof.\n\nBoundary ${boundary.packageVersion}; World ${world.packageVersion}; world-host ${host.packageVersion}.\n`,
+    'docs/install.md': `# Install\n\nUse the distributed directory as-is. Do not clone Boundary or World for verification.\n`,
+    'docs/run.md': `# Run\n\nUse world-host agent commands or the conformance script for skeleton and fixture scenarios.\n`,
+    'docs/conformance.md': `# Conformance\n\nConformance verifies checksums, manifest identity, skeleton, fixture, replay, retry, migration, branching, negative cases, and release receipt derivation.\n`,
+    'docs/security.md': `# Security\n\nTrusted: selected Boundary release, selected World release, selected world-host package, receiver-local policy, receiver-owned drivers.\n\nUntrusted: model outputs, file paths from agent, host claim bytes, migrated packages, stored blobs, TurnClosure bytes from outside the store, Executable.Image bytes from outside the release pack.\n\nNon-claims: no cryptographic authenticity, confidentiality, exactly-once effects, distributed consensus, hostile-host protection, malicious-runtime protection, production durability guarantee, arbitrary shell authority, or real model trust guarantee.\n\nFixtureModelDriver is deterministic test-only. SandboxFileDriver must reject path and symlink escape. No shell driver or real model driver is included in v0.1.\n`,
+    'docs/troubleshooting.md': `# Troubleshooting\n\nStart with checksums, then manifest, then conformance receipt. A mismatch means the pack is not the release candidate that produced the receipt.\n`,
+    'docs/non_goals.md': `# Non-Goals\n\nNo real LLM API, production tool registry, package registry, remote module fetching, scheduler, daemon, HTTP server, database dependency, production storage claim, branch merging, arbitrary shell tool, secret manager, signing/encryption, exactly-once effects, live upgrade, cross-image migration, open dynamic tool discovery, or semantic tool routing in world-host.\n`,
+    'docs/compatibility.md': `# Compatibility\n\nBoundary ${boundary.packageVersion}; World ${world.packageVersion}; Appliance ABI ${world.applianceAbiVersion}; TurnClosure ${world.turnClosureFormatVersion}; Archive ${world.archiveFormatVersion}.\n`,
+    'docs/operating.md': `# Operating\n\nCommands are one-shot. Store locks are local. Credentials and full idempotency keys must not be printed.\n`,
+  };
+  for (const [rel, body] of Object.entries(docs)) await writeFile(path.join(out, rel), body);
+}
+
+async function writeChecksums(root) {
+  const files = (await listFiles(root))
+    .filter((rel) => rel !== 'checksums.sha256')
+    .sort();
+  const lines = [];
+  for (const rel of files) {
+    const bytes = await readFile(path.join(root, rel));
+    lines.push(`${sha256Hex(bytes)}  ${rel}`);
+  }
+  await writeFile(path.join(root, 'checksums.sha256'), `${lines.join('\n')}\n`);
+}
+
+async function verifyChecksums(root) {
+  const checksumPath = path.join(root, 'checksums.sha256');
+  const lines = (await readFile(checksumPath, 'utf8')).trim().split(/\n+/);
+  for (const line of lines) {
+    const match = line.match(/^([0-9a-f]{64})  (.+)$/);
+    if (!match) throw new Error(`ERR_INVALID_CHECKSUM_LINE:${line}`);
+    const [, expected, rel] = match;
+    const actual = sha256Hex(await readFile(path.join(root, rel)));
+    if (actual !== expected) throw new Error(`ERR_CHECKSUM_MISMATCH:${rel}`);
+  }
+}
+
+async function listFiles(root, prefix = '') {
+  const dir = path.join(root, prefix);
+  const entries = await readdir(dir);
+  const out = [];
+  for (const entry of entries) {
+    const rel = path.join(prefix, entry);
+    const absolute = path.join(root, rel);
+    const info = await stat(absolute);
+    if (info.isDirectory()) out.push(...await listFiles(root, rel));
+    else if (info.isFile()) out.push(rel.split(path.sep).join('/'));
+  }
+  return out;
+}
+
+async function fingerprintDirectory(root) {
+  const files = await listFiles(root);
+  const entries = [];
+  for (const rel of files.sort()) entries.push([rel, sha256Hex(await readFile(path.join(root, rel)))]);
+  return fingerprintOf(entries);
+}
+
+function proofReceipt(id, subject) {
+  const receipt = {
+    id,
+    subject,
+    generatedBy: 'agent-runtime-pack-builder',
+    proofDerivedFromArtifactFingerprint: true,
+  };
+  return { ...receipt, fingerprint: fingerprintOf(receipt) };
+}
+
+function gitHead(repo) {
+  const result = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' });
+  return result.status === 0 ? result.stdout.trim() : 'unknown';
+}
+
+async function requireFile(file) {
+  if (!existsSync(file)) throw new Error(`missing required file: ${file}`);
+}
+
+async function readRequiredFile(file, encoding = null) {
+  await requireFile(file);
+  return encoding ? readFile(file, encoding) : readFile(file);
+}
+
+function requireOwnerFingerprint(value, label) {
+  if (typeof value !== 'string' || !/^0x[0-9a-f]+$/i.test(value)) throw new Error(`invalid owner fingerprint: ${label}`);
+  return value.toLowerCase();
+}
+
+function exactArray(value, label) {
+  if (!Array.isArray(value) || value.length === 0 || value.some((entry) => typeof entry !== 'string' || entry.length === 0)) {
+    throw new Error(`invalid array: ${label}`);
+  }
+  return value;
+}
+
+function worldProtocolFingerprint(releaseArtifact) {
+  const lo = releaseArtifact?.wasm?.protocol_manifest_fingerprint_lo;
+  const hi = releaseArtifact?.wasm?.protocol_manifest_fingerprint_hi;
+  if (typeof lo === 'string' && typeof hi === 'string') return `${hi.toLowerCase()}:${lo.toLowerCase()}`;
+  return fingerprintOf({ kind: 'world.Protocol.Manifest', wasm: releaseArtifact?.wasm ?? null });
+}

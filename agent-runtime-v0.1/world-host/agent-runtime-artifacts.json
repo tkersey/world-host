@@ -1,0 +1,52 @@
+{
+  "boundary": {
+    "agentRootModule": {
+      "exportedByOwner": true,
+      "sha256": "ac56cf729057fe4c5a2f55cad478c1dc5960a37ceaef05f6d5f4bb287764ec98",
+      "byteFingerprint": "0x371bf8460c5e9649"
+    },
+    "toolboxModule": {
+      "exportedByOwner": true,
+      "sha256": "cb94a40f2d86e3772d37433ea45984d7d88f2a95269d20cee2dae76bc044f5ce",
+      "byteFingerprint": "0x8ece9b217aeedb44"
+    },
+    "protocolManifest": {
+      "exportedByOwner": true,
+      "sha256": "530abb241e2e8de864cb80e0fa5c5ac528470e75777c4a3d29dd9f374f8e48e0"
+    },
+    "agentProfile": {
+      "exportedByOwner": true,
+      "sha256": "4e3323e7b67fccf215ab874d9ff2b6e9c0fc99307e1a7fda24ce14cfa257476d"
+    }
+  },
+  "world": {
+    "executableImage": {
+      "exportedByOwner": true,
+      "sha256": "f75eda188131e9782dd7b1de3c5083262a13a9007f355a89ba9f79983ba06795"
+    },
+    "applianceManifest": {
+      "exportedByOwner": true,
+      "sha256": "d5ff90e2a2738ce18a45303d65799fe4e2687e19e04090859f9e73d750b7df74"
+    },
+    "universalWasm": {
+      "exportedByOwner": true,
+      "sha256": "a79ae458d3cc5145660dadfc678736e75822c8c70558f8139861dc1103e84add"
+    },
+    "releaseReceipt": {
+      "exportedByOwner": true,
+      "sha256": "9a32f438758b5db5dd8db3f434b2f54f5262f7e507dc88211c90572d93ed28f7"
+    },
+    "agentRuntimeMetadata": {
+      "exportedByOwner": true,
+      "sha256": "873690610081b9ac35b12e8b20d9f0d4c85db4b55a7888e6e9017e191f05d8e8"
+    }
+  },
+  "worldHost": {
+    "codecs": {
+      "dependencyFree": true
+    },
+    "carrierManifest": {
+      "exportedByOwner": true
+    }
+  }
+}
