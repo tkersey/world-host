@@ -28,6 +28,7 @@ describe('repository foundation', () => {
     assert.equal(packageJson.scripts.test, 'bun test');
     assert.match(packageJson.scripts.proof, /^bun test && bun scripts\/run-world-conformance\.mjs/);
     assert.equal(packageJson.scripts['proof:world-real'], 'bun scripts/run-world-conformance.mjs --world-repo ../world');
+    assert.equal(packageJson.scripts['proof:agent'], 'bun scripts/run-agent-closure-conformance.mjs');
   });
 
   it('creates the requested source layout', async () => {

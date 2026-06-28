@@ -18,6 +18,8 @@ This repository contains the Carrier v0 host boundary: immutable blob stores, mu
 
 `bun bin/world-host.mjs run-example file-rewrite-agent` is a durable host-level flagship fixture. It creates a temporary `DirectoryStore`, installs application/run/head records and immutable blobs, resolves real sandbox file read/write requests through `EffectJournal`, retries the write by the same full World idempotency key without invoking the file driver again, commits the final host branch head, then reopens the store and inspects the completed run, effects, output file, closure blob, and retained archive-append fixture bytes without executing a driver. It is explicit host evidence only; World semantic TurnReceipt/root-result validation remains in the real World conformance lane above.
 
+`bun run proof:agent` runs the Agent Closure host proof. It first validates the sibling World `dist-world-agent-v0` gate, then exercises Carrier-side skeleton, fixture file rewrite, replay, retry, migration, branching, and negative lanes. The agent loop remains Boundary/World-owned; world-host only installs the image, resolves external model/file HostRequests through deterministic drivers, persists `ResolutionInput` bytes, advances retained branch heads, and inspects stored results.
+
 `RunController` can advance a branch from real worker output by inspecting World-authored TurnClosure bytes for the next `RunHead` fingerprints. That inspection is host metadata extraction only; Carrier does not validate or author World receipts, capsules, archive moments, chronicle events, or TurnClosures.
 
 If a host dies after advancing `RunHead` but before finalizing effect records, `EffectJournal` can reconcile `submitted` records from the committed head's parent TurnClosure fingerprint. This recovery only marks matching run/branch effects `closure_committed`; it does not rerun drivers or create World evidence.
@@ -49,12 +51,17 @@ bun --version
 bun run test
 bun run proof
 bun run proof:world-real
+bun run proof:agent
 bun bin/world-host.mjs doctor --json
 bun scripts/run-store-conformance.mjs
 bun scripts/run-crash-matrix.mjs
 bun scripts/run-migration-conformance.mjs
 bun scripts/run-security-conformance.mjs
 bun bin/world-host.mjs run-example file-rewrite-agent
+bun bin/world-host.mjs run-example agent-skeleton
+bun bin/world-host.mjs run-example agent-fixture
+bun bin/world-host.mjs run-example agent-replay
+bun bin/world-host.mjs run-example agent-migration
 bun bin/world-host.mjs run-example crash-recovery
 bun bin/world-host.mjs run-example migration
 bun bin/world-host.mjs run-example branching
