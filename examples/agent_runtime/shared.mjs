@@ -288,6 +288,8 @@ export async function runMigrationExample() {
       authorityImported: imported.authorityImported,
       receiverLocalPreflight: imported.receiverPolicyApplied && preflightReport?.blockers?.length === 0,
       receiverCoveredRequiredActuators: preflightReport?.everyRequiredActuatorCovered === true,
+      sourceReceiverPolicyExported: exported.bundle.run.receiverPolicyRef?.checksum === installed.run.receiverPolicyRef.checksum,
+      senderReceiverPolicyDropped: imported.run.receiverPolicyRef === null,
       migratedFromFingerprint: migratedHead.turnClosureWorldFingerprint,
       continuedThroughReceiverDrivers: receiverModel.calls === 2 && output === EXPECTED_FIXTURE_OUTPUT,
       finalResultMatches: finalHead.status === 'completed' && output === EXPECTED_FIXTURE_OUTPUT,
