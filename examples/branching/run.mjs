@@ -2,6 +2,7 @@ import { createApplicationRecord } from '../../src/core/application.mjs';
 import { forkRunBranch } from '../../src/core/migration.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from '../../src/core/run.mjs';
 import { fromUtf8 } from '../../src/core/store.mjs';
+import { carrierVersionSummary } from '../../src/protocol/world_manifest.mjs';
 import { MemoryStore } from '../../src/stores/memory_store.mjs';
 
 export async function runExample() {
@@ -10,7 +11,7 @@ export async function runExample() {
   const wasmRef = await store.putBlob(fromUtf8('wasm'));
   const manifestRef = await store.putBlob(fromUtf8('manifest'));
   const closureRef = await store.putBlob(fromUtf8('closure:0'));
-  const app = createApplicationRecord({ applicationId: 'app', universalWasmChecksum: `sha256:${wasmRef.checksum}`, universalWasmByteLength: wasmRef.byteLength, worldProtocolVersion: 'v0.1.0', applianceAbiVersion: 'v3', executableImageRef: imageRef, executableImageWorldFingerprint: 'world:image', applianceManifestRef: manifestRef, requiredActuators: [], requiredRuntimeLimits: {} });
+  const app = createApplicationRecord({ applicationId: 'app', universalWasmChecksum: `sha256:${wasmRef.checksum}`, universalWasmByteLength: wasmRef.byteLength, worldProtocolVersion: 'v0.1.0', applianceAbiVersion: carrierVersionSummary().applianceAbi, executableImageRef: imageRef, executableImageWorldFingerprint: 'world:image', applianceManifestRef: manifestRef, requiredActuators: [], requiredRuntimeLimits: {} });
   await store.createApplication(app);
   const head = createRunHead({ generation: 0, turnClosureRef: closureRef, turnClosureWorldFingerprint: 'world:closure:0', resultingStateFingerprint: 'world:state:0', chronicleCursor: 'cursor:0', archiveMomentFingerprint: 'archive:moment:0', archiveSealFingerprint: 'archive:seal:0', status: 'needs_host' });
   const run = createRunRecord({ runId: 'run', applicationId: app.applicationId, branches: [createBranchRecord({ branchId: 'main', currentHead: head })], effectJournalNamespace: 'effects' });
