@@ -1,12 +1,12 @@
 export const carrierManifest = Object.freeze({
   carrierVersion: '0.0.0-carrier-v0',
   supportedWorldRelease: 'v0.1.0',
-  supportedBoundaryRelease: 'v0.5.0',
-  applianceAbiVersion: 'v3',
+  supportedBoundaryRelease: 'v0.6.2',
+  applianceAbiVersion: 'v4',
   turnClosureFormatVersion: 'v1',
   universalWasm: Object.freeze({
     fileName: 'world_universal_appliance.wasm',
-    sha256: '938dfe12937b5ca767793bbbc5e8d2e2122caf7134efe52fba7fb7892930c589',
+    sha256: 'a79ae458d3cc5145660dadfc678736e75822c8c70558f8139861dc1103e84add',
     checksumSource: 'local World universal Appliance cache artifact selected by real Carrier conformance',
     releaseVerificationRequired: true,
   }),
@@ -22,7 +22,7 @@ export function assertCarrierManifest(manifest = carrierManifest) {
   if (manifest.supportedWorldRelease !== 'v0.1.0') {
     throw new Error('ERR_UNSUPPORTED_WORLD_RELEASE');
   }
-  if (manifest.supportedBoundaryRelease !== 'v0.5.0') {
+  if (manifest.supportedBoundaryRelease !== 'v0.6.2') {
     throw new Error('ERR_UNSUPPORTED_BOUNDARY_RELEASE');
   }
   if (!/^[0-9a-f]{64}$/.test(manifest.universalWasm.sha256)) {

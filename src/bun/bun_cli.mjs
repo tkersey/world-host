@@ -801,6 +801,12 @@ function summarizeBlobRef(ref) {
 export async function runExample(name, io) {
   const modules = {
     'file-rewrite-agent': '../../examples/file_rewrite_agent/run.mjs',
+    'agent-skeleton': '../../examples/agent_runtime/skeleton/run.mjs',
+    'agent-fixture': '../../examples/agent_runtime/fixture_file_rewrite/run.mjs',
+    'agent-replay': '../../examples/agent_runtime/replay/run.mjs',
+    'agent-retry': '../../examples/agent_runtime/retry/run.mjs',
+    'agent-migration': '../../examples/agent_runtime/migration/run.mjs',
+    'agent-branching': '../../examples/agent_runtime/branching/run.mjs',
     'crash-recovery': '../../examples/crash_recovery/run.mjs',
     migration: '../../examples/migration/run.mjs',
     branching: '../../examples/branching/run.mjs',

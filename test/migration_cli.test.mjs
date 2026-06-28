@@ -192,7 +192,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         universalWasmChecksum: `sha256:${otherWasmRef.checksum}`,
         universalWasmByteLength: otherWasmRef.byteLength,
         worldProtocolVersion: 'v0.1.0',
-        applianceAbiVersion: 'v3',
+        applianceAbiVersion: 'v4',
         executableImageRef: otherImageRef,
         executableImageWorldFingerprint: 'world:image:other-directory',
         applianceManifestRef: otherManifestRef,
@@ -279,7 +279,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         universalWasmChecksum: `sha256:${wasmRef.checksum}`,
         universalWasmByteLength: wasmRef.byteLength,
         worldProtocolVersion: 'v0.1.0',
-        applianceAbiVersion: 'v3',
+        applianceAbiVersion: 'v4',
         executableImageRef: imageRef,
         executableImageWorldFingerprint: 'world:image:sequence-zero',
         applianceManifestRef: manifestRef,
@@ -713,7 +713,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         assert.equal(app.universalWasmChecksum, `sha256:${installed.blobs.wasm.checksum}`);
         assert.equal(app.universalWasmByteLength, installed.blobs.wasm.byteLength);
         assert.equal(app.worldProtocolVersion, 'v0.1.0');
-        assert.equal(app.applianceAbiVersion, 'v3');
+        assert.equal(app.applianceAbiVersion, 'v4');
         assert.equal(app.executableImageWorldFingerprint, 'world:image:installed');
         assert.equal(app.installationDiagnostics.wasmPath, undefined);
         assert.equal(app.installationDiagnostics.imagePath, undefined);
@@ -1029,7 +1029,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       const app = {
         applicationId: '../escape',
         worldProtocolVersion: 'v0.1.0',
-        applianceAbiVersion: 'v3',
+        applianceAbiVersion: 'v4',
         universalWasmChecksum: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
         executableImageWorldFingerprint: 'world:image',
       };
@@ -2154,7 +2154,7 @@ async function fixtureStore() {
     universalWasmChecksum: `sha256:${wasmRef.checksum}`,
     universalWasmByteLength: wasmRef.byteLength,
     worldProtocolVersion: 'v0.1.0',
-    applianceAbiVersion: 'v3',
+    applianceAbiVersion: 'v4',
     executableImageRef: imageRef,
     executableImageWorldFingerprint: 'world:image',
     applianceManifestRef: manifestRef,
@@ -2192,7 +2192,7 @@ async function fixtureDirectoryStore(root, options = {}) {
       universalWasmChecksum: `sha256:${wasmRef.checksum}`,
       universalWasmByteLength: wasmRef.byteLength,
       worldProtocolVersion: 'v0.1.0',
-      applianceAbiVersion: 'v3',
+      applianceAbiVersion: 'v4',
       executableImageRef: imageRef,
       executableImageWorldFingerprint: 'world:image:directory',
       applianceManifestRef: manifestRef,
