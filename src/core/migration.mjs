@@ -187,10 +187,14 @@ function rejectUnrecoverableEffects(effects) {
 
 function rewriteRunBundle(bundle, runId) {
   const selectedBranch = (bundle.run.branches ?? []).find((branch) => branch.branchId === bundle.branchId);
+  const head = scrubReceiverPolicyRefs(bundle.head);
   const branch = createBranchRecord({
     ...(selectedBranch ?? { branchId: bundle.branchId }),
-    currentHead: bundle.head,
+    currentHead: head,
   });
+  const effects = (bundle.effects ?? [])
+    .filter((effect) => effect.branchId === bundle.branchId)
+    .map((effect) => scrubReceiverPolicyRefs({ ...effect, runId }));
   const run = scrubReceiverPolicyRefs({
     ...bundle.run,
     runId,
@@ -200,10 +204,8 @@ function rewriteRunBundle(bundle, runId) {
   const rewritten = {
     ...bundle,
     run,
-    head: bundle.head,
-    effects: (bundle.effects ?? [])
-      .filter((effect) => effect.branchId === bundle.branchId)
-      .map((effect) => ({ ...effect, runId })),
+    head,
+    effects,
     branchId: bundle.branchId,
   };
   return {

@@ -584,6 +584,15 @@ describe('migration, branching, and CLI diagnostics', () => {
     const senderPolicyRef = await source.store.putBlob(fromUtf8('sender-local-policy'));
     const historicalDiagnosticBytes = fromUtf8('historical closure retained by branch diagnostics');
     const historicalDiagnosticRef = await source.store.putBlob(historicalDiagnosticBytes);
+    const diagnosticHead = createRunHead({
+      ...source.head,
+      updateDiagnostics: {
+        ...source.head.updateDiagnostics,
+        receiverPolicyRef: senderPolicyRef,
+        historicalTurnClosureRefs: [historicalDiagnosticRef],
+      },
+    });
+    assert.equal((await source.store.compareAndSwapHead(source.run.runId, 'main', source.head.generation, diagnosticHead)).ok, true);
     await source.store.writeRun(createRunRecord({
       ...source.run,
       branches: source.run.branches.map((branch) => branch.branchId === 'main'
@@ -602,6 +611,29 @@ describe('migration, branching, and CLI diagnostics', () => {
       },
       receiverPolicyRef: senderPolicyRef,
     }));
+    const journal = new EffectJournal({
+      store: source.store,
+      runId: source.run.runId,
+      branchId: 'main',
+      parentTurnClosureFingerprint: 'world:closure:parent',
+    });
+    const resolved = await journal.resolve({}, {
+      actuatorRef: 'fixture:model',
+      descriptorFingerprint: 'descriptor:fixture',
+      actuationClass: 'fixture',
+      responseSchema: { status: 'ok' },
+      idempotencyKeyBytes: fromUtf8('sender-policy-effect-key'),
+      idempotencyKeyWorldFingerprint: 'world:key:sender-policy-effect',
+      requestBytes: fromUtf8('request:sender-policy-effect'),
+      hostRequestFingerprint: 'world:host-request:0000000000000c01',
+    }, fixtureDriver());
+    await source.store.putEffectRecord({
+      ...resolved.record,
+      diagnostics: {
+        ...resolved.record.diagnostics,
+        receiverPolicyRef: senderPolicyRef,
+      },
+    });
     await forkRunBranch(source.store, {
       runId: source.run.runId,
       sourceBranchId: 'main',
@@ -617,6 +649,8 @@ describe('migration, branching, and CLI diagnostics', () => {
     assert.equal(imported.run.receiverPolicyRef, null);
     assert.equal(imported.run.creationMetadata.receiverPolicyRef, undefined);
     assert.equal(imported.run.branches[0].diagnostics.receiverPolicyRef, undefined);
+    assert.equal((await receiver.readHead('receiver-run', 'main')).updateDiagnostics.receiverPolicyRef, undefined);
+    assert.equal((await receiver.listEffectRecords('receiver-run'))[0].diagnostics.receiverPolicyRef, undefined);
     await assert.rejects(() => receiver.getBlob(senderPolicyRef), { code: 'ERR_BLOB_NOT_FOUND' });
     assert.deepEqual([...await receiver.getBlob(historicalDiagnosticRef)], [...historicalDiagnosticBytes]);
     assert.equal(carrierExport.bundle.application.applicationId, source.run.applicationId);
