@@ -109,9 +109,9 @@
     "buildDiagnostics": {
       "boundaryHead": "8c65d2b74262acc7134fcbbcccea488649d6ae33",
       "worldHead": "ed5503e4bcb063b4112156b9c212ce884ad5dbb0",
-      "worldHostHead": "99bfbef85c8114b3f985396d50fd57c9628e7328",
-      "worldHostDirty": true
+      "worldHostHead": "430c9d3ab5325f6711c0598b8865cca66410ba7d",
+      "worldHostDirty": false
     }
   },
-  "manifestFingerprint": "agent-runtime:152348ff1889d16ce4611668e1c26dbd"
+  "manifestFingerprint": "agent-runtime:799c93ca83cc5c32068d3e4da0f49972"
 }
