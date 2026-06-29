@@ -250,6 +250,7 @@ export async function assertAgentRuntimeReleaseReceipt(pack, actual) {
     worldHostCarrierManifestFingerprint: manifest.worldHost.carrierManifestFingerprint,
     conformanceCorpusFingerprint: manifest.conformanceCorpusFingerprint,
     proofReceiptFingerprints: corpus.proofReceipts.map((receipt) => receipt.fingerprint),
+    blockers: [],
     warnings: corpus.warnings,
   };
   for (const [key, value] of Object.entries(expectedFields)) {

@@ -76,16 +76,18 @@ async function runAgentCommand(args, io, options) {
     const pack = requiredOption(args, '--pack');
     const storePath = requiredOption(args, '--store');
     const applicationId = valueAfter(args, '--app') ?? valueAfter(args, '--name') ?? 'agent-runtime-v0.1';
-    const manifest = JSON.parse(await readFile(path.join(pack, 'manifest/agent-runtime-manifest.json'), 'utf8'));
+    const { checkAgentRuntimePack } = await import('../../scripts/agent_runtime_pack_lib.mjs');
+    const checked = await checkAgentRuntimePack(pack);
+    const manifest = checked.manifest;
     const requiredActuators = manifest.requiredActuatorRefs.map((actuatorRef) => ({ actuatorRef }));
     return await runInstall([
       'install',
       '--store', storePath,
       '--name', applicationId,
-      '--wasm', path.join(pack, 'world/world_universal_appliance.wasm'),
-      '--image', path.join(pack, 'world/agent.executable-image'),
+      '--wasm', path.join(checked.root, 'world/world_universal_appliance.wasm'),
+      '--image', path.join(checked.root, 'world/agent.executable-image'),
       '--image-fingerprint', manifest.world.executableImageFingerprint,
-      '--manifest', path.join(pack, 'world/appliance-manifest.bin'),
+      '--manifest', path.join(checked.root, 'world/appliance-manifest.bin'),
     ], io, storePath, { requiredActuators });
   }
   if (subcommand === 'run') return await runStoreRun(['run', ...args.slice(1)], io, requiredOption(args, '--store'), options);

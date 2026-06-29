@@ -51,6 +51,15 @@ describe('Agent Runtime pack', () => {
         () => assertAgentRuntimeReleaseReceipt(pack, tamperedReceipt),
         /ERR_AGENT_RUNTIME_RELEASE_RECEIPT_universalWasmChecksum/,
       );
+      const blockedReceipt = {
+        ...receipt,
+        blockers: ['blocked'],
+      };
+      blockedReceipt.receiptFingerprint = releaseReceiptFingerprint(blockedReceipt);
+      await assert.rejects(
+        () => assertAgentRuntimeReleaseReceipt(pack, blockedReceipt),
+        /ERR_AGENT_RUNTIME_RELEASE_RECEIPT_blockers/,
+      );
       assert.equal(corpus.requiredScenarios.includes('skeleton'), true);
       assert.equal(corpus.requiredScenarios.includes('fixture'), true);
       assert.deepEqual(corpus.warnings, []);

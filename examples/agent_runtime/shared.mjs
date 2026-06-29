@@ -18,8 +18,10 @@ import { MemoryStore } from '../../src/stores/memory_store.mjs';
 
 const MODEL_ACTUATOR = 'world:actuator-ref:4f0c7160f25c4c62';
 const MODEL_DESCRIPTOR = 'world:descriptor:be73177924a6b377';
+const MODEL_ACTUATION_CLASS = 'world:actuation-class:1';
 const FILE_ACTUATOR = 'world:actuator-ref:d5e4b1b427522cf2';
 const FILE_DESCRIPTOR = 'world:descriptor:74afc8c3b2fe4c33';
+const FILE_ACTUATION_CLASS = 'world:actuation-class:0';
 const WORLD_AGENT_PROOF = 'zig build dist-world-agent-v0 --summary all';
 const EXPECTED_FIXTURE_INPUT = 'rewrite this file through the agent loop\n';
 const EXPECTED_FIXTURE_OUTPUT = 'actuate updated the fixture';
@@ -547,19 +549,43 @@ function journalFor(store, installed, policy = {}) {
 }
 
 function agentModelDriver(scenario) {
-  return new FixtureAgentModelDriver({
+  return withWorldRequestShape(new FixtureAgentModelDriver({
     scenario,
     actuatorRef: MODEL_ACTUATOR,
     descriptorFingerprint: MODEL_DESCRIPTOR,
-  });
+  }), MODEL_ACTUATION_CLASS);
 }
 
 function agentFileDriver(root) {
-  return new SandboxFileDriver({
+  return withWorldRequestShape(new SandboxFileDriver({
     root,
     actuatorRef: FILE_ACTUATOR,
     descriptorFingerprint: FILE_DESCRIPTOR,
-  });
+  }), FILE_ACTUATION_CLASS);
+}
+
+function withWorldRequestShape(driver, actuationClass) {
+  return {
+    get calls() {
+      return driver.calls;
+    },
+    manifest() {
+      return {
+        ...driver.manifest(),
+        supportedActuationClasses: [actuationClass],
+        supportedResponseStatuses: ['responded'],
+      };
+    },
+    async resolve(context, hostRequest) {
+      return await driver.resolve(context, {
+        ...hostRequest,
+        responseSchema: hostRequest.responseSchema ? { ...hostRequest.responseSchema, status: 'ok' } : hostRequest.responseSchema,
+      });
+    },
+    async recover(context, effectRecord) {
+      return await driver.recover(context, effectRecord);
+    },
+  };
 }
 
 async function commitEffects(journal, records) {
@@ -604,8 +630,8 @@ function modelRequest(key, observation) {
   return {
     actuatorRef: MODEL_ACTUATOR,
     descriptorFingerprint: MODEL_DESCRIPTOR,
-    actuationClass: 'model',
-    responseSchema: { status: 'ok' },
+    actuationClass: MODEL_ACTUATION_CLASS,
+    responseSchema: { status: 'responded' },
     idempotencyKeyBytes: fromUtf8(key),
     idempotencyKeyWorldFingerprint: `world:key:agent:${key}`,
     requestBytes: fromUtf8(stableJson({
@@ -621,8 +647,8 @@ function fileRequest(key, request) {
   return {
     actuatorRef: FILE_ACTUATOR,
     descriptorFingerprint: FILE_DESCRIPTOR,
-    actuationClass: 'file',
-    responseSchema: { status: 'ok' },
+    actuationClass: FILE_ACTUATION_CLASS,
+    responseSchema: { status: 'responded' },
     idempotencyKeyBytes: fromUtf8(key),
     idempotencyKeyWorldFingerprint: `world:key:agent:${key}`,
     requestBytes: fromUtf8(stableJson(request)),

@@ -2,7 +2,7 @@ import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -816,28 +816,14 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
-  it('preserves agent pack actuator requirements during CLI install', async () => {
+  it('preserves checked agent pack actuator requirements during CLI install', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-cli-install-'));
     try {
-      const pack = path.join(root, 'agent-runtime-v0.1');
-      await mkdir(path.join(pack, 'manifest'), { recursive: true });
-      await mkdir(path.join(pack, 'world'), { recursive: true });
-      await writeFile(path.join(pack, 'manifest/agent-runtime-manifest.json'), JSON.stringify({
-        world: { executableImageFingerprint: 'world:image:agent-runtime' },
-        requiredActuatorRefs: [
-          'world:actuator-ref:4f0c7160f25c4c62',
-          'world:actuator-ref:d5e4b1b427522cf2',
-        ],
-      }));
-      await writeFile(path.join(pack, 'world/world_universal_appliance.wasm'), 'wasm:agent');
-      await writeFile(path.join(pack, 'world/agent.executable-image'), 'image:agent');
-      await writeFile(path.join(pack, 'world/appliance-manifest.bin'), 'manifest:agent');
-
       let output = '';
       const installCode = await runBunCli([
         'agent',
         'install',
-        '--pack', pack,
+        '--pack', path.resolve('agent-runtime-v0.1'),
         '--store', root,
         '--app', 'agent-runtime-v0.1',
       ], {
@@ -858,6 +844,30 @@ describe('migration, branching, and CLI diagnostics', () => {
       } finally {
         await store.releaseLock();
       }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects invalid agent packs during CLI install', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-cli-invalid-install-'));
+    try {
+      const pack = path.join(root, 'agent-runtime-v0.1');
+      await cp(path.resolve('agent-runtime-v0.1'), pack, { recursive: true });
+      await writeFile(path.join(pack, 'world/world_universal_appliance.wasm'), 'tampered');
+      await assert.rejects(
+        () => runBunCli([
+          'agent',
+          'install',
+          '--pack', pack,
+          '--store', root,
+          '--app', 'agent-runtime-v0.1',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        /ERR_CHECKSUM_MISMATCH:world\/world_universal_appliance\.wasm/,
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
