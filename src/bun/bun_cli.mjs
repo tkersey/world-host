@@ -84,7 +84,7 @@ async function runAgentCommand(args, io, options) {
       '--wasm', path.join(pack, 'world/world_universal_appliance.wasm'),
       '--image', path.join(pack, 'world/agent.executable-image'),
       '--image-fingerprint', manifest.world.executableImageFingerprint,
-      '--manifest', path.join(pack, 'manifest/agent-runtime-manifest.bin'),
+      '--manifest', path.join(pack, 'world/appliance-manifest.bin'),
     ], io, storePath);
   }
   if (subcommand === 'run') return await runStoreRun(['run', ...args.slice(1)], io, requiredOption(args, '--store'), options);
@@ -99,14 +99,15 @@ async function runAgentCommand(args, io, options) {
   if (subcommand === 'import') return await runImport(['import', ...args.slice(1)], io, requiredOption(args, '--store'));
   if (subcommand === 'conformance') {
     const pack = requiredOption(args, '--pack');
-    const { checkAgentRuntimePack } = await import('../../scripts/agent_runtime_pack_lib.mjs');
-    const checked = await checkAgentRuntimePack(pack);
+    const { runAgentRuntimeConformance } = await import('../../scripts/run-agent-runtime-conformance.mjs');
+    const { receipt, releaseReceipt } = await runAgentRuntimeConformance(pack);
     io.stdout.write(`${JSON.stringify(redact({
       command: 'agent conformance',
       pack,
-      agentRuntimeManifestFingerprint: checked.manifest.manifestFingerprint,
+      agentRuntimeManifestFingerprint: receipt.agentRuntimeManifestFingerprint,
+      releaseReceiptFingerprint: releaseReceipt.receiptFingerprint,
       packValid: true,
-      fullScenarioCommand: `bun scripts/run-agent-runtime-conformance.mjs ${pack}`,
+      scenariosPassed: true,
     }), null, 2)}\n`);
     return 0;
   }

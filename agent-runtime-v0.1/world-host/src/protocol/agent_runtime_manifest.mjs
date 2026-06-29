@@ -69,12 +69,12 @@ export function buildAgentRuntimeManifest(input) {
       carrierManifestFingerprint: requiredString(input.worldHost?.carrierManifestFingerprint, 'worldHost.carrierManifestFingerprint'),
     },
     requiredDriverIds: exactStringList(input.requiredDriverIds ?? REQUIRED_DRIVER_IDS, REQUIRED_DRIVER_IDS, 'requiredDriverIds'),
-    requiredActuatorRefs: exactStringList(input.requiredActuatorRefs ?? REQUIRED_ACTUATOR_REFS, REQUIRED_ACTUATOR_REFS, 'requiredActuatorRefs'),
+    requiredActuatorRefs: canonicalExactStringList(input.requiredActuatorRefs ?? REQUIRED_ACTUATOR_REFS, REQUIRED_ACTUATOR_REFS, 'requiredActuatorRefs'),
     requiredDescriptorFingerprints: nonemptyStringList(input.requiredDescriptorFingerprints, 'requiredDescriptorFingerprints'),
     requiredHostAuthorityLabels: nonemptyStringList(input.requiredHostAuthorityLabels, 'requiredHostAuthorityLabels'),
     supportedExampleScenarios: exactStringList(input.supportedExampleScenarios ?? REQUIRED_SCENARIOS, REQUIRED_SCENARIOS, 'supportedExampleScenarios'),
     conformanceCorpusFingerprint: requiredString(input.conformanceCorpusFingerprint, 'conformanceCorpusFingerprint'),
-    releaseReceiptFingerprint: requiredString(input.releaseReceiptFingerprint, 'releaseReceiptFingerprint'),
+    ...(input.releaseReceiptFingerprint ? { releaseReceiptFingerprint: requiredString(input.releaseReceiptFingerprint, 'releaseReceiptFingerprint') } : {}),
     artifacts,
     metadata: input.metadata ?? {},
   };
@@ -135,4 +135,13 @@ function exactStringList(value, expected, label) {
     throw new Error(`ERR_UNEXPECTED_LIST_${label}`);
   }
   return Object.freeze([...value]);
+}
+
+function canonicalExactStringList(value, expected, label) {
+  const list = nonemptyStringList(value, label);
+  const seen = new Set(list);
+  if (seen.size !== expected.length || expected.some((item) => !seen.has(item))) {
+    throw new Error(`ERR_UNEXPECTED_LIST_${label}`);
+  }
+  return Object.freeze([...expected]);
 }

@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   cp,
+  lstat,
   mkdir,
   readdir,
   readFile,
@@ -14,9 +15,11 @@ import path from 'node:path';
 
 import { stableJson } from '../src/core/store.mjs';
 import {
+  assertAgentRuntimeManifest,
   buildAgentRuntimeManifest,
   carrierManifestFingerprint,
   fingerprintOf,
+  releaseReceiptFingerprint,
   sha256Hex,
 } from '../src/protocol/agent_runtime_manifest.mjs';
 import { carrierManifest } from '../src/protocol/world_manifest.mjs';
@@ -36,6 +39,8 @@ export function parseCommonArgs(raw) {
     else if (arg === '--world-repo') parsed.worldRepo = raw[++i];
     else if (arg === '--world-host-repo') parsed.worldHostRepo = raw[++i];
     else if (arg === '--receipt-out') parsed.receiptOut = raw[++i];
+    else if (arg === '--release-receipt-out') parsed.releaseReceiptOut = raw[++i];
+    else if (arg === '--conformance-receipt') parsed.conformanceReceipt = raw[++i];
     else if (!arg.startsWith('--') && !parsed.out) parsed.out = arg;
     else throw new Error(`unknown argument: ${arg}`);
   }
@@ -49,6 +54,12 @@ export function defaultRoots(options = {}) {
     worldRepo: path.resolve(options.worldRepo ?? path.join(cwd, '../world')),
     boundaryRepo: path.resolve(options.boundaryRepo ?? path.join(cwd, '../boundary')),
   };
+}
+
+export function defaultPackPath(cwd = process.cwd()) {
+  if (existsSync(path.join(cwd, 'manifest/agent-runtime-manifest.json'))) return cwd;
+  if (path.basename(cwd) === 'world-host' && existsSync(path.join(cwd, '../manifest/agent-runtime-manifest.json'))) return path.join(cwd, '..');
+  return PACK_NAME;
 }
 
 export async function buildAgentRuntimePack(options = {}) {
@@ -89,12 +100,6 @@ export async function buildAgentRuntimePack(options = {}) {
   await writeDocs(out, boundary, world, host);
 
   const conformanceCorpusFingerprint = await fingerprintDirectory(path.join(out, 'conformance'));
-  const releaseReceiptSeed = fingerprintOf({
-    agentRuntimeVersion: 'v0.1',
-    conformanceCorpusFingerprint,
-    worldExecutableImageFingerprint: world.executableImageFingerprint,
-    worldHostCarrierManifestFingerprint: host.carrierManifestFingerprint,
-  });
   const manifest = buildAgentRuntimeManifest({
     agentRuntimeVersion: 'v0.1',
     boundary,
@@ -107,7 +112,6 @@ export async function buildAgentRuntimePack(options = {}) {
       'file:sandbox',
     ],
     conformanceCorpusFingerprint,
-    releaseReceiptFingerprint: releaseReceiptSeed,
     artifacts: {
       boundary: boundary.artifacts,
       world: world.artifacts,
@@ -145,6 +149,7 @@ export async function checkAgentRuntimePack(pack) {
     'world/world-protocol-manifest.bin',
     'world/release-receipt.bin',
     'world/agent-runtime-world-artifacts.json',
+    'world-host/bin/world-host.mjs',
     'world-host/package.json',
     'world-host/src/protocol/world_appliance_wire_codec.mjs',
     'world-host/src/protocol/world_loaded_value_codec.mjs',
@@ -166,19 +171,24 @@ export async function checkAgentRuntimePack(pack) {
   ];
   for (const rel of required) await requireFile(path.join(root, rel));
   await verifyChecksums(root);
-  const manifest = JSON.parse(await readFile(path.join(root, 'manifest/agent-runtime-manifest.json'), 'utf8'));
+  const manifestBytes = await readFile(path.join(root, 'manifest/agent-runtime-manifest.json'));
+  const manifest = assertAgentRuntimeManifest(JSON.parse(manifestBytes.toString('utf8')));
+  const manifestBin = await readFile(path.join(root, 'manifest/agent-runtime-manifest.bin'));
+  if (Buffer.compare(manifestBin, Buffer.from(stableJson(manifest))) !== 0) throw new Error('ERR_AGENT_RUNTIME_MANIFEST_BIN_MISMATCH');
   const wasm = await readFile(path.join(root, 'world/world_universal_appliance.wasm'));
   if (manifest.world.universalWasmSha256 !== sha256Hex(wasm)) throw new Error('ERR_AGENT_RUNTIME_WASM_CHECKSUM');
+  await verifyManifestArtifacts(root, manifest);
   const corpus = JSON.parse(await readFile(path.join(root, 'conformance/corpus.json'), 'utf8'));
   if (corpus.warnings?.length) throw new Error(`ERR_AGENT_RUNTIME_OWNER_EXPORT_WARNINGS:${corpus.warnings.join(',')}`);
   return { root, manifest, complete: true };
 }
 
-export async function emitReleaseReceipt(pack, conformance = null) {
+export async function emitReleaseReceipt(pack, conformance) {
   const checked = await checkAgentRuntimePack(pack);
   const root = checked.root;
   const manifest = checked.manifest;
   const corpus = JSON.parse(await readFile(path.join(root, 'conformance/corpus.json'), 'utf8'));
+  const proof = requireConformanceReceipt(conformance, manifest);
   const receipt = {
     receiptFormatVersion: 1,
     receiptFingerprintVersion: 1,
@@ -192,13 +202,13 @@ export async function emitReleaseReceipt(pack, conformance = null) {
     worldHostCarrierManifestFingerprint: manifest.worldHost.carrierManifestFingerprint,
     conformanceCorpusFingerprint: manifest.conformanceCorpusFingerprint,
     proofReceiptFingerprints: corpus.proofReceipts.map((receipt) => receipt.fingerprint),
-    skeletonProofPassed: Boolean(conformance?.skeleton_completed ?? corpus.requiredScenarios.includes('skeleton')),
-    fixtureProofPassed: Boolean(conformance?.fixture_completed ?? corpus.requiredScenarios.includes('fixture')),
-    replayProofPassed: Boolean(conformance?.replay_matched ?? corpus.requiredScenarios.includes('replay')),
-    retryProofPassed: Boolean(conformance?.retry_matched ?? corpus.requiredScenarios.includes('retry')),
-    migrationProofPassed: Boolean(conformance?.migration_matched ?? corpus.requiredScenarios.includes('migration')),
-    branchingProofPassed: Boolean(conformance?.branching_matched ?? corpus.requiredScenarios.includes('branching')),
-    negativeProofPassed: Boolean(conformance?.negative_cases_rejected ?? corpus.requiredScenarios.includes('negative')),
+    skeletonProofPassed: proof.skeleton_completed === true,
+    fixtureProofPassed: proof.fixture_completed === true,
+    replayProofPassed: proof.replay_matched === true,
+    retryProofPassed: proof.retry_matched === true,
+    migrationProofPassed: proof.migration_matched === true,
+    branchingProofPassed: proof.branching_matched === true,
+    negativeProofPassed: proof.negative_cases_rejected === true,
     complete: false,
     blockers: [],
     warnings: corpus.warnings,
@@ -212,8 +222,46 @@ export async function emitReleaseReceipt(pack, conformance = null) {
     receipt.branchingProofPassed,
     receipt.negativeProofPassed,
   ].every(Boolean);
-  receipt.receiptFingerprint = fingerprintOf(receipt);
+  receipt.receiptFingerprint = releaseReceiptFingerprint(receipt);
   return receipt;
+}
+
+export async function assertAgentRuntimeReleaseReceipt(pack, actual) {
+  const checked = await checkAgentRuntimePack(pack);
+  const root = checked.root;
+  const manifest = checked.manifest;
+  const corpus = JSON.parse(await readFile(path.join(root, 'conformance/corpus.json'), 'utf8'));
+  if (actual?.receiptFingerprint !== releaseReceiptFingerprint(actual)) throw new Error('ERR_AGENT_RUNTIME_RELEASE_RECEIPT_FINGERPRINT');
+  const expectedFields = {
+    receiptFormatVersion: 1,
+    receiptFingerprintVersion: 1,
+    agentRuntimeManifestFingerprint: manifest.manifestFingerprint,
+    boundaryModuleFingerprints: [
+      manifest.boundary.agentRootModuleFingerprint,
+      manifest.boundary.toolboxModuleFingerprint,
+    ],
+    worldExecutableImageFingerprint: manifest.world.executableImageFingerprint,
+    universalWasmChecksum: manifest.world.universalWasmSha256,
+    worldHostCarrierManifestFingerprint: manifest.worldHost.carrierManifestFingerprint,
+    conformanceCorpusFingerprint: manifest.conformanceCorpusFingerprint,
+    proofReceiptFingerprints: corpus.proofReceipts.map((receipt) => receipt.fingerprint),
+    warnings: corpus.warnings,
+  };
+  for (const [key, value] of Object.entries(expectedFields)) {
+    if (stableJson(actual[key]) !== stableJson(value)) throw new Error(`ERR_AGENT_RUNTIME_RELEASE_RECEIPT_${key}`);
+  }
+  const proofFields = [
+    'skeletonProofPassed',
+    'fixtureProofPassed',
+    'replayProofPassed',
+    'retryProofPassed',
+    'migrationProofPassed',
+    'branchingProofPassed',
+    'negativeProofPassed',
+  ];
+  if (!proofFields.every((field) => actual[field] === true)) throw new Error('ERR_AGENT_RUNTIME_RELEASE_RECEIPT_PROOF_INCOMPLETE');
+  if (actual.complete !== true) throw new Error('ERR_AGENT_RUNTIME_RELEASE_RECEIPT_INCOMPLETE');
+  return actual;
 }
 
 async function boundaryArtifacts(boundaryRepo) {
@@ -388,9 +436,87 @@ async function verifyChecksums(root) {
     const match = line.match(/^([0-9a-f]{64})  (.+)$/);
     if (!match) throw new Error(`ERR_INVALID_CHECKSUM_LINE:${line}`);
     const [, expected, rel] = match;
-    const actual = sha256Hex(await readFile(path.join(root, rel)));
+    const target = await safePackFile(root, rel);
+    const actual = sha256Hex(await readFile(target));
     if (actual !== expected) throw new Error(`ERR_CHECKSUM_MISMATCH:${rel}`);
   }
+}
+
+async function verifyManifestArtifacts(root, manifest) {
+  const boundaryProfile = JSON.parse(await readFile(path.join(root, 'boundary/agent-profile.json'), 'utf8'));
+  const worldMetadata = JSON.parse(await readFile(path.join(root, 'world/agent-runtime-world-artifacts.json'), 'utf8'));
+  const carrier = JSON.parse(await readFile(path.join(root, 'world-host/carrier-manifest.json'), 'utf8'));
+  const conformanceCorpusFingerprint = await fingerprintDirectory(path.join(root, 'conformance'));
+
+  assertEqual(manifest.boundary.protocolManifestFingerprint, requireOwnerFingerprint(boundaryProfile.boundary_protocol_manifest_fingerprint, 'boundary profile protocol manifest'), 'ERR_AGENT_RUNTIME_BOUNDARY_PROTOCOL_FINGERPRINT');
+  assertEqual(manifest.boundary.agentProfileFingerprint, requireOwnerFingerprint(boundaryProfile.profile_fingerprint, 'boundary agent profile'), 'ERR_AGENT_RUNTIME_BOUNDARY_PROFILE_FINGERPRINT');
+  assertEqual(manifest.boundary.agentRootModuleFingerprint, requireOwnerFingerprint(boundaryProfile.agent_root_module_fingerprint, 'boundary agent root module'), 'ERR_AGENT_RUNTIME_BOUNDARY_ROOT_FINGERPRINT');
+  assertEqual(manifest.boundary.toolboxModuleFingerprint, requireOwnerFingerprint(boundaryProfile.toolbox_module_fingerprint, 'boundary toolbox module'), 'ERR_AGENT_RUNTIME_BOUNDARY_TOOLBOX_FINGERPRINT');
+  assertEqual(manifest.world.executableImageFingerprint, requireOwnerFingerprint(worldMetadata.world_executable_image_fingerprint, 'world executable image'), 'ERR_AGENT_RUNTIME_WORLD_IMAGE_FINGERPRINT');
+  assertEqual(manifest.world.applianceManifestFingerprint, requireOwnerFingerprint(worldMetadata.world_appliance_manifest_fingerprint, 'world appliance manifest'), 'ERR_AGENT_RUNTIME_WORLD_APPLIANCE_FINGERPRINT');
+  assertEqual(stableJson(manifest.requiredDescriptorFingerprints), stableJson(exactArray(worldMetadata.required_descriptor_fingerprints, 'world required descriptor fingerprints')), 'ERR_AGENT_RUNTIME_DESCRIPTOR_FINGERPRINTS');
+  assertEqual(manifest.worldHost.carrierManifestFingerprint, carrierManifestFingerprint(carrier), 'ERR_AGENT_RUNTIME_CARRIER_MANIFEST_FINGERPRINT');
+  assertEqual(manifest.conformanceCorpusFingerprint, conformanceCorpusFingerprint, 'ERR_AGENT_RUNTIME_CONFORMANCE_CORPUS_FINGERPRINT');
+
+  const artifactChecks = [
+    ['boundary.agentRootModule.sha256', manifest.artifacts?.boundary?.agentRootModule?.sha256, async () => readFile(path.join(root, 'boundary/agent-root.full-module'))],
+    ['boundary.toolboxModule.sha256', manifest.artifacts?.boundary?.toolboxModule?.sha256, async () => readFile(path.join(root, 'boundary/toolbox-provider.full-module'))],
+    ['boundary.protocolManifest.sha256', manifest.artifacts?.boundary?.protocolManifest?.sha256, async () => readFile(path.join(root, 'boundary/boundary-protocol-manifest.bin'))],
+    ['boundary.agentProfile.sha256', manifest.artifacts?.boundary?.agentProfile?.sha256, async () => Buffer.from(stableJson(boundaryProfile))],
+    ['world.executableImage.sha256', manifest.artifacts?.world?.executableImage?.sha256, async () => readFile(path.join(root, 'world/agent.executable-image'))],
+    ['world.applianceManifest.sha256', manifest.artifacts?.world?.applianceManifest?.sha256, async () => readFile(path.join(root, 'world/appliance-manifest.bin'))],
+    ['world.universalWasm.sha256', manifest.artifacts?.world?.universalWasm?.sha256, async () => readFile(path.join(root, 'world/world_universal_appliance.wasm'))],
+    ['world.releaseReceipt.sha256', manifest.artifacts?.world?.releaseReceipt?.sha256, async () => readFile(path.join(root, 'world/release-receipt.bin'))],
+    ['world.agentRuntimeMetadata.sha256', manifest.artifacts?.world?.agentRuntimeMetadata?.sha256, async () => Buffer.from(stableJson(worldMetadata))],
+  ];
+  for (const [label, expected, readBytes] of artifactChecks) {
+    if (typeof expected !== 'string') throw new Error(`ERR_AGENT_RUNTIME_ARTIFACT_SHA:${label}`);
+    const actual = sha256Hex(await readBytes());
+    if (actual !== expected) throw new Error(`ERR_AGENT_RUNTIME_ARTIFACT_SHA:${label}`);
+  }
+}
+
+function requireConformanceReceipt(conformance, manifest) {
+  if (!conformance || typeof conformance !== 'object') throw new Error('ERR_AGENT_RUNTIME_CONFORMANCE_REQUIRED');
+  if (conformance.agentRuntimeManifestFingerprint !== manifest.manifestFingerprint) throw new Error('ERR_AGENT_RUNTIME_CONFORMANCE_MANIFEST_FINGERPRINT');
+  const required = [
+    'agent_runtime_conformance',
+    'skeleton_completed',
+    'fixture_completed',
+    'replay_matched',
+    'retry_matched',
+    'migration_matched',
+    'branching_matched',
+    'negative_cases_rejected',
+    'world_evidence_validated',
+    'host_did_not_author_receipts',
+    'no_generated_agent_target_type',
+    'no_native_helper_process',
+    'distributed_wasm_compiled',
+    'distributed_wasm_instantiated',
+    'distributed_executable_image_loaded',
+    'distributed_appliance_manifest_matched',
+  ];
+  for (const field of required) {
+    if (conformance[field] !== true) throw new Error(`ERR_AGENT_RUNTIME_CONFORMANCE_${field}`);
+  }
+  return conformance;
+}
+
+async function safePackFile(root, rel) {
+  if (path.isAbsolute(rel)) throw new Error(`ERR_CHECKSUM_PATH_ESCAPE:${rel}`);
+  const normalized = path.normalize(rel);
+  if (normalized.startsWith('..') || normalized.includes(`${path.sep}..${path.sep}`)) throw new Error(`ERR_CHECKSUM_PATH_ESCAPE:${rel}`);
+  const rootPath = path.resolve(root);
+  const target = path.resolve(rootPath, normalized);
+  if (target !== rootPath && !target.startsWith(`${rootPath}${path.sep}`)) throw new Error(`ERR_CHECKSUM_PATH_ESCAPE:${rel}`);
+  const info = await lstat(target);
+  if (!info.isFile()) throw new Error(`ERR_CHECKSUM_PATH_NOT_FILE:${rel}`);
+  return target;
+}
+
+function assertEqual(actual, expected, code) {
+  if (actual !== expected) throw new Error(code);
 }
 
 async function listFiles(root, prefix = '') {

@@ -314,6 +314,7 @@ export async function runBranchingExample() {
     sourceClosureFingerprint: sourceHead.turnClosureWorldFingerprint,
     newBranchId: 'alternate',
   });
+  const sourceHeadAfterFork = await store.readHead(installed.run.runId, installed.branchId);
   const mainRef = await store.putBlob(turnClosureBytes({ runId: installed.run.runId, branchId: 'main', result: 'tool(actuate)' }));
   const alternateRef = await store.putBlob(turnClosureBytes({ runId: installed.run.runId, branchId: 'alternate', result: 'final=alternate branch complete' }));
   const mainHead = createRunHead({
@@ -346,7 +347,7 @@ export async function runBranchingExample() {
       alternate.status === 'completed' &&
       main.turnClosureWorldFingerprint === mainHead.turnClosureWorldFingerprint &&
       alternate.turnClosureWorldFingerprint === alternateHead.turnClosureWorldFingerprint,
-    sourceBranchUnchangedByFork: sourceHead.turnClosureWorldFingerprint === installed.parentHead.turnClosureWorldFingerprint,
+    sourceBranchUnchangedByFork: sourceHeadAfterFork.turnClosureWorldFingerprint === sourceHead.turnClosureWorldFingerprint,
     sourceBranchImplicitlyMerged: false,
     main: main.turnClosureWorldFingerprint,
     alternate: alternate.turnClosureWorldFingerprint,

@@ -50,7 +50,6 @@
     "negative"
   ],
   "conformanceCorpusFingerprint": "agent-runtime:a3b7adf4c54ac31d87db8094e6b54c70",
-  "releaseReceiptFingerprint": "agent-runtime:1fdf88ad1aae08a0b83d6a41c98d0c05",
   "artifacts": {
     "boundary": {
       "agentRootModule": {
@@ -113,5 +112,5 @@
       "worldHostHead": "1b6808fb98f420bce82d890f60f108d351c35f3c"
     }
   },
-  "manifestFingerprint": "agent-runtime:fc37d72a2edbb46d4fbf4e419087194b"
+  "manifestFingerprint": "agent-runtime:b393ccac08d385bc40450f780ddb917f"
 }

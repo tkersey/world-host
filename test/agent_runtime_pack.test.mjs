@@ -6,6 +6,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
+  assertAgentRuntimeReleaseReceipt,
   buildAgentRuntimePack,
   checkAgentRuntimePack,
   emitReleaseReceipt,
@@ -14,6 +15,7 @@ import {
   assertAgentRuntimeManifest,
   buildAgentRuntimeManifest,
   carrierManifestFingerprint,
+  releaseReceiptFingerprint,
 } from '../src/protocol/agent_runtime_manifest.mjs';
 
 describe('Agent Runtime pack', () => {
@@ -31,13 +33,24 @@ describe('Agent Runtime pack', () => {
         worldHostRepo: process.cwd(),
       });
       const checked = await checkAgentRuntimePack(pack);
-      const receipt = await emitReleaseReceipt(pack);
+      await assert.rejects(() => emitReleaseReceipt(pack), /ERR_AGENT_RUNTIME_CONFORMANCE_REQUIRED/);
+      const receipt = await emitReleaseReceipt(pack, passingConformanceReceipt(checked.manifest));
       const corpus = JSON.parse(await readFile(path.join(pack, 'conformance/corpus.json'), 'utf8'));
 
       assert.equal(checked.complete, true);
       assert.equal(checked.manifest.manifestFingerprint, built.manifest.manifestFingerprint);
       assert.equal(assertAgentRuntimeManifest(checked.manifest), checked.manifest);
       assert.equal(receipt.complete, true);
+      await assertAgentRuntimeReleaseReceipt(pack, receipt);
+      const tamperedReceipt = {
+        ...receipt,
+        universalWasmChecksum: '0'.repeat(64),
+      };
+      tamperedReceipt.receiptFingerprint = releaseReceiptFingerprint(tamperedReceipt);
+      await assert.rejects(
+        () => assertAgentRuntimeReleaseReceipt(pack, tamperedReceipt),
+        /ERR_AGENT_RUNTIME_RELEASE_RECEIPT_universalWasmChecksum/,
+      );
       assert.equal(corpus.requiredScenarios.includes('skeleton'), true);
       assert.equal(corpus.requiredScenarios.includes('fixture'), true);
       assert.deepEqual(corpus.warnings, []);
@@ -80,4 +93,62 @@ describe('Agent Runtime pack', () => {
     });
     assert.throws(() => assertAgentRuntimeManifest({ ...manifest, agentRuntimeVersion: 'v0.2' }), /ERR_AGENT_RUNTIME_MANIFEST_FINGERPRINT/);
   });
+
+  it('canonicalizes owner-exported actuator refs in the manifest', () => {
+    const manifest = buildAgentRuntimeManifest({
+      agentRuntimeVersion: 'v0.1',
+      boundary: {
+        packageVersion: '0.6.2',
+        packageHash: 'abc',
+        protocolManifestFingerprint: 'boundary:protocol',
+        agentProfileFingerprint: 'boundary:profile',
+        agentRootModuleFingerprint: 'boundary:root',
+        toolboxModuleFingerprint: 'boundary:toolbox',
+      },
+      world: {
+        packageVersion: 'world-v0.1.0',
+        protocolManifestFingerprint: 'world:protocol',
+        executableImageFingerprint: 'world:image',
+        applianceManifestFingerprint: 'world:appliance',
+        universalWasmSha256: '0'.repeat(64),
+        applianceAbiVersion: 'v4',
+        turnClosureFormatVersion: 'v1',
+        archiveFormatVersion: 'v1',
+      },
+      worldHost: {
+        packageVersion: '0.0.0-carrier-v0',
+        carrierManifestFingerprint: carrierManifestFingerprint(),
+      },
+      requiredActuatorRefs: ['sandbox:file', 'fixture:agent-model'],
+      requiredDescriptorFingerprints: ['descriptor:fixture-agent-model', 'descriptor:sandbox-file'],
+      requiredHostAuthorityLabels: ['model:fixture-agent', 'file:sandbox'],
+      conformanceCorpusFingerprint: 'agent-runtime:corpus',
+      releaseReceiptFingerprint: 'agent-runtime:receipt',
+    });
+
+    assert.deepEqual(manifest.requiredActuatorRefs, ['fixture:agent-model', 'sandbox:file']);
+  });
 });
+
+function passingConformanceReceipt(manifest) {
+  return {
+    receiptFormatVersion: 1,
+    agentRuntimeManifestFingerprint: manifest.manifestFingerprint,
+    agent_runtime_conformance: true,
+    skeleton_completed: true,
+    fixture_completed: true,
+    replay_matched: true,
+    retry_matched: true,
+    migration_matched: true,
+    branching_matched: true,
+    negative_cases_rejected: true,
+    world_evidence_validated: true,
+    host_did_not_author_receipts: true,
+    no_generated_agent_target_type: true,
+    no_native_helper_process: true,
+    distributed_wasm_compiled: true,
+    distributed_wasm_instantiated: true,
+    distributed_executable_image_loaded: true,
+    distributed_appliance_manifest_matched: true,
+  };
+}
