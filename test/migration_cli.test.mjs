@@ -852,7 +852,7 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
-  it('rejects installed agent pack resumes with empty bundled runtime payloads', async () => {
+  it('runs installed agent pack resumes with seeded scenario payloads', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-cli-run-resume-'));
     try {
       await runBunCli([
@@ -900,21 +900,24 @@ describe('migration, branching, and CLI diagnostics', () => {
 
       assert.equal(runCode, 0);
       assert.equal(run.head.status, 'needs_host');
-      await assert.rejects(
-        () => runBunCli([
-          'agent',
-          'resume',
-          '--store', root,
-          '--run', 'agent-cli-run',
-          '--scenario', 'fixture',
-          '--sandbox-root', path.join(root, 'sandbox'),
-        ], {
-          stdout: { write: (text) => { output += text; } },
-          stderr: { write() {} },
-        }),
-        { code: 'ERR_AGENT_RUNTIME_EMPTY_PAYLOAD_UNSUPPORTED' },
-      );
-      assert.equal(await readFile(path.join(root, 'sandbox/output.txt'), 'utf8'), '');
+      output = '';
+      const resumeCode = await runBunCli([
+        'agent',
+        'resume',
+        '--store', root,
+        '--run', 'agent-cli-run',
+        '--scenario', 'fixture',
+        '--sandbox-root', path.join(root, 'sandbox'),
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      });
+      const resumed = JSON.parse(output);
+
+      assert.equal(resumeCode, 0);
+      assert.equal(resumed.head.status, 'completed');
+      assert.equal(resumed.advance.effectCount, 2);
+      assert.equal(await readFile(path.join(root, 'sandbox/output.txt'), 'utf8'), 'actuate updated the fixture');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

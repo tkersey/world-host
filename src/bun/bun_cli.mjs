@@ -8,7 +8,7 @@ import { createBranchRecord, createRunHead, createRunRecord } from '../core/run.
 import { assertBlobRef, fail, fromUtf8, makeBlobRef, stableJson } from '../core/store.mjs';
 import { RunController, worldHostRequestToEffectRequest } from '../core/worker.mjs';
 import { createRunPolicy, preflightCapabilities } from '../core/capabilities.mjs';
-import { decodeResolutionInputBytes, encodeBootTurnInput, encodeResolutionInputBytes, encodeRestoreTurnInput } from '../protocol/world_appliance_wire_codec.mjs';
+import { decodeResolutionInputBytes, encodeBootTurnInput, encodeResolutionInputBytes, encodeRestoreTurnInput, encodeTurnInput, operationBoot } from '../protocol/world_appliance_wire_codec.mjs';
 import { encodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
 import { inspectTurnOutput, summarizeTurnClosureForRunHead } from '../protocol/world_universal_appliance_codec.mjs';
 import { carrierVersionSummary } from '../protocol/world_manifest.mjs';
@@ -24,6 +24,7 @@ const AGENT_MODEL_ACTUATION_CLASS = 'world:actuation-class:2';
 const AGENT_FILE_ACTUATOR = 'world:actuator-ref:d5e4b1b427522cf2';
 const AGENT_FILE_DESCRIPTOR = 'world:descriptor:74afc8c3b2fe4c33';
 const AGENT_FILE_ACTUATION_CLASS = 'world:actuation-class:1';
+const AGENT_RUNTIME_FIXTURE_OUTPUT = 'actuate updated the fixture';
 export async function runBunCli(args, io, options = {}) {
   const command = args[0] ?? 'help';
   if (command === '--version' || command === 'version') {
@@ -626,9 +627,36 @@ function agentRuntimeRunOptions(args, options = {}) {
       allowBestEffort: true,
       ...(options.effectPolicy ?? {}),
     },
+    turnInputFactory: options.turnInputFactory ?? agentRuntimeTurnInputFactory(scenario),
     hostRequestMapper: options.hostRequestMapper ?? ((request) => agentWorldHostRequestToEffectRequest(request, { scenario, sandboxRoot })),
     agentRuntimeDrivers: true,
   };
+}
+
+function agentRuntimeTurnInputFactory(scenario) {
+  return (context) => {
+    if (context.parentHead.status !== 'genesis') return cliTurnInputFactory(context);
+    const applianceManifest = context.worker.readApplianceManifest();
+    return encodeTurnInput({
+      operation: operationBoot,
+      manifestFingerprint: applianceManifest.decoded.manifestFingerprint,
+      turnSequenceNumber: 0n,
+      rootArgumentImages: [fromUtf8(agentRuntimeScenarioPayload(scenario))],
+      hostMetadata: `world-host.agent-runtime.${scenario}`,
+    });
+  };
+}
+
+function agentRuntimeScenarioPayload(scenario) {
+  const fixture = scenario === 'fixture';
+  return stableJson({
+    schema: 'boundary.Agent.DecisionPrompt.v0',
+    observation: fixture ? 'goal=fixture' : 'goal=invoke',
+    traceSummary: 'bounded',
+    operation: fixture ? 'write' : 'read',
+    path: fixture ? 'output.txt' : 'input.txt',
+    ...(fixture ? { content: AGENT_RUNTIME_FIXTURE_OUTPUT } : {}),
+  });
 }
 
 export function agentWorldHostRequestToEffectRequest(request, options = {}) {

@@ -27,8 +27,8 @@ export async function runAgentRuntimeConformance(pack) {
   const fixture = await examples.runFixtureExample();
   const distributedSkeleton = await runCheckedPackScenario({ checked, codecs, runBunCli, scenario: 'skeleton', mode: 'success' });
   const distributedFixture = await runCheckedPackScenario({ checked, codecs, runBunCli, scenario: 'fixture', mode: 'success' });
-  const emptyPayloadSkeleton = await runCheckedPackScenario({ checked, runBunCli, scenario: 'skeleton', mode: 'empty-payload' });
-  const emptyPayloadFixture = await runCheckedPackScenario({ checked, runBunCli, scenario: 'fixture', mode: 'empty-payload' });
+  const emptyPayloadSkeleton = await runCheckedPackScenario({ checked, codecs, runBunCli, scenario: 'skeleton', mode: 'empty-payload' });
+  const emptyPayloadFixture = await runCheckedPackScenario({ checked, codecs, runBunCli, scenario: 'fixture', mode: 'empty-payload' });
   const replay = await examples.runReplayExample();
   const retry = await examples.runRetryExample();
   const migration = await examples.runMigrationExample();
@@ -152,8 +152,8 @@ async function runCheckedPackScenario({ checked, codecs, runBunCli, scenario, mo
     if (installCode !== 0) throw new Error(`ERR_AGENT_RUNTIME_PACK_SCENARIO_INSTALL:${scenario}`);
 
     current = io();
-    const runOptions = mode === 'success'
-      ? { turnInputFactory: distributedScenarioTurnInputFactory(scenario, codecs) }
+    const runOptions = mode === 'empty-payload'
+      ? { turnInputFactory: distributedEmptyPayloadTurnInputFactory(codecs) }
       : {};
     const runCode = await runBunCli([
       'agent',
@@ -211,25 +211,16 @@ async function runCheckedPackScenario({ checked, codecs, runBunCli, scenario, mo
   }
 }
 
-function distributedScenarioTurnInputFactory(scenario, codecs) {
+function distributedEmptyPayloadTurnInputFactory(codecs) {
   return ({ worker }) => {
-    const { encodeTurnInput, fromUtf8, operationBoot, stableJson } = codecs;
+    const { encodeTurnInput, operationBoot } = codecs;
     const applianceManifest = worker.readApplianceManifest();
-    const observation = scenario === 'fixture' ? 'goal=fixture' : 'goal=invoke';
-    const payload = stableJson({
-      schema: 'boundary.Agent.DecisionPrompt.v0',
-      observation,
-      traceSummary: 'bounded',
-      operation: scenario === 'fixture' ? 'write' : 'read',
-      path: scenario === 'fixture' ? 'output.txt' : 'input.txt',
-      ...(scenario === 'fixture' ? { content: FIXTURE_OUTPUT } : {}),
-    });
     return encodeTurnInput({
       operation: operationBoot,
       manifestFingerprint: applianceManifest.decoded.manifestFingerprint,
       turnSequenceNumber: 0n,
-      rootArgumentImages: [fromUtf8(payload)],
-      hostMetadata: `world-host.agent-runtime.${scenario}`,
+      rootArgumentImages: [],
+      hostMetadata: 'world-host.agent-runtime.empty-payload',
     });
   };
 }
