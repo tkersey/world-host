@@ -83,7 +83,9 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const releaseReceiptOut = options.releaseReceiptOut ?? path.join(pack, 'manifest/agent-runtime-release-receipt.json');
   if (options.receiptOut) await writeFile(options.receiptOut, `${JSON.stringify(receipt, null, 2)}\n`);
   await writeFile(releaseReceiptOut, `${JSON.stringify(releaseReceipt, null, 2)}\n`);
-  if (isInsidePath(releaseReceiptOut, pack)) await refreshAgentRuntimePackChecksums(pack);
+  if ([options.receiptOut, releaseReceiptOut].some((out) => out && isInsidePath(out, pack))) {
+    await refreshAgentRuntimePackChecksums(pack);
+  }
   console.log('agent_runtime_conformance=true');
   console.log('skeleton_completed=true');
   console.log('fixture_completed=true');

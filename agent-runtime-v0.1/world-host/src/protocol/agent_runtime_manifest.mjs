@@ -65,7 +65,7 @@ export function buildAgentRuntimeManifest(input) {
     },
     requiredDriverIds: exactStringList(input.requiredDriverIds ?? REQUIRED_DRIVER_IDS, REQUIRED_DRIVER_IDS, 'requiredDriverIds'),
     requiredActuatorRefs: worldActuatorRefList(input.requiredActuatorRefs, 'requiredActuatorRefs'),
-    requiredDescriptorFingerprints: nonemptyStringList(input.requiredDescriptorFingerprints, 'requiredDescriptorFingerprints'),
+    requiredDescriptorFingerprints: worldDescriptorFingerprintList(input.requiredDescriptorFingerprints, 'requiredDescriptorFingerprints'),
     requiredHostAuthorityLabels: nonemptyStringList(input.requiredHostAuthorityLabels, 'requiredHostAuthorityLabels'),
     supportedExampleScenarios: exactStringList(input.supportedExampleScenarios ?? REQUIRED_SCENARIOS, REQUIRED_SCENARIOS, 'supportedExampleScenarios'),
     conformanceCorpusFingerprint: requiredString(input.conformanceCorpusFingerprint, 'conformanceCorpusFingerprint'),
@@ -88,6 +88,7 @@ export function assertAgentRuntimeManifest(manifest) {
   requiredSha256(manifest.world?.universalWasmSha256, 'world.universalWasmSha256');
   exactStringList(manifest.requiredDriverIds, REQUIRED_DRIVER_IDS, 'requiredDriverIds');
   worldActuatorRefList(manifest.requiredActuatorRefs, 'requiredActuatorRefs');
+  worldDescriptorFingerprintList(manifest.requiredDescriptorFingerprints, 'requiredDescriptorFingerprints');
   exactStringList(manifest.supportedExampleScenarios, REQUIRED_SCENARIOS, 'supportedExampleScenarios');
   return manifest;
 }
@@ -135,6 +136,14 @@ function exactStringList(value, expected, label) {
 function worldActuatorRefList(value, label) {
   const list = nonemptyStringList(value, label);
   if (list.some((item) => !/^world:actuator-ref:[0-9a-f]{16}$/i.test(item))) {
+    throw new Error(`ERR_UNEXPECTED_LIST_${label}`);
+  }
+  return Object.freeze([...list]);
+}
+
+function worldDescriptorFingerprintList(value, label) {
+  const list = nonemptyStringList(value, label);
+  if (list.some((item) => !/^world:descriptor:[0-9a-f]{16}$/i.test(item))) {
     throw new Error(`ERR_UNEXPECTED_LIST_${label}`);
   }
   return Object.freeze([...list]);

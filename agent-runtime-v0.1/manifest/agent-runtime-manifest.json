@@ -33,8 +33,8 @@
     "world:actuator-ref:d5e4b1b427522cf2"
   ],
   "requiredDescriptorFingerprints": [
-    "0xbe73177924a6b377",
-    "0x74afc8c3b2fe4c33"
+    "world:descriptor:be73177924a6b377",
+    "world:descriptor:74afc8c3b2fe4c33"
   ],
   "requiredHostAuthorityLabels": [
     "model:fixture-agent",
@@ -113,5 +113,5 @@
       "worldHostDirty": true
     }
   },
-  "manifestFingerprint": "agent-runtime:6bd5557ff8a5bb6e60817088becf6a0d"
+  "manifestFingerprint": "agent-runtime:152348ff1889d16ce4611668e1c26dbd"
 }

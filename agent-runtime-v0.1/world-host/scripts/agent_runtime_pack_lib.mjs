@@ -350,7 +350,7 @@ async function worldArtifacts(worldRepo, worldDist) {
     turnClosureFormatVersion: `v${agentRuntimeMetadata.world_turn_closure_format_version ?? 1}`,
     archiveFormatVersion: `v${agentRuntimeMetadata.world_archive_format_version ?? 1}`,
     requiredActuatorRefs: exactArray(agentRuntimeMetadata.required_actuator_ref_fingerprints, 'world required actuator ref fingerprints').map(worldActuatorRef),
-    requiredDescriptorFingerprints: exactArray(agentRuntimeMetadata.required_descriptor_fingerprints, 'world required descriptor fingerprints'),
+    requiredDescriptorFingerprints: exactArray(agentRuntimeMetadata.required_descriptor_fingerprints, 'world required descriptor fingerprints').map(worldDescriptorFingerprint),
     gitHead: gitHead(worldRepo),
     files: { protocolManifest, releaseReceipt, wasm, corpus, image, applianceManifest, agentRuntimeMetadata },
     artifacts: {
@@ -503,7 +503,7 @@ async function verifyManifestArtifacts(root, manifest) {
   assertEqual(manifest.world.executableImageFingerprint, requireOwnerFingerprint(worldMetadata.world_executable_image_fingerprint, 'world executable image'), 'ERR_AGENT_RUNTIME_WORLD_IMAGE_FINGERPRINT');
   assertEqual(manifest.world.applianceManifestFingerprint, requireOwnerFingerprint(worldMetadata.world_appliance_manifest_fingerprint, 'world appliance manifest'), 'ERR_AGENT_RUNTIME_WORLD_APPLIANCE_FINGERPRINT');
   assertEqual(stableJson(manifest.requiredActuatorRefs), stableJson(exactArray(worldMetadata.required_actuator_ref_fingerprints, 'world required actuator ref fingerprints').map(worldActuatorRef)), 'ERR_AGENT_RUNTIME_ACTUATOR_REFS');
-  assertEqual(stableJson(manifest.requiredDescriptorFingerprints), stableJson(exactArray(worldMetadata.required_descriptor_fingerprints, 'world required descriptor fingerprints')), 'ERR_AGENT_RUNTIME_DESCRIPTOR_FINGERPRINTS');
+  assertEqual(stableJson(manifest.requiredDescriptorFingerprints), stableJson(exactArray(worldMetadata.required_descriptor_fingerprints, 'world required descriptor fingerprints').map(worldDescriptorFingerprint)), 'ERR_AGENT_RUNTIME_DESCRIPTOR_FINGERPRINTS');
   assertEqual(manifest.worldHost.carrierManifestFingerprint, carrierManifestFingerprint(carrier), 'ERR_AGENT_RUNTIME_CARRIER_MANIFEST_FINGERPRINT');
   assertEqual(manifest.conformanceCorpusFingerprint, conformanceCorpusFingerprint, 'ERR_AGENT_RUNTIME_CONFORMANCE_CORPUS_FINGERPRINT');
 
@@ -633,6 +633,11 @@ function exactArray(value, label) {
 function worldActuatorRef(value) {
   const hex = requireOwnerFingerprint(value, 'world actuator ref fingerprint').slice('0x'.length).padStart(16, '0');
   return `world:actuator-ref:${hex}`;
+}
+
+function worldDescriptorFingerprint(value) {
+  const hex = requireOwnerFingerprint(value, 'world descriptor fingerprint').slice('0x'.length).padStart(16, '0');
+  return `world:descriptor:${hex}`;
 }
 
 function worldProtocolFingerprint(releaseArtifact) {
