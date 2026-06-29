@@ -900,6 +900,8 @@ describe('migration, branching, and CLI diagnostics', () => {
 
       assert.equal(runCode, 0);
       assert.equal(run.head.status, 'needs_host');
+      assert.equal(run.advance.effectCount, 0);
+      assert.equal(run.diagnostics.driversInvokedByCli, false);
       output = '';
       const resumeCode = await runBunCli([
         'agent',
@@ -917,6 +919,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(resumeCode, 0);
       assert.equal(resumed.head.status, 'completed');
       assert.equal(resumed.advance.effectCount, 2);
+      assert.equal(resumed.diagnostics.driversInvokedByCli, true);
       assert.equal(await readFile(path.join(root, 'sandbox/output.txt'), 'utf8'), 'actuate updated the fixture');
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -946,6 +949,7 @@ describe('migration, branching, and CLI diagnostics', () => {
   it('imports installed agent exports with receiver-local agent drivers', async () => {
     const sourceRoot = await mkdtemp(path.join(tmpdir(), 'world-host-agent-import-source-'));
     const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-agent-import-receiver-'));
+    const noPendingReceiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-agent-import-complete-receiver-'));
     const packagePath = path.join(receiverRoot, 'agent-export.json');
     try {
       await runBunCli([
@@ -984,6 +988,22 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(exportCode, 0);
 
       const packageJson = JSON.parse(await readFile(packagePath, 'utf8'));
+      let noPendingOutput = '';
+      const noPendingImportCode = await runBunCli([
+        'agent',
+        'import',
+        '--store', noPendingReceiverRoot,
+        '--package', packagePath,
+        '--run', 'receiver-agent-import-no-pending',
+      ], {
+        stdout: { write: (text) => { noPendingOutput += text; } },
+        stderr: { write() {} },
+      });
+      const noPendingImported = JSON.parse(noPendingOutput);
+      assert.equal(noPendingImportCode, 0);
+      assert.equal(noPendingImported.runId, 'receiver-agent-import-no-pending');
+      assert.equal(noPendingImported.receiverPolicyApplied, true);
+
       const pendingClosureBytes = fixtureNeedsHostTurnClosureBytes([agentModelHostRequestBytes()]);
       const pendingClosureSummary = summarizeTurnClosureForRunHead(pendingClosureBytes);
       const pendingClosureBlob = blobEntryForBytes(pendingClosureBytes);
@@ -1058,6 +1078,7 @@ describe('migration, branching, and CLI diagnostics', () => {
     } finally {
       await rm(sourceRoot, { recursive: true, force: true });
       await rm(receiverRoot, { recursive: true, force: true });
+      await rm(noPendingReceiverRoot, { recursive: true, force: true });
     }
   });
 

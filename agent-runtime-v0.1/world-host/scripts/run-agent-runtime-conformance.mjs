@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -15,6 +16,7 @@ export async function runAgentRuntimeConformance(pack) {
   const { fromUtf8, stableJson } = await import(pathToFileURL(path.join(hostRoot, 'src/core/store.mjs')));
   const { encodeTurnInput, operationBoot } = await import(pathToFileURL(path.join(hostRoot, 'src/protocol/world_appliance_wire_codec.mjs')));
   const codecs = { encodeTurnInput, fromUtf8, operationBoot, stableJson };
+  const corpus = JSON.parse(await readFile(path.join(checked.root, 'conformance/corpus.json'), 'utf8'));
   const wasmBytes = await readFile(path.join(checked.root, 'world/world_universal_appliance.wasm'));
   const imageBytes = await readFile(path.join(checked.root, 'world/agent.executable-image'));
   const expectedManifestBytes = await readFile(path.join(checked.root, 'world/appliance-manifest.bin'));
@@ -49,8 +51,13 @@ export async function runAgentRuntimeConformance(pack) {
       branching.sourceBranchImplicitlyMerged === false,
     negative_cases_rejected: Object.values(negative).every((value) => value === true),
     world_evidence_validated: true,
-    distributed_skeleton_scenario_completed: distributedSkeleton.completed === true && distributedSkeleton.effectCount >= 2,
-    distributed_fixture_scenario_completed: distributedFixture.completed === true && distributedFixture.effectCount >= 2 && distributedFixture.outputVerified === true,
+    distributed_skeleton_scenario_completed: distributedSkeleton.completed === true &&
+      distributedSkeleton.effectCount >= 2 &&
+      distributedSkeleton.rootResultFingerprint === corpus.expected?.skeletonRootResultFingerprint,
+    distributed_fixture_scenario_completed: distributedFixture.completed === true &&
+      distributedFixture.effectCount >= 2 &&
+      distributedFixture.outputVerified === true &&
+      distributedFixture.rootResultFingerprint === corpus.expected?.fixtureRootResultFingerprint,
     distributed_empty_payloads_rejected: emptyPayloadSkeleton.emptyPayloadRejected === true && emptyPayloadFixture.emptyPayloadRejected === true,
     host_did_not_author_receipts: [skeleton, fixture, replay, retry, migration, branching].every((item) => item.hostAuthoredWorldEvidence === false),
     no_generated_agent_target_type: [skeleton, fixture, replay, retry, migration, branching].every((item) => item.generatedAgentTargetType === false),
@@ -94,10 +101,19 @@ export async function runAgentRuntimeConformance(pack) {
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const options = parseCommonArgs(process.argv.slice(2));
   const pack = options.out ?? defaultPackPath();
+  const defaultReleaseReceiptOut = path.join(pack, 'manifest/agent-runtime-release-receipt.json');
+  const defaultReleaseReceiptExists = existsSync(defaultReleaseReceiptOut);
   const { receipt, releaseReceipt } = await runAgentRuntimeConformance(pack);
-  const releaseReceiptOut = options.releaseReceiptOut ?? path.join(pack, 'manifest/agent-runtime-release-receipt.json');
   if (options.receiptOut) await writeFile(options.receiptOut, `${JSON.stringify(receipt, null, 2)}\n`);
-  await writeFile(releaseReceiptOut, `${JSON.stringify(releaseReceipt, null, 2)}\n`);
+  const releaseReceiptOut = options.releaseReceiptOut ?? (defaultReleaseReceiptExists ? null : defaultReleaseReceiptOut);
+  if (releaseReceiptOut) {
+    await writeFile(releaseReceiptOut, `${JSON.stringify(releaseReceipt, null, 2)}\n`);
+  } else {
+    const existingReleaseReceipt = JSON.parse(await readFile(defaultReleaseReceiptOut, 'utf8'));
+    if (existingReleaseReceipt.receiptFingerprint !== releaseReceipt.receiptFingerprint) {
+      throw new Error('ERR_AGENT_RUNTIME_RELEASE_RECEIPT_MISMATCH');
+    }
+  }
   if ([options.receiptOut, releaseReceiptOut].some((out) => out && isInsidePath(out, pack))) {
     await refreshAgentRuntimePackChecksums(pack);
   }
@@ -184,6 +200,7 @@ async function runCheckedPackScenario({ checked, codecs, runBunCli, scenario, mo
       return {
         completed: true,
         effectCount: resumed.advance?.effectCount ?? 0,
+        rootResultFingerprint: resumed.head?.rootResultFingerprint ?? null,
         outputVerified: scenario === 'fixture' ? output === FIXTURE_OUTPUT : null,
       };
     }

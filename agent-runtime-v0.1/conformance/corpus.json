@@ -12,9 +12,11 @@
   ],
   "expected": {
     "skeletonFinalResult": "final=actuate skeleton complete",
+    "skeletonRootResultFingerprint": "world:root-result:469ea29edd2b9b6a",
     "fixtureInput": "rewrite this file through the agent loop\n",
     "fixtureOutput": "actuate updated the fixture",
-    "fixtureFinalResult": "final=fixture updated"
+    "fixtureFinalResult": "final=fixture updated",
+    "fixtureRootResultFingerprint": "world:root-result:716ad80792c9e8fe"
   },
   "proofReceipts": [
     {

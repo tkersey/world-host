@@ -112,10 +112,17 @@ async function runAgentCommand(args, io, options) {
     const out = requiredOption(args, '--out');
     return await runExport(['export', ...args.slice(1), '--out', out], io, storePath);
   }
-  if (subcommand === 'import') return await runImport(['import', ...args.slice(1)], io, requiredOption(args, '--store'), agentRuntimeRunOptions(args, options));
+  if (subcommand === 'import') {
+    return await runImport(['import', ...args.slice(1)], io, requiredOption(args, '--store'), {
+      ...options,
+      agentRuntimeOptionsArgs: args,
+    });
+  }
   if (subcommand === 'conformance') {
     const pack = requiredOption(args, '--pack');
+    const { checkAgentRuntimePack } = await import('../../scripts/agent_runtime_pack_lib.mjs');
     const { runAgentRuntimeConformance } = await import('../../scripts/run-agent-runtime-conformance.mjs');
+    await checkAgentRuntimePack(pack);
     const { receipt, releaseReceipt } = await runAgentRuntimeConformance(pack);
     io.stdout.write(`${JSON.stringify(redact({
       command: 'agent conformance',
@@ -477,13 +484,22 @@ async function runImport(args, io, storePath, options = {}) {
   try {
     const imported = await importCarrierRun(store, carrierExport, {
       runId: receiverRunId,
-      preflight: async (candidate) => preflightCapabilities({
-        application: candidate.bundle.application,
-        currentHead: candidate.bundle.head,
-        pendingRequests: pendingRequestsForImportedHead(candidate).map(options.hostRequestMapper ?? worldHostRequestToEffectRequest),
-        drivers: options.effectDrivers ?? [],
-        policy: options.effectPolicy ?? createRunPolicy(),
-      }),
+      preflight: async (candidate) => {
+        const pendingRequests = pendingRequestsForImportedHead(candidate);
+        const preflightOptions = pendingRequests.length > 0 && options.agentRuntimeOptionsArgs
+          ? agentRuntimeRunOptions(options.agentRuntimeOptionsArgs, options)
+          : options;
+        const application = pendingRequests.length === 0 && options.agentRuntimeOptionsArgs
+          ? { ...candidate.bundle.application, requiredActuators: [] }
+          : candidate.bundle.application;
+        return preflightCapabilities({
+          application,
+          currentHead: candidate.bundle.head,
+          pendingRequests: pendingRequests.map(preflightOptions.hostRequestMapper ?? worldHostRequestToEffectRequest),
+          drivers: preflightOptions.effectDrivers ?? [],
+          policy: preflightOptions.effectPolicy ?? createRunPolicy(),
+        });
+      },
     });
     io.stdout.write(`${JSON.stringify(redact({
       command: 'import',
@@ -1045,6 +1061,7 @@ function summarizeRunLifecycle({ command, storePath, run, branchId, created, hea
       status: head.status,
       turnClosureWorldFingerprint: head.turnClosureWorldFingerprint,
       resultingStateFingerprint: head.resultingStateFingerprint,
+      rootResultFingerprint: head.updateDiagnostics?.inspectedTurnClosure?.rootResultFingerprint ?? null,
     } : null,
     advance: advance ? {
       status: advance.status,
@@ -1058,7 +1075,7 @@ function summarizeRunLifecycle({ command, storePath, run, branchId, created, hea
       workerExecuted: advance !== null,
       runCreated: created,
       schedulerLoop: false,
-      driversInvokedByCli: advance !== null && driversInvokedByCli,
+      driversInvokedByCli: advance !== null && driversInvokedByCli && (advance.effects?.length ?? 0) > 0,
       runHeadMutatedDirectlyByCli: false,
       worldEvidenceAuthored: false,
     },

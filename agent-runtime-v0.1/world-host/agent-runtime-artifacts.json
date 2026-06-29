@@ -12,14 +12,22 @@
     },
     "protocolManifest": {
       "exportedByOwner": true,
-      "sha256": "530abb241e2e8de864cb80e0fa5c5ac528470e75777c4a3d29dd9f374f8e48e0"
+      "sha256": "7330714f4e2eae6c6036e5562d55619c461fdf444fb0564b11c1e3b232908a68"
     },
     "agentProfile": {
       "exportedByOwner": true,
-      "sha256": "4e3323e7b67fccf215ab874d9ff2b6e9c0fc99307e1a7fda24ce14cfa257476d"
+      "sha256": "c74a75c0627eff68caf6a54c367049ea6873c24044f0f498232aa7544499c635"
+    },
+    "corpus": {
+      "exportedByOwner": true,
+      "sha256": "04214a52058e785e61b69d58b031887b7e977a65b8eb114b04f868ffef9abf3d"
     }
   },
   "world": {
+    "protocolManifest": {
+      "exportedByOwner": true,
+      "sha256": "f8e8e2053a3058f0207cb4c906b1a0c2b7a0b0cbfa2fdb051ad97db9327c13cb"
+    },
     "executableImage": {
       "exportedByOwner": true,
       "sha256": "f75eda188131e9782dd7b1de3c5083262a13a9007f355a89ba9f79983ba06795"
@@ -36,13 +44,13 @@
       "exportedByOwner": true,
       "sha256": "9a32f438758b5db5dd8db3f434b2f54f5262f7e507dc88211c90572d93ed28f7"
     },
+    "conformanceCorpus": {
+      "exportedByOwner": true,
+      "sha256": "c7d6067ca2b95612b69b9248356f4aaa5eda3a63042ecd88d544849aa1ede321"
+    },
     "agentRuntimeMetadata": {
       "exportedByOwner": true,
-      "sha256": "873690610081b9ac35b12e8b20d9f0d4c85db4b55a7888e6e9017e191f05d8e8"
-    },
-    "protocolManifest": {
-      "exportedByOwner": true,
-      "sha256": "f8e8e2053a3058f0207cb4c906b1a0c2b7a0b0cbfa2fdb051ad97db9327c13cb"
+      "sha256": "721c34678b6b37e2536ddb8c621dd29158fd0ed13d754336ed16267f6db35585"
     }
   },
   "worldHost": {

@@ -1,7 +1,7 @@
 {
   "receiptFormatVersion": 1,
   "receiptFingerprintVersion": 1,
-  "agentRuntimeManifestFingerprint": "agent-runtime:05dd8c72cbd93a189b719c34cd835ac1",
+  "agentRuntimeManifestFingerprint": "agent-runtime:b845e7b8ba29352560864ce4db17e395",
   "boundaryModuleFingerprints": [
     "0xa663b81aa6df6f3e",
     "0x4a4c934becaf32ae"
@@ -9,7 +9,7 @@
   "worldExecutableImageFingerprint": "0x56623af1b7581f29",
   "universalWasmChecksum": "a79ae458d3cc5145660dadfc678736e75822c8c70558f8139861dc1103e84add",
   "worldHostCarrierManifestFingerprint": "agent-runtime:132a4d1bd786256457272a8d2dda815c",
-  "conformanceCorpusFingerprint": "agent-runtime:a3b7adf4c54ac31d87db8094e6b54c70",
+  "conformanceCorpusFingerprint": "agent-runtime:1349ede338932fb62eb2124e7384bc1a",
   "proofReceiptFingerprints": [
     "agent-runtime:bf1543a5a3baf589d46eff7ddc334e5d",
     "agent-runtime:aa5e96b305bba9f532ac4e92b6dc89a4",
@@ -28,5 +28,5 @@
   "complete": true,
   "blockers": [],
   "warnings": [],
-  "receiptFingerprint": "agent-runtime:967ee9501df199280ddb4549975ef28d"
+  "receiptFingerprint": "agent-runtime:104a4f7fd90043d5ffb4e7d72f51cdb3"
 }

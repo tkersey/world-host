@@ -25,7 +25,7 @@
     "proof:agent": "bun scripts/run-agent-closure-conformance.mjs",
     "proof:boundaries": "bun scripts/check-boundaries.mjs",
     "build:agent-runtime": "bun scripts/build-agent-runtime-pack.mjs",
-    "check:agent-runtime": "bun scripts/run-agent-runtime-conformance.mjs && bun scripts/check-agent-runtime-pack.mjs --require-release-receipt && bun scripts/check-agent-runtime-release-receipt.mjs"
+    "check:agent-runtime": "bun scripts/check-agent-runtime-pack.mjs && bun scripts/run-agent-runtime-conformance.mjs && bun scripts/check-agent-runtime-pack.mjs --require-release-receipt && bun scripts/check-agent-runtime-release-receipt.mjs"
   },
   "engines": {
     "bun": ">=1.3.2"

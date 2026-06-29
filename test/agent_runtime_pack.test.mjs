@@ -1,5 +1,6 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -10,6 +11,7 @@ import {
   buildAgentRuntimePack,
   checkAgentRuntimePack,
   emitReleaseReceipt,
+  parseCommonArgs,
   refreshAgentRuntimePackChecksums,
 } from '../scripts/agent_runtime_pack_lib.mjs';
 import { runAgentRuntimeConformance } from '../scripts/run-agent-runtime-conformance.mjs';
@@ -78,13 +80,55 @@ describe('Agent Runtime pack', () => {
       );
       assert.equal(corpus.requiredScenarios.includes('skeleton'), true);
       assert.equal(corpus.requiredScenarios.includes('fixture'), true);
+      assert.equal(corpus.expected.skeletonRootResultFingerprint, 'world:root-result:469ea29edd2b9b6a');
+      assert.equal(corpus.expected.fixtureRootResultFingerprint, 'world:root-result:716ad80792c9e8fe');
       assert.deepEqual(corpus.warnings, []);
       assert.equal(checked.manifest.artifacts.boundary.agentRootModule.exportedByOwner, true);
       assert.equal(checked.manifest.artifacts.world.executableImage.exportedByOwner, true);
+      const packagedPackageJson = JSON.parse(await readFile(path.join(pack, 'world-host/package.json'), 'utf8'));
+      assert.deepEqual(Object.keys(packagedPackageJson.scripts).sort(), ['check:agent-runtime']);
+      assert.equal(packagedPackageJson.files.includes('test/'), false);
+      assert.equal(packagedPackageJson.files.includes('carrier-manifest.json'), true);
+      const packagedReadme = await readFile(path.join(pack, 'world-host/README.md'), 'utf8');
+      assert.equal(/\bbun(?:\s+run)?\s+(?:test|proof(?::[\w-]+)?)/.test(packagedReadme), false);
+
+      const cliPreservationPack = path.join(root, 'cli-preservation', 'agent-runtime-v0.1');
+      await cp(path.resolve('agent-runtime-v0.1'), cliPreservationPack, { recursive: true });
+      const releaseReceiptPath = path.join(cliPreservationPack, 'manifest/agent-runtime-release-receipt.json');
+      const checksumsPath = path.join(cliPreservationPack, 'checksums.sha256');
+      const releaseReceiptBeforeCliConformance = await readFile(releaseReceiptPath, 'utf8');
+      const checksumsBeforeCliConformance = await readFile(checksumsPath, 'utf8');
+      const cliConformance = spawnSync(process.execPath, [path.resolve('scripts/run-agent-runtime-conformance.mjs'), cliPreservationPack], {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+      });
+      assert.equal(cliConformance.status, 0, cliConformance.stderr);
+      assert.equal(await readFile(releaseReceiptPath, 'utf8'), releaseReceiptBeforeCliConformance);
+      assert.equal(await readFile(checksumsPath, 'utf8'), checksumsBeforeCliConformance);
+
+      const tamperedCliConformancePack = path.join(root, 'tampered-cli-conformance', 'agent-runtime-v0.1');
+      await cp(path.resolve('agent-runtime-v0.1'), tamperedCliConformancePack, { recursive: true });
+      const tamperedCliReceiptPath = path.join(tamperedCliConformancePack, 'manifest/agent-runtime-release-receipt.json');
+      const tamperedCliReceipt = JSON.parse(await readFile(tamperedCliReceiptPath, 'utf8'));
+      tamperedCliReceipt.receiptFingerprint = 'agent-runtime:tampered';
+      await writeFile(tamperedCliReceiptPath, `${JSON.stringify(tamperedCliReceipt, null, 2)}\n`);
+      await refreshAgentRuntimePackChecksums(tamperedCliConformancePack);
+      const tamperedCliConformance = spawnSync(process.execPath, [
+        path.resolve('bin/world-host.mjs'),
+        'agent',
+        'conformance',
+        '--pack',
+        tamperedCliConformancePack,
+      ], {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+      });
+      assert.notEqual(tamperedCliConformance.status, 0);
+      assert.match(tamperedCliConformance.stderr, /ERR_AGENT_RUNTIME_RELEASE_RECEIPT_FINGERPRINT/);
 
       const freshConformancePack = path.join(root, 'fresh-conformance', 'agent-runtime-v0.1');
       await cp(path.resolve('agent-runtime-v0.1'), freshConformancePack, { recursive: true });
-      await rm(path.join(freshConformancePack, 'manifest/agent-runtime-release-receipt.json'));
+      await rm(path.join(freshConformancePack, 'manifest/agent-runtime-release-receipt.json'), { force: true });
       await refreshAgentRuntimePackChecksums(freshConformancePack);
       const fresh = await runAgentRuntimeConformance(freshConformancePack);
       assert.equal(fresh.receipt.distributed_skeleton_scenario_completed, true);
@@ -107,6 +151,27 @@ describe('Agent Runtime pack', () => {
       await assert.rejects(
         () => checkAgentRuntimePack(missingConformancePack),
         /missing required file: .*world-host\/scripts\/run-agent-runtime-conformance\.mjs/,
+      );
+
+      const missingWorldCorpusPack = path.join(root, 'agent-runtime-v0.1-missing-world-corpus');
+      await cp(pack, missingWorldCorpusPack, { recursive: true });
+      await rm(path.join(missingWorldCorpusPack, 'world/conformance-corpus.json'));
+      await refreshAgentRuntimePackChecksums(missingWorldCorpusPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(missingWorldCorpusPack),
+        /missing required file: .*world\/conformance-corpus\.json/,
+      );
+
+      const sourceOnlyScriptPack = path.join(root, 'agent-runtime-v0.1-source-only-script');
+      await cp(pack, sourceOnlyScriptPack, { recursive: true });
+      const sourceOnlyPackagePath = path.join(sourceOnlyScriptPack, 'world-host/package.json');
+      const sourceOnlyPackage = JSON.parse(await readFile(sourceOnlyPackagePath, 'utf8'));
+      sourceOnlyPackage.scripts.proof = 'bun test';
+      await writeFile(sourceOnlyPackagePath, `${JSON.stringify(sourceOnlyPackage, null, 2)}\n`);
+      await refreshAgentRuntimePackChecksums(sourceOnlyScriptPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(sourceOnlyScriptPack),
+        /ERR_AGENT_RUNTIME_PACKAGE_SCRIPT:proof/,
       );
 
       const directoryStoreModulePack = path.join(root, 'agent-runtime-v0.1-directory-store-module');
@@ -132,6 +197,31 @@ describe('Agent Runtime pack', () => {
       await assert.rejects(
         () => checkAgentRuntimePack(staleWorldProtocolPack),
         /ERR_AGENT_RUNTIME_WORLD_PROTOCOL_MANIFEST_FINGERPRINT/,
+      );
+
+      const staleBoundaryProtocolPack = path.join(root, 'agent-runtime-v0.1-stale-boundary-protocol');
+      await cp(pack, staleBoundaryProtocolPack, { recursive: true });
+      const boundaryProtocolPath = path.join(staleBoundaryProtocolPack, 'boundary/boundary-protocol-manifest.bin');
+      const boundaryProtocol = new Uint8Array(await readFile(boundaryProtocolPath));
+      boundaryProtocol[12] ^= 0xff;
+      await writeFile(boundaryProtocolPath, boundaryProtocol);
+      await rewriteManifestArtifactSha(staleBoundaryProtocolPack, 'boundary', 'protocolManifest', boundaryProtocol);
+      await refreshAgentRuntimePackChecksums(staleBoundaryProtocolPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(staleBoundaryProtocolPack),
+        /ERR_AGENT_RUNTIME_BOUNDARY_PROTOCOL_MANIFEST_FINGERPRINT/,
+      );
+
+      const reserializedProfilePack = path.join(root, 'agent-runtime-v0.1-reserialized-profile');
+      await cp(pack, reserializedProfilePack, { recursive: true });
+      const profilePath = path.join(reserializedProfilePack, 'boundary/agent-profile.json');
+      const profile = JSON.parse(await readFile(profilePath, 'utf8'));
+      await writeFile(profilePath, JSON.stringify(profile));
+      await rewriteManifestArtifactSha(reserializedProfilePack, 'boundary', 'agentProfile', Buffer.from(stableJson(profile)));
+      await refreshAgentRuntimePackChecksums(reserializedProfilePack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(reserializedProfilePack),
+        /ERR_AGENT_RUNTIME_ARTIFACT_SHA:boundary\.agentProfile\.sha256/,
       );
 
       const missingReleaseReceiptPack = path.join(root, 'agent-runtime-v0.1-missing-release-receipt');
@@ -252,6 +342,12 @@ describe('Agent Runtime pack', () => {
       () => buildAgentRuntimePack({ out: process.cwd(), worldHostRepo: process.cwd() }),
       /ERR_AGENT_RUNTIME_UNSAFE_OUT:worldHostRepo/,
     );
+  });
+
+  it('rejects missing values for valued pack CLI options', () => {
+    assert.throws(() => parseCommonArgs(['--out']), /ERR_AGENT_RUNTIME_ARG_VALUE:--out/);
+    assert.throws(() => parseCommonArgs(['--world-repo', '--boundary-repo', '../boundary']), /ERR_AGENT_RUNTIME_ARG_VALUE:--world-repo/);
+    assert.deepEqual(parseCommonArgs(['--require-release-receipt']), { requireReleaseReceipt: true });
   });
 
   it('rejects non-pack build output directories before removal', async () => {
@@ -423,7 +519,7 @@ async function writeBoundaryRepoForPackTest(root, version) {
   await writeFile(path.join(root, 'build.zig.zon'), `.version = "${version}",\n`);
   await writeFile(path.join(exportDir, 'agent-root.full-module'), `boundary-root-module-v${version}`);
   await writeFile(path.join(exportDir, 'toolbox-provider.full-module'), `boundary-toolbox-module-v${version}`);
-  await writeFile(path.join(exportDir, 'boundary-protocol-manifest.bin'), `boundary-protocol-v${version}`);
+  await writeFile(path.join(exportDir, 'boundary-protocol-manifest.bin'), boundaryProtocolManifestBytesForTest(0x1111n));
   await writeFile(path.join(exportDir, 'agent-profile.json'), `${JSON.stringify({
     boundary_protocol_manifest_fingerprint: '0x1111',
     profile_fingerprint: '0x2222',
@@ -433,6 +529,16 @@ async function writeBoundaryRepoForPackTest(root, version) {
     toolbox_full_module_byte_fingerprint: '0x6666',
   }, null, 2)}\n`);
   await writeFile(path.join(root, 'conformance/v0/agent/corpus.boundary-agent.txt'), 'profile_fingerprint: 0x0000\n');
+}
+
+function boundaryProtocolManifestBytesForTest(fingerprint) {
+  const bytes = new Uint8Array(20);
+  bytes.set(Buffer.from('BPM1'), 0);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(4, 1, true);
+  view.setUint32(8, 1, true);
+  view.setBigUint64(12, fingerprint, true);
+  return bytes;
 }
 
 async function writeWorldRepoForPackTest(root) {
