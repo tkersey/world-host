@@ -77,6 +77,7 @@ async function runAgentCommand(args, io, options) {
     const storePath = requiredOption(args, '--store');
     const applicationId = valueAfter(args, '--app') ?? valueAfter(args, '--name') ?? 'agent-runtime-v0.1';
     const manifest = JSON.parse(await readFile(path.join(pack, 'manifest/agent-runtime-manifest.json'), 'utf8'));
+    const requiredActuators = manifest.requiredActuatorRefs.map((actuatorRef) => ({ actuatorRef }));
     return await runInstall([
       'install',
       '--store', storePath,
@@ -85,7 +86,7 @@ async function runAgentCommand(args, io, options) {
       '--image', path.join(pack, 'world/agent.executable-image'),
       '--image-fingerprint', manifest.world.executableImageFingerprint,
       '--manifest', path.join(pack, 'world/appliance-manifest.bin'),
-    ], io, storePath);
+    ], io, storePath, { requiredActuators });
   }
   if (subcommand === 'run') return await runStoreRun(['run', ...args.slice(1)], io, requiredOption(args, '--store'), options);
   if (subcommand === 'resume') return await runStoreResume(['resume', ...args.slice(1)], io, requiredOption(args, '--store'), options);
@@ -181,7 +182,7 @@ async function runStoreResume(args, io, storePath, options) {
   }
 }
 
-async function runInstall(args, io, storePath) {
+async function runInstall(args, io, storePath, options = {}) {
   const applicationId = requiredOption(args, '--name');
   const wasmPath = requiredOption(args, '--wasm');
   const imagePath = requiredOption(args, '--image');
@@ -214,7 +215,7 @@ async function runInstall(args, io, storePath) {
       executableImageRef: imageRef,
       executableImageWorldFingerprint: imageWorldFingerprint,
       applianceManifestRef: manifestRef,
-      requiredActuators: [],
+      requiredActuators: options.requiredActuators ?? [],
       requiredRuntimeLimits: {},
       installationDiagnostics: {
         command: 'install',

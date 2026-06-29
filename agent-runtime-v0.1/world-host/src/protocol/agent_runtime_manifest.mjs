@@ -19,8 +19,8 @@ const REQUIRED_SCENARIOS = Object.freeze([
 ]);
 
 const REQUIRED_DRIVER_IDS = Object.freeze([
-  'fixture:agent-model',
-  'sandbox:file',
+  'fixture-agent-model',
+  'sandbox-file',
 ]);
 
 export function sha256Hex(bytes) {

@@ -10,7 +10,7 @@ const conformancePath = options.conformanceReceipt;
 if (!conformancePath) throw new Error('ERR_AGENT_RUNTIME_CONFORMANCE_REQUIRED');
 const conformance = JSON.parse(await readFile(conformancePath, 'utf8'));
 const receipt = await emitReleaseReceipt(pack, conformance);
-const out = options.receiptOut ?? path.join(pack, 'manifest/agent-runtime-release-receipt.json');
+const out = options.releaseReceiptOut ?? options.receiptOut ?? path.join(pack, 'manifest/agent-runtime-release-receipt.json');
 await writeFile(out, `${JSON.stringify(receipt, null, 2)}\n`);
 if (isInsidePath(out, pack)) await refreshAgentRuntimePackChecksums(pack);
 console.log(JSON.stringify({

@@ -25,8 +25,8 @@
     "carrierManifestFingerprint": "agent-runtime:132a4d1bd786256457272a8d2dda815c"
   },
   "requiredDriverIds": [
-    "fixture:agent-model",
-    "sandbox:file"
+    "fixture-agent-model",
+    "sandbox-file"
   ],
   "requiredActuatorRefs": [
     "world:actuator-ref:4f0c7160f25c4c62",
@@ -113,5 +113,5 @@
       "worldHostDirty": true
     }
   },
-  "manifestFingerprint": "agent-runtime:aee5df979d26099bf6c8a366cc75116f"
+  "manifestFingerprint": "agent-runtime:6bd5557ff8a5bb6e60817088becf6a0d"
 }
