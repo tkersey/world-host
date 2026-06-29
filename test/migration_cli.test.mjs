@@ -20,6 +20,7 @@ import { summarizeTurnClosureForRunHead } from '../src/protocol/world_universal_
 import { DirectoryStore } from '../src/stores/directory_store.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
 import { FixtureAgentModelDriver } from '../src/drivers/fixture_agent_model_driver.mjs';
+import { SandboxFileDriver } from '../src/drivers/sandbox_file_driver.mjs';
 
 describe('migration, branching, and CLI diagnostics', () => {
   it('forks a branch without mutating the source branch head', async () => {
@@ -1104,6 +1105,39 @@ describe('migration, branching, and CLI diagnostics', () => {
     assert.equal(recovered.record.diagnostics.agentRuntimeResponseBoundToExpectedRefs, true);
     assert.equal(refs.boundaryValueFingerprint, '0x0000000000000abc');
     assert.equal(refs.codecSchemaDescriptorFingerprint, '0x0000000000000def');
+  });
+
+  it('translates missing sandbox file reads into agent runtime responses', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-missing-file-'));
+    try {
+      const driver = agentWorldRequestDriver(new SandboxFileDriver({
+        root,
+        actuatorRef: 'world:actuator-ref:d5e4b1b427522cf2',
+        descriptorFingerprint: 'world:descriptor:74afc8c3b2fe4c33',
+      }), 'world:actuation-class:3');
+      const result = await driver.resolve({}, {
+        hostRequestFingerprint: 'world:host-request:0000000000000f17',
+        idempotencyKeyBytes: fromUtf8('agent-runtime-missing-file-key'),
+        idempotencyKeyWorldFingerprint: 'world:idempotency-key:0000000000000f18',
+        actuatorRef: 'world:actuator-ref:d5e4b1b427522cf2',
+        descriptorFingerprint: 'world:descriptor:74afc8c3b2fe4c33',
+        actuationClass: 'world:actuation-class:3',
+        responseSchema: { status: 'responded' },
+        requestBytes: fromUtf8(JSON.stringify({ operation: 'read', path: 'missing.txt' })),
+        expectedResponseValueRefFingerprint: '0x0000000000000f19',
+        expectedResponseSchemaRefFingerprint: '0x0000000000000f20',
+      });
+      const resolution = decodeResolutionInputBytes(result.resolutionInputBytes);
+      const refs = decodeValueImageResponseRefs(resolution.responseValueImageBytes);
+
+      assert.equal(resolution.status, 0);
+      assert.equal(result.diagnostics.agentRuntimeTranslatedResponseStatus, 'not_found');
+      assert.equal(result.diagnostics.agentRuntimeResponseBoundToExpectedRefs, true);
+      assert.equal(refs.boundaryValueFingerprint, '0x0000000000000f19');
+      assert.equal(refs.codecSchemaDescriptorFingerprint, '0x0000000000000f20');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('rejects invalid agent packs during CLI install', async () => {

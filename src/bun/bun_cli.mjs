@@ -5,7 +5,7 @@ import path from 'node:path';
 import { createApplicationRecord } from '../core/application.mjs';
 import { exportCarrierRun, forkRunBranch, importCarrierRun } from '../core/migration.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from '../core/run.mjs';
-import { assertBlobRef, fail, fromUtf8, makeBlobRef } from '../core/store.mjs';
+import { assertBlobRef, fail, fromUtf8, makeBlobRef, stableJson } from '../core/store.mjs';
 import { RunController, worldHostRequestToEffectRequest } from '../core/worker.mjs';
 import { createRunPolicy, preflightCapabilities } from '../core/capabilities.mjs';
 import { decodeResolutionInputBytes, encodeBootTurnInput, encodeResolutionInputBytes, encodeRestoreTurnInput } from '../protocol/world_appliance_wire_codec.mjs';
@@ -666,29 +666,46 @@ export function agentWorldRequestDriver(driver, actuationClass) {
 }
 
 function bindAgentRuntimeResolution(hostRequest, result) {
+  const resolution = decodeResolutionInputBytes(result.resolutionInputBytes);
+  const translated = translateAgentRuntimeResolution(resolution);
   const expectedValue = hostRequest.expectedResponseValueRefFingerprint ??
     hostRequest.diagnostics?.agentRuntimeExpectedResponseValueRefFingerprint;
   const expectedSchema = hostRequest.expectedResponseSchemaRefFingerprint ??
     hostRequest.diagnostics?.agentRuntimeExpectedResponseSchemaRefFingerprint;
-  if (expectedValue == null && expectedSchema == null) return result;
-  const resolution = decodeResolutionInputBytes(result.resolutionInputBytes);
-  if (resolution.status !== 0 || resolution.responseValueImageBytes.byteLength === 0) return result;
-  const payload = decodeCanonicalValueImagePayload(resolution.responseValueImageBytes);
+  const shouldBindExpectedRefs = expectedValue != null || expectedSchema != null;
+  if (translated === resolution && !shouldBindExpectedRefs) return result;
+  if (translated.status !== 0 || translated.responseValueImageBytes.byteLength === 0) return result;
+  const payload = decodeCanonicalValueImagePayload(translated.responseValueImageBytes);
   return {
     ...result,
     resolutionInputBytes: encodeResolutionInputBytes({
-      ...resolution,
-      responseValueImageBytes: encodeCanonicalValueImage({
-        boundaryValueFingerprint: expectedValue,
-        codecSchemaDescriptorFingerprint: expectedSchema,
-        bytes: payload,
-        dynamicSize: true,
-      }),
+      ...translated,
+      responseValueImageBytes: shouldBindExpectedRefs
+        ? encodeCanonicalValueImage({
+            boundaryValueFingerprint: expectedValue,
+            codecSchemaDescriptorFingerprint: expectedSchema,
+            bytes: payload,
+            dynamicSize: true,
+          })
+        : translated.responseValueImageBytes,
     }),
     diagnostics: {
       ...result.diagnostics,
-      agentRuntimeResponseBoundToExpectedRefs: true,
+      ...(shouldBindExpectedRefs ? { agentRuntimeResponseBoundToExpectedRefs: true } : {}),
+      ...(translated === resolution ? {} : { agentRuntimeTranslatedResponseStatus: 'not_found' }),
     },
+  };
+}
+
+function translateAgentRuntimeResolution(resolution) {
+  if (resolution.status !== 1) return resolution;
+  return {
+    ...resolution,
+    status: 0,
+    responseValueImageBytes: encodeCanonicalValueImage({
+      bytes: fromUtf8(stableJson({ status: 'not_found' })),
+      dynamicSize: true,
+    }),
   };
 }
 
