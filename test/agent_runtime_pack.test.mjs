@@ -86,6 +86,7 @@ describe('Agent Runtime pack', () => {
         packageVersion: '0.0.0-carrier-v0',
         carrierManifestFingerprint: carrierManifestFingerprint(),
       },
+      requiredActuatorRefs: ['world:actuator-ref:4f0c7160f25c4c62', 'world:actuator-ref:d5e4b1b427522cf2'],
       requiredDescriptorFingerprints: ['descriptor:fixture-agent-model', 'descriptor:sandbox-file'],
       requiredHostAuthorityLabels: ['model:fixture-agent', 'file:sandbox'],
       conformanceCorpusFingerprint: 'agent-runtime:corpus',
@@ -94,7 +95,7 @@ describe('Agent Runtime pack', () => {
     assert.throws(() => assertAgentRuntimeManifest({ ...manifest, agentRuntimeVersion: 'v0.2' }), /ERR_AGENT_RUNTIME_MANIFEST_FINGERPRINT/);
   });
 
-  it('canonicalizes owner-exported actuator refs in the manifest', () => {
+  it('accepts owner-exported actuator fingerprint refs in the manifest', () => {
     const manifest = buildAgentRuntimeManifest({
       agentRuntimeVersion: 'v0.1',
       boundary: {
@@ -119,14 +120,14 @@ describe('Agent Runtime pack', () => {
         packageVersion: '0.0.0-carrier-v0',
         carrierManifestFingerprint: carrierManifestFingerprint(),
       },
-      requiredActuatorRefs: ['sandbox:file', 'fixture:agent-model'],
+      requiredActuatorRefs: ['world:actuator-ref:4f0c7160f25c4c62', 'world:actuator-ref:d5e4b1b427522cf2'],
       requiredDescriptorFingerprints: ['descriptor:fixture-agent-model', 'descriptor:sandbox-file'],
       requiredHostAuthorityLabels: ['model:fixture-agent', 'file:sandbox'],
       conformanceCorpusFingerprint: 'agent-runtime:corpus',
       releaseReceiptFingerprint: 'agent-runtime:receipt',
     });
 
-    assert.deepEqual(manifest.requiredActuatorRefs, ['fixture:agent-model', 'sandbox:file']);
+    assert.deepEqual(manifest.requiredActuatorRefs, ['world:actuator-ref:4f0c7160f25c4c62', 'world:actuator-ref:d5e4b1b427522cf2']);
   });
 });
 

@@ -16,10 +16,10 @@ import { carrierVersionSummary } from '../../src/protocol/world_manifest.mjs';
 import { DirectoryStore } from '../../src/stores/directory_store.mjs';
 import { MemoryStore } from '../../src/stores/memory_store.mjs';
 
-const MODEL_ACTUATOR = 'fixture:agent-model';
-const MODEL_DESCRIPTOR = 'descriptor:fixture-agent-model';
-const FILE_ACTUATOR = 'sandbox:file';
-const FILE_DESCRIPTOR = 'descriptor:sandbox-file';
+const MODEL_ACTUATOR = 'world:actuator-ref:4f0c7160f25c4c62';
+const MODEL_DESCRIPTOR = 'world:descriptor:be73177924a6b377';
+const FILE_ACTUATOR = 'world:actuator-ref:d5e4b1b427522cf2';
+const FILE_DESCRIPTOR = 'world:descriptor:74afc8c3b2fe4c33';
 const WORLD_AGENT_PROOF = 'zig build dist-world-agent-v0 --summary all';
 const EXPECTED_FIXTURE_INPUT = 'rewrite this file through the agent loop\n';
 const EXPECTED_FIXTURE_OUTPUT = 'actuate updated the fixture';
@@ -29,7 +29,7 @@ const EXPECTED_SKELETON_RESULT = 'final=actuate skeleton complete';
 export async function runSkeletonExample() {
   const store = new MemoryStore();
   const installed = await installAgentRun(store, { runId: 'agent-skeleton-run', scenario: 'skeleton', branchId: 'main' });
-  const model = new FixtureAgentModelDriver({ scenario: 'skeleton' });
+  const model = agentModelDriver('skeleton');
   const journal = journalFor(store, installed);
 
   const first = await journal.resolve({}, modelRequest('model-1', 'goal=invoke'), model);
@@ -120,7 +120,7 @@ export async function runReplayExample() {
   const fixture = await runFixtureInMemory();
   try {
     const replayStore = fixture.store;
-    const replayModel = new FixtureAgentModelDriver({ scenario: 'fixture' });
+    const replayModel = agentModelDriver('fixture');
     const { driver: replayFileDriver, counters: replayFileCounters } = countingSandboxDriver(fixture.sandboxRoot);
     const replayJournal = journalFor(replayStore, fixture.installed, { allowBestEffort: true });
     const replayResolutions = [
@@ -206,7 +206,7 @@ export async function runMigrationExample() {
     await writeFile(path.join(receiverSandboxRoot, 'output.txt'), '');
     const source = new MemoryStore();
     const installed = await installAgentRun(source, { runId: 'agent-migration-run', scenario: 'fixture', branchId: 'main' });
-    const model = new FixtureAgentModelDriver({ scenario: 'fixture' });
+    const model = agentModelDriver('fixture');
     const { driver: sourceFileDriver } = countingSandboxDriver(sourceSandboxRoot);
     const journal = journalFor(source, installed, { allowBestEffort: true });
     const first = await journal.resolve({}, modelRequest('model-1', 'goal=fixture'), model);
@@ -222,8 +222,8 @@ export async function runMigrationExample() {
     const exported = await exportCarrierRun(source, installed.run.runId, installed.branchId);
     const receiver = new MemoryStore();
     const receiverDrivers = [
-      new FixtureAgentModelDriver({ scenario: 'fixture' }),
-      new SandboxFileDriver({ root: receiverSandboxRoot }),
+      agentModelDriver('fixture'),
+      agentFileDriver(receiverSandboxRoot),
     ];
     let preflightReport = null;
     const imported = await importCarrierRun(receiver, exported, {
@@ -363,7 +363,7 @@ export async function runNegativeExamples() {
     const store = new MemoryStore();
     const installed = await installAgentRun(store, { runId: 'agent-negative-duplicate', scenario: 'skeleton', branchId: 'main' });
     const journal = journalFor(store, installed);
-    const model = new FixtureAgentModelDriver({ scenario: 'skeleton' });
+    const model = agentModelDriver('skeleton');
     await journal.resolve({}, modelRequest('model-1', 'goal=invoke'), model);
     await journal.resolve({}, modelRequest('model-1', 'actuate'), model);
   }, 'ERR_EFFECT_IDEMPOTENCY_CONFLICT');
@@ -371,13 +371,13 @@ export async function runNegativeExamples() {
   const missingModelDriver = await rejects(async () => {
     const store = new MemoryStore();
     const installed = await installAgentRun(store, { runId: 'agent-negative-missing-model', scenario: 'skeleton', branchId: 'main' });
-    await journalFor(store, installed).resolve({}, modelRequest('model-1', 'goal=invoke'), new SandboxFileDriver({ root: tmpdir() }));
+    await journalFor(store, installed).resolve({}, modelRequest('model-1', 'goal=invoke'), agentFileDriver(tmpdir()));
   }, 'ERR_ACTUATOR_REF_NOT_SUPPORTED');
 
   const missingFileDriver = await rejects(async () => {
     const store = new MemoryStore();
     const installed = await installAgentRun(store, { runId: 'agent-negative-missing-file', scenario: 'fixture', branchId: 'main' });
-    await journalFor(store, installed, { allowBestEffort: true }).resolve({}, fileRequest('read-input', { operation: 'read', path: 'input.txt' }), new FixtureAgentModelDriver({ scenario: 'fixture' }));
+    await journalFor(store, installed, { allowBestEffort: true }).resolve({}, fileRequest('read-input', { operation: 'read', path: 'input.txt' }), agentModelDriver('fixture'));
   }, 'ERR_ACTUATOR_REF_NOT_SUPPORTED');
 
   const staleResolutionInputRejected = await rejects(async () => {
@@ -389,7 +389,7 @@ export async function runNegativeExamples() {
   const wrongResponseSchema = await rejects(async () => {
     const store = new MemoryStore();
     const installed = await installAgentRun(store, { runId: 'agent-negative-schema', scenario: 'skeleton', branchId: 'main' });
-    const model = new FixtureAgentModelDriver({ scenario: 'skeleton' });
+    const model = agentModelDriver('skeleton');
     await journalFor(store, installed).resolve({}, { ...modelRequest('model-1', 'goal=invoke'), responseSchema: { status: 'streaming' } }, model);
   }, 'ERR_RESPONSE_STATUS_NOT_SUPPORTED');
 
@@ -424,7 +424,7 @@ async function runFixtureInMemory() {
 }
 
 async function driveFixtureToCompletion(store, installed, sandboxRoot) {
-  const model = new FixtureAgentModelDriver({ scenario: 'fixture' });
+  const model = agentModelDriver('fixture');
   const { driver: fileDriver, counters } = countingSandboxDriver(sandboxRoot);
   const journal = journalFor(store, installed, { allowBestEffort: true });
   const modelRead = await journal.resolve({}, modelRequest('model-1', 'goal=fixture'), model);
@@ -546,6 +546,22 @@ function journalFor(store, installed, policy = {}) {
   });
 }
 
+function agentModelDriver(scenario) {
+  return new FixtureAgentModelDriver({
+    scenario,
+    actuatorRef: MODEL_ACTUATOR,
+    descriptorFingerprint: MODEL_DESCRIPTOR,
+  });
+}
+
+function agentFileDriver(root) {
+  return new SandboxFileDriver({
+    root,
+    actuatorRef: FILE_ACTUATOR,
+    descriptorFingerprint: FILE_DESCRIPTOR,
+  });
+}
+
 async function commitEffects(journal, records) {
   for (const record of records) {
     await journal.markClosureCommitted(await journal.markSubmitted(record));
@@ -615,7 +631,7 @@ function fileRequest(key, request) {
 }
 
 function countingSandboxDriver(root) {
-  const delegate = new SandboxFileDriver({ root });
+  const delegate = agentFileDriver(root);
   const counters = { calls: 0, readCalls: 0, writeCalls: 0 };
   return {
     counters,
@@ -638,7 +654,7 @@ function countingSandboxDriver(root) {
 }
 
 function wrongTargetDriver() {
-  const delegate = new FixtureAgentModelDriver({ scenario: 'skeleton' });
+  const delegate = agentModelDriver('skeleton');
   return {
     manifest() {
       return delegate.manifest();
@@ -661,7 +677,7 @@ function wrongTargetDriver() {
 async function sandboxRejects(request, code) {
   const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-negative-'));
   try {
-    const driver = new SandboxFileDriver({ root });
+    const driver = agentFileDriver(root);
     await driver.resolve({}, fileRequest('negative-file', request));
     return false;
   } catch (error) {

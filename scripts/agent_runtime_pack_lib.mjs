@@ -125,6 +125,7 @@ export async function buildAgentRuntimePack(options = {}) {
         boundaryHead: boundary.gitHead,
         worldHead: world.gitHead,
         worldHostHead: host.gitHead,
+        worldHostDirty: host.gitDirty,
       },
     },
   });
@@ -264,6 +265,10 @@ export async function assertAgentRuntimeReleaseReceipt(pack, actual) {
   return actual;
 }
 
+export async function refreshAgentRuntimePackChecksums(pack) {
+  await writeChecksums(path.resolve(pack));
+}
+
 async function boundaryArtifacts(boundaryRepo) {
   const zon = await readFile(path.join(boundaryRepo, 'build.zig.zon'), 'utf8');
   const version = zon.match(/\.version\s*=\s*"([^"]+)"/)?.[1] ?? '0.6.2';
@@ -311,7 +316,7 @@ async function worldArtifacts(worldRepo, worldDist) {
     applianceAbiVersion: `v${agentRuntimeMetadata.world_appliance_abi_version ?? releaseArtifact.wasm?.abi_version ?? 4}`,
     turnClosureFormatVersion: `v${agentRuntimeMetadata.world_turn_closure_format_version ?? 1}`,
     archiveFormatVersion: `v${agentRuntimeMetadata.world_archive_format_version ?? 1}`,
-    requiredActuatorRefs: exactArray(agentRuntimeMetadata.required_actuator_refs, 'world required actuator refs'),
+    requiredActuatorRefs: exactArray(agentRuntimeMetadata.required_actuator_ref_fingerprints, 'world required actuator ref fingerprints').map(worldActuatorRef),
     requiredDescriptorFingerprints: exactArray(agentRuntimeMetadata.required_descriptor_fingerprints, 'world required descriptor fingerprints'),
     gitHead: gitHead(worldRepo),
     files: { protocolManifest, releaseReceipt, wasm, corpus, image, applianceManifest, agentRuntimeMetadata },
@@ -331,6 +336,7 @@ async function worldHostArtifacts(worldHostRepo) {
     packageVersion: packageJson.version,
     carrierManifestFingerprint: carrierManifestFingerprint(carrierManifest),
     gitHead: gitHead(worldHostRepo),
+    gitDirty: gitDirty(worldHostRepo),
     artifacts: {
       codecs: { dependencyFree: true },
       carrierManifest: { exportedByOwner: true },
@@ -463,6 +469,7 @@ async function verifyManifestArtifacts(root, manifest) {
   assertEqual(manifest.boundary.toolboxModuleFingerprint, requireOwnerFingerprint(boundaryProfile.toolbox_module_fingerprint, 'boundary toolbox module'), 'ERR_AGENT_RUNTIME_BOUNDARY_TOOLBOX_FINGERPRINT');
   assertEqual(manifest.world.executableImageFingerprint, requireOwnerFingerprint(worldMetadata.world_executable_image_fingerprint, 'world executable image'), 'ERR_AGENT_RUNTIME_WORLD_IMAGE_FINGERPRINT');
   assertEqual(manifest.world.applianceManifestFingerprint, requireOwnerFingerprint(worldMetadata.world_appliance_manifest_fingerprint, 'world appliance manifest'), 'ERR_AGENT_RUNTIME_WORLD_APPLIANCE_FINGERPRINT');
+  assertEqual(stableJson(manifest.requiredActuatorRefs), stableJson(exactArray(worldMetadata.required_actuator_ref_fingerprints, 'world required actuator ref fingerprints').map(worldActuatorRef)), 'ERR_AGENT_RUNTIME_ACTUATOR_REFS');
   assertEqual(stableJson(manifest.requiredDescriptorFingerprints), stableJson(exactArray(worldMetadata.required_descriptor_fingerprints, 'world required descriptor fingerprints')), 'ERR_AGENT_RUNTIME_DESCRIPTOR_FINGERPRINTS');
   assertEqual(manifest.worldHost.carrierManifestFingerprint, carrierManifestFingerprint(carrier), 'ERR_AGENT_RUNTIME_CARRIER_MANIFEST_FINGERPRINT');
   assertEqual(manifest.conformanceCorpusFingerprint, conformanceCorpusFingerprint, 'ERR_AGENT_RUNTIME_CONFORMANCE_CORPUS_FINGERPRINT');
@@ -564,6 +571,11 @@ function gitHead(repo) {
   return result.status === 0 ? result.stdout.trim() : 'unknown';
 }
 
+function gitDirty(repo) {
+  const result = spawnSync('git', ['status', '--porcelain'], { cwd: repo, encoding: 'utf8' });
+  return result.status === 0 ? result.stdout.trim().length > 0 : true;
+}
+
 async function requireFile(file) {
   if (!existsSync(file)) throw new Error(`missing required file: ${file}`);
 }
@@ -583,6 +595,11 @@ function exactArray(value, label) {
     throw new Error(`invalid array: ${label}`);
   }
   return value;
+}
+
+function worldActuatorRef(value) {
+  const hex = requireOwnerFingerprint(value, 'world actuator ref fingerprint').slice('0x'.length).padStart(16, '0');
+  return `world:actuator-ref:${hex}`;
 }
 
 function worldProtocolFingerprint(releaseArtifact) {

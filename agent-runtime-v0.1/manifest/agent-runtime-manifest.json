@@ -29,8 +29,8 @@
     "sandbox:file"
   ],
   "requiredActuatorRefs": [
-    "fixture:agent-model",
-    "sandbox:file"
+    "world:actuator-ref:4f0c7160f25c4c62",
+    "world:actuator-ref:d5e4b1b427522cf2"
   ],
   "requiredDescriptorFingerprints": [
     "0xbe73177924a6b377",
@@ -109,8 +109,9 @@
     "buildDiagnostics": {
       "boundaryHead": "8c65d2b74262acc7134fcbbcccea488649d6ae33",
       "worldHead": "ed5503e4bcb063b4112156b9c212ce884ad5dbb0",
-      "worldHostHead": "1b6808fb98f420bce82d890f60f108d351c35f3c"
+      "worldHostHead": "99bfbef85c8114b3f985396d50fd57c9628e7328",
+      "worldHostDirty": true
     }
   },
-  "manifestFingerprint": "agent-runtime:b393ccac08d385bc40450f780ddb917f"
+  "manifestFingerprint": "agent-runtime:aee5df979d26099bf6c8a366cc75116f"
 }

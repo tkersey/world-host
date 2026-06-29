@@ -3,7 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { checkAgentRuntimePack, defaultPackPath, emitReleaseReceipt, parseCommonArgs } from './agent_runtime_pack_lib.mjs';
+import { checkAgentRuntimePack, defaultPackPath, emitReleaseReceipt, parseCommonArgs, refreshAgentRuntimePackChecksums } from './agent_runtime_pack_lib.mjs';
 
 export async function runAgentRuntimeConformance(pack) {
   const checked = await checkAgentRuntimePack(pack);
@@ -83,6 +83,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const releaseReceiptOut = options.releaseReceiptOut ?? path.join(pack, 'manifest/agent-runtime-release-receipt.json');
   if (options.receiptOut) await writeFile(options.receiptOut, `${JSON.stringify(receipt, null, 2)}\n`);
   await writeFile(releaseReceiptOut, `${JSON.stringify(releaseReceipt, null, 2)}\n`);
+  if (isInsidePath(releaseReceiptOut, pack)) await refreshAgentRuntimePackChecksums(pack);
   console.log('agent_runtime_conformance=true');
   console.log('skeleton_completed=true');
   console.log('fixture_completed=true');
@@ -93,6 +94,12 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   console.log('negative_cases_rejected=true');
   console.log('world_evidence_validated=true');
   console.log('host_did_not_author_receipts=true');
+}
+
+function isInsidePath(candidate, root) {
+  const resolvedRoot = path.resolve(root);
+  const resolvedCandidate = path.resolve(candidate);
+  return resolvedCandidate === resolvedRoot || resolvedCandidate.startsWith(`${resolvedRoot}${path.sep}`);
 }
 
 async function loadDistributedImage({ BunWorldWorker, wasmBytes, imageBytes, expectedManifestBytes, expectedManifestFingerprint }) {

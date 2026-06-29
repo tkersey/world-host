@@ -9,13 +9,15 @@ import { encodeResolutionInputBytes } from '../protocol/world_appliance_wire_cod
 import { encodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
 
 export class SandboxFileDriver {
-  constructor({ root, allowAbsolute = false, symlinkPolicy = 'reject', maximumReadBytes = DEFAULT_MAXIMUM_READ_BYTES, maximumWriteBytes = 1024 * 1024 } = {}) {
+  constructor({ root, allowAbsolute = false, symlinkPolicy = 'reject', maximumReadBytes = DEFAULT_MAXIMUM_READ_BYTES, maximumWriteBytes = 1024 * 1024, actuatorRef = 'sandbox:file', descriptorFingerprint = 'descriptor:sandbox-file' } = {}) {
     if (!root) fail('ERR_SANDBOX_ROOT_REQUIRED');
     this.root = path.resolve(root);
     this.allowAbsolute = allowAbsolute;
     this.symlinkPolicy = symlinkPolicy;
     this.maximumReadBytes = maximumReadBytes;
     this.maximumWriteBytes = maximumWriteBytes;
+    this.actuatorRef = actuatorRef;
+    this.descriptorFingerprint = descriptorFingerprint;
     this.writeOutcomes = new Map();
     this.canonicalRoot = null;
   }
@@ -23,8 +25,8 @@ export class SandboxFileDriver {
   manifest() {
     return {
       driverId: 'sandbox-file',
-      supportedActuatorRefs: ['sandbox:file'],
-      supportedDescriptorFingerprints: ['descriptor:sandbox-file'],
+      supportedActuatorRefs: [this.actuatorRef],
+      supportedDescriptorFingerprints: [this.descriptorFingerprint],
       supportedActuationClasses: ['file'],
       supportedResponseStatuses: ['ok', 'not_found'],
       maximumRequestBytes: encodedJsonStringEnvelopeLimit(this.maximumWriteBytes, 4096),

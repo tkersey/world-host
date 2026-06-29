@@ -23,11 +23,6 @@ const REQUIRED_DRIVER_IDS = Object.freeze([
   'sandbox:file',
 ]);
 
-const REQUIRED_ACTUATOR_REFS = Object.freeze([
-  'fixture:agent-model',
-  'sandbox:file',
-]);
-
 export function sha256Hex(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
@@ -69,7 +64,7 @@ export function buildAgentRuntimeManifest(input) {
       carrierManifestFingerprint: requiredString(input.worldHost?.carrierManifestFingerprint, 'worldHost.carrierManifestFingerprint'),
     },
     requiredDriverIds: exactStringList(input.requiredDriverIds ?? REQUIRED_DRIVER_IDS, REQUIRED_DRIVER_IDS, 'requiredDriverIds'),
-    requiredActuatorRefs: canonicalExactStringList(input.requiredActuatorRefs ?? REQUIRED_ACTUATOR_REFS, REQUIRED_ACTUATOR_REFS, 'requiredActuatorRefs'),
+    requiredActuatorRefs: worldActuatorRefList(input.requiredActuatorRefs, 'requiredActuatorRefs'),
     requiredDescriptorFingerprints: nonemptyStringList(input.requiredDescriptorFingerprints, 'requiredDescriptorFingerprints'),
     requiredHostAuthorityLabels: nonemptyStringList(input.requiredHostAuthorityLabels, 'requiredHostAuthorityLabels'),
     supportedExampleScenarios: exactStringList(input.supportedExampleScenarios ?? REQUIRED_SCENARIOS, REQUIRED_SCENARIOS, 'supportedExampleScenarios'),
@@ -92,7 +87,7 @@ export function assertAgentRuntimeManifest(manifest) {
   requiredString(manifest.world?.packageVersion, 'world.packageVersion');
   requiredSha256(manifest.world?.universalWasmSha256, 'world.universalWasmSha256');
   exactStringList(manifest.requiredDriverIds, REQUIRED_DRIVER_IDS, 'requiredDriverIds');
-  exactStringList(manifest.requiredActuatorRefs, REQUIRED_ACTUATOR_REFS, 'requiredActuatorRefs');
+  worldActuatorRefList(manifest.requiredActuatorRefs, 'requiredActuatorRefs');
   exactStringList(manifest.supportedExampleScenarios, REQUIRED_SCENARIOS, 'supportedExampleScenarios');
   return manifest;
 }
@@ -137,11 +132,10 @@ function exactStringList(value, expected, label) {
   return Object.freeze([...value]);
 }
 
-function canonicalExactStringList(value, expected, label) {
+function worldActuatorRefList(value, label) {
   const list = nonemptyStringList(value, label);
-  const seen = new Set(list);
-  if (seen.size !== expected.length || expected.some((item) => !seen.has(item))) {
+  if (list.some((item) => !/^world:actuator-ref:[0-9a-f]{16}$/i.test(item))) {
     throw new Error(`ERR_UNEXPECTED_LIST_${label}`);
   }
-  return Object.freeze([...expected]);
+  return Object.freeze([...list]);
 }
