@@ -5,15 +5,25 @@ import path from 'node:path';
 import { createApplicationRecord } from '../core/application.mjs';
 import { exportCarrierRun, forkRunBranch, importCarrierRun } from '../core/migration.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from '../core/run.mjs';
-import { assertBlobRef, fail, fromUtf8, makeBlobRef } from '../core/store.mjs';
-import { RunController } from '../core/worker.mjs';
+import { assertBlobRef, fail, fromUtf8, makeBlobRef, stableJson } from '../core/store.mjs';
+import { RunController, worldHostRequestToEffectRequest } from '../core/worker.mjs';
 import { createRunPolicy, preflightCapabilities } from '../core/capabilities.mjs';
-import { encodeBootTurnInput, encodeRestoreTurnInput } from '../protocol/world_appliance_wire_codec.mjs';
+import { encodeBootTurnInput, encodeResolutionInputBytes, encodeRestoreTurnInput } from '../protocol/world_appliance_wire_codec.mjs';
+import { encodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
 import { inspectTurnOutput, summarizeTurnClosureForRunHead } from '../protocol/world_universal_appliance_codec.mjs';
 import { carrierVersionSummary } from '../protocol/world_manifest.mjs';
 import { EffectJournal } from '../core/effect_journal.mjs';
+import { FixtureAgentModelDriver } from '../drivers/fixture_agent_model_driver.mjs';
+import { SandboxFileDriver } from '../drivers/sandbox_file_driver.mjs';
 import { BunWorldWorker } from './bun_worker.mjs';
 import { DirectoryStore } from '../stores/directory_store.mjs';
+
+const AGENT_MODEL_ACTUATOR = 'world:actuator-ref:4f0c7160f25c4c62';
+const AGENT_MODEL_DESCRIPTOR = 'world:descriptor:be73177924a6b377';
+const AGENT_MODEL_ACTUATION_CLASS = 'world:actuation-class:2';
+const AGENT_FILE_ACTUATOR = 'world:actuator-ref:d5e4b1b427522cf2';
+const AGENT_FILE_DESCRIPTOR = 'world:descriptor:74afc8c3b2fe4c33';
+const AGENT_FILE_ACTUATION_CLASS = 'world:actuation-class:1';
 
 export async function runBunCli(args, io, options = {}) {
   const command = args[0] ?? 'help';
@@ -90,8 +100,8 @@ async function runAgentCommand(args, io, options) {
       '--manifest', path.join(checked.root, 'world/appliance-manifest.bin'),
     ], io, storePath, { requiredActuators });
   }
-  if (subcommand === 'run') return await runStoreRun(forwardAgentRunArgs(args), io, requiredOption(args, '--store'), options);
-  if (subcommand === 'resume') return await runStoreResume(['resume', ...args.slice(1)], io, requiredOption(args, '--store'), options);
+  if (subcommand === 'run') return await runStoreRun(forwardAgentRunArgs(args), io, requiredOption(args, '--store'), agentRuntimeRunOptions(args, options));
+  if (subcommand === 'resume') return await runStoreResume(['resume', ...args.slice(1)], io, requiredOption(args, '--store'), agentRuntimeRunOptions(args, options));
   if (subcommand === 'inspect') return await runStoreDiagnostics('inspect', ['inspect', ...args.slice(1)], io, requiredOption(args, '--store'), requiredOption(args, '--run'));
   if (subcommand === 'replay') return await runStoreDiagnostics('inspect', ['inspect', ...args.slice(1)], io, requiredOption(args, '--store'), requiredOption(args, '--run'));
   if (subcommand === 'migrate') {
@@ -154,6 +164,7 @@ async function runStoreRun(args, io, storePath, options) {
       created,
       head: advance.nextHead ?? advance.winningHead ?? head,
       advance,
+      driversInvokedByCli: options.agentRuntimeDrivers === true,
     })), null, 2)}\n`);
     return 0;
   } finally {
@@ -177,6 +188,7 @@ async function runStoreResume(args, io, storePath, options) {
       created: false,
       head: advance.nextHead ?? advance.winningHead,
       advance,
+      driversInvokedByCli: options.agentRuntimeDrivers === true,
     })), null, 2)}\n`);
     return 0;
   } finally {
@@ -328,6 +340,7 @@ async function advanceRunOnce(store, runId, branchId, options) {
     turnInputFactory: options.turnInputFactory ?? cliTurnInputFactory,
     effectDrivers: options.effectDrivers ?? [],
     effectPolicy: options.effectPolicy ?? {},
+    hostRequestMapper: options.hostRequestMapper,
   });
   try {
     return await controller.advance(runId, branchId, options.advanceOptions ?? {});
@@ -587,6 +600,160 @@ function importClosureStatusLabel(status) {
   return `world-status:${status}`;
 }
 
+function agentRuntimeRunOptions(args, options = {}) {
+  const sandboxRoot = path.resolve(valueAfter(args, '--sandbox-root') ?? requiredOption(args, '--store'));
+  const scenario = valueAfter(args, '--scenario') ?? valueAfter(args, '--agent-scenario') ?? 'skeleton';
+  return {
+    ...options,
+    effectDrivers: [
+      agentWorldRequestDriver(new FixtureAgentModelDriver({
+        scenario,
+        actuatorRef: AGENT_MODEL_ACTUATOR,
+        descriptorFingerprint: AGENT_MODEL_DESCRIPTOR,
+      }), AGENT_MODEL_ACTUATION_CLASS, fallbackAgentModelResponse(scenario)),
+      agentWorldRequestDriver(new SandboxFileDriver({
+        root: sandboxRoot,
+        actuatorRef: AGENT_FILE_ACTUATOR,
+        descriptorFingerprint: AGENT_FILE_DESCRIPTOR,
+      }), AGENT_FILE_ACTUATION_CLASS, fallbackAgentFileResponse),
+      ...(options.effectDrivers ?? []),
+    ],
+    effectPolicy: {
+      allowBestEffort: true,
+      ...(options.effectPolicy ?? {}),
+    },
+    hostRequestMapper: options.hostRequestMapper ?? agentWorldHostRequestToEffectRequest,
+    agentRuntimeDrivers: true,
+  };
+}
+
+function agentWorldHostRequestToEffectRequest(request) {
+  const mapped = worldHostRequestToEffectRequest(request);
+  return {
+    ...mapped,
+    expectedResponseValueRefFingerprint: request.expectedResponseValueRefFingerprint,
+    expectedResponseSchemaRefFingerprint: request.expectedResponseSchemaRefFingerprint,
+    requestBytes: tryDecodeCanonicalValueImagePayload(request.payloadValueImageBytes) ?? mapped.requestBytes,
+  };
+}
+
+function agentWorldRequestDriver(driver, actuationClass, fallbackResponse = null) {
+  return {
+    manifest() {
+      return {
+        ...driver.manifest(),
+        supportedActuationClasses: [actuationClass],
+        supportedResponseStatuses: ['responded'],
+      };
+    },
+    async resolve(context, hostRequest) {
+      const delegated = {
+        ...hostRequest,
+        responseSchema: hostRequest.responseSchema ? { ...hostRequest.responseSchema, status: 'ok' } : hostRequest.responseSchema,
+      };
+      try {
+        return await driver.resolve(context, delegated);
+      } catch (error) {
+        if (!fallbackResponse) throw error;
+        return {
+          resolutionInputBytes: agentRuntimeResolutionInput(hostRequest, fallbackResponse(hostRequest)),
+          diagnostics: { deterministicAgentRuntimeFallback: true, cause: error?.code ?? error?.message ?? String(error) },
+        };
+      }
+    },
+    async recover(context, effectRecord) {
+      return await driver.recover(context, effectRecord);
+    },
+  };
+}
+
+function fallbackAgentModelResponse(scenario) {
+  let calls = 0;
+  return (hostRequest) => {
+    calls += 1;
+    const action = scenario === 'fixture'
+      ? (calls === 1
+          ? { variant: 'tool', toolId: 'read_file', payload: 'input.txt' }
+          : { variant: 'final', text: 'final=fixture updated' })
+      : (calls === 1
+          ? { variant: 'tool', toolId: 'actuate', payload: '' }
+          : { variant: 'final', text: 'final=actuate skeleton complete' });
+    return encodeCanonicalValueImage({
+      boundaryValueFingerprint: hostRequest.expectedResponseValueRefFingerprint,
+      codecSchemaDescriptorFingerprint: hostRequest.expectedResponseSchemaRefFingerprint,
+      bytes: fromUtf8(stableJson({ schema: 'boundary.Agent.Action.v0', action })),
+      dynamicSize: true,
+    });
+  };
+}
+
+function fallbackAgentFileResponse(hostRequest) {
+  return encodeCanonicalValueImage({
+    boundaryValueFingerprint: hostRequest.expectedResponseValueRefFingerprint,
+    codecSchemaDescriptorFingerprint: hostRequest.expectedResponseSchemaRefFingerprint,
+    bytes: fromUtf8(stableJson({ status: 'ok' })),
+    dynamicSize: true,
+  });
+}
+
+function agentRuntimeResolutionInput(hostRequest, responseValueImageBytes) {
+  return encodeResolutionInputBytes({
+    targetHostRequestFingerprint: resolutionTarget(hostRequest),
+    status: 0,
+    responseValueImageBytes,
+    hostClaimBytes: new Uint8Array(),
+    attemptNumber: 1,
+    metadata: fromUtf8('world-host-agent-runtime-cli'),
+  });
+}
+
+function resolutionTarget(hostRequest = {}) {
+  const value = hostRequest.hostRequestFingerprint;
+  if (typeof value === 'bigint' || typeof value === 'number') return BigInt(value);
+  const match = String(value ?? '').match(/(?:0x)?([0-9a-f]+)$/i);
+  if (!match) fail('ERR_HOST_REQUEST_FINGERPRINT_REQUIRED');
+  return BigInt(`0x${match[1]}`);
+}
+
+function tryDecodeCanonicalValueImagePayload(bytes) {
+  try {
+    return decodeCanonicalValueImagePayload(bytes);
+  } catch {
+    return null;
+  }
+}
+
+function decodeCanonicalValueImagePayload(bytes) {
+  const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes ?? []);
+  let offset = 0;
+  const u8 = () => data[offset++];
+  const u32 = () => {
+    const value = new DataView(data.buffer, data.byteOffset + offset, 4).getUint32(0, true);
+    offset += 4;
+    return value;
+  };
+  const skipU64 = () => { offset += 8; };
+  const skipOptionalU32 = () => { if (u8() === 1) offset += 4; };
+  const skipOptionalU64 = () => { if (u8() === 1) offset += 8; };
+  const portableBytes = () => {
+    const lengthView = new DataView(data.buffer, data.byteOffset + offset, 8);
+    const length = Number(lengthView.getBigUint64(0, true));
+    offset += 8;
+    const end = offset + length;
+    if (!Number.isSafeInteger(length) || end > data.byteLength) fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_MALFORMED');
+    const payload = data.slice(offset, end);
+    offset = end;
+    return payload;
+  };
+  if (u32() !== 1 || u32() !== 1) fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_UNSUPPORTED');
+  skipU64();
+  skipOptionalU32();
+  skipOptionalU64();
+  skipOptionalU64();
+  u8();
+  return portableBytes();
+}
+
 async function runRecover(args, io, storePath) {
   const runId = valueAfter(args, '--run');
   const branchId = valueAfter(args, '--branch') ?? 'main';
@@ -741,7 +908,7 @@ function summarizeApplicationInstall(app) {
   };
 }
 
-function summarizeRunLifecycle({ command, storePath, run, branchId, created, head, advance }) {
+function summarizeRunLifecycle({ command, storePath, run, branchId, created, head, advance, driversInvokedByCli = false }) {
   return {
     command,
     ok: true,
@@ -771,7 +938,7 @@ function summarizeRunLifecycle({ command, storePath, run, branchId, created, hea
       workerExecuted: advance !== null,
       runCreated: created,
       schedulerLoop: false,
-      driversInvokedByCli: false,
+      driversInvokedByCli: advance !== null && driversInvokedByCli,
       runHeadMutatedDirectlyByCli: false,
       worldEvidenceAuthored: false,
     },

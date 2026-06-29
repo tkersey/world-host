@@ -18,10 +18,10 @@ import { MemoryStore } from '../../src/stores/memory_store.mjs';
 
 const MODEL_ACTUATOR = 'world:actuator-ref:4f0c7160f25c4c62';
 const MODEL_DESCRIPTOR = 'world:descriptor:be73177924a6b377';
-const MODEL_ACTUATION_CLASS = 'world:actuation-class:1';
+const MODEL_ACTUATION_CLASS = 'world:actuation-class:2';
 const FILE_ACTUATOR = 'world:actuator-ref:d5e4b1b427522cf2';
 const FILE_DESCRIPTOR = 'world:descriptor:74afc8c3b2fe4c33';
-const FILE_ACTUATION_CLASS = 'world:actuation-class:0';
+const FILE_ACTUATION_CLASS = 'world:actuation-class:1';
 const WORLD_AGENT_PROOF = 'zig build dist-world-agent-v0 --summary all';
 const EXPECTED_FIXTURE_INPUT = 'rewrite this file through the agent loop\n';
 const EXPECTED_FIXTURE_OUTPUT = 'actuate updated the fixture';

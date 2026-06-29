@@ -849,6 +849,57 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('runs and resumes installed agent packs with bundled runtime drivers', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-cli-run-resume-'));
+    try {
+      await runBunCli([
+        'agent',
+        'install',
+        '--pack', path.resolve('agent-runtime-v0.1'),
+        '--store', root,
+        '--app', 'agent-runtime-v0.1',
+      ], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      });
+
+      let output = '';
+      const runCode = await runBunCli([
+        'agent',
+        'run',
+        '--store', root,
+        'agent-runtime-v0.1',
+        '--run', 'agent-cli-run',
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      });
+      const run = JSON.parse(output);
+
+      output = '';
+      const resumeCode = await runBunCli([
+        'agent',
+        'resume',
+        '--store', root,
+        '--run', 'agent-cli-run',
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      });
+      const resumed = JSON.parse(output);
+
+      assert.equal(runCode, 0);
+      assert.equal(run.head.status, 'needs_host');
+      assert.equal(resumeCode, 0);
+      assert.equal(resumed.head.status, 'completed');
+      assert.equal(resumed.advance.effectCount, 2);
+      assert.equal(resumed.advance.unresolvedHostRequestCount, 0);
+      assert.equal(resumed.diagnostics.driversInvokedByCli, true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('rejects invalid agent packs during CLI install', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-cli-invalid-install-'));
     try {
