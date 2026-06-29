@@ -73,7 +73,16 @@ describe('Agent Runtime pack', () => {
       await refreshAgentRuntimePackChecksums(incompletePack);
       await assert.rejects(
         () => checkAgentRuntimePack(incompletePack),
-        /ERR_AGENT_RUNTIME_PACK_RUNTIME_IMPORT:world-host\/src\/bun\/bun_cli\.mjs:/,
+        /missing required file: .*world-host\/src\/core\/store\.mjs/,
+      );
+
+      const missingConformancePack = path.join(root, 'agent-runtime-v0.1-missing-conformance-script');
+      await cp(pack, missingConformancePack, { recursive: true });
+      await rm(path.join(missingConformancePack, 'world-host/scripts/run-agent-runtime-conformance.mjs'));
+      await refreshAgentRuntimePackChecksums(missingConformancePack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(missingConformancePack),
+        /missing required file: .*world-host\/scripts\/run-agent-runtime-conformance\.mjs/,
       );
     } finally {
       await rm(root, { recursive: true, force: true });

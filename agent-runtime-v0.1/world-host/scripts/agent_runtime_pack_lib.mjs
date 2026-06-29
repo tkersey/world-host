@@ -12,7 +12,6 @@ import {
 } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import { stableJson } from '../src/core/store.mjs';
 import {
@@ -152,14 +151,42 @@ export async function checkAgentRuntimePack(pack) {
     'world/release-receipt.bin',
     'world/agent-runtime-world-artifacts.json',
     'world-host/bin/world-host.mjs',
+    'world-host/docs/agent_runtime.md',
+    'world-host/examples/agent_runtime/README.md',
+    'world-host/examples/agent_runtime/branching/run.mjs',
+    'world-host/examples/agent_runtime/fixture_file_rewrite/run.mjs',
+    'world-host/examples/agent_runtime/migration/run.mjs',
+    'world-host/examples/agent_runtime/replay/run.mjs',
+    'world-host/examples/agent_runtime/retry/run.mjs',
     'world-host/examples/agent_runtime/shared.mjs',
+    'world-host/examples/agent_runtime/skeleton/run.mjs',
     'world-host/package.json',
+    'world-host/scripts/agent_runtime_pack_lib.mjs',
+    'world-host/scripts/build-agent-runtime-pack.mjs',
+    'world-host/scripts/check-agent-runtime-pack.mjs',
+    'world-host/scripts/check-agent-runtime-release-receipt.mjs',
+    'world-host/scripts/emit-agent-runtime-release-receipt.mjs',
+    'world-host/scripts/run-agent-runtime-conformance.mjs',
+    'world-host/src/bun/bun_cli.mjs',
+    'world-host/src/bun/bun_lock.mjs',
     'world-host/src/bun/bun_worker.mjs',
+    'world-host/src/core/actuator.mjs',
+    'world-host/src/core/application.mjs',
+    'world-host/src/core/capabilities.mjs',
+    'world-host/src/core/effect_journal.mjs',
+    'world-host/src/core/migration.mjs',
+    'world-host/src/core/run.mjs',
+    'world-host/src/core/store.mjs',
+    'world-host/src/core/worker.mjs',
     'world-host/src/drivers/fixture_agent_model_driver.mjs',
     'world-host/src/drivers/sandbox_file_driver.mjs',
+    'world-host/src/protocol/world_manifest.mjs',
     'world-host/src/protocol/world_appliance_wire_codec.mjs',
     'world-host/src/protocol/world_loaded_value_codec.mjs',
+    'world-host/src/protocol/world_universal_appliance_codec.mjs',
     'world-host/src/protocol/agent_runtime_manifest.mjs',
+    'world-host/src/stores/directory_store.mjs',
+    'world-host/src/stores/memory_store.mjs',
     'world-host/carrier-manifest.json',
     'conformance/corpus.json',
     'fixtures/input.txt',
@@ -184,25 +211,9 @@ export async function checkAgentRuntimePack(pack) {
   const wasm = await readFile(path.join(root, 'world/world_universal_appliance.wasm'));
   if (manifest.world.universalWasmSha256 !== sha256Hex(wasm)) throw new Error('ERR_AGENT_RUNTIME_WASM_CHECKSUM');
   await verifyManifestArtifacts(root, manifest);
-  await smokeTestWorldHostRuntime(root);
   const corpus = JSON.parse(await readFile(path.join(root, 'conformance/corpus.json'), 'utf8'));
   if (corpus.warnings?.length) throw new Error(`ERR_AGENT_RUNTIME_OWNER_EXPORT_WARNINGS:${corpus.warnings.join(',')}`);
   return { root, manifest, complete: true };
-}
-
-async function smokeTestWorldHostRuntime(root) {
-  for (const rel of [
-    'world-host/src/bun/bun_cli.mjs',
-    'world-host/examples/agent_runtime/shared.mjs',
-    'world-host/scripts/agent_runtime_pack_lib.mjs',
-  ]) {
-    const target = path.join(root, rel);
-    try {
-      await import(`${pathToFileURL(target).href}?pack-smoke=${Date.now()}-${Math.random()}`);
-    } catch (error) {
-      throw new Error(`ERR_AGENT_RUNTIME_PACK_RUNTIME_IMPORT:${rel}:${error.message}`);
-    }
-  }
 }
 
 export async function emitReleaseReceipt(pack, conformance) {
