@@ -1,7 +1,7 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -10,6 +10,7 @@ import {
   buildAgentRuntimePack,
   checkAgentRuntimePack,
   emitReleaseReceipt,
+  refreshAgentRuntimePackChecksums,
 } from '../scripts/agent_runtime_pack_lib.mjs';
 import {
   assertAgentRuntimeManifest,
@@ -65,6 +66,15 @@ describe('Agent Runtime pack', () => {
       assert.deepEqual(corpus.warnings, []);
       assert.equal(checked.manifest.artifacts.boundary.agentRootModule.exportedByOwner, true);
       assert.equal(checked.manifest.artifacts.world.executableImage.exportedByOwner, true);
+
+      const incompletePack = path.join(root, 'agent-runtime-v0.1-missing-runtime');
+      await cp(pack, incompletePack, { recursive: true });
+      await rm(path.join(incompletePack, 'world-host/src/core/store.mjs'));
+      await refreshAgentRuntimePackChecksums(incompletePack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(incompletePack),
+        /ERR_AGENT_RUNTIME_PACK_RUNTIME_IMPORT:world-host\/src\/bun\/bun_cli\.mjs:/,
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }

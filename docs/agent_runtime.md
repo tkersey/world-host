@@ -22,7 +22,6 @@ World-authored evidence.
 bun scripts/build-agent-runtime-pack.mjs
 bun scripts/check-agent-runtime-pack.mjs ./agent-runtime-v0.1
 bun scripts/run-agent-runtime-conformance.mjs ./agent-runtime-v0.1
-bun scripts/emit-agent-runtime-release-receipt.mjs ./agent-runtime-v0.1
 bun scripts/check-agent-runtime-release-receipt.mjs ./agent-runtime-v0.1
 ```
 

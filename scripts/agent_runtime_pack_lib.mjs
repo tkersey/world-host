@@ -12,6 +12,7 @@ import {
 } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { stableJson } from '../src/core/store.mjs';
 import {
@@ -183,9 +184,25 @@ export async function checkAgentRuntimePack(pack) {
   const wasm = await readFile(path.join(root, 'world/world_universal_appliance.wasm'));
   if (manifest.world.universalWasmSha256 !== sha256Hex(wasm)) throw new Error('ERR_AGENT_RUNTIME_WASM_CHECKSUM');
   await verifyManifestArtifacts(root, manifest);
+  await smokeTestWorldHostRuntime(root);
   const corpus = JSON.parse(await readFile(path.join(root, 'conformance/corpus.json'), 'utf8'));
   if (corpus.warnings?.length) throw new Error(`ERR_AGENT_RUNTIME_OWNER_EXPORT_WARNINGS:${corpus.warnings.join(',')}`);
   return { root, manifest, complete: true };
+}
+
+async function smokeTestWorldHostRuntime(root) {
+  for (const rel of [
+    'world-host/src/bun/bun_cli.mjs',
+    'world-host/examples/agent_runtime/shared.mjs',
+    'world-host/scripts/agent_runtime_pack_lib.mjs',
+  ]) {
+    const target = path.join(root, rel);
+    try {
+      await import(`${pathToFileURL(target).href}?pack-smoke=${Date.now()}-${Math.random()}`);
+    } catch (error) {
+      throw new Error(`ERR_AGENT_RUNTIME_PACK_RUNTIME_IMPORT:${rel}:${error.message}`);
+    }
+  }
 }
 
 export async function emitReleaseReceipt(pack, conformance) {
