@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -9,6 +10,7 @@ export async function runAgentRuntimeConformance(pack) {
   const checked = await checkAgentRuntimePack(pack);
   const hostRoot = path.join(checked.root, 'world-host');
   const examples = await import(pathToFileURL(path.join(hostRoot, 'examples/agent_runtime/shared.mjs')));
+  const { runBunCli } = await import(pathToFileURL(path.join(hostRoot, 'src/bun/bun_cli.mjs')));
   const { BunWorldWorker } = await import(pathToFileURL(path.join(hostRoot, 'src/bun/bun_worker.mjs')));
   const wasmBytes = await readFile(path.join(checked.root, 'world/world_universal_appliance.wasm'));
   const imageBytes = await readFile(path.join(checked.root, 'world/agent.executable-image'));
@@ -20,6 +22,8 @@ export async function runAgentRuntimeConformance(pack) {
 
   const skeleton = await examples.runSkeletonExample();
   const fixture = await examples.runFixtureExample();
+  const distributedSkeleton = await runCheckedPackScenario({ checked, runBunCli, scenario: 'skeleton' });
+  const distributedFixture = await runCheckedPackScenario({ checked, runBunCli, scenario: 'fixture' });
   const replay = await examples.runReplayExample();
   const retry = await examples.runRetryExample();
   const migration = await examples.runMigrationExample();
@@ -30,8 +34,8 @@ export async function runAgentRuntimeConformance(pack) {
     receiptFormatVersion: 1,
     agentRuntimeManifestFingerprint: checked.manifest.manifestFingerprint,
     agent_runtime_conformance: true,
-    skeleton_completed: skeleton.completed === true && skeleton.finalResult === 'final=actuate skeleton complete',
-    fixture_completed: fixture.completed === true && fixture.finalResult === 'final=fixture updated' && fixture.outputFileVerified === true,
+    skeleton_completed: skeleton.completed === true && skeleton.finalResult === 'final=actuate skeleton complete' && distributedSkeleton.completed === true,
+    fixture_completed: fixture.completed === true && fixture.finalResult === 'final=fixture updated' && fixture.outputFileVerified === true && distributedFixture.completed === true && distributedFixture.outputFileVerified === true,
     replay_matched: replay.replayCompleted === true && replay.finalResultMatches === true && replay.replayFreshModelEffects === 0 && replay.replayFreshFileEffects === 0,
     retry_matched: retry.resultTurnClosureByteIdentical === true && retry.fileWriteRepeated === false,
     migration_matched: migration.finalResultMatches === true && migration.receiverLocalPreflight === true,
@@ -102,6 +106,69 @@ function isInsidePath(candidate, root) {
   const resolvedRoot = path.resolve(root);
   const resolvedCandidate = path.resolve(candidate);
   return resolvedCandidate === resolvedRoot || resolvedCandidate.startsWith(`${resolvedRoot}${path.sep}`);
+}
+
+async function runCheckedPackScenario({ checked, runBunCli, scenario }) {
+  const root = await mkdtemp(path.join(tmpdir(), `world-host-agent-runtime-${scenario}-`));
+  const sandboxRoot = path.join(root, 'sandbox');
+  const runId = `agent-runtime-${scenario}`;
+  try {
+    const io = () => {
+      let output = '';
+      return {
+        stream: {
+          stdout: { write: (text) => { output += text; } },
+          stderr: { write() {} },
+        },
+        json: () => JSON.parse(output),
+      };
+    };
+
+    let current = io();
+    const installCode = await runBunCli([
+      'agent',
+      'install',
+      '--pack', checked.root,
+      '--store', root,
+      '--app', 'agent-runtime-v0.1',
+    ], current.stream);
+    if (installCode !== 0) throw new Error(`ERR_AGENT_RUNTIME_PACK_SCENARIO_INSTALL:${scenario}`);
+
+    current = io();
+    const runCode = await runBunCli([
+      'agent',
+      'run',
+      '--store', root,
+      '--scenario', scenario,
+      '--sandbox-root', sandboxRoot,
+      'agent-runtime-v0.1',
+      '--run', runId,
+    ], current.stream);
+    const run = current.json();
+    if (runCode !== 0 || run.head?.status !== 'needs_host') throw new Error(`ERR_AGENT_RUNTIME_PACK_SCENARIO_RUN:${scenario}`);
+
+    current = io();
+    const resumeCode = await runBunCli([
+      'agent',
+      'resume',
+      '--store', root,
+      '--run', runId,
+      '--scenario', scenario,
+      '--sandbox-root', sandboxRoot,
+    ], current.stream);
+    const resumed = current.json();
+    const outputFileVerified = scenario !== 'fixture' ||
+      await readFile(path.join(sandboxRoot, 'output.txt'), 'utf8') === 'actuate updated the fixture';
+    return {
+      completed: resumeCode === 0 &&
+        resumed.head?.status === 'completed' &&
+        resumed.advance?.unresolvedHostRequestCount === 0 &&
+        resumed.diagnostics?.driversInvokedByCli === true,
+      outputFileVerified,
+    };
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 }
 
 async function loadDistributedImage({ BunWorldWorker, wasmBytes, imageBytes, expectedManifestBytes, expectedManifestFingerprint }) {
