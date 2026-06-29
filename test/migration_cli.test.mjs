@@ -868,7 +868,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         'agent',
         'run',
         '--store', root,
-        '--scenario', 'skeleton',
+        '--scenario', 'fixture',
         '--sandbox-root', path.join(root, 'sandbox'),
         'agent-runtime-v0.1',
         '--run', 'agent-cli-run',
@@ -884,6 +884,8 @@ describe('migration, branching, and CLI diagnostics', () => {
         'resume',
         '--store', root,
         '--run', 'agent-cli-run',
+        '--scenario', 'fixture',
+        '--sandbox-root', path.join(root, 'sandbox'),
       ], {
         stdout: { write: (text) => { output += text; } },
         stderr: { write() {} },
@@ -897,6 +899,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(resumed.advance.effectCount, 2);
       assert.equal(resumed.advance.unresolvedHostRequestCount, 0);
       assert.equal(resumed.diagnostics.driversInvokedByCli, true);
+      assert.equal(await readFile(path.join(root, 'sandbox/output.txt'), 'utf8'), 'actuate updated the fixture');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

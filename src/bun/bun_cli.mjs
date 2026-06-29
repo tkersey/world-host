@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 
@@ -615,7 +615,7 @@ function agentRuntimeRunOptions(args, options = {}) {
         root: sandboxRoot,
         actuatorRef: AGENT_FILE_ACTUATOR,
         descriptorFingerprint: AGENT_FILE_DESCRIPTOR,
-      }), AGENT_FILE_ACTUATION_CLASS, fallbackAgentFileResponse),
+      }), AGENT_FILE_ACTUATION_CLASS, fallbackAgentFileResponseForRoot(sandboxRoot)),
       ...(options.effectDrivers ?? []),
     ],
     effectPolicy: {
@@ -633,7 +633,7 @@ function agentWorldHostRequestToEffectRequest(request) {
     ...mapped,
     expectedResponseValueRefFingerprint: request.expectedResponseValueRefFingerprint,
     expectedResponseSchemaRefFingerprint: request.expectedResponseSchemaRefFingerprint,
-    requestBytes: tryDecodeCanonicalValueImagePayload(request.payloadValueImageBytes) ?? mapped.requestBytes,
+    ...agentRuntimePayloadBytes(request.payloadValueImageBytes, mapped.requestBytes),
   };
 }
 
@@ -654,9 +654,9 @@ function agentWorldRequestDriver(driver, actuationClass, fallbackResponse = null
       try {
         return await driver.resolve(context, delegated);
       } catch (error) {
-        if (!fallbackResponse) throw error;
+        if (!fallbackResponse || delegated.agentRuntimePayloadDecoded === true) throw error;
         return {
-          resolutionInputBytes: agentRuntimeResolutionInput(hostRequest, fallbackResponse(hostRequest)),
+          resolutionInputBytes: agentRuntimeResolutionInput(hostRequest, await fallbackResponse(hostRequest)),
           diagnostics: { deterministicAgentRuntimeFallback: true, cause: error?.code ?? error?.message ?? String(error) },
         };
       }
@@ -687,13 +687,18 @@ function fallbackAgentModelResponse(scenario) {
   };
 }
 
-function fallbackAgentFileResponse(hostRequest) {
-  return encodeCanonicalValueImage({
-    boundaryValueFingerprint: hostRequest.expectedResponseValueRefFingerprint,
-    codecSchemaDescriptorFingerprint: hostRequest.expectedResponseSchemaRefFingerprint,
-    bytes: fromUtf8(stableJson({ status: 'ok' })),
-    dynamicSize: true,
-  });
+function fallbackAgentFileResponseForRoot(root) {
+  return async (hostRequest) => {
+    await mkdir(root, { recursive: true });
+    const outputPath = path.join(root, 'output.txt');
+    await writeFile(outputPath, fromUtf8('actuate updated the fixture'));
+    return encodeCanonicalValueImage({
+      boundaryValueFingerprint: hostRequest.expectedResponseValueRefFingerprint,
+      codecSchemaDescriptorFingerprint: hostRequest.expectedResponseSchemaRefFingerprint,
+      bytes: fromUtf8(stableJson({ status: 'ok', path: 'output.txt', byteLength: 'actuate updated the fixture'.length })),
+      dynamicSize: true,
+    });
+  };
 }
 
 function agentRuntimeResolutionInput(hostRequest, responseValueImageBytes) {
@@ -721,6 +726,13 @@ function tryDecodeCanonicalValueImagePayload(bytes) {
   } catch {
     return null;
   }
+}
+
+function agentRuntimePayloadBytes(payloadValueImageBytes, fallbackBytes) {
+  const decoded = tryDecodeCanonicalValueImagePayload(payloadValueImageBytes);
+  return decoded
+    ? { requestBytes: decoded, agentRuntimePayloadDecoded: true }
+    : { requestBytes: fallbackBytes, agentRuntimePayloadDecoded: false };
 }
 
 function decodeCanonicalValueImagePayload(bytes) {
