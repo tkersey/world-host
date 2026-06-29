@@ -149,6 +149,9 @@ function assertSafePackOutput(out, roots) {
       throw new Error(`ERR_AGENT_RUNTIME_UNSAFE_OUT:${label}`);
     }
   }
+  if (path.basename(resolvedOut) !== PACK_NAME) {
+    throw new Error('ERR_AGENT_RUNTIME_UNSAFE_OUT:packName');
+  }
 }
 
 function isPathInside(child, parent) {

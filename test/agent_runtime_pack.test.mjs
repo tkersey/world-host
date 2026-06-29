@@ -187,6 +187,21 @@ describe('Agent Runtime pack', () => {
     );
   });
 
+  it('rejects non-pack build output directories before removal', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agent-runtime-pack-unsafe-out-'));
+    try {
+      const marker = path.join(root, 'marker.txt');
+      await writeFile(marker, 'keep');
+      await assert.rejects(
+        () => buildAgentRuntimePack({ out: root, worldHostRepo: process.cwd() }),
+        /ERR_AGENT_RUNTIME_UNSAFE_OUT:packName/,
+      );
+      assert.equal(await readFile(marker, 'utf8'), 'keep');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('accepts owner-exported actuator fingerprint refs in the manifest', () => {
     const manifest = buildAgentRuntimeManifest({
       agentRuntimeVersion: 'v0.1',
