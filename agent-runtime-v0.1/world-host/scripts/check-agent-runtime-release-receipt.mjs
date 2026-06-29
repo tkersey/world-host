@@ -6,7 +6,7 @@ import { assertAgentRuntimeReleaseReceipt, defaultPackPath, parseCommonArgs } fr
 
 const options = parseCommonArgs(process.argv.slice(2));
 const pack = options.out ?? defaultPackPath();
-const receiptPath = options.receiptOut ?? path.join(pack, 'manifest/agent-runtime-release-receipt.json');
+const receiptPath = options.releaseReceiptOut ?? options.receiptOut ?? path.join(pack, 'manifest/agent-runtime-release-receipt.json');
 const actual = JSON.parse(await readFile(receiptPath, 'utf8'));
 await assertAgentRuntimeReleaseReceipt(pack, actual);
 console.log(JSON.stringify({

@@ -3,35 +3,28 @@ import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import {
-  runBranchingExample,
-  runFixtureExample,
-  runMigrationExample,
-  runNegativeExamples,
-  runReplayExample,
-  runRetryExample,
-  runSkeletonExample,
-} from '../examples/agent_runtime/shared.mjs';
 import { checkAgentRuntimePack, defaultPackPath, emitReleaseReceipt, parseCommonArgs } from './agent_runtime_pack_lib.mjs';
-import { BunWorldWorker } from '../src/bun/bun_worker.mjs';
 
 export async function runAgentRuntimeConformance(pack) {
   const checked = await checkAgentRuntimePack(pack);
+  const hostRoot = path.join(checked.root, 'world-host');
+  const examples = await import(pathToFileURL(path.join(hostRoot, 'examples/agent_runtime/shared.mjs')));
+  const { BunWorldWorker } = await import(pathToFileURL(path.join(hostRoot, 'src/bun/bun_worker.mjs')));
   const wasmBytes = await readFile(path.join(checked.root, 'world/world_universal_appliance.wasm'));
   const imageBytes = await readFile(path.join(checked.root, 'world/agent.executable-image'));
   const expectedManifestBytes = await readFile(path.join(checked.root, 'world/appliance-manifest.bin'));
   const module = await WebAssembly.compile(wasmBytes);
   const wasmImports = WebAssembly.Module.imports(module);
   if (wasmImports.length !== 0) throw new Error('ERR_AGENT_RUNTIME_WASM_IMPORTS');
-  const distributedLoad = await loadDistributedImage({ wasmBytes, imageBytes, expectedManifestBytes, expectedManifestFingerprint: checked.manifest.world.applianceManifestFingerprint });
+  const distributedLoad = await loadDistributedImage({ BunWorldWorker, wasmBytes, imageBytes, expectedManifestBytes, expectedManifestFingerprint: checked.manifest.world.applianceManifestFingerprint });
 
-  const skeleton = await runSkeletonExample();
-  const fixture = await runFixtureExample();
-  const replay = await runReplayExample();
-  const retry = await runRetryExample();
-  const migration = await runMigrationExample();
-  const branching = await runBranchingExample();
-  const negative = await runNegativeExamples();
+  const skeleton = await examples.runSkeletonExample();
+  const fixture = await examples.runFixtureExample();
+  const replay = await examples.runReplayExample();
+  const retry = await examples.runRetryExample();
+  const migration = await examples.runMigrationExample();
+  const branching = await examples.runBranchingExample();
+  const negative = await examples.runNegativeExamples();
 
   const receipt = {
     receiptFormatVersion: 1,
@@ -102,7 +95,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   console.log('host_did_not_author_receipts=true');
 }
 
-async function loadDistributedImage({ wasmBytes, imageBytes, expectedManifestBytes, expectedManifestFingerprint }) {
+async function loadDistributedImage({ BunWorldWorker, wasmBytes, imageBytes, expectedManifestBytes, expectedManifestFingerprint }) {
   const worker = new BunWorldWorker();
   try {
     await worker.instantiate(wasmBytes);

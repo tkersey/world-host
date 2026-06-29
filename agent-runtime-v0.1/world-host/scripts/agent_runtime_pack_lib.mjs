@@ -403,7 +403,7 @@ async function writeFixtures(out) {
 
 async function writeDocs(out, boundary, world, host) {
   const docs = {
-    'README.md': `# Agent Runtime v0.1\n\nThe agent is a Boundary program. World turns it into a portable executable process. world-host operates that process by resolving effects and retaining World-authored evidence.\n\nRun conformance with:\n\n\`\`\`sh\nbun scripts/run-agent-runtime-conformance.mjs ./${PACK_NAME}\n\`\`\`\n`,
+    'README.md': `# Agent Runtime v0.1\n\nThe agent is a Boundary program. World turns it into a portable executable process. world-host operates that process by resolving effects and retaining World-authored evidence.\n\nRun conformance from the pack root with:\n\n\`\`\`sh\nbun world-host/scripts/run-agent-runtime-conformance.mjs .\n\`\`\`\n`,
     'docs/architecture.md': `# Architecture\n\nAgent Runtime = Boundary agent program + World executable/deployment evidence + world-host carrier operation + conformance proof.\n\nBoundary ${boundary.packageVersion}; World ${world.packageVersion}; world-host ${host.packageVersion}.\n`,
     'docs/install.md': `# Install\n\nUse the distributed directory as-is. Do not clone Boundary or World for verification.\n`,
     'docs/run.md': `# Run\n\nUse world-host agent commands or the conformance script for skeleton and fixture scenarios.\n`,
@@ -432,13 +432,22 @@ async function writeChecksums(root) {
 async function verifyChecksums(root) {
   const checksumPath = path.join(root, 'checksums.sha256');
   const lines = (await readFile(checksumPath, 'utf8')).trim().split(/\n+/);
+  const covered = new Set();
   for (const line of lines) {
     const match = line.match(/^([0-9a-f]{64})  (.+)$/);
     if (!match) throw new Error(`ERR_INVALID_CHECKSUM_LINE:${line}`);
     const [, expected, rel] = match;
+    const normalizedRel = rel.split(/[\\/]+/).join('/');
+    if (covered.has(normalizedRel)) throw new Error(`ERR_CHECKSUM_DUPLICATE:${rel}`);
     const target = await safePackFile(root, rel);
     const actual = sha256Hex(await readFile(target));
     if (actual !== expected) throw new Error(`ERR_CHECKSUM_MISMATCH:${rel}`);
+    covered.add(normalizedRel);
+  }
+  const files = (await listFiles(root)).filter((rel) => rel !== 'checksums.sha256').sort();
+  if (covered.size !== files.length) throw new Error('ERR_CHECKSUM_COVERAGE');
+  for (const rel of files) {
+    if (!covered.has(rel)) throw new Error(`ERR_CHECKSUM_MISSING:${rel}`);
   }
 }
 
