@@ -69,6 +69,7 @@ export async function buildAgentRuntimePack(options = {}) {
   await requireFile(path.join(worldDist, 'world_universal_appliance.wasm'));
   await requireFile(path.join(worldDist, 'world-release-receipt.json'));
   await requireFile(path.join(worldDist, 'conformance/v0/world/corpus.json'));
+  const host = await worldHostArtifacts(roots.worldHostRepo);
 
   await rm(out, { recursive: true, force: true });
   for (const rel of [
@@ -92,7 +93,6 @@ export async function buildAgentRuntimePack(options = {}) {
 
   const boundary = await boundaryArtifacts(roots.boundaryRepo);
   const world = await worldArtifacts(roots.worldRepo, worldDist);
-  const host = await worldHostArtifacts(roots.worldHostRepo);
   await writeArtifactSet(out, boundary, world, host);
   await copyWorldHostPackage(roots.worldHostRepo, path.join(out, 'world-host'));
   await writeConformanceCorpus(out, boundary, world, host);
@@ -151,7 +151,11 @@ export async function checkAgentRuntimePack(pack) {
     'world/release-receipt.bin',
     'world/agent-runtime-world-artifacts.json',
     'world-host/bin/world-host.mjs',
+    'world-host/examples/agent_runtime/shared.mjs',
     'world-host/package.json',
+    'world-host/src/bun/bun_worker.mjs',
+    'world-host/src/drivers/fixture_agent_model_driver.mjs',
+    'world-host/src/drivers/sandbox_file_driver.mjs',
     'world-host/src/protocol/world_appliance_wire_codec.mjs',
     'world-host/src/protocol/world_loaded_value_codec.mjs',
     'world-host/src/protocol/agent_runtime_manifest.mjs',
