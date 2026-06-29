@@ -164,6 +164,7 @@ export async function checkAgentRuntimePack(pack) {
     'boundary/toolbox-provider.full-module',
     'boundary/boundary-protocol-manifest.bin',
     'boundary/agent-profile.json',
+    'boundary/corpus.boundary-agent.txt',
     'world/agent.executable-image',
     'world/appliance-manifest.bin',
     'world/world_universal_appliance.wasm',
@@ -331,7 +332,10 @@ async function boundaryArtifacts(boundaryRepo) {
   const protocolManifest = await readRequiredFile(path.join(exportDir, 'boundary-protocol-manifest.bin'));
   const profile = JSON.parse(await readRequiredFile(path.join(exportDir, 'agent-profile.json'), 'utf8'));
   const corpusPath = path.join(boundaryRepo, 'conformance/v0/agent/corpus.boundary-agent.txt');
-  const corpus = existsSync(corpusPath) ? await readFile(corpusPath) : Buffer.from('');
+  const corpus = bindBoundaryCorpusProfile(
+    existsSync(corpusPath) ? await readFile(corpusPath, 'utf8') : '',
+    profile,
+  );
   return {
     packageVersion: version,
     packageHash: gitHead(boundaryRepo),
@@ -346,6 +350,7 @@ async function boundaryArtifacts(boundaryRepo) {
       toolboxModule: { exportedByOwner: true, sha256: sha256Hex(toolboxModule), byteFingerprint: profile.toolbox_full_module_byte_fingerprint },
       protocolManifest: { exportedByOwner: true, sha256: sha256Hex(protocolManifest) },
       agentProfile: { exportedByOwner: true, sha256: sha256Hex(Buffer.from(stableJson(profile))) },
+      corpus: { exportedByOwner: true, sha256: sha256Hex(corpus) },
     },
   };
 }
@@ -514,12 +519,14 @@ async function verifyChecksums(root) {
 
 async function verifyManifestArtifacts(root, manifest) {
   const boundaryProfile = JSON.parse(await readFile(path.join(root, 'boundary/agent-profile.json'), 'utf8'));
+  const boundaryCorpus = await readFile(path.join(root, 'boundary/corpus.boundary-agent.txt'), 'utf8');
   const worldMetadata = JSON.parse(await readFile(path.join(root, 'world/agent-runtime-world-artifacts.json'), 'utf8'));
   const carrier = JSON.parse(await readFile(path.join(root, 'world-host/carrier-manifest.json'), 'utf8'));
   const conformanceCorpusFingerprint = await fingerprintDirectory(path.join(root, 'conformance'));
 
   assertEqual(manifest.boundary.protocolManifestFingerprint, requireOwnerFingerprint(boundaryProfile.boundary_protocol_manifest_fingerprint, 'boundary profile protocol manifest'), 'ERR_AGENT_RUNTIME_BOUNDARY_PROTOCOL_FINGERPRINT');
   assertEqual(manifest.boundary.agentProfileFingerprint, requireOwnerFingerprint(boundaryProfile.profile_fingerprint, 'boundary agent profile'), 'ERR_AGENT_RUNTIME_BOUNDARY_PROFILE_FINGERPRINT');
+  assertEqual(manifest.boundary.agentProfileFingerprint, boundaryCorpusProfileFingerprint(boundaryCorpus), 'ERR_AGENT_RUNTIME_BOUNDARY_CORPUS_PROFILE_FINGERPRINT');
   assertEqual(manifest.boundary.agentRootModuleFingerprint, requireOwnerFingerprint(boundaryProfile.agent_root_module_fingerprint, 'boundary agent root module'), 'ERR_AGENT_RUNTIME_BOUNDARY_ROOT_FINGERPRINT');
   assertEqual(manifest.boundary.toolboxModuleFingerprint, requireOwnerFingerprint(boundaryProfile.toolbox_module_fingerprint, 'boundary toolbox module'), 'ERR_AGENT_RUNTIME_BOUNDARY_TOOLBOX_FINGERPRINT');
   assertEqual(manifest.world.executableImageFingerprint, requireOwnerFingerprint(worldMetadata.world_executable_image_fingerprint, 'world executable image'), 'ERR_AGENT_RUNTIME_WORLD_IMAGE_FINGERPRINT');
@@ -534,6 +541,7 @@ async function verifyManifestArtifacts(root, manifest) {
     ['boundary.toolboxModule.sha256', manifest.artifacts?.boundary?.toolboxModule?.sha256, async () => readFile(path.join(root, 'boundary/toolbox-provider.full-module'))],
     ['boundary.protocolManifest.sha256', manifest.artifacts?.boundary?.protocolManifest?.sha256, async () => readFile(path.join(root, 'boundary/boundary-protocol-manifest.bin'))],
     ['boundary.agentProfile.sha256', manifest.artifacts?.boundary?.agentProfile?.sha256, async () => Buffer.from(stableJson(boundaryProfile))],
+    ['boundary.corpus.sha256', manifest.artifacts?.boundary?.corpus?.sha256, async () => Buffer.from(boundaryCorpus)],
     ['world.executableImage.sha256', manifest.artifacts?.world?.executableImage?.sha256, async () => readFile(path.join(root, 'world/agent.executable-image'))],
     ['world.applianceManifest.sha256', manifest.artifacts?.world?.applianceManifest?.sha256, async () => readFile(path.join(root, 'world/appliance-manifest.bin'))],
     ['world.universalWasm.sha256', manifest.artifacts?.world?.universalWasm?.sha256, async () => readFile(path.join(root, 'world/world_universal_appliance.wasm'))],
@@ -656,6 +664,21 @@ async function readRequiredFile(file, encoding = null) {
 function requireOwnerFingerprint(value, label) {
   if (typeof value !== 'string' || !/^0x[0-9a-f]+$/i.test(value)) throw new Error(`invalid owner fingerprint: ${label}`);
   return value.toLowerCase();
+}
+
+function boundaryCorpusProfileFingerprint(corpus) {
+  const match = corpus.match(/^profile_fingerprint:\s*(0x[0-9a-f]+)\s*$/im);
+  if (!match) throw new Error('ERR_AGENT_RUNTIME_BOUNDARY_CORPUS_PROFILE_FINGERPRINT');
+  return requireOwnerFingerprint(match[1], 'boundary corpus profile');
+}
+
+function bindBoundaryCorpusProfile(corpus, profile) {
+  const expected = requireOwnerFingerprint(profile.profile_fingerprint, 'boundary agent profile');
+  if (corpus.length === 0) throw new Error('ERR_AGENT_RUNTIME_BOUNDARY_CORPUS_MISSING');
+  if (!/^profile_fingerprint:\s*0x[0-9a-f]+\s*$/im.test(corpus)) {
+    throw new Error('ERR_AGENT_RUNTIME_BOUNDARY_CORPUS_PROFILE_FINGERPRINT');
+  }
+  return Buffer.from(corpus.replace(/^profile_fingerprint:\s*0x[0-9a-f]+\s*$/im, `profile_fingerprint: ${expected}`));
 }
 
 function exactArray(value, label) {

@@ -1,7 +1,7 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { cp, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -83,6 +83,20 @@ describe('Agent Runtime pack', () => {
       await assert.rejects(
         () => checkAgentRuntimePack(missingConformancePack),
         /missing required file: .*world-host\/scripts\/run-agent-runtime-conformance\.mjs/,
+      );
+
+      const staleBoundaryCorpusPack = path.join(root, 'agent-runtime-v0.1-stale-boundary-corpus');
+      await cp(pack, staleBoundaryCorpusPack, { recursive: true });
+      const boundaryCorpusPath = path.join(staleBoundaryCorpusPack, 'boundary/corpus.boundary-agent.txt');
+      const staleCorpus = (await readFile(boundaryCorpusPath, 'utf8')).replace(
+        /^profile_fingerprint:\s*0x[0-9a-f]+\s*$/im,
+        'profile_fingerprint: 0x1111111111111111',
+      );
+      await writeFile(boundaryCorpusPath, staleCorpus);
+      await refreshAgentRuntimePackChecksums(staleBoundaryCorpusPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(staleBoundaryCorpusPack),
+        /ERR_AGENT_RUNTIME_BOUNDARY_CORPUS_PROFILE_FINGERPRINT/,
       );
     } finally {
       await rm(root, { recursive: true, force: true });

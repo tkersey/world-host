@@ -69,6 +69,10 @@
       "agentProfile": {
         "exportedByOwner": true,
         "sha256": "4e3323e7b67fccf215ab874d9ff2b6e9c0fc99307e1a7fda24ce14cfa257476d"
+      },
+      "corpus": {
+        "exportedByOwner": true,
+        "sha256": "04214a52058e785e61b69d58b031887b7e977a65b8eb114b04f868ffef9abf3d"
       }
     },
     "world": {
@@ -113,5 +117,5 @@
       "worldHostDirty": false
     }
   },
-  "manifestFingerprint": "agent-runtime:799c93ca83cc5c32068d3e4da0f49972"
+  "manifestFingerprint": "agent-runtime:a9643fbbd97cec9f744f730572c053d0"
 }

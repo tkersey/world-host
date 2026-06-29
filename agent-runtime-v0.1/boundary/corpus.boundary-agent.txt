@@ -2,7 +2,7 @@ Boundary Agent Profile v0 conformance corpus
 format: boundary-agent-conformance-corpus-v0
 profile_format_version: 0
 profile_fingerprint_version: 1
-profile_fingerprint: 0x93e76a6083279734
+profile_fingerprint: 0xdc1981503eeeb739
 max_iterations: 5
 max_model_calls: 5
 max_tool_calls: 4
