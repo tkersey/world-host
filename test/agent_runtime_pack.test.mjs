@@ -123,6 +123,13 @@ describe('Agent Runtime pack', () => {
     assert.throws(() => assertAgentRuntimeManifest({ ...manifest, agentRuntimeVersion: 'v0.2' }), /ERR_AGENT_RUNTIME_MANIFEST_FINGERPRINT/);
   });
 
+  it('rejects source roots as pack build output targets', async () => {
+    await assert.rejects(
+      () => buildAgentRuntimePack({ out: process.cwd(), worldHostRepo: process.cwd() }),
+      /ERR_AGENT_RUNTIME_UNSAFE_OUT:worldHostRepo/,
+    );
+  });
+
   it('accepts owner-exported actuator fingerprint refs in the manifest', () => {
     const manifest = buildAgentRuntimeManifest({
       agentRuntimeVersion: 'v0.1',

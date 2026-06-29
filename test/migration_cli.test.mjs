@@ -873,6 +873,48 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('runs agent apps with option-first positional app names', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-cli-run-position-'));
+    try {
+      const wasmPath = path.join(root, 'world_universal_appliance.wasm');
+      const imagePath = path.join(root, 'agent.world-executable');
+      await writeFile(wasmPath, fromUtf8('wasm:agent-run'));
+      await writeFile(imagePath, fromUtf8('image:agent-run'));
+      await runBunCli([
+        'install',
+        '--store', root,
+        '--name', 'agent-app',
+        '--wasm', wasmPath,
+        '--image', imagePath,
+        '--image-fingerprint', 'world:image:agent-app',
+      ], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      });
+
+      let output = '';
+      const code = await runBunCli([
+        'agent',
+        'run',
+        '--store', root,
+        'agent-app',
+        '--run', 'agent-cli-run',
+        '--no-execute',
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      });
+
+      assert.equal(code, 0);
+      const result = JSON.parse(output);
+      assert.equal(result.run.runId, 'agent-cli-run');
+      assert.equal(result.run.applicationId, 'agent-app');
+      assert.equal(result.run.created, true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('uses relative store paths for lock creation', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-cli-relative-'));
     const previousCwd = process.cwd();

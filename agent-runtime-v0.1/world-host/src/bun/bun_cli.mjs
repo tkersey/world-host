@@ -90,7 +90,7 @@ async function runAgentCommand(args, io, options) {
       '--manifest', path.join(checked.root, 'world/appliance-manifest.bin'),
     ], io, storePath, { requiredActuators });
   }
-  if (subcommand === 'run') return await runStoreRun(['run', ...args.slice(1)], io, requiredOption(args, '--store'), options);
+  if (subcommand === 'run') return await runStoreRun(forwardAgentRunArgs(args), io, requiredOption(args, '--store'), options);
   if (subcommand === 'resume') return await runStoreResume(['resume', ...args.slice(1)], io, requiredOption(args, '--store'), options);
   if (subcommand === 'inspect') return await runStoreDiagnostics('inspect', ['inspect', ...args.slice(1)], io, requiredOption(args, '--store'), requiredOption(args, '--run'));
   if (subcommand === 'replay') return await runStoreDiagnostics('inspect', ['inspect', ...args.slice(1)], io, requiredOption(args, '--store'), requiredOption(args, '--run'));
@@ -894,6 +894,28 @@ function valueAfter(args, name) {
 function positionalAfterCommand(args) {
   const value = args[1];
   return value && !value.startsWith('--') ? value : null;
+}
+
+function forwardAgentRunArgs(args) {
+  const forwarded = ['run', ...args.slice(1)];
+  if (!valueAfter(forwarded, '--app') && !positionalAfterCommand(forwarded)) {
+    const applicationId = positionalAfterOptions(args, 1);
+    if (applicationId) forwarded.push('--app', applicationId);
+  }
+  return forwarded;
+}
+
+function positionalAfterOptions(args, start) {
+  const optionsWithValues = new Set(['--app', '--branch', '--input', '--name', '--pack', '--run', '--store']);
+  for (let index = start; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg.startsWith('--')) {
+      if (optionsWithValues.has(arg)) index += 1;
+      continue;
+    }
+    return arg;
+  }
+  return null;
 }
 
 function requiredOption(args, name) {

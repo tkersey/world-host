@@ -65,6 +65,7 @@ export function defaultPackPath(cwd = process.cwd()) {
 export async function buildAgentRuntimePack(options = {}) {
   const roots = defaultRoots(options);
   const out = path.resolve(options.out ?? PACK_NAME);
+  assertSafePackOutput(out, roots);
   const worldDist = path.join(roots.worldRepo, 'zig-out/dist/world-v0.1.0');
   await requireFile(path.join(worldDist, 'world_universal_appliance.wasm'));
   await requireFile(path.join(worldDist, 'world-release-receipt.json'));
@@ -133,6 +134,24 @@ export async function buildAgentRuntimePack(options = {}) {
   await writeFile(path.join(out, 'manifest/agent-runtime-manifest.bin'), Buffer.from(stableJson(manifest)));
   await writeChecksums(out);
   return { out, manifest };
+}
+
+function assertSafePackOutput(out, roots) {
+  const resolvedOut = path.resolve(out);
+  for (const [label, root] of Object.entries(roots)) {
+    const resolvedRoot = path.resolve(root);
+    if (resolvedOut === resolvedRoot || isPathInside(resolvedRoot, resolvedOut)) {
+      throw new Error(`ERR_AGENT_RUNTIME_UNSAFE_OUT:${label}`);
+    }
+    if (isPathInside(resolvedOut, resolvedRoot) && path.relative(resolvedRoot, resolvedOut).split(path.sep).join('/') !== PACK_NAME) {
+      throw new Error(`ERR_AGENT_RUNTIME_UNSAFE_OUT:${label}`);
+    }
+  }
+}
+
+function isPathInside(child, parent) {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
 }
 
 export async function checkAgentRuntimePack(pack) {
