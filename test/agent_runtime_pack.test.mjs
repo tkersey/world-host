@@ -1,7 +1,7 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -12,12 +12,16 @@ import {
   emitReleaseReceipt,
   refreshAgentRuntimePackChecksums,
 } from '../scripts/agent_runtime_pack_lib.mjs';
+import { runAgentRuntimeConformance } from '../scripts/run-agent-runtime-conformance.mjs';
 import {
   assertAgentRuntimeManifest,
   buildAgentRuntimeManifest,
   carrierManifestFingerprint,
+  fingerprintOf,
   releaseReceiptFingerprint,
+  sha256Hex,
 } from '../src/protocol/agent_runtime_manifest.mjs';
+import { stableJson } from '../src/core/store.mjs';
 
 describe('Agent Runtime pack', () => {
   it('builds a checksum-covered pack with a self-validating manifest', async () => {
@@ -33,10 +37,21 @@ describe('Agent Runtime pack', () => {
         worldRepo: path.resolve('../world'),
         worldHostRepo: process.cwd(),
       });
+      const preReceiptChecked = await checkAgentRuntimePack(pack);
+      assert.equal(preReceiptChecked.releaseReceiptValidated, false);
+      const builtReceipt = await emitReleaseReceipt(pack, passingConformanceReceipt(built.manifest));
+      await writeFile(path.join(pack, 'manifest/agent-runtime-release-receipt.json'), `${JSON.stringify(builtReceipt, null, 2)}\n`);
+      await refreshAgentRuntimePackChecksums(pack);
       const checked = await checkAgentRuntimePack(pack);
       await assert.rejects(() => emitReleaseReceipt(pack), /ERR_AGENT_RUNTIME_CONFORMANCE_REQUIRED/);
       const receipt = await emitReleaseReceipt(pack, passingConformanceReceipt(checked.manifest));
       const corpus = JSON.parse(await readFile(path.join(pack, 'conformance/corpus.json'), 'utf8'));
+      const staleConformance = passingConformanceReceipt(checked.manifest);
+      delete staleConformance.distributed_skeleton_scenario_completed;
+      await assert.rejects(
+        () => emitReleaseReceipt(pack, staleConformance),
+        /ERR_AGENT_RUNTIME_CONFORMANCE_distributed_skeleton_scenario_completed/,
+      );
 
       assert.equal(checked.complete, true);
       assert.equal(checked.manifest.manifestFingerprint, built.manifest.manifestFingerprint);
@@ -66,6 +81,15 @@ describe('Agent Runtime pack', () => {
       assert.deepEqual(corpus.warnings, []);
       assert.equal(checked.manifest.artifacts.boundary.agentRootModule.exportedByOwner, true);
       assert.equal(checked.manifest.artifacts.world.executableImage.exportedByOwner, true);
+
+      const freshConformancePack = path.join(root, 'fresh-conformance', 'agent-runtime-v0.1');
+      await cp(path.resolve('agent-runtime-v0.1'), freshConformancePack, { recursive: true });
+      await rm(path.join(freshConformancePack, 'manifest/agent-runtime-release-receipt.json'));
+      await refreshAgentRuntimePackChecksums(freshConformancePack);
+      const fresh = await runAgentRuntimeConformance(freshConformancePack);
+      assert.equal(fresh.receipt.distributed_skeleton_scenario_completed, true);
+      assert.equal(fresh.receipt.distributed_fixture_scenario_completed, true);
+      await assertAgentRuntimeReleaseReceipt(freshConformancePack, fresh.releaseReceipt);
 
       const incompletePack = path.join(root, 'agent-runtime-v0.1-missing-runtime');
       await cp(pack, incompletePack, { recursive: true });
@@ -99,11 +123,54 @@ describe('Agent Runtime pack', () => {
 
       const staleWorldProtocolPack = path.join(root, 'agent-runtime-v0.1-stale-world-protocol');
       await cp(pack, staleWorldProtocolPack, { recursive: true });
-      await writeFile(path.join(staleWorldProtocolPack, 'world/world-protocol-manifest.bin'), 'tampered world protocol');
+      const protocolPath = path.join(staleWorldProtocolPack, 'world/world-protocol-manifest.bin');
+      const protocol = JSON.parse(await readFile(protocolPath, 'utf8'));
+      protocol.protocol_manifest_fingerprint_lo = '0x1111111111111111';
+      await writeFile(protocolPath, `${JSON.stringify(protocol, null, 2)}\n`);
+      await rewriteManifestArtifactSha(staleWorldProtocolPack, 'world', 'protocolManifest', await readFile(protocolPath));
       await refreshAgentRuntimePackChecksums(staleWorldProtocolPack);
       await assert.rejects(
         () => checkAgentRuntimePack(staleWorldProtocolPack),
-        /ERR_CHECKSUM_MISMATCH:world\/world-protocol-manifest\.bin|ERR_AGENT_RUNTIME_ARTIFACT_SHA:world\.protocolManifest\.sha256/,
+        /ERR_AGENT_RUNTIME_WORLD_PROTOCOL_MANIFEST_FINGERPRINT/,
+      );
+
+      const missingReleaseReceiptPack = path.join(root, 'agent-runtime-v0.1-missing-release-receipt');
+      await cp(pack, missingReleaseReceiptPack, { recursive: true });
+      await rm(path.join(missingReleaseReceiptPack, 'manifest/agent-runtime-release-receipt.json'));
+      await refreshAgentRuntimePackChecksums(missingReleaseReceiptPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(missingReleaseReceiptPack, { requireReleaseReceipt: true }),
+        /missing required file: .*manifest\/agent-runtime-release-receipt\.json/,
+      );
+
+      const unsafeProofReceiptPack = path.join(root, 'agent-runtime-v0.1-unsafe-proof-receipt');
+      await cp(pack, unsafeProofReceiptPack, { recursive: true });
+      const unsafeCorpusPath = path.join(unsafeProofReceiptPack, 'conformance/corpus.json');
+      const unsafeCorpus = JSON.parse(await readFile(unsafeCorpusPath, 'utf8'));
+      unsafeCorpus.proofReceipts[0] = { ...unsafeCorpus.proofReceipts[0], id: '../escape' };
+      await writeFile(unsafeCorpusPath, `${JSON.stringify(unsafeCorpus, null, 2)}\n`);
+      await rewriteManifestConformanceFingerprint(unsafeProofReceiptPack);
+      await refreshAgentRuntimePackChecksums(unsafeProofReceiptPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(unsafeProofReceiptPack),
+        /ERR_AGENT_RUNTIME_PROOF_RECEIPT_ID:\.\.\/escape/,
+      );
+
+      const wrongProofSubjectPack = path.join(root, 'agent-runtime-v0.1-wrong-proof-subject');
+      await cp(pack, wrongProofSubjectPack, { recursive: true });
+      const wrongCorpusPath = path.join(wrongProofSubjectPack, 'conformance/corpus.json');
+      const wrongCorpus = JSON.parse(await readFile(wrongCorpusPath, 'utf8'));
+      wrongCorpus.proofReceipts[0] = proofReceiptForTest(wrongCorpus.proofReceipts[0].id, 'agent-runtime:wrong-subject');
+      await writeFile(wrongCorpusPath, `${JSON.stringify(wrongCorpus, null, 2)}\n`);
+      await writeFile(
+        path.join(wrongProofSubjectPack, `proof-receipts/${wrongCorpus.proofReceipts[0].id}.json`),
+        `${JSON.stringify(wrongCorpus.proofReceipts[0], null, 2)}\n`,
+      );
+      await rewriteManifestConformanceFingerprint(wrongProofSubjectPack);
+      await refreshAgentRuntimePackChecksums(wrongProofSubjectPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(wrongProofSubjectPack),
+        /ERR_AGENT_RUNTIME_PROOF_RECEIPT_SUBJECT:boundary-agent-profile/,
       );
 
       const staleBoundaryCorpusPack = path.join(root, 'agent-runtime-v0.1-stale-boundary-corpus');
@@ -252,6 +319,8 @@ function passingConformanceReceipt(manifest) {
     negative_cases_rejected: true,
     world_evidence_validated: true,
     distributed_empty_payloads_rejected: true,
+    distributed_skeleton_scenario_completed: true,
+    distributed_fixture_scenario_completed: true,
     host_did_not_author_receipts: true,
     no_generated_agent_target_type: true,
     no_native_helper_process: true,
@@ -260,4 +329,63 @@ function passingConformanceReceipt(manifest) {
     distributed_executable_image_loaded: true,
     distributed_appliance_manifest_matched: true,
   };
+}
+
+async function rewriteManifestArtifactSha(pack, group, artifact, bytes) {
+  const manifestPath = path.join(pack, 'manifest/agent-runtime-manifest.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.artifacts[group][artifact].sha256 = sha256Hex(bytes);
+  await writeManifest(pack, manifest);
+}
+
+async function rewriteManifestConformanceFingerprint(pack) {
+  const manifestPath = path.join(pack, 'manifest/agent-runtime-manifest.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.conformanceCorpusFingerprint = await fingerprintDirectoryForTest(path.join(pack, 'conformance'));
+  await writeManifest(pack, manifest);
+}
+
+async function writeManifest(pack, manifest) {
+  const manifestPath = path.join(pack, 'manifest/agent-runtime-manifest.json');
+  const withoutFingerprint = { ...manifest };
+  delete withoutFingerprint.manifestFingerprint;
+  manifest.manifestFingerprint = fingerprintOf(withoutFingerprint);
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  await writeFile(path.join(pack, 'manifest/agent-runtime-manifest.bin'), Buffer.from(stableJson(manifest)));
+}
+
+async function fingerprintDirectoryForTest(root, prefix = '') {
+  const dir = path.join(root, prefix);
+  const entries = [];
+  for (const entry of await readdir(dir)) {
+    const rel = path.join(prefix, entry);
+    const absolute = path.join(root, rel);
+    const info = await lstat(absolute);
+    if (info.isDirectory()) entries.push(...await fingerprintDirectoryEntriesForTest(root, rel));
+    else if (info.isFile()) entries.push([rel.split(path.sep).join('/'), sha256Hex(await readFile(absolute))]);
+  }
+  return fingerprintOf(entries.sort(([left], [right]) => left.localeCompare(right)));
+}
+
+async function fingerprintDirectoryEntriesForTest(root, prefix) {
+  const dir = path.join(root, prefix);
+  const entries = [];
+  for (const entry of await readdir(dir)) {
+    const rel = path.join(prefix, entry);
+    const absolute = path.join(root, rel);
+    const info = await lstat(absolute);
+    if (info.isDirectory()) entries.push(...await fingerprintDirectoryEntriesForTest(root, rel));
+    else if (info.isFile()) entries.push([rel.split(path.sep).join('/'), sha256Hex(await readFile(absolute))]);
+  }
+  return entries;
+}
+
+function proofReceiptForTest(id, subject) {
+  const receipt = {
+    id,
+    subject,
+    generatedBy: 'agent-runtime-pack-builder',
+    proofDerivedFromArtifactFingerprint: true,
+  };
+  return { ...receipt, fingerprint: fingerprintOf(receipt) };
 }

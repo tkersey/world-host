@@ -86,7 +86,7 @@ async function runAgentCommand(args, io, options) {
     const storePath = requiredOption(args, '--store');
     const applicationId = valueAfter(args, '--app') ?? valueAfter(args, '--name') ?? 'agent-runtime-v0.1';
     const { checkAgentRuntimePack } = await import('../../scripts/agent_runtime_pack_lib.mjs');
-    const checked = await checkAgentRuntimePack(pack);
+    const checked = await checkAgentRuntimePack(pack, { validateReleaseReceipt: options.validateReleaseReceipt });
     const manifest = checked.manifest;
     const requiredActuators = manifest.requiredActuatorRefs.map((actuatorRef) => ({ actuatorRef }));
     return await runInstall([

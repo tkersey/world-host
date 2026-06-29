@@ -43,6 +43,7 @@ export function parseCommonArgs(raw) {
     else if (arg === '--receipt-out') parsed.receiptOut = raw[++i];
     else if (arg === '--release-receipt-out') parsed.releaseReceiptOut = raw[++i];
     else if (arg === '--conformance-receipt') parsed.conformanceReceipt = raw[++i];
+    else if (arg === '--require-release-receipt') parsed.requireReleaseReceipt = true;
     else if (!arg.startsWith('--') && !parsed.out) parsed.out = arg;
     else throw new Error(`unknown argument: ${arg}`);
   }
@@ -159,8 +160,13 @@ function isPathInside(child, parent) {
   return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
 }
 
-export async function checkAgentRuntimePack(pack) {
+export async function checkAgentRuntimePack(pack, options = {}) {
   const root = path.resolve(pack);
+  const releaseReceiptPath = path.join(root, 'manifest/agent-runtime-release-receipt.json');
+  const requireReleaseReceipt = options.requireReleaseReceipt === true || options.validateReleaseReceipt === true;
+  const validateReleaseReceipt = options.validateReleaseReceipt === false
+    ? false
+    : requireReleaseReceipt || existsSync(releaseReceiptPath);
   const required = [
     'manifest/agent-runtime-manifest.bin',
     'manifest/agent-runtime-manifest.json',
@@ -214,6 +220,9 @@ export async function checkAgentRuntimePack(pack) {
     'world-host/src/stores/memory_store.mjs',
     'world-host/carrier-manifest.json',
     'conformance/corpus.json',
+    'proof-receipts/boundary-agent-profile.json',
+    'proof-receipts/world-agent-dist.json',
+    'proof-receipts/world-host-carrier.json',
     'fixtures/input.txt',
     'fixtures/expected-output.txt',
     'fixtures/expected-result.txt',
@@ -227,6 +236,7 @@ export async function checkAgentRuntimePack(pack) {
     'docs/non_goals.md',
     'checksums.sha256',
   ];
+  if (requireReleaseReceipt) required.push('manifest/agent-runtime-release-receipt.json');
   for (const rel of required) await requireFile(path.join(root, rel));
   await verifyChecksums(root);
   const manifestBytes = await readFile(path.join(root, 'manifest/agent-runtime-manifest.json'));
@@ -238,11 +248,20 @@ export async function checkAgentRuntimePack(pack) {
   await verifyManifestArtifacts(root, manifest);
   const corpus = JSON.parse(await readFile(path.join(root, 'conformance/corpus.json'), 'utf8'));
   if (corpus.warnings?.length) throw new Error(`ERR_AGENT_RUNTIME_OWNER_EXPORT_WARNINGS:${corpus.warnings.join(',')}`);
-  return { root, manifest, complete: true };
+  await verifyProofReceipts(root, corpus, manifest);
+  if (validateReleaseReceipt) {
+    await assertAgentRuntimeReleaseReceiptContents(
+      root,
+      manifest,
+      corpus,
+      JSON.parse(await readFile(releaseReceiptPath, 'utf8')),
+    );
+  }
+  return { root, manifest, complete: true, releaseReceiptValidated: validateReleaseReceipt };
 }
 
 export async function emitReleaseReceipt(pack, conformance) {
-  const checked = await checkAgentRuntimePack(pack);
+  const checked = await checkAgentRuntimePack(pack, { validateReleaseReceipt: false });
   const root = checked.root;
   const manifest = checked.manifest;
   const corpus = JSON.parse(await readFile(path.join(root, 'conformance/corpus.json'), 'utf8'));
@@ -267,6 +286,8 @@ export async function emitReleaseReceipt(pack, conformance) {
     migrationProofPassed: proof.migration_matched === true,
     branchingProofPassed: proof.branching_matched === true,
     negativeProofPassed: proof.negative_cases_rejected === true,
+    distributedSkeletonScenarioPassed: proof.distributed_skeleton_scenario_completed === true,
+    distributedFixtureScenarioPassed: proof.distributed_fixture_scenario_completed === true,
     distributedEmptyPayloadsRejected: proof.distributed_empty_payloads_rejected === true,
     complete: false,
     blockers: [],
@@ -280,6 +301,8 @@ export async function emitReleaseReceipt(pack, conformance) {
     receipt.migrationProofPassed,
     receipt.branchingProofPassed,
     receipt.negativeProofPassed,
+    receipt.distributedSkeletonScenarioPassed,
+    receipt.distributedFixtureScenarioPassed,
     receipt.distributedEmptyPayloadsRejected,
   ].every(Boolean);
   receipt.receiptFingerprint = releaseReceiptFingerprint(receipt);
@@ -287,10 +310,14 @@ export async function emitReleaseReceipt(pack, conformance) {
 }
 
 export async function assertAgentRuntimeReleaseReceipt(pack, actual) {
-  const checked = await checkAgentRuntimePack(pack);
+  const checked = await checkAgentRuntimePack(pack, { validateReleaseReceipt: false });
   const root = checked.root;
   const manifest = checked.manifest;
   const corpus = JSON.parse(await readFile(path.join(root, 'conformance/corpus.json'), 'utf8'));
+  return assertAgentRuntimeReleaseReceiptContents(root, manifest, corpus, actual);
+}
+
+async function assertAgentRuntimeReleaseReceiptContents(root, manifest, corpus, actual) {
   if (actual?.receiptFingerprint !== releaseReceiptFingerprint(actual)) throw new Error('ERR_AGENT_RUNTIME_RELEASE_RECEIPT_FINGERPRINT');
   const expectedFields = {
     receiptFormatVersion: 1,
@@ -319,6 +346,8 @@ export async function assertAgentRuntimeReleaseReceipt(pack, actual) {
     'migrationProofPassed',
     'branchingProofPassed',
     'negativeProofPassed',
+    'distributedSkeletonScenarioPassed',
+    'distributedFixtureScenarioPassed',
     'distributedEmptyPayloadsRejected',
   ];
   if (!proofFields.every((field) => actual[field] === true)) throw new Error('ERR_AGENT_RUNTIME_RELEASE_RECEIPT_PROOF_INCOMPLETE');
@@ -539,6 +568,7 @@ async function verifyManifestArtifacts(root, manifest) {
   assertEqual(manifest.boundary.toolboxModuleFingerprint, requireOwnerFingerprint(boundaryProfile.toolbox_module_fingerprint, 'boundary toolbox module'), 'ERR_AGENT_RUNTIME_BOUNDARY_TOOLBOX_FINGERPRINT');
   assertEqual(manifest.world.executableImageFingerprint, requireOwnerFingerprint(worldMetadata.world_executable_image_fingerprint, 'world executable image'), 'ERR_AGENT_RUNTIME_WORLD_IMAGE_FINGERPRINT');
   assertEqual(manifest.world.applianceManifestFingerprint, requireOwnerFingerprint(worldMetadata.world_appliance_manifest_fingerprint, 'world appliance manifest'), 'ERR_AGENT_RUNTIME_WORLD_APPLIANCE_FINGERPRINT');
+  assertEqual(manifest.world.protocolManifestFingerprint, worldProtocolManifestFileFingerprint(await readFile(path.join(root, 'world/world-protocol-manifest.bin'))), 'ERR_AGENT_RUNTIME_WORLD_PROTOCOL_MANIFEST_FINGERPRINT');
   assertEqual(stableJson(manifest.requiredActuatorRefs), stableJson(exactArray(worldMetadata.required_actuator_ref_fingerprints, 'world required actuator ref fingerprints').map(worldActuatorRef)), 'ERR_AGENT_RUNTIME_ACTUATOR_REFS');
   assertEqual(stableJson(manifest.requiredDescriptorFingerprints), stableJson(exactArray(worldMetadata.required_descriptor_fingerprints, 'world required descriptor fingerprints').map(worldDescriptorFingerprint)), 'ERR_AGENT_RUNTIME_DESCRIPTOR_FINGERPRINTS');
   assertEqual(manifest.worldHost.carrierManifestFingerprint, carrierManifestFingerprint(carrier), 'ERR_AGENT_RUNTIME_CARRIER_MANIFEST_FINGERPRINT');
@@ -564,6 +594,29 @@ async function verifyManifestArtifacts(root, manifest) {
   }
 }
 
+async function verifyProofReceipts(root, corpus, manifest) {
+  const receipts = corpus.proofReceipts;
+  if (!Array.isArray(receipts) || receipts.length === 0) throw new Error('ERR_AGENT_RUNTIME_PROOF_RECEIPTS');
+  const expectedSubjects = new Map([
+    ['boundary-agent-profile', manifest.boundary.agentProfileFingerprint],
+    ['world-agent-dist', manifest.world.executableImageFingerprint],
+    ['world-host-carrier', manifest.worldHost.carrierManifestFingerprint],
+  ]);
+  if (receipts.length !== expectedSubjects.size) throw new Error('ERR_AGENT_RUNTIME_PROOF_RECEIPTS');
+  const seen = new Set();
+  for (const receipt of receipts) {
+    if (typeof receipt?.id !== 'string' || typeof receipt?.fingerprint !== 'string') throw new Error('ERR_AGENT_RUNTIME_PROOF_RECEIPT');
+    if (!/^[a-z0-9][a-z0-9-]*$/i.test(receipt.id)) throw new Error(`ERR_AGENT_RUNTIME_PROOF_RECEIPT_ID:${receipt.id}`);
+    const expectedSubject = expectedSubjects.get(receipt.id);
+    if (!expectedSubject || seen.has(receipt.id)) throw new Error(`ERR_AGENT_RUNTIME_PROOF_RECEIPT:${receipt.id}`);
+    seen.add(receipt.id);
+    if (receipt.subject !== expectedSubject) throw new Error(`ERR_AGENT_RUNTIME_PROOF_RECEIPT_SUBJECT:${receipt.id}`);
+    const actual = JSON.parse(await readFile(path.join(root, `proof-receipts/${receipt.id}.json`), 'utf8'));
+    if (stableJson(actual) !== stableJson(receipt)) throw new Error(`ERR_AGENT_RUNTIME_PROOF_RECEIPT:${receipt.id}`);
+    if (actual.fingerprint !== fingerprintOf({ ...actual, fingerprint: undefined })) throw new Error(`ERR_AGENT_RUNTIME_PROOF_RECEIPT_FINGERPRINT:${receipt.id}`);
+  }
+}
+
 function requireConformanceReceipt(conformance, manifest) {
   if (!conformance || typeof conformance !== 'object') throw new Error('ERR_AGENT_RUNTIME_CONFORMANCE_REQUIRED');
   if (conformance.agentRuntimeManifestFingerprint !== manifest.manifestFingerprint) throw new Error('ERR_AGENT_RUNTIME_CONFORMANCE_MANIFEST_FINGERPRINT');
@@ -577,6 +630,8 @@ function requireConformanceReceipt(conformance, manifest) {
     'branching_matched',
     'negative_cases_rejected',
     'world_evidence_validated',
+    'distributed_skeleton_scenario_completed',
+    'distributed_fixture_scenario_completed',
     'distributed_empty_payloads_rejected',
     'host_did_not_author_receipts',
     'no_generated_agent_target_type',
@@ -720,4 +775,16 @@ function worldProtocolFingerprint(releaseArtifact) {
   const hi = releaseArtifact?.wasm?.protocol_manifest_fingerprint_hi;
   if (typeof lo === 'string' && typeof hi === 'string') return `${hi.toLowerCase()}:${lo.toLowerCase()}`;
   return fingerprintOf({ kind: 'world.Protocol.Manifest', wasm: releaseArtifact?.wasm ?? null });
+}
+
+function worldProtocolManifestFileFingerprint(bytes) {
+  let parsed;
+  try {
+    parsed = JSON.parse(Buffer.from(bytes).toString('utf8'));
+  } catch {
+    throw new Error('ERR_AGENT_RUNTIME_WORLD_PROTOCOL_MANIFEST_PARSE');
+  }
+  const lo = requireOwnerFingerprint(parsed.protocol_manifest_fingerprint_lo, 'world protocol manifest lo');
+  const hi = requireOwnerFingerprint(parsed.protocol_manifest_fingerprint_hi, 'world protocol manifest hi');
+  return `${hi}:${lo}`;
 }

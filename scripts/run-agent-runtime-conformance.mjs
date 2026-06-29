@@ -4,14 +4,17 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { checkAgentRuntimePack, defaultPackPath, emitReleaseReceipt, parseCommonArgs, refreshAgentRuntimePackChecksums } from './agent_runtime_pack_lib.mjs';
+import { checkAgentRuntimePack, defaultPackPath, emitReleaseReceipt, FIXTURE_INPUT, FIXTURE_OUTPUT, parseCommonArgs, refreshAgentRuntimePackChecksums } from './agent_runtime_pack_lib.mjs';
 
 export async function runAgentRuntimeConformance(pack) {
-  const checked = await checkAgentRuntimePack(pack);
+  const checked = await checkAgentRuntimePack(pack, { validateReleaseReceipt: false });
   const hostRoot = path.join(checked.root, 'world-host');
   const examples = await import(pathToFileURL(path.join(hostRoot, 'examples/agent_runtime/shared.mjs')));
   const { runBunCli } = await import(pathToFileURL(path.join(hostRoot, 'src/bun/bun_cli.mjs')));
   const { BunWorldWorker } = await import(pathToFileURL(path.join(hostRoot, 'src/bun/bun_worker.mjs')));
+  const { fromUtf8, stableJson } = await import(pathToFileURL(path.join(hostRoot, 'src/core/store.mjs')));
+  const { encodeTurnInput, operationBoot } = await import(pathToFileURL(path.join(hostRoot, 'src/protocol/world_appliance_wire_codec.mjs')));
+  const codecs = { encodeTurnInput, fromUtf8, operationBoot, stableJson };
   const wasmBytes = await readFile(path.join(checked.root, 'world/world_universal_appliance.wasm'));
   const imageBytes = await readFile(path.join(checked.root, 'world/agent.executable-image'));
   const expectedManifestBytes = await readFile(path.join(checked.root, 'world/appliance-manifest.bin'));
@@ -22,8 +25,10 @@ export async function runAgentRuntimeConformance(pack) {
 
   const skeleton = await examples.runSkeletonExample();
   const fixture = await examples.runFixtureExample();
-  const distributedSkeleton = await runCheckedPackScenario({ checked, runBunCli, scenario: 'skeleton' });
-  const distributedFixture = await runCheckedPackScenario({ checked, runBunCli, scenario: 'fixture' });
+  const distributedSkeleton = await runCheckedPackScenario({ checked, codecs, runBunCli, scenario: 'skeleton', mode: 'success' });
+  const distributedFixture = await runCheckedPackScenario({ checked, codecs, runBunCli, scenario: 'fixture', mode: 'success' });
+  const emptyPayloadSkeleton = await runCheckedPackScenario({ checked, runBunCli, scenario: 'skeleton', mode: 'empty-payload' });
+  const emptyPayloadFixture = await runCheckedPackScenario({ checked, runBunCli, scenario: 'fixture', mode: 'empty-payload' });
   const replay = await examples.runReplayExample();
   const retry = await examples.runRetryExample();
   const migration = await examples.runMigrationExample();
@@ -44,7 +49,9 @@ export async function runAgentRuntimeConformance(pack) {
       branching.sourceBranchImplicitlyMerged === false,
     negative_cases_rejected: Object.values(negative).every((value) => value === true),
     world_evidence_validated: true,
-    distributed_empty_payloads_rejected: distributedSkeleton.emptyPayloadRejected === true && distributedFixture.emptyPayloadRejected === true,
+    distributed_skeleton_scenario_completed: distributedSkeleton.completed === true && distributedSkeleton.effectCount >= 2,
+    distributed_fixture_scenario_completed: distributedFixture.completed === true && distributedFixture.effectCount >= 2 && distributedFixture.outputVerified === true,
+    distributed_empty_payloads_rejected: emptyPayloadSkeleton.emptyPayloadRejected === true && emptyPayloadFixture.emptyPayloadRejected === true,
     host_did_not_author_receipts: [skeleton, fixture, replay, retry, migration, branching].every((item) => item.hostAuthoredWorldEvidence === false),
     no_generated_agent_target_type: [skeleton, fixture, replay, retry, migration, branching].every((item) => item.generatedAgentTargetType === false),
     no_native_helper_process: [skeleton, fixture, replay, retry, migration, branching].every((item) => item.nativeHelperProcess === false),
@@ -65,6 +72,8 @@ export async function runAgentRuntimeConformance(pack) {
     receipt.branching_matched,
     receipt.negative_cases_rejected,
     receipt.world_evidence_validated,
+    receipt.distributed_skeleton_scenario_completed,
+    receipt.distributed_fixture_scenario_completed,
     receipt.distributed_empty_payloads_rejected,
     receipt.host_did_not_author_receipts,
     receipt.no_generated_agent_target_type,
@@ -101,6 +110,8 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   console.log('branching_matched=true');
   console.log('negative_cases_rejected=true');
   console.log('world_evidence_validated=true');
+  console.log('distributed_skeleton_scenario_completed=true');
+  console.log('distributed_fixture_scenario_completed=true');
   console.log('distributed_empty_payloads_rejected=true');
   console.log('host_did_not_author_receipts=true');
 }
@@ -111,10 +122,10 @@ function isInsidePath(candidate, root) {
   return resolvedCandidate === resolvedRoot || resolvedCandidate.startsWith(`${resolvedRoot}${path.sep}`);
 }
 
-async function runCheckedPackScenario({ checked, runBunCli, scenario }) {
+async function runCheckedPackScenario({ checked, codecs, runBunCli, scenario, mode }) {
   const root = await mkdtemp(path.join(tmpdir(), `world-host-agent-runtime-${scenario}-`));
   const sandboxRoot = path.join(root, 'sandbox');
-  const runId = `agent-runtime-${scenario}`;
+  const runId = `agent-runtime-${mode}-${scenario}`;
   try {
     const io = () => {
       let output = '';
@@ -127,6 +138,8 @@ async function runCheckedPackScenario({ checked, runBunCli, scenario }) {
       };
     };
     await mkdir(sandboxRoot, { recursive: true });
+    await writeFile(path.join(sandboxRoot, 'input.txt'), FIXTURE_INPUT);
+    await writeFile(path.join(sandboxRoot, 'output.txt'), '');
 
     let current = io();
     const installCode = await runBunCli([
@@ -135,10 +148,13 @@ async function runCheckedPackScenario({ checked, runBunCli, scenario }) {
       '--pack', checked.root,
       '--store', root,
       '--app', 'agent-runtime-v0.1',
-    ], current.stream);
+    ], current.stream, { validateReleaseReceipt: false });
     if (installCode !== 0) throw new Error(`ERR_AGENT_RUNTIME_PACK_SCENARIO_INSTALL:${scenario}`);
 
     current = io();
+    const runOptions = mode === 'success'
+      ? { turnInputFactory: distributedScenarioTurnInputFactory(scenario, codecs) }
+      : {};
     const runCode = await runBunCli([
       'agent',
       'run',
@@ -147,9 +163,30 @@ async function runCheckedPackScenario({ checked, runBunCli, scenario }) {
       '--sandbox-root', sandboxRoot,
       'agent-runtime-v0.1',
       '--run', runId,
-    ], current.stream);
+    ], current.stream, runOptions);
     const run = current.json();
     if (runCode !== 0 || run.head?.status !== 'needs_host') throw new Error(`ERR_AGENT_RUNTIME_PACK_SCENARIO_RUN:${scenario}`);
+
+    if (mode === 'success') {
+      current = io();
+      const resumeCode = await runBunCli([
+        'agent',
+        'resume',
+        '--store', root,
+        '--run', runId,
+        '--scenario', scenario,
+        '--sandbox-root', sandboxRoot,
+      ], current.stream);
+      const resumed = current.json();
+      if (resumeCode !== 0 || resumed.head?.status !== 'completed') throw new Error(`ERR_AGENT_RUNTIME_PACK_SCENARIO_COMPLETE:${scenario}`);
+      const output = scenario === 'fixture' ? await readFile(path.join(sandboxRoot, 'output.txt'), 'utf8') : null;
+      if (scenario === 'fixture' && output !== FIXTURE_OUTPUT) throw new Error(`ERR_AGENT_RUNTIME_PACK_SCENARIO_OUTPUT:${scenario}`);
+      return {
+        completed: true,
+        effectCount: resumed.advance?.effectCount ?? 0,
+        outputVerified: scenario === 'fixture' ? output === FIXTURE_OUTPUT : null,
+      };
+    }
 
     let emptyPayloadRejected = false;
     try {
@@ -172,6 +209,29 @@ async function runCheckedPackScenario({ checked, runBunCli, scenario }) {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+}
+
+function distributedScenarioTurnInputFactory(scenario, codecs) {
+  return ({ worker }) => {
+    const { encodeTurnInput, fromUtf8, operationBoot, stableJson } = codecs;
+    const applianceManifest = worker.readApplianceManifest();
+    const observation = scenario === 'fixture' ? 'goal=fixture' : 'goal=invoke';
+    const payload = stableJson({
+      schema: 'boundary.Agent.DecisionPrompt.v0',
+      observation,
+      traceSummary: 'bounded',
+      operation: scenario === 'fixture' ? 'write' : 'read',
+      path: scenario === 'fixture' ? 'output.txt' : 'input.txt',
+      ...(scenario === 'fixture' ? { content: FIXTURE_OUTPUT } : {}),
+    });
+    return encodeTurnInput({
+      operation: operationBoot,
+      manifestFingerprint: applianceManifest.decoded.manifestFingerprint,
+      turnSequenceNumber: 0n,
+      rootArgumentImages: [fromUtf8(payload)],
+      hostMetadata: `world-host.agent-runtime.${scenario}`,
+    });
+  };
 }
 
 async function loadDistributedImage({ BunWorldWorker, wasmBytes, imageBytes, expectedManifestBytes, expectedManifestFingerprint }) {

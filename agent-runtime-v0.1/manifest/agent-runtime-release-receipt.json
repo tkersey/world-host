@@ -22,9 +22,11 @@
   "migrationProofPassed": true,
   "branchingProofPassed": true,
   "negativeProofPassed": true,
+  "distributedSkeletonScenarioPassed": true,
+  "distributedFixtureScenarioPassed": true,
   "distributedEmptyPayloadsRejected": true,
   "complete": true,
   "blockers": [],
   "warnings": [],
-  "receiptFingerprint": "agent-runtime:f541bd19ce5480445434588d4926982d"
+  "receiptFingerprint": "agent-runtime:967ee9501df199280ddb4549975ef28d"
 }
