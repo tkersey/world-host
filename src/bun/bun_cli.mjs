@@ -1073,7 +1073,7 @@ function forwardAgentRunArgs(args) {
 }
 
 function positionalAfterOptions(args, start) {
-  const optionsWithValues = new Set(['--app', '--branch', '--input', '--name', '--pack', '--run', '--store']);
+  const optionsWithValues = new Set(['--agent-scenario', '--app', '--branch', '--input', '--name', '--pack', '--run', '--sandbox-root', '--scenario', '--store']);
   for (let index = start; index < args.length; index += 1) {
     const arg = args[index];
     if (arg.startsWith('--')) {

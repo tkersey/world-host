@@ -868,6 +868,8 @@ describe('migration, branching, and CLI diagnostics', () => {
         'agent',
         'run',
         '--store', root,
+        '--scenario', 'skeleton',
+        '--sandbox-root', path.join(root, 'sandbox'),
         'agent-runtime-v0.1',
         '--run', 'agent-cli-run',
       ], {
