@@ -12,6 +12,7 @@ import {
 } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { stableJson } from '../src/core/store.mjs';
 import {
@@ -384,11 +385,13 @@ async function worldArtifacts(worldRepo, worldDist) {
 
 async function worldHostArtifacts(worldHostRepo) {
   const packageJson = JSON.parse(await readFile(path.join(worldHostRepo, 'package.json'), 'utf8'));
+  const selectedCarrierManifest = await loadCarrierManifest(worldHostRepo);
   return {
     packageVersion: packageJson.version,
-    carrierManifestFingerprint: carrierManifestFingerprint(carrierManifest),
+    carrierManifest: selectedCarrierManifest,
+    carrierManifestFingerprint: carrierManifestFingerprint(selectedCarrierManifest),
     gitHead: gitHead(worldHostRepo),
-    gitDirty: gitDirty(worldHostRepo),
+    gitDirty: gitDirty(worldHostRepo, [PACK_NAME]),
     artifacts: {
       codecs: { dependencyFree: true },
       carrierManifest: { exportedByOwner: true },
@@ -409,7 +412,7 @@ async function writeArtifactSet(out, boundary, world, host) {
   await writeFile(path.join(out, 'world/release-receipt.bin'), world.files.releaseReceipt);
   await writeFile(path.join(out, 'world/conformance-corpus.json'), world.files.corpus);
   await writeFile(path.join(out, 'world/agent-runtime-world-artifacts.json'), `${JSON.stringify(world.files.agentRuntimeMetadata, null, 2)}\n`);
-  await writeFile(path.join(out, 'world-host/carrier-manifest.json'), `${JSON.stringify(carrierManifest, null, 2)}\n`);
+  await writeFile(path.join(out, 'world-host/carrier-manifest.json'), `${JSON.stringify(host.carrierManifest, null, 2)}\n`);
   await writeFile(path.join(out, 'world-host/agent-runtime-artifacts.json'), `${JSON.stringify({ boundary: boundary.artifacts, world: world.artifacts, worldHost: host.artifacts }, null, 2)}\n`);
 }
 
@@ -623,9 +626,22 @@ function gitHead(repo) {
   return result.status === 0 ? result.stdout.trim() : 'unknown';
 }
 
-function gitDirty(repo) {
+async function loadCarrierManifest(worldHostRepo) {
+  const modulePath = path.join(worldHostRepo, 'src/protocol/world_manifest.mjs');
+  const moduleUrl = `${pathToFileURL(modulePath).href}?head=${gitHead(worldHostRepo)}`;
+  const selected = await import(moduleUrl);
+  return selected.carrierManifest;
+}
+
+function gitDirty(repo, ignoredTopLevelPaths = []) {
   const result = spawnSync('git', ['status', '--porcelain'], { cwd: repo, encoding: 'utf8' });
-  return result.status === 0 ? result.stdout.trim().length > 0 : true;
+  if (result.status !== 0) return true;
+  const ignored = new Set(ignoredTopLevelPaths.map((item) => item.replace(/\/+$/, '')));
+  return result.stdout
+    .split('\n')
+    .map((line) => line.slice(3).trim())
+    .filter(Boolean)
+    .some((file) => !ignored.has(file.split(/[\\/]/)[0]));
 }
 
 async function requireFile(file) {
