@@ -479,7 +479,7 @@ async function runImport(args, io, storePath, options = {}) {
       preflight: async (candidate) => preflightCapabilities({
         application: candidate.bundle.application,
         currentHead: candidate.bundle.head,
-        pendingRequests: pendingRequestsForImportedHead(candidate),
+        pendingRequests: pendingRequestsForImportedHead(candidate).map(options.hostRequestMapper ?? worldHostRequestToEffectRequest),
         drivers: options.effectDrivers ?? [],
         policy: options.effectPolicy ?? createRunPolicy(),
       }),

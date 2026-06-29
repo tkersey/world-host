@@ -979,11 +979,39 @@ describe('migration, branching, and CLI diagnostics', () => {
       });
       assert.equal(exportCode, 0);
 
+      const packageJson = JSON.parse(await readFile(packagePath, 'utf8'));
+      const pendingClosureBytes = fixtureNeedsHostTurnClosureBytes([agentModelHostRequestBytes()]);
+      const pendingClosureSummary = summarizeTurnClosureForRunHead(pendingClosureBytes);
+      const pendingClosureBlob = blobEntryForBytes(pendingClosureBytes);
+      const pendingPackagePath = path.join(receiverRoot, 'agent-pending-export.json');
+      await writeFile(pendingPackagePath, JSON.stringify({
+        ...packageJson,
+        bundle: {
+          ...packageJson.bundle,
+          head: {
+            ...packageJson.bundle.head,
+            generation: pendingClosureSummary.inspectionDiagnostics.turnSequenceNumber + 1,
+            status: 'needs_host',
+            turnClosureRef: {
+              algorithm: 'sha256',
+              checksum: pendingClosureBlob.checksum,
+              byteLength: pendingClosureBlob.byteLength,
+            },
+            turnClosureWorldFingerprint: pendingClosureSummary.turnClosureWorldFingerprint,
+            resultingStateFingerprint: pendingClosureSummary.resultingStateFingerprint,
+            chronicleCursor: pendingClosureSummary.chronicleCursor,
+            archiveMomentFingerprint: pendingClosureSummary.archiveMomentFingerprint,
+            archiveSealFingerprint: pendingClosureSummary.archiveSealFingerprint,
+          },
+          blobs: [...packageJson.bundle.blobs, pendingClosureBlob],
+        },
+      }));
+
       await assert.rejects(
         () => runBunCli([
           'import',
           '--store', receiverRoot,
-          '--package', packagePath,
+          '--package', pendingPackagePath,
           '--run', 'generic-agent-import',
         ], {
           stdout: { write() {} },
@@ -999,7 +1027,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         'agent',
         'import',
         '--store', receiverRoot,
-        '--package', packagePath,
+        '--package', pendingPackagePath,
         '--run', 'receiver-agent-import',
         '--sandbox-root', sandboxRoot,
       ], {
@@ -2496,6 +2524,45 @@ function fixtureHostRequestBytes() {
     optionalU64(0xa0fn),
     bytes(fromUtf8('prepared')),
     bytes(fromUtf8('idempotency-key')),
+  ]);
+}
+
+function agentModelHostRequestBytes() {
+  return concat([
+    u32(4),
+    u32(4),
+    u64(0xa17n),
+    u64(0n),
+    u32(0),
+    u64(0xa18n),
+    u64(0xa19n),
+    u32(0),
+    u64(0xa20n),
+    u64(0xa21n),
+    u64(0x4f0c7160f25c4c62n),
+    u8(2),
+    u8(1),
+    u64(0xa22n),
+    u64(0xa23n),
+    u64(0xa24n),
+    u64(0xbe73177924a6b377n),
+    u64(0xa25n),
+    optionalU64(null),
+    bytes(fromUtf8('metadata')),
+    bytes(fromUtf8('frame')),
+    bytes(encodeCanonicalValueImage({
+      bytes: fromUtf8(JSON.stringify({
+        schema: 'boundary.Agent.DecisionPrompt.v0',
+        observation: 'goal=invoke',
+      })),
+      dynamicSize: true,
+    })),
+    optionalU64(null),
+    optionalU64(null),
+    optionalU64(null),
+    optionalU64(null),
+    bytes(fromUtf8('prepared')),
+    bytes(fromUtf8('agent-model-idempotency-key')),
   ]);
 }
 
