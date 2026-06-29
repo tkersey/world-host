@@ -303,6 +303,32 @@ describe('Agent Runtime pack', () => {
 
     assert.deepEqual(manifest.requiredActuatorRefs, ['world:actuator-ref:4f0c7160f25c4c62', 'world:actuator-ref:d5e4b1b427522cf2']);
   });
+
+  it('uses the parsed Boundary package version when reading owner artifacts', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agent-runtime-pack-boundary-version-'));
+    try {
+      const boundaryRepo = path.join(root, 'boundary');
+      const worldRepo = path.join(root, 'world');
+      const pack = path.join(root, 'agent-runtime-v0.1');
+      await writeBoundaryRepoForPackTest(boundaryRepo, '0.7.1');
+      await writeWorldRepoForPackTest(worldRepo);
+
+      const built = await buildAgentRuntimePack({
+        out: pack,
+        boundaryRepo,
+        worldRepo,
+        worldHostRepo: process.cwd(),
+      });
+
+      assert.equal(built.manifest.boundary.packageVersion, '0.7.1');
+      assert.equal(
+        await readFile(path.join(pack, 'boundary/agent-root.full-module'), 'utf8'),
+        'boundary-root-module-v0.7.1',
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 function passingConformanceReceipt(manifest) {
@@ -388,4 +414,53 @@ function proofReceiptForTest(id, subject) {
     proofDerivedFromArtifactFingerprint: true,
   };
   return { ...receipt, fingerprint: fingerprintOf(receipt) };
+}
+
+async function writeBoundaryRepoForPackTest(root, version) {
+  const exportDir = path.join(root, `zig-out/dist/boundary-v${version}-agent-runtime`);
+  await mkdir(path.join(root, 'conformance/v0/agent'), { recursive: true });
+  await mkdir(exportDir, { recursive: true });
+  await writeFile(path.join(root, 'build.zig.zon'), `.version = "${version}",\n`);
+  await writeFile(path.join(exportDir, 'agent-root.full-module'), `boundary-root-module-v${version}`);
+  await writeFile(path.join(exportDir, 'toolbox-provider.full-module'), `boundary-toolbox-module-v${version}`);
+  await writeFile(path.join(exportDir, 'boundary-protocol-manifest.bin'), `boundary-protocol-v${version}`);
+  await writeFile(path.join(exportDir, 'agent-profile.json'), `${JSON.stringify({
+    boundary_protocol_manifest_fingerprint: '0x1111',
+    profile_fingerprint: '0x2222',
+    agent_root_module_fingerprint: '0x3333',
+    toolbox_module_fingerprint: '0x4444',
+    agent_root_full_module_byte_fingerprint: '0x5555',
+    toolbox_full_module_byte_fingerprint: '0x6666',
+  }, null, 2)}\n`);
+  await writeFile(path.join(root, 'conformance/v0/agent/corpus.boundary-agent.txt'), 'profile_fingerprint: 0x0000\n');
+}
+
+async function writeWorldRepoForPackTest(root) {
+  const dist = path.join(root, 'zig-out/dist/world-v0.1.0');
+  const agentRuntime = path.join(dist, 'agent-runtime');
+  await mkdir(path.join(dist, 'conformance/v0/world'), { recursive: true });
+  await mkdir(agentRuntime, { recursive: true });
+  await writeFile(path.join(dist, 'world_universal_appliance.wasm'), 'world-wasm');
+  await writeFile(path.join(dist, 'world-release-receipt.json'), '{"world_release":true}\n');
+  await writeFile(path.join(dist, 'conformance/v0/world/corpus.json'), '{"world_corpus":true}\n');
+  await writeFile(path.join(dist, 'world-release-artifact.json'), `${JSON.stringify({
+    package: 'world-v0.1.0',
+    wasm: {
+      protocol_manifest_fingerprint_hi: '0xaaaa',
+      protocol_manifest_fingerprint_lo: '0xbbbb',
+      abi_version: 4,
+    },
+  }, null, 2)}\n`);
+  await writeFile(path.join(dist, 'world-protocol-manifest.json'), '{"world_protocol":true}\n');
+  await writeFile(path.join(agentRuntime, 'agent.executable-image'), 'world-agent-image');
+  await writeFile(path.join(agentRuntime, 'appliance-manifest.bin'), 'world-appliance-manifest');
+  await writeFile(path.join(agentRuntime, 'agent-runtime-world-artifacts.json'), `${JSON.stringify({
+    world_executable_image_fingerprint: '0x7777',
+    world_appliance_manifest_fingerprint: '0x8888',
+    world_appliance_abi_version: 4,
+    world_turn_closure_format_version: 1,
+    world_archive_format_version: 1,
+    required_actuator_ref_fingerprints: ['0x4f0c7160f25c4c62', '0xd5e4b1b427522cf2'],
+    required_descriptor_fingerprints: ['0xbe73177924a6b377', '0x74afc8c3b2fe4c33'],
+  }, null, 2)}\n`);
 }

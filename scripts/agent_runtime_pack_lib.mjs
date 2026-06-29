@@ -362,7 +362,7 @@ export async function refreshAgentRuntimePackChecksums(pack) {
 async function boundaryArtifacts(boundaryRepo) {
   const zon = await readFile(path.join(boundaryRepo, 'build.zig.zon'), 'utf8');
   const version = zon.match(/\.version\s*=\s*"([^"]+)"/)?.[1] ?? '0.6.2';
-  const exportDir = path.join(boundaryRepo, 'zig-out/dist/boundary-v0.6.2-agent-runtime');
+  const exportDir = path.join(boundaryRepo, `zig-out/dist/boundary-v${version}-agent-runtime`);
   const rootModule = await readRequiredFile(path.join(exportDir, 'agent-root.full-module'));
   const toolboxModule = await readRequiredFile(path.join(exportDir, 'toolbox-provider.full-module'));
   const protocolManifest = await readRequiredFile(path.join(exportDir, 'boundary-protocol-manifest.bin'));
