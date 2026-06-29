@@ -1,7 +1,7 @@
 {
   "receiptFormatVersion": 1,
   "receiptFingerprintVersion": 1,
-  "agentRuntimeManifestFingerprint": "agent-runtime:2c907b54cd3e761b4dfdadaf1b00ea78",
+  "agentRuntimeManifestFingerprint": "agent-runtime:71ce016d2e011a2e5a8c8b1a0322a1c1",
   "boundaryModuleFingerprints": [
     "0xa663b81aa6df6f3e",
     "0x4a4c934becaf32ae"
@@ -15,15 +15,16 @@
     "agent-runtime:aa5e96b305bba9f532ac4e92b6dc89a4",
     "agent-runtime:d9f3bfc2e8197c9fbbc8b4ba6d55dccd"
   ],
-  "skeletonProofPassed": true,
-  "fixtureProofPassed": true,
+  "ownerSkeletonExamplePassed": true,
+  "ownerFixtureExamplePassed": true,
   "replayProofPassed": true,
   "retryProofPassed": true,
   "migrationProofPassed": true,
   "branchingProofPassed": true,
   "negativeProofPassed": true,
+  "distributedEmptyPayloadsRejected": true,
   "complete": true,
   "blockers": [],
   "warnings": [],
-  "receiptFingerprint": "agent-runtime:1615eb116a876b34adcd32266466e223"
+  "receiptFingerprint": "agent-runtime:f4027140098cce1cd4ee67d6e68aee6f"
 }

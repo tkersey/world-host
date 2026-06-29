@@ -39,6 +39,10 @@
     "agentRuntimeMetadata": {
       "exportedByOwner": true,
       "sha256": "873690610081b9ac35b12e8b20d9f0d4c85db4b55a7888e6e9017e191f05d8e8"
+    },
+    "protocolManifest": {
+      "exportedByOwner": true,
+      "sha256": "f8e8e2053a3058f0207cb4c906b1a0c2b7a0b0cbfa2fdb051ad97db9327c13cb"
     }
   },
   "worldHost": {

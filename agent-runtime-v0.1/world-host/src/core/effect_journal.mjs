@@ -97,7 +97,7 @@ export class EffectJournal {
       state: EffectState.observed,
       attemptCount: 0,
       driverRecoveryClass: recoveryClass,
-      diagnostics: options.diagnostics ?? {},
+      diagnostics: options.diagnostics ?? hostRequest.diagnostics ?? {},
     });
     return await this.store.putEffectRecord(record);
   }

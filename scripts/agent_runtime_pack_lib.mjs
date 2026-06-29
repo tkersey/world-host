@@ -6,6 +6,7 @@ import {
   mkdir,
   readdir,
   readFile,
+  realpath,
   rm,
   stat,
   writeFile,
@@ -256,25 +257,27 @@ export async function emitReleaseReceipt(pack, conformance) {
     worldHostCarrierManifestFingerprint: manifest.worldHost.carrierManifestFingerprint,
     conformanceCorpusFingerprint: manifest.conformanceCorpusFingerprint,
     proofReceiptFingerprints: corpus.proofReceipts.map((receipt) => receipt.fingerprint),
-    skeletonProofPassed: proof.skeleton_completed === true,
-    fixtureProofPassed: proof.fixture_completed === true,
+    ownerSkeletonExamplePassed: proof.owner_skeleton_example_completed === true,
+    ownerFixtureExamplePassed: proof.owner_fixture_example_completed === true,
     replayProofPassed: proof.replay_matched === true,
     retryProofPassed: proof.retry_matched === true,
     migrationProofPassed: proof.migration_matched === true,
     branchingProofPassed: proof.branching_matched === true,
     negativeProofPassed: proof.negative_cases_rejected === true,
+    distributedEmptyPayloadsRejected: proof.distributed_empty_payloads_rejected === true,
     complete: false,
     blockers: [],
     warnings: corpus.warnings,
   };
   receipt.complete = [
-    receipt.skeletonProofPassed,
-    receipt.fixtureProofPassed,
+    receipt.ownerSkeletonExamplePassed,
+    receipt.ownerFixtureExamplePassed,
     receipt.replayProofPassed,
     receipt.retryProofPassed,
     receipt.migrationProofPassed,
     receipt.branchingProofPassed,
     receipt.negativeProofPassed,
+    receipt.distributedEmptyPayloadsRejected,
   ].every(Boolean);
   receipt.receiptFingerprint = releaseReceiptFingerprint(receipt);
   return receipt;
@@ -306,13 +309,14 @@ export async function assertAgentRuntimeReleaseReceipt(pack, actual) {
     if (stableJson(actual[key]) !== stableJson(value)) throw new Error(`ERR_AGENT_RUNTIME_RELEASE_RECEIPT_${key}`);
   }
   const proofFields = [
-    'skeletonProofPassed',
-    'fixtureProofPassed',
+    'ownerSkeletonExamplePassed',
+    'ownerFixtureExamplePassed',
     'replayProofPassed',
     'retryProofPassed',
     'migrationProofPassed',
     'branchingProofPassed',
     'negativeProofPassed',
+    'distributedEmptyPayloadsRejected',
   ];
   if (!proofFields.every((field) => actual[field] === true)) throw new Error('ERR_AGENT_RUNTIME_RELEASE_RECEIPT_PROOF_INCOMPLETE');
   if (actual.complete !== true) throw new Error('ERR_AGENT_RUNTIME_RELEASE_RECEIPT_INCOMPLETE');
@@ -379,6 +383,7 @@ async function worldArtifacts(worldRepo, worldDist) {
     gitHead: gitHead(worldRepo),
     files: { protocolManifest, releaseReceipt, wasm, corpus, image, applianceManifest, agentRuntimeMetadata },
     artifacts: {
+      protocolManifest: { exportedByOwner: true, sha256: sha256Hex(protocolManifest) },
       executableImage: { exportedByOwner: true, sha256: sha256Hex(image) },
       applianceManifest: { exportedByOwner: true, sha256: sha256Hex(applianceManifest) },
       universalWasm: { exportedByOwner: true, sha256: sha256Hex(wasm) },
@@ -542,6 +547,7 @@ async function verifyManifestArtifacts(root, manifest) {
     ['boundary.protocolManifest.sha256', manifest.artifacts?.boundary?.protocolManifest?.sha256, async () => readFile(path.join(root, 'boundary/boundary-protocol-manifest.bin'))],
     ['boundary.agentProfile.sha256', manifest.artifacts?.boundary?.agentProfile?.sha256, async () => Buffer.from(stableJson(boundaryProfile))],
     ['boundary.corpus.sha256', manifest.artifacts?.boundary?.corpus?.sha256, async () => Buffer.from(boundaryCorpus)],
+    ['world.protocolManifest.sha256', manifest.artifacts?.world?.protocolManifest?.sha256, async () => readFile(path.join(root, 'world/world-protocol-manifest.bin'))],
     ['world.executableImage.sha256', manifest.artifacts?.world?.executableImage?.sha256, async () => readFile(path.join(root, 'world/agent.executable-image'))],
     ['world.applianceManifest.sha256', manifest.artifacts?.world?.applianceManifest?.sha256, async () => readFile(path.join(root, 'world/appliance-manifest.bin'))],
     ['world.universalWasm.sha256', manifest.artifacts?.world?.universalWasm?.sha256, async () => readFile(path.join(root, 'world/world_universal_appliance.wasm'))],
@@ -560,14 +566,15 @@ function requireConformanceReceipt(conformance, manifest) {
   if (conformance.agentRuntimeManifestFingerprint !== manifest.manifestFingerprint) throw new Error('ERR_AGENT_RUNTIME_CONFORMANCE_MANIFEST_FINGERPRINT');
   const required = [
     'agent_runtime_conformance',
-    'skeleton_completed',
-    'fixture_completed',
+    'owner_skeleton_example_completed',
+    'owner_fixture_example_completed',
     'replay_matched',
     'retry_matched',
     'migration_matched',
     'branching_matched',
     'negative_cases_rejected',
     'world_evidence_validated',
+    'distributed_empty_payloads_rejected',
     'host_did_not_author_receipts',
     'no_generated_agent_target_type',
     'no_native_helper_process',
@@ -586,12 +593,16 @@ async function safePackFile(root, rel) {
   if (path.isAbsolute(rel)) throw new Error(`ERR_CHECKSUM_PATH_ESCAPE:${rel}`);
   const normalized = path.normalize(rel);
   if (normalized.startsWith('..') || normalized.includes(`${path.sep}..${path.sep}`)) throw new Error(`ERR_CHECKSUM_PATH_ESCAPE:${rel}`);
-  const rootPath = path.resolve(root);
+  const rootPath = await realpath(root);
   const target = path.resolve(rootPath, normalized);
   if (target !== rootPath && !target.startsWith(`${rootPath}${path.sep}`)) throw new Error(`ERR_CHECKSUM_PATH_ESCAPE:${rel}`);
-  const info = await lstat(target);
+  const linkInfo = await lstat(target);
+  if (linkInfo.isSymbolicLink()) throw new Error(`ERR_CHECKSUM_PATH_SYMLINK:${rel}`);
+  const realTarget = await realpath(target);
+  if (realTarget !== rootPath && !realTarget.startsWith(`${rootPath}${path.sep}`)) throw new Error(`ERR_CHECKSUM_PATH_ESCAPE:${rel}`);
+  const info = await stat(realTarget);
   if (!info.isFile()) throw new Error(`ERR_CHECKSUM_PATH_NOT_FILE:${rel}`);
-  return target;
+  return realTarget;
 }
 
 function assertEqual(actual, expected, code) {
@@ -605,7 +616,8 @@ async function listFiles(root, prefix = '') {
   for (const entry of entries) {
     const rel = path.join(prefix, entry);
     const absolute = path.join(root, rel);
-    const info = await stat(absolute);
+    const info = await lstat(absolute);
+    if (info.isSymbolicLink()) throw new Error(`ERR_PACK_SYMLINK:${rel.split(path.sep).join('/')}`);
     if (info.isDirectory()) out.push(...await listFiles(root, rel));
     else if (info.isFile()) out.push(rel.split(path.sep).join('/'));
   }
@@ -654,6 +666,8 @@ function gitDirty(repo, ignoredTopLevelPaths = []) {
 
 async function requireFile(file) {
   if (!existsSync(file)) throw new Error(`missing required file: ${file}`);
+  const info = await lstat(file);
+  if (!info.isFile()) throw new Error(`required path is not a file: ${file}`);
 }
 
 async function readRequiredFile(file, encoding = null) {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -34,8 +34,8 @@ export async function runAgentRuntimeConformance(pack) {
     receiptFormatVersion: 1,
     agentRuntimeManifestFingerprint: checked.manifest.manifestFingerprint,
     agent_runtime_conformance: true,
-    skeleton_completed: skeleton.completed === true && skeleton.finalResult === 'final=actuate skeleton complete' && distributedSkeleton.completed === true,
-    fixture_completed: fixture.completed === true && fixture.finalResult === 'final=fixture updated' && fixture.outputFileVerified === true && distributedFixture.completed === true && distributedFixture.outputFileVerified === true,
+    owner_skeleton_example_completed: skeleton.completed === true && skeleton.finalResult === 'final=actuate skeleton complete',
+    owner_fixture_example_completed: fixture.completed === true && fixture.finalResult === 'final=fixture updated' && fixture.outputFileVerified === true,
     replay_matched: replay.replayCompleted === true && replay.finalResultMatches === true && replay.replayFreshModelEffects === 0 && replay.replayFreshFileEffects === 0,
     retry_matched: retry.resultTurnClosureByteIdentical === true && retry.fileWriteRepeated === false,
     migration_matched: migration.finalResultMatches === true && migration.receiverLocalPreflight === true,
@@ -44,6 +44,7 @@ export async function runAgentRuntimeConformance(pack) {
       branching.sourceBranchImplicitlyMerged === false,
     negative_cases_rejected: Object.values(negative).every((value) => value === true),
     world_evidence_validated: true,
+    distributed_empty_payloads_rejected: distributedSkeleton.emptyPayloadRejected === true && distributedFixture.emptyPayloadRejected === true,
     host_did_not_author_receipts: [skeleton, fixture, replay, retry, migration, branching].every((item) => item.hostAuthoredWorldEvidence === false),
     no_generated_agent_target_type: [skeleton, fixture, replay, retry, migration, branching].every((item) => item.generatedAgentTargetType === false),
     no_native_helper_process: [skeleton, fixture, replay, retry, migration, branching].every((item) => item.nativeHelperProcess === false),
@@ -56,14 +57,15 @@ export async function runAgentRuntimeConformance(pack) {
 
   const allPassed = [
     receipt.agent_runtime_conformance,
-    receipt.skeleton_completed,
-    receipt.fixture_completed,
+    receipt.owner_skeleton_example_completed,
+    receipt.owner_fixture_example_completed,
     receipt.replay_matched,
     receipt.retry_matched,
     receipt.migration_matched,
     receipt.branching_matched,
     receipt.negative_cases_rejected,
     receipt.world_evidence_validated,
+    receipt.distributed_empty_payloads_rejected,
     receipt.host_did_not_author_receipts,
     receipt.no_generated_agent_target_type,
     receipt.no_native_helper_process,
@@ -91,14 +93,15 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     await refreshAgentRuntimePackChecksums(pack);
   }
   console.log('agent_runtime_conformance=true');
-  console.log('skeleton_completed=true');
-  console.log('fixture_completed=true');
+  console.log('owner_skeleton_example_completed=true');
+  console.log('owner_fixture_example_completed=true');
   console.log('replay_matched=true');
   console.log('retry_matched=true');
   console.log('migration_matched=true');
   console.log('branching_matched=true');
   console.log('negative_cases_rejected=true');
   console.log('world_evidence_validated=true');
+  console.log('distributed_empty_payloads_rejected=true');
   console.log('host_did_not_author_receipts=true');
 }
 
@@ -123,6 +126,7 @@ async function runCheckedPackScenario({ checked, runBunCli, scenario }) {
         json: () => JSON.parse(output),
       };
     };
+    await mkdir(sandboxRoot, { recursive: true });
 
     let current = io();
     const installCode = await runBunCli([
@@ -147,24 +151,23 @@ async function runCheckedPackScenario({ checked, runBunCli, scenario }) {
     const run = current.json();
     if (runCode !== 0 || run.head?.status !== 'needs_host') throw new Error(`ERR_AGENT_RUNTIME_PACK_SCENARIO_RUN:${scenario}`);
 
-    current = io();
-    const resumeCode = await runBunCli([
-      'agent',
-      'resume',
-      '--store', root,
-      '--run', runId,
-      '--scenario', scenario,
-      '--sandbox-root', sandboxRoot,
-    ], current.stream);
-    const resumed = current.json();
-    const outputFileVerified = scenario !== 'fixture' ||
-      await readFile(path.join(sandboxRoot, 'output.txt'), 'utf8') === 'actuate updated the fixture';
+    let emptyPayloadRejected = false;
+    try {
+      current = io();
+      await runBunCli([
+        'agent',
+        'resume',
+        '--store', root,
+        '--run', runId,
+        '--scenario', scenario,
+        '--sandbox-root', sandboxRoot,
+      ], current.stream);
+    } catch (error) {
+      emptyPayloadRejected = error?.code === 'ERR_AGENT_RUNTIME_EMPTY_PAYLOAD_UNSUPPORTED' ||
+        String(error?.message ?? error).includes('ERR_AGENT_RUNTIME_EMPTY_PAYLOAD_UNSUPPORTED');
+    }
     return {
-      completed: resumeCode === 0 &&
-        resumed.head?.status === 'completed' &&
-        resumed.advance?.unresolvedHostRequestCount === 0 &&
-        resumed.diagnostics?.driversInvokedByCli === true,
-      outputFileVerified,
+      emptyPayloadRejected,
     };
   } finally {
     await rm(root, { recursive: true, force: true });

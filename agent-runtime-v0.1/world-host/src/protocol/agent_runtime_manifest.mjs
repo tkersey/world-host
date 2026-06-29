@@ -89,6 +89,7 @@ export function assertAgentRuntimeManifest(manifest) {
   exactStringList(manifest.requiredDriverIds, REQUIRED_DRIVER_IDS, 'requiredDriverIds');
   worldActuatorRefList(manifest.requiredActuatorRefs, 'requiredActuatorRefs');
   worldDescriptorFingerprintList(manifest.requiredDescriptorFingerprints, 'requiredDescriptorFingerprints');
+  nonemptyStringList(manifest.requiredHostAuthorityLabels, 'requiredHostAuthorityLabels');
   exactStringList(manifest.supportedExampleScenarios, REQUIRED_SCENARIOS, 'supportedExampleScenarios');
   return manifest;
 }

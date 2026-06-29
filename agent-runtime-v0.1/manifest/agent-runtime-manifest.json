@@ -95,6 +95,10 @@
       "agentRuntimeMetadata": {
         "exportedByOwner": true,
         "sha256": "873690610081b9ac35b12e8b20d9f0d4c85db4b55a7888e6e9017e191f05d8e8"
+      },
+      "protocolManifest": {
+        "exportedByOwner": true,
+        "sha256": "f8e8e2053a3058f0207cb4c906b1a0c2b7a0b0cbfa2fdb051ad97db9327c13cb"
       }
     },
     "worldHost": {
@@ -113,9 +117,9 @@
     "buildDiagnostics": {
       "boundaryHead": "8c65d2b74262acc7134fcbbcccea488649d6ae33",
       "worldHead": "ed5503e4bcb063b4112156b9c212ce884ad5dbb0",
-      "worldHostHead": "3cc8cd45ae98cfeac60088211cd7c007d84f5617",
+      "worldHostHead": "280805ad5a9bb744b7aa902658165a8b5e1e0c0e",
       "worldHostDirty": false
     }
   },
-  "manifestFingerprint": "agent-runtime:2c907b54cd3e761b4dfdadaf1b00ea78"
+  "manifestFingerprint": "agent-runtime:71ce016d2e011a2e5a8c8b1a0322a1c1"
 }

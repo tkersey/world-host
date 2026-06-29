@@ -2,22 +2,24 @@ import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cp, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { createApplicationRecord } from '../src/core/application.mjs';
-import { EffectJournal } from '../src/core/effect_journal.mjs';
+import { EffectJournal, EffectState } from '../src/core/effect_journal.mjs';
 import { exportCarrierRun, forkRunBranch, importCarrierRun } from '../src/core/migration.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from '../src/core/run.mjs';
 import { fromUtf8, stableJson } from '../src/core/store.mjs';
 import { RunController, WorldWorker } from '../src/core/worker.mjs';
 import { BunStoreLock } from '../src/bun/bun_lock.mjs';
-import { redact, runBunCli } from '../src/bun/bun_cli.mjs';
-import { encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
+import { agentWorldHostRequestToEffectRequest, agentWorldRequestDriver, redact, runBunCli } from '../src/bun/bun_cli.mjs';
+import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
+import { encodeCanonicalValueImage } from '../src/protocol/world_loaded_value_codec.mjs';
 import { summarizeTurnClosureForRunHead } from '../src/protocol/world_universal_appliance_codec.mjs';
 import { DirectoryStore } from '../src/stores/directory_store.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
+import { FixtureAgentModelDriver } from '../src/drivers/fixture_agent_model_driver.mjs';
 
 describe('migration, branching, and CLI diagnostics', () => {
   it('forks a branch without mutating the source branch head', async () => {
@@ -849,7 +851,7 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
-  it('runs and resumes installed agent packs with bundled runtime drivers', async () => {
+  it('rejects installed agent pack resumes with empty bundled runtime payloads', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-cli-run-resume-'));
     try {
       await runBunCli([
@@ -862,6 +864,23 @@ describe('migration, branching, and CLI diagnostics', () => {
         stdout: { write() {} },
         stderr: { write() {} },
       });
+      await mkdir(path.join(root, 'sandbox'), { recursive: true });
+      await writeFile(path.join(root, 'sandbox/input.txt'), 'rewrite this file through the agent loop\n');
+      await writeFile(path.join(root, 'sandbox/output.txt'), '');
+
+      await assert.rejects(
+        () => runBunCli([
+          'agent',
+          'run',
+          '--store', root,
+          'agent-runtime-v0.1',
+          '--run', 'agent-cli-missing-sandbox',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_AGENT_RUNTIME_SANDBOX_ROOT_REQUIRED' },
+      );
 
       let output = '';
       const runCode = await runBunCli([
@@ -878,31 +897,185 @@ describe('migration, branching, and CLI diagnostics', () => {
       });
       const run = JSON.parse(output);
 
-      output = '';
-      const resumeCode = await runBunCli([
+      assert.equal(runCode, 0);
+      assert.equal(run.head.status, 'needs_host');
+      await assert.rejects(
+        () => runBunCli([
+          'agent',
+          'resume',
+          '--store', root,
+          '--run', 'agent-cli-run',
+          '--scenario', 'fixture',
+          '--sandbox-root', path.join(root, 'sandbox'),
+        ], {
+          stdout: { write: (text) => { output += text; } },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_AGENT_RUNTIME_EMPTY_PAYLOAD_UNSUPPORTED' },
+      );
+      assert.equal(await readFile(path.join(root, 'sandbox/output.txt'), 'utf8'), '');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects malformed canonical agent runtime payload framing', () => {
+    const malformedPayload = new Uint8Array(encodeCanonicalValueImage({
+      bytes: fromUtf8('agent runtime request'),
+      dynamicSize: true,
+    }));
+    malformedPayload[16] = 2;
+
+    assert.throws(() => agentWorldHostRequestToEffectRequest({
+      requestFingerprint: 0xa17n,
+      idempotencyKeyBytes: fromUtf8('malformed-agent-runtime-payload'),
+      idempotencyKeyFingerprint: 0xa18n,
+      actuatorRefFingerprint: 0xa19n,
+      expectedResponseDescriptorFingerprint: 0xa20n,
+      actuationClass: 2,
+      allowedResponseStatuses: 1,
+      hostRequestBytes: fromUtf8('host-request-envelope'),
+      payloadValueImageBytes: malformedPayload,
+    }), { code: 'ERR_AGENT_RUNTIME_VALUE_IMAGE_MALFORMED' });
+  });
+
+  it('imports installed agent exports with receiver-local agent drivers', async () => {
+    const sourceRoot = await mkdtemp(path.join(tmpdir(), 'world-host-agent-import-source-'));
+    const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-agent-import-receiver-'));
+    const packagePath = path.join(receiverRoot, 'agent-export.json');
+    try {
+      await runBunCli([
         'agent',
-        'resume',
-        '--store', root,
-        '--run', 'agent-cli-run',
-        '--scenario', 'fixture',
-        '--sandbox-root', path.join(root, 'sandbox'),
+        'install',
+        '--pack', path.resolve('agent-runtime-v0.1'),
+        '--store', sourceRoot,
+        '--app', 'agent-runtime-v0.1',
+      ], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      });
+      const runCode = await runBunCli([
+        'agent',
+        'run',
+        '--no-execute',
+        '--store', sourceRoot,
+        'agent-runtime-v0.1',
+        '--run', 'agent-import-source',
+      ], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      });
+      assert.equal(runCode, 0);
+
+      const exportCode = await runBunCli([
+        'agent',
+        'migrate',
+        '--store', sourceRoot,
+        '--run', 'agent-import-source',
+        '--out', packagePath,
+      ], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      });
+      assert.equal(exportCode, 0);
+
+      await assert.rejects(
+        () => runBunCli([
+          'import',
+          '--store', receiverRoot,
+          '--package', packagePath,
+          '--run', 'generic-agent-import',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_IMPORT_PREFLIGHT_BLOCKED' },
+      );
+
+      const sandboxRoot = path.join(receiverRoot, 'sandbox');
+      await mkdir(sandboxRoot, { recursive: true });
+      let output = '';
+      const importCode = await runBunCli([
+        'agent',
+        'import',
+        '--store', receiverRoot,
+        '--package', packagePath,
+        '--run', 'receiver-agent-import',
+        '--sandbox-root', sandboxRoot,
       ], {
         stdout: { write: (text) => { output += text; } },
         stderr: { write() {} },
       });
-      const resumed = JSON.parse(output);
+      const imported = JSON.parse(output);
+      assert.equal(importCode, 0);
+      assert.equal(imported.runId, 'receiver-agent-import');
+      assert.equal(imported.receiverPolicyApplied, true);
+      assert.equal(imported.diagnostics.workerExecuted, false);
 
-      assert.equal(runCode, 0);
-      assert.equal(run.head.status, 'needs_host');
-      assert.equal(resumeCode, 0);
-      assert.equal(resumed.head.status, 'completed');
-      assert.equal(resumed.advance.effectCount, 2);
-      assert.equal(resumed.advance.unresolvedHostRequestCount, 0);
-      assert.equal(resumed.diagnostics.driversInvokedByCli, true);
-      assert.equal(await readFile(path.join(root, 'sandbox/output.txt'), 'utf8'), 'actuate updated the fixture');
+      const receiverStore = new DirectoryStore(receiverRoot);
+      await receiverStore.acquireLock();
+      try {
+        const app = await receiverStore.getApplication('agent-runtime-v0.1');
+        assert.deepEqual(app.requiredActuators, [
+          { actuatorRef: 'world:actuator-ref:4f0c7160f25c4c62' },
+          { actuatorRef: 'world:actuator-ref:d5e4b1b427522cf2' },
+        ]);
+      } finally {
+        await receiverStore.releaseLock();
+      }
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(sourceRoot, { recursive: true, force: true });
+      await rm(receiverRoot, { recursive: true, force: true });
     }
+  });
+
+  it('rebinds recovered agent runtime model responses to expected World refs', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({
+      store,
+      runId: 'agent-runtime-recover',
+      branchId: 'main',
+      parentTurnClosureFingerprint: 'world:turn-closure:agent-runtime-parent',
+    });
+    const driver = agentWorldRequestDriver(new FixtureAgentModelDriver({
+      scenario: 'skeleton',
+      actuatorRef: 'world:actuator-ref:4f0c7160f25c4c62',
+      descriptorFingerprint: 'world:descriptor:be73177924a6b377',
+    }), 'world:actuation-class:2');
+    const hostRequest = {
+      hostRequestFingerprint: 'world:host-request:0000000000000a17',
+      idempotencyKeyBytes: fromUtf8('agent-runtime-recover-key'),
+      actuatorRef: 'world:actuator-ref:4f0c7160f25c4c62',
+      descriptorFingerprint: 'world:descriptor:be73177924a6b377',
+      actuationClass: 'world:actuation-class:2',
+      responseSchema: { status: 'responded' },
+      requestBytes: fromUtf8(JSON.stringify({
+        schema: 'boundary.Agent.DecisionPrompt.v0',
+        observation: 'goal=invoke',
+      })),
+      expectedResponseValueRefFingerprint: '0x0000000000000abc',
+      expectedResponseSchemaRefFingerprint: '0x0000000000000def',
+      diagnostics: {
+        agentRuntimeExpectedResponseValueRefFingerprint: '0x0000000000000abc',
+        agentRuntimeExpectedResponseSchemaRefFingerprint: '0x0000000000000def',
+      },
+    };
+    const observed = await journal.observe(hostRequest, { manifest: driver.manifest() });
+    await store.putEffectRecord({
+      ...observed,
+      state: EffectState.running,
+      attemptCount: 1,
+      diagnostics: { ...observed.diagnostics, driverId: 'fixture-agent-model' },
+    });
+
+    const recovered = await journal.resolve({}, hostRequest, driver);
+    const resolution = decodeResolutionInputBytes(recovered.resolutionInputBytes);
+    const refs = decodeValueImageResponseRefs(resolution.responseValueImageBytes);
+
+    assert.equal(recovered.record.diagnostics.recovered, true);
+    assert.equal(recovered.record.diagnostics.agentRuntimeResponseBoundToExpectedRefs, true);
+    assert.equal(refs.boundaryValueFingerprint, '0x0000000000000abc');
+    assert.equal(refs.codecSchemaDescriptorFingerprint, '0x0000000000000def');
   });
 
   it('rejects invalid agent packs during CLI install', async () => {
@@ -2526,6 +2699,32 @@ function fixtureImportEffect(bundle, overrides = {}) {
     diagnostics: {},
     ...overrides,
   };
+}
+
+function decodeValueImageResponseRefs(bytes) {
+  let offset = 0;
+  const view = (length) => {
+    const result = new DataView(bytes.buffer, bytes.byteOffset + offset, length);
+    offset += length;
+    return result;
+  };
+  const u8 = () => view(1).getUint8(0);
+  const u32 = () => view(4).getUint32(0, true);
+  const u64 = () => view(8).getBigUint64(0, true);
+  const optionalU32 = () => (u8() === 1 ? u32() : null);
+  const optionalU64 = () => (u8() === 1 ? u64() : null);
+  assert.equal(u32(), 1);
+  assert.equal(u32(), 1);
+  u64();
+  optionalU32();
+  return {
+    boundaryValueFingerprint: fingerprintHex(optionalU64()),
+    codecSchemaDescriptorFingerprint: fingerprintHex(optionalU64()),
+  };
+}
+
+function fingerprintHex(value) {
+  return value == null ? null : `0x${value.toString(16).padStart(16, '0')}`;
 }
 
 function fixtureDriver() {

@@ -1,7 +1,7 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -85,6 +85,27 @@ describe('Agent Runtime pack', () => {
         /missing required file: .*world-host\/scripts\/run-agent-runtime-conformance\.mjs/,
       );
 
+      const directoryStoreModulePack = path.join(root, 'agent-runtime-v0.1-directory-store-module');
+      await cp(pack, directoryStoreModulePack, { recursive: true });
+      const storeModulePath = path.join(directoryStoreModulePack, 'world-host/src/core/store.mjs');
+      await rm(storeModulePath);
+      await mkdir(storeModulePath);
+      await writeFile(path.join(storeModulePath, 'nested.txt'), 'not a module');
+      await refreshAgentRuntimePackChecksums(directoryStoreModulePack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(directoryStoreModulePack),
+        /required path is not a file: .*world-host\/src\/core\/store\.mjs/,
+      );
+
+      const staleWorldProtocolPack = path.join(root, 'agent-runtime-v0.1-stale-world-protocol');
+      await cp(pack, staleWorldProtocolPack, { recursive: true });
+      await writeFile(path.join(staleWorldProtocolPack, 'world/world-protocol-manifest.bin'), 'tampered world protocol');
+      await refreshAgentRuntimePackChecksums(staleWorldProtocolPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(staleWorldProtocolPack),
+        /ERR_CHECKSUM_MISMATCH:world\/world-protocol-manifest\.bin|ERR_AGENT_RUNTIME_ARTIFACT_SHA:world\.protocolManifest\.sha256/,
+      );
+
       const staleBoundaryCorpusPack = path.join(root, 'agent-runtime-v0.1-stale-boundary-corpus');
       await cp(pack, staleBoundaryCorpusPack, { recursive: true });
       const boundaryCorpusPath = path.join(staleBoundaryCorpusPack, 'boundary/corpus.boundary-agent.txt');
@@ -135,6 +156,28 @@ describe('Agent Runtime pack', () => {
       releaseReceiptFingerprint: 'agent-runtime:receipt',
     });
     assert.throws(() => assertAgentRuntimeManifest({ ...manifest, agentRuntimeVersion: 'v0.2' }), /ERR_AGENT_RUNTIME_MANIFEST_FINGERPRINT/);
+    assert.throws(() => assertAgentRuntimeManifest({
+      ...buildAgentRuntimeManifest({
+        ...manifest,
+        requiredHostAuthorityLabels: [],
+      }),
+      requiredHostAuthorityLabels: [],
+    }), /requiredHostAuthorityLabels/);
+  });
+
+  it('rejects symlinked paths while checking pack checksum coverage', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agent-runtime-pack-symlink-'));
+    try {
+      const pack = path.join(root, 'agent-runtime-v0.1');
+      await cp(path.resolve('agent-runtime-v0.1'), pack, { recursive: true });
+      await symlink(root, path.join(pack, 'conformance/escape'), 'dir');
+      await assert.rejects(
+        () => checkAgentRuntimePack(pack),
+        /ERR_PACK_SYMLINK:conformance\/escape/,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('rejects source roots as pack build output targets', async () => {
@@ -185,14 +228,15 @@ function passingConformanceReceipt(manifest) {
     receiptFormatVersion: 1,
     agentRuntimeManifestFingerprint: manifest.manifestFingerprint,
     agent_runtime_conformance: true,
-    skeleton_completed: true,
-    fixture_completed: true,
+    owner_skeleton_example_completed: true,
+    owner_fixture_example_completed: true,
     replay_matched: true,
     retry_matched: true,
     migration_matched: true,
     branching_matched: true,
     negative_cases_rejected: true,
     world_evidence_validated: true,
+    distributed_empty_payloads_rejected: true,
     host_did_not_author_receipts: true,
     no_generated_agent_target_type: true,
     no_native_helper_process: true,

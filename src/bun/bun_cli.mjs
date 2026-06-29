@@ -1,14 +1,14 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import { createApplicationRecord } from '../core/application.mjs';
 import { exportCarrierRun, forkRunBranch, importCarrierRun } from '../core/migration.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from '../core/run.mjs';
-import { assertBlobRef, fail, fromUtf8, makeBlobRef, stableJson } from '../core/store.mjs';
+import { assertBlobRef, fail, fromUtf8, makeBlobRef } from '../core/store.mjs';
 import { RunController, worldHostRequestToEffectRequest } from '../core/worker.mjs';
 import { createRunPolicy, preflightCapabilities } from '../core/capabilities.mjs';
-import { encodeBootTurnInput, encodeResolutionInputBytes, encodeRestoreTurnInput } from '../protocol/world_appliance_wire_codec.mjs';
+import { decodeResolutionInputBytes, encodeBootTurnInput, encodeResolutionInputBytes, encodeRestoreTurnInput } from '../protocol/world_appliance_wire_codec.mjs';
 import { encodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
 import { inspectTurnOutput, summarizeTurnClosureForRunHead } from '../protocol/world_universal_appliance_codec.mjs';
 import { carrierVersionSummary } from '../protocol/world_manifest.mjs';
@@ -24,7 +24,6 @@ const AGENT_MODEL_ACTUATION_CLASS = 'world:actuation-class:2';
 const AGENT_FILE_ACTUATOR = 'world:actuator-ref:d5e4b1b427522cf2';
 const AGENT_FILE_DESCRIPTOR = 'world:descriptor:74afc8c3b2fe4c33';
 const AGENT_FILE_ACTUATION_CLASS = 'world:actuation-class:1';
-
 export async function runBunCli(args, io, options = {}) {
   const command = args[0] ?? 'help';
   if (command === '--version' || command === 'version') {
@@ -100,7 +99,10 @@ async function runAgentCommand(args, io, options) {
       '--manifest', path.join(checked.root, 'world/appliance-manifest.bin'),
     ], io, storePath, { requiredActuators });
   }
-  if (subcommand === 'run') return await runStoreRun(forwardAgentRunArgs(args), io, requiredOption(args, '--store'), agentRuntimeRunOptions(args, options));
+  if (subcommand === 'run') {
+    const runOptions = args.includes('--no-execute') ? options : agentRuntimeRunOptions(args, options);
+    return await runStoreRun(forwardAgentRunArgs(args), io, requiredOption(args, '--store'), runOptions);
+  }
   if (subcommand === 'resume') return await runStoreResume(['resume', ...args.slice(1)], io, requiredOption(args, '--store'), agentRuntimeRunOptions(args, options));
   if (subcommand === 'inspect') return await runStoreDiagnostics('inspect', ['inspect', ...args.slice(1)], io, requiredOption(args, '--store'), requiredOption(args, '--run'));
   if (subcommand === 'replay') return await runStoreDiagnostics('inspect', ['inspect', ...args.slice(1)], io, requiredOption(args, '--store'), requiredOption(args, '--run'));
@@ -109,7 +111,7 @@ async function runAgentCommand(args, io, options) {
     const out = requiredOption(args, '--out');
     return await runExport(['export', ...args.slice(1), '--out', out], io, storePath);
   }
-  if (subcommand === 'import') return await runImport(['import', ...args.slice(1)], io, requiredOption(args, '--store'));
+  if (subcommand === 'import') return await runImport(['import', ...args.slice(1)], io, requiredOption(args, '--store'), agentRuntimeRunOptions(args, options));
   if (subcommand === 'conformance') {
     const pack = requiredOption(args, '--pack');
     const { runAgentRuntimeConformance } = await import('../../scripts/run-agent-runtime-conformance.mjs');
@@ -465,7 +467,7 @@ async function runExport(args, io, storePath) {
   }
 }
 
-async function runImport(args, io, storePath) {
+async function runImport(args, io, storePath, options = {}) {
   const packagePath = requiredOption(args, '--package');
   const receiverRunId = valueAfter(args, '--run');
   const carrierExport = JSON.parse(await readFile(packagePath, 'utf8'));
@@ -478,8 +480,8 @@ async function runImport(args, io, storePath) {
         application: candidate.bundle.application,
         currentHead: candidate.bundle.head,
         pendingRequests: pendingRequestsForImportedHead(candidate),
-        drivers: [],
-        policy: createRunPolicy(),
+        drivers: options.effectDrivers ?? [],
+        policy: options.effectPolicy ?? createRunPolicy(),
       }),
     });
     io.stdout.write(`${JSON.stringify(redact({
@@ -601,7 +603,9 @@ function importClosureStatusLabel(status) {
 }
 
 function agentRuntimeRunOptions(args, options = {}) {
-  const sandboxRoot = path.resolve(valueAfter(args, '--sandbox-root') ?? requiredOption(args, '--store'));
+  const sandboxRootOption = valueAfter(args, '--sandbox-root');
+  if (!sandboxRootOption) fail('ERR_AGENT_RUNTIME_SANDBOX_ROOT_REQUIRED', 'agent runtime file driver requires --sandbox-root');
+  const sandboxRoot = path.resolve(sandboxRootOption);
   const scenario = valueAfter(args, '--scenario') ?? valueAfter(args, '--agent-scenario') ?? 'skeleton';
   return {
     ...options,
@@ -610,34 +614,39 @@ function agentRuntimeRunOptions(args, options = {}) {
         scenario,
         actuatorRef: AGENT_MODEL_ACTUATOR,
         descriptorFingerprint: AGENT_MODEL_DESCRIPTOR,
-      }), AGENT_MODEL_ACTUATION_CLASS, fallbackAgentModelResponse(scenario)),
+      }), AGENT_MODEL_ACTUATION_CLASS),
       agentWorldRequestDriver(new SandboxFileDriver({
         root: sandboxRoot,
         actuatorRef: AGENT_FILE_ACTUATOR,
         descriptorFingerprint: AGENT_FILE_DESCRIPTOR,
-      }), AGENT_FILE_ACTUATION_CLASS, fallbackAgentFileResponseForRoot(sandboxRoot)),
+      }), AGENT_FILE_ACTUATION_CLASS),
       ...(options.effectDrivers ?? []),
     ],
     effectPolicy: {
       allowBestEffort: true,
       ...(options.effectPolicy ?? {}),
     },
-    hostRequestMapper: options.hostRequestMapper ?? agentWorldHostRequestToEffectRequest,
+    hostRequestMapper: options.hostRequestMapper ?? ((request) => agentWorldHostRequestToEffectRequest(request, { scenario, sandboxRoot })),
     agentRuntimeDrivers: true,
   };
 }
 
-function agentWorldHostRequestToEffectRequest(request) {
+export function agentWorldHostRequestToEffectRequest(request, options = {}) {
   const mapped = worldHostRequestToEffectRequest(request);
+  const expectedResponseDiagnostics = agentRuntimeExpectedResponseDiagnostics(request);
   return {
     ...mapped,
     expectedResponseValueRefFingerprint: request.expectedResponseValueRefFingerprint,
     expectedResponseSchemaRefFingerprint: request.expectedResponseSchemaRefFingerprint,
-    ...agentRuntimePayloadBytes(request.payloadValueImageBytes, mapped.requestBytes),
+    diagnostics: {
+      ...mapped.diagnostics,
+      ...expectedResponseDiagnostics,
+    },
+    ...agentRuntimePayloadBytes(request.payloadValueImageBytes),
   };
 }
 
-function agentWorldRequestDriver(driver, actuationClass, fallbackResponse = null) {
+export function agentWorldRequestDriver(driver, actuationClass) {
   return {
     manifest() {
       return {
@@ -651,119 +660,173 @@ function agentWorldRequestDriver(driver, actuationClass, fallbackResponse = null
         ...hostRequest,
         responseSchema: hostRequest.responseSchema ? { ...hostRequest.responseSchema, status: 'ok' } : hostRequest.responseSchema,
       };
-      try {
-        return await driver.resolve(context, delegated);
-      } catch (error) {
-        if (!fallbackResponse || delegated.agentRuntimePayloadDecoded === true) throw error;
-        return {
-          resolutionInputBytes: agentRuntimeResolutionInput(hostRequest, await fallbackResponse(hostRequest)),
-          diagnostics: { deterministicAgentRuntimeFallback: true, cause: error?.code ?? error?.message ?? String(error) },
-        };
-      }
-    },
-    async recover(context, effectRecord) {
-      return await driver.recover(context, effectRecord);
+      return bindAgentRuntimeResolution(hostRequest, await driver.resolve(context, delegated));
     },
   };
 }
 
-function fallbackAgentModelResponse(scenario) {
-  let calls = 0;
-  return (hostRequest) => {
-    calls += 1;
-    const action = scenario === 'fixture'
-      ? (calls === 1
-          ? { variant: 'tool', toolId: 'read_file', payload: 'input.txt' }
-          : { variant: 'final', text: 'final=fixture updated' })
-      : (calls === 1
-          ? { variant: 'tool', toolId: 'actuate', payload: '' }
-          : { variant: 'final', text: 'final=actuate skeleton complete' });
-    return encodeCanonicalValueImage({
-      boundaryValueFingerprint: hostRequest.expectedResponseValueRefFingerprint,
-      codecSchemaDescriptorFingerprint: hostRequest.expectedResponseSchemaRefFingerprint,
-      bytes: fromUtf8(stableJson({ schema: 'boundary.Agent.Action.v0', action })),
-      dynamicSize: true,
-    });
+function bindAgentRuntimeResolution(hostRequest, result) {
+  const expectedValue = hostRequest.expectedResponseValueRefFingerprint ??
+    hostRequest.diagnostics?.agentRuntimeExpectedResponseValueRefFingerprint;
+  const expectedSchema = hostRequest.expectedResponseSchemaRefFingerprint ??
+    hostRequest.diagnostics?.agentRuntimeExpectedResponseSchemaRefFingerprint;
+  if (expectedValue == null && expectedSchema == null) return result;
+  const resolution = decodeResolutionInputBytes(result.resolutionInputBytes);
+  if (resolution.status !== 0 || resolution.responseValueImageBytes.byteLength === 0) return result;
+  const payload = decodeCanonicalValueImagePayload(resolution.responseValueImageBytes);
+  return {
+    ...result,
+    resolutionInputBytes: encodeResolutionInputBytes({
+      ...resolution,
+      responseValueImageBytes: encodeCanonicalValueImage({
+        boundaryValueFingerprint: expectedValue,
+        codecSchemaDescriptorFingerprint: expectedSchema,
+        bytes: payload,
+        dynamicSize: true,
+      }),
+    }),
+    diagnostics: {
+      ...result.diagnostics,
+      agentRuntimeResponseBoundToExpectedRefs: true,
+    },
   };
 }
 
-function fallbackAgentFileResponseForRoot(root) {
-  return async (hostRequest) => {
-    await mkdir(root, { recursive: true });
-    const outputPath = path.join(root, 'output.txt');
-    await writeFile(outputPath, fromUtf8('actuate updated the fixture'));
-    return encodeCanonicalValueImage({
-      boundaryValueFingerprint: hostRequest.expectedResponseValueRefFingerprint,
-      codecSchemaDescriptorFingerprint: hostRequest.expectedResponseSchemaRefFingerprint,
-      bytes: fromUtf8(stableJson({ status: 'ok', path: 'output.txt', byteLength: 'actuate updated the fixture'.length })),
-      dynamicSize: true,
-    });
+function agentRuntimeExpectedResponseDiagnostics(request) {
+  return {
+    agentRuntimeExpectedResponseValueRefFingerprint: optionalFingerprintHex(request.expectedResponseValueRefFingerprint),
+    agentRuntimeExpectedResponseSchemaRefFingerprint: optionalFingerprintHex(request.expectedResponseSchemaRefFingerprint),
   };
 }
 
-function agentRuntimeResolutionInput(hostRequest, responseValueImageBytes) {
-  return encodeResolutionInputBytes({
-    targetHostRequestFingerprint: resolutionTarget(hostRequest),
-    status: 0,
-    responseValueImageBytes,
-    hostClaimBytes: new Uint8Array(),
-    attemptNumber: 1,
-    metadata: fromUtf8('world-host-agent-runtime-cli'),
-  });
-}
-
-function resolutionTarget(hostRequest = {}) {
-  const value = hostRequest.hostRequestFingerprint;
-  if (typeof value === 'bigint' || typeof value === 'number') return BigInt(value);
-  const match = String(value ?? '').match(/(?:0x)?([0-9a-f]+)$/i);
-  if (!match) fail('ERR_HOST_REQUEST_FINGERPRINT_REQUIRED');
-  return BigInt(`0x${match[1]}`);
+function optionalFingerprintHex(value) {
+  if (value == null) return null;
+  return `0x${BigInt(value).toString(16).padStart(16, '0')}`;
 }
 
 function tryDecodeCanonicalValueImagePayload(bytes) {
-  try {
-    return decodeCanonicalValueImagePayload(bytes);
-  } catch {
-    return null;
-  }
+  const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes ?? []);
+  if (!hasCanonicalValueImageHeader(data)) return null;
+  return decodeCanonicalValueImagePayload(data);
 }
 
-function agentRuntimePayloadBytes(payloadValueImageBytes, fallbackBytes) {
-  const decoded = tryDecodeCanonicalValueImagePayload(payloadValueImageBytes);
-  return decoded
-    ? { requestBytes: decoded, agentRuntimePayloadDecoded: true }
-    : { requestBytes: fallbackBytes, agentRuntimePayloadDecoded: false };
+function hasCanonicalValueImageHeader(data) {
+  if (data.byteLength < 8) return false;
+  const view = new DataView(data.buffer, data.byteOffset, 8);
+  return view.getUint32(0, true) === 1 && view.getUint32(4, true) === 1;
+}
+
+function canonicalView(data, offset, length) {
+  if (offset > data.byteLength || length > data.byteLength - offset) fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_MALFORMED');
+  return new DataView(data.buffer, data.byteOffset + offset, length);
+}
+
+function canonicalOptionalTag(data, offset) {
+  if (offset >= data.byteLength) fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_MALFORMED');
+  const tag = data[offset];
+  if (tag !== 0 && tag !== 1) fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_MALFORMED');
+  return tag;
+}
+
+function canonicalPortableBytes(data, offset) {
+  const length = Number(canonicalView(data, offset, 8).getBigUint64(0, true));
+  if (!Number.isSafeInteger(length)) fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_MALFORMED');
+  const start = offset + 8;
+  const end = start + length;
+  if (end > data.byteLength) fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_MALFORMED');
+  return { payload: data.slice(start, end), offset: end };
+}
+
+function skipCanonicalOptional(data, offset, width) {
+  const tag = canonicalOptionalTag(data, offset);
+  const next = offset + 1 + (tag === 1 ? width : 0);
+  if (next > data.byteLength) fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_MALFORMED');
+  return next;
+}
+
+function skipCanonicalOptionalPortableBytes(data, offset) {
+  const tag = canonicalOptionalTag(data, offset);
+  if (tag === 0) return offset + 1;
+  return canonicalPortableBytes(data, offset + 1).offset;
+}
+
+function readCanonicalU32(data, offset) {
+  return canonicalView(data, offset, 4).getUint32(0, true);
+}
+
+function skipCanonicalU64(data, offset) {
+  canonicalView(data, offset, 8);
+  return offset + 8;
+}
+
+function readCanonicalBool(data, offset) {
+  if (offset >= data.byteLength) fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_MALFORMED');
+  const value = data[offset];
+  if (value !== 0 && value !== 1) fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_MALFORMED');
+  return offset + 1;
 }
 
 function decodeCanonicalValueImagePayload(bytes) {
   const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes ?? []);
   let offset = 0;
-  const u8 = () => data[offset++];
-  const u32 = () => {
-    const value = new DataView(data.buffer, data.byteOffset + offset, 4).getUint32(0, true);
-    offset += 4;
+  if (readCanonicalU32(data, offset) !== 1) fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_UNSUPPORTED');
+  offset += 4;
+  if (readCanonicalU32(data, offset) !== 1) fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_UNSUPPORTED');
+  offset += 4;
+  offset = skipCanonicalU64(data, offset);
+  offset = skipCanonicalOptional(data, offset, 4);
+  offset = skipCanonicalOptional(data, offset, 8);
+  offset = skipCanonicalOptional(data, offset, 8);
+  offset = readCanonicalBool(data, offset);
+  const decoded = canonicalPortableBytes(data, offset);
+  offset = skipCanonicalOptionalPortableBytes(data, decoded.offset);
+  if (offset !== data.byteLength) fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_TRAILING_BYTES');
+  return decoded.payload;
+}
+
+function agentRuntimePayloadBytes(payloadValueImageBytes) {
+  const decoded = tryDecodeCanonicalValueImagePayload(payloadValueImageBytes);
+  if (decoded) {
+    if (decoded.byteLength === 0) fail('ERR_AGENT_RUNTIME_EMPTY_PAYLOAD_UNSUPPORTED', 'agent runtime HostRequest payload did not carry request bytes');
+    return { requestBytes: decoded, agentRuntimePayloadDecoded: true, agentRuntimePayloadFormat: 'world.frame.value_image' };
+  }
+  const portable = decodeAgentRuntimePayloadValueImage(payloadValueImageBytes);
+  if (portable.rootArgumentImageBytes.byteLength > 0) {
+    return {
+      requestBytes: portable.rootArgumentImageBytes,
+      agentRuntimePayloadDecoded: true,
+      agentRuntimePayloadFormat: portable.format,
+    };
+  }
+  fail('ERR_AGENT_RUNTIME_EMPTY_PAYLOAD_UNSUPPORTED', 'agent runtime HostRequest payload did not carry request bytes');
+}
+
+function decodeAgentRuntimePayloadValueImage(bytes) {
+  const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes ?? []);
+  let offset = 0;
+  const view = (length) => {
+    if (offset > data.byteLength || length > data.byteLength - offset) fail('ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_MALFORMED');
+    const value = new DataView(data.buffer, data.byteOffset + offset, length);
+    offset += length;
     return value;
   };
-  const skipU64 = () => { offset += 8; };
-  const skipOptionalU32 = () => { if (u8() === 1) offset += 4; };
-  const skipOptionalU64 = () => { if (u8() === 1) offset += 8; };
+  const u32 = () => view(4).getUint32(0, true);
+  const u64 = () => view(8).getBigUint64(0, true);
   const portableBytes = () => {
-    const lengthView = new DataView(data.buffer, data.byteOffset + offset, 8);
-    const length = Number(lengthView.getBigUint64(0, true));
-    offset += 8;
-    const end = offset + length;
-    if (!Number.isSafeInteger(length) || end > data.byteLength) fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_MALFORMED');
-    const payload = data.slice(offset, end);
-    offset = end;
-    return payload;
+    const length = u32();
+    if (offset > data.byteLength || length > data.byteLength - offset) fail('ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_MALFORMED');
+    const value = data.slice(offset, offset + length);
+    offset += length;
+    return value;
   };
-  if (u32() !== 1 || u32() !== 1) fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_UNSUPPORTED');
-  skipU64();
-  skipOptionalU32();
-  skipOptionalU64();
-  skipOptionalU64();
-  u8();
-  return portableBytes();
+  const format = new TextDecoder().decode(portableBytes());
+  if (format !== 'world.appliance.payload_value_image.v1') fail('ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_UNSUPPORTED');
+  const commandFingerprint = u64();
+  const bindingFingerprint = u64();
+  const worldPortId = u32();
+  const rootArgumentImageBytes = portableBytes();
+  if (offset !== data.byteLength) fail('ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_TRAILING_BYTES');
+  return { format, commandFingerprint, bindingFingerprint, worldPortId, rootArgumentImageBytes };
 }
 
 async function runRecover(args, io, storePath) {
