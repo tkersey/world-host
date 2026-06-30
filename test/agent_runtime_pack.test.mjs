@@ -166,6 +166,7 @@ describe('Agent Runtime pack', () => {
       const fresh = await runAgentRuntimeConformance(freshConformancePack);
       assert.equal(fresh.receipt.distributed_skeleton_scenario_completed, true);
       assert.equal(fresh.receipt.distributed_fixture_scenario_completed, true);
+      assert.equal(fresh.receipt.host_did_not_author_receipts, true);
       await assertAgentRuntimeReleaseReceipt(freshConformancePack, fresh.releaseReceipt);
 
       const permutedEffectsPack = path.join(root, 'permuted-effects', 'agent-runtime-v0.1');

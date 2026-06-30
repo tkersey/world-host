@@ -1100,6 +1100,31 @@ describe('RunController and WorldWorker', () => {
     );
   });
 
+  it('fails closed when TurnClosure root result diverges from the embedded receipt', async () => {
+    const { store, runId, branchId } = await fixtureStore();
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes({ rootResultFingerprint: 0xbadn })),
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_TURN_CLOSURE_INSPECTION_FAILED' },
+    );
+  });
+
+  it('accepts non-completed diagnostic root results when object refs match', async () => {
+    const { store, runId, branchId } = await fixtureStore();
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes({ status: 3 })),
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.nextHead.status, 'failed');
+  });
+
   it('fails closed when pending HostRequests are not receipt-emitted', () => {
     assert.throws(
       () => summarizeTurnClosureForRunHead(fixtureNeedsHostTurnClosureBytes(
@@ -1107,6 +1132,17 @@ describe('RunController and WorldWorker', () => {
         { emittedHostRequestFingerprints: [0xa01n] },
       )),
       /TurnReceipt emitted HostRequests do not match TurnClosure pending requests/,
+    );
+  });
+
+  it('fails closed on duplicate pending HostRequest fingerprints', () => {
+    const duplicateRequest = fixtureHostRequestBytes({ requestFingerprint: 0xa01n });
+    assert.throws(
+      () => summarizeTurnClosureForRunHead(fixtureNeedsHostTurnClosureBytes(
+        [duplicateRequest, duplicateRequest],
+        { emittedHostRequestFingerprints: [0xa01n, 0xa01n] },
+      )),
+      /duplicate HostRequest fingerprints/,
     );
   });
 
@@ -1550,6 +1586,8 @@ class ThrowingRestoreWorker extends RestoringWorker {
 
 function fixtureTurnClosureBytes(options = {}) {
   const closureStatus = options.status ?? 2;
+  const rootResultBytes = rootResultValueBytes(options.rootResultValueFingerprint ?? 0xb01n);
+  const rootResultRef = rootResultObjectRef(rootResultBytes);
   const turnReceiptBytes = concat([
     u32(options.receiptFormatVersion ?? 1),
     u32(options.receiptFingerprintVersion ?? 1),
@@ -1599,9 +1637,9 @@ function fixtureTurnClosureBytes(options = {}) {
     optionalU64(0xa00n),
     bytes(Uint8Array.of(1, 2, 3)),
     bytes(new Uint8Array()),
-    optionalU64(0xb01n),
-    bytes(rootResultValueBytes(options.rootResultValueFingerprint ?? 0xb01n)),
-    optionalU64(null),
+    optionalU64(options.rootResultFingerprint ?? rootResultRef.objectFingerprint),
+    bytes(rootResultBytes),
+    optionalU64(options.rootResultValueRefFingerprint ?? rootResultRef.refFingerprint),
     optionalU64(null),
     bytes(new Uint8Array()),
     u64Slice([]),
@@ -1763,6 +1801,25 @@ function optionalHashU64(value) {
 function rootResultValueBytes(fingerprint) {
   const label = fromUtf8('world.appliance.root_result.value_image');
   return concat([u32(label.byteLength), label, u64(fingerprint)]);
+}
+
+function rootResultObjectRef(payload) {
+  const objectFingerprint = wyhash64(concat([
+    fromUtf8('world.continuity.object.payload'),
+    u64(56n),
+    u64(1n),
+    u64(BigInt(payload.byteLength)),
+    payload,
+  ]));
+  const refFingerprint = wyhash64(concat([
+    fromUtf8('world.continuity.object.ref'),
+    u64(1n),
+    u64(56n),
+    u64(1n),
+    u64(objectFingerprint),
+    u64(BigInt(payload.byteLength)),
+  ]));
+  return { objectFingerprint, refFingerprint };
 }
 
 function nonzero(value) {

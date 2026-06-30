@@ -46,21 +46,30 @@ const WORLD_V0_BOUNDARY_PROTOCOL_MANIFEST_FINGERPRINT = '0x68ce6ebd4448144f';
 const WORLD_V0_CONFORMANCE_CORPUS_ROOT_FINGERPRINT = '0xe727536b60a5e286';
 const WORLD_V0_SOURCE_PACKAGE_CHECKSUM_BY_HEAD = Object.freeze({
   a8b594e428d49f93d5dcf5a862e7c28192dd44ef: '0x21cf0eced28585af',
+  '969f23f6bad87ca9d535d92d62b6418612891699': '0x5b0212ec5ad6d56a',
 });
 const WORLD_V0_PROTOCOL_FINGERPRINT_BY_HEAD = Object.freeze({
   a8b594e428d49f93d5dcf5a862e7c28192dd44ef: '0xc6fb4236a4b64302:0xdeaadbe889dbe92a',
+  '969f23f6bad87ca9d535d92d62b6418612891699': '0xc6fb4236a4b64302:0xdeaadbe889dbe92a',
 });
 const WORLD_V0_EXECUTABLE_IMAGE_SHA256_BY_HEAD = Object.freeze({
   a8b594e428d49f93d5dcf5a862e7c28192dd44ef: 'f75eda188131e9782dd7b1de3c5083262a13a9007f355a89ba9f79983ba06795',
+  '969f23f6bad87ca9d535d92d62b6418612891699': 'd691bf943b33689b5d35c25c596bfaec9b602500e0b24a32ca495c05ada2f3bf',
 });
 const WORLD_V0_APPLIANCE_MANIFEST_SHA256_BY_HEAD = Object.freeze({
   a8b594e428d49f93d5dcf5a862e7c28192dd44ef: 'd5ff90e2a2738ce18a45303d65799fe4e2687e19e04090859f9e73d750b7df74',
+  '969f23f6bad87ca9d535d92d62b6418612891699': '5a6864d702ffc32ea9492fbc22f2bcc783b69bc087a5269fe00bda509cd1440b',
 });
 const WORLD_V0_UNIVERSAL_WASM_SHA256_BY_HEAD = Object.freeze({
   a8b594e428d49f93d5dcf5a862e7c28192dd44ef: 'a79ae458d3cc5145660dadfc678736e75822c8c70558f8139861dc1103e84add',
+  '969f23f6bad87ca9d535d92d62b6418612891699': 'a79ae458d3cc5145660dadfc678736e75822c8c70558f8139861dc1103e84add',
 });
 const WORLD_V0_REQUIRED_ACTUATOR_REFS_BY_HEAD = Object.freeze({
   a8b594e428d49f93d5dcf5a862e7c28192dd44ef: Object.freeze([
+    'world:actuator-ref:4f0c7160f25c4c62',
+    'world:actuator-ref:d5e4b1b427522cf2',
+  ]),
+  '969f23f6bad87ca9d535d92d62b6418612891699': Object.freeze([
     'world:actuator-ref:4f0c7160f25c4c62',
     'world:actuator-ref:d5e4b1b427522cf2',
   ]),
@@ -69,6 +78,10 @@ const WORLD_V0_REQUIRED_DESCRIPTOR_FINGERPRINTS_BY_HEAD = Object.freeze({
   a8b594e428d49f93d5dcf5a862e7c28192dd44ef: Object.freeze([
     'world:descriptor:be73177924a6b377',
     'world:descriptor:74afc8c3b2fe4c33',
+  ]),
+  '969f23f6bad87ca9d535d92d62b6418612891699': Object.freeze([
+    'world:descriptor:cdf81bc2c474fd1e',
+    'world:descriptor:df0f60919ffc29d2',
   ]),
 });
 const WORLD_HOST_CARRIER_MODULE_SHA256 = '322ea7e3baca7a64d4ff48626f85ccd96165e05e9c8fbb878f0e583a656eef31';

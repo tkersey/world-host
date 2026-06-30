@@ -15,7 +15,7 @@ import { RunController, WorldWorker } from '../src/core/worker.mjs';
 import { BunStoreLock } from '../src/bun/bun_lock.mjs';
 import { agentWorldHostRequestToEffectRequest, agentWorldRequestDriver, redact, runBunCli } from '../src/bun/bun_cli.mjs';
 import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
-import { encodeCanonicalValueImage } from '../src/protocol/world_loaded_value_codec.mjs';
+import { encodeCanonicalValueImage, wyhash64 } from '../src/protocol/world_loaded_value_codec.mjs';
 import { summarizeTurnClosureForRunHead } from '../src/protocol/world_universal_appliance_codec.mjs';
 import { DirectoryStore } from '../src/stores/directory_store.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
@@ -2728,6 +2728,8 @@ async function bytesToUtf8(bytes) {
 
 function fixtureTurnClosureBytes(options = {}) {
   const closureStatus = options.status ?? 2;
+  const rootResultBytes = rootResultValueBytes(options.rootResultValueFingerprint ?? 0xb01n);
+  const rootResultRef = rootResultObjectRef(rootResultBytes);
   const turnReceiptBytes = concat([
     u32(1),
     u32(1),
@@ -2776,9 +2778,9 @@ function fixtureTurnClosureBytes(options = {}) {
     optionalU64(0xa00n),
     bytes(Uint8Array.of(1, 2, 3)),
     bytes(new Uint8Array()),
-    optionalU64(0xb01n),
-    bytes(rootResultValueBytes(0xb01n)),
-    optionalU64(null),
+    optionalU64(options.rootResultFingerprint ?? rootResultRef.objectFingerprint),
+    bytes(rootResultBytes),
+    optionalU64(options.rootResultValueRefFingerprint ?? rootResultRef.refFingerprint),
     optionalU64(null),
     bytes(new Uint8Array()),
     u64Slice([]),
@@ -3015,6 +3017,25 @@ function byteSlices(values) {
 function rootResultValueBytes(fingerprint) {
   const label = fromUtf8('world.appliance.root_result.value_image');
   return concat([u32(label.byteLength), label, u64(fingerprint)]);
+}
+
+function rootResultObjectRef(payload) {
+  const objectFingerprint = wyhash64(concat([
+    fromUtf8('world.continuity.object.payload'),
+    u64(56n),
+    u64(1n),
+    u64(BigInt(payload.byteLength)),
+    payload,
+  ]));
+  const refFingerprint = wyhash64(concat([
+    fromUtf8('world.continuity.object.ref'),
+    u64(1n),
+    u64(56n),
+    u64(1n),
+    u64(objectFingerprint),
+    u64(BigInt(payload.byteLength)),
+  ]));
+  return { objectFingerprint, refFingerprint };
 }
 
 function concat(chunks) {
