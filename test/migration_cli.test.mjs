@@ -21,6 +21,7 @@ import { DirectoryStore } from '../src/stores/directory_store.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
 import { FixtureAgentModelDriver } from '../src/drivers/fixture_agent_model_driver.mjs';
 import { SandboxFileDriver } from '../src/drivers/sandbox_file_driver.mjs';
+import { refreshAgentRuntimePackChecksums } from '../scripts/agent_runtime_pack_lib.mjs';
 
 describe('migration, branching, and CLI diagnostics', () => {
   it('forks a branch without mutating the source branch head', async () => {
@@ -996,6 +997,91 @@ describe('migration, branching, and CLI diagnostics', () => {
     }), { code: 'ERR_AGENT_RUNTIME_VALUE_IMAGE_PAYLOAD_SCHEMA_REF' });
   });
 
+  it('rejects legacy agent runtime payload wrapper mismatches', () => {
+    const payload = encodeLegacyAgentRuntimePayload({
+      commandFingerprint: 0xa04n,
+      bindingFingerprint: 0xa03n,
+      worldPortId: 0,
+      rootArgumentImageBytes: fromUtf8('agent runtime request'),
+    });
+    const baseRequest = {
+      requestFingerprint: 0xa17n,
+      pendingPortFingerprint: 0xa03n,
+      targetRefFingerprint: 0xa04n,
+      commandFingerprint: 0xa04n,
+      bindingFingerprint: 0xa03n,
+      worldPortId: 0,
+      idempotencyKeyBytes: fromUtf8('legacy-agent-runtime-payload'),
+      idempotencyKeyFingerprint: 0xa18n,
+      actuatorRefFingerprint: 0xa19n,
+      expectedResponseDescriptorFingerprint: 0xa20n,
+      actuationClass: 2,
+      allowedResponseStatuses: 1,
+      hostRequestBytes: fromUtf8('host-request-envelope'),
+    };
+
+    assert.deepEqual(agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      payloadValueImageBytes: payload,
+    }).requestBytes, fromUtf8('agent runtime request'));
+
+    assert.throws(() => agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      payloadValueImageBytes: encodeLegacyAgentRuntimePayload({
+        commandFingerprint: 0xb04n,
+        bindingFingerprint: 0xa03n,
+        worldPortId: 0,
+        rootArgumentImageBytes: fromUtf8('agent runtime request'),
+      }),
+    }), { code: 'ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_COMMAND_REF' });
+
+    assert.throws(() => agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      payloadValueImageBytes: encodeLegacyAgentRuntimePayload({
+        commandFingerprint: 0xa04n,
+        bindingFingerprint: 0xb03n,
+        worldPortId: 0,
+        rootArgumentImageBytes: fromUtf8('agent runtime request'),
+      }),
+    }), { code: 'ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_BINDING_REF' });
+
+    assert.throws(() => agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      payloadValueImageBytes: encodeLegacyAgentRuntimePayload({
+        commandFingerprint: 0xa04n,
+        bindingFingerprint: 0xa03n,
+        worldPortId: 1,
+        rootArgumentImageBytes: fromUtf8('agent runtime request'),
+      }),
+    }), { code: 'ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_WORLD_PORT' });
+  });
+
+  it('requires shipped release receipts before agent installs', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-install-receipt-'));
+    const pack = path.join(root, 'agent-runtime-v0.1');
+    try {
+      await cp(path.resolve('agent-runtime-v0.1'), pack, { recursive: true });
+      await rm(path.join(pack, 'manifest/agent-runtime-release-receipt.json'));
+      await refreshAgentRuntimePackChecksums(pack);
+
+      await assert.rejects(
+        () => runBunCli([
+          'agent',
+          'install',
+          '--pack', pack,
+          '--store', path.join(root, 'store'),
+          '--app', 'agent-runtime-v0.1',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        /missing required file: .*agent-runtime-release-receipt\.json/,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('imports installed agent exports with receiver-local agent drivers', async () => {
     const sourceRoot = await mkdtemp(path.join(tmpdir(), 'world-host-agent-import-source-'));
     const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-agent-import-receiver-'));
@@ -1134,6 +1220,46 @@ describe('migration, branching, and CLI diagnostics', () => {
           stderr: { write() {} },
         }),
         { code: 'ERR_IMPORT_PREFLIGHT_NEEDS_HOST_REQUESTS_EMPTY' },
+      );
+
+      const yieldedBudgetBytes = fixtureNeedsHostTurnClosureBytes([], 1);
+      const yieldedBudgetSummary = summarizeTurnClosureForRunHead(yieldedBudgetBytes);
+      const yieldedBudgetBlob = blobEntryForBytes(yieldedBudgetBytes);
+      const yieldedBudgetPackagePath = path.join(receiverRoot, 'agent-yielded-budget-export.json');
+      await writeFile(yieldedBudgetPackagePath, JSON.stringify({
+        ...packageJson,
+        bundle: {
+          ...packageJson.bundle,
+          head: {
+            ...packageJson.bundle.head,
+            generation: yieldedBudgetSummary.inspectionDiagnostics.turnSequenceNumber + 1,
+            status: 'yielded_budget',
+            turnClosureRef: {
+              algorithm: 'sha256',
+              checksum: yieldedBudgetBlob.checksum,
+              byteLength: yieldedBudgetBlob.byteLength,
+            },
+            turnClosureWorldFingerprint: yieldedBudgetSummary.turnClosureWorldFingerprint,
+            resultingStateFingerprint: yieldedBudgetSummary.resultingStateFingerprint,
+            chronicleCursor: yieldedBudgetSummary.chronicleCursor,
+            archiveMomentFingerprint: yieldedBudgetSummary.archiveMomentFingerprint,
+            archiveSealFingerprint: yieldedBudgetSummary.archiveSealFingerprint,
+          },
+          blobs: [...packageJson.bundle.blobs, yieldedBudgetBlob],
+        },
+      }));
+      await assert.rejects(
+        () => runBunCli([
+          'agent',
+          'import',
+          '--store', receiverRoot,
+          '--package', yieldedBudgetPackagePath,
+          '--run', 'receiver-agent-import-yielded-budget',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_AGENT_RUNTIME_SANDBOX_ROOT_REQUIRED' },
       );
 
       await mkdir(sandboxRoot, { recursive: true });
@@ -2578,7 +2704,7 @@ function receiptStatusForClosureStatus(status) {
   return status;
 }
 
-function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()]) {
+function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()], status = 0) {
   const turnReceiptBytes = concat([
     u32(1),
     u32(1),
@@ -2596,7 +2722,7 @@ function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()]
     optionalU64(null),
     optionalU64(0x304n),
     optionalU64(null),
-    u8(0),
+    u8(receiptStatusForClosureStatus(status)),
     optionalU64(null),
     u64(0n),
     u64(0n),
@@ -2641,7 +2767,17 @@ function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()]
     u64Slice([]),
     u64Slice([]),
     bytes(new Uint8Array()),
-    u8(0),
+    u8(status),
+  ]);
+}
+
+function encodeLegacyAgentRuntimePayload({ commandFingerprint, bindingFingerprint, worldPortId, rootArgumentImageBytes }) {
+  return concat([
+    bytes(fromUtf8('world.appliance.payload_value_image.v1')),
+    u64(commandFingerprint),
+    u64(bindingFingerprint),
+    u32(worldPortId),
+    bytes(rootArgumentImageBytes),
   ]);
 }
 

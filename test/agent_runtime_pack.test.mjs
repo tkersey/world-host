@@ -30,6 +30,8 @@ describe('Agent Runtime pack', () => {
     if (!existsSync(path.resolve('../world/zig-out/dist/world-v0.1.0/world_universal_appliance.wasm'))) return;
     if (!existsSync(path.resolve('../world/zig-out/dist/world-v0.1.0/agent-runtime/agent.executable-image'))) return;
     if (!existsSync(path.resolve('../boundary/zig-out/dist/boundary-v0.6.2-agent-runtime/agent-root.full-module'))) return;
+    const worldHead = spawnSync('git', ['-C', path.resolve('../world'), 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+    if (worldHead !== 'a8b594e428d49f93d5dcf5a862e7c28192dd44ef') return;
     const root = await mkdtemp(path.join(tmpdir(), 'agent-runtime-pack-test-'));
     try {
       const pack = path.join(root, 'agent-runtime-v0.1');
@@ -294,6 +296,73 @@ describe('Agent Runtime pack', () => {
       await assert.rejects(
         () => checkAgentRuntimePack(tamperedWorldProofPack, { requireReleaseReceipt: true }),
         /ERR_AGENT_RUNTIME_WORLD_PROOF_RECEIPT_FINGERPRINT/,
+      );
+
+      const tamperedAgentVersionPack = path.join(root, 'agent-runtime-v0.1-tampered-agent-version');
+      await cp(pack, tamperedAgentVersionPack, { recursive: true });
+      const tamperedAgentVersionManifest = JSON.parse(await readFile(path.join(tamperedAgentVersionPack, 'manifest/agent-runtime-manifest.json'), 'utf8'));
+      tamperedAgentVersionManifest.agentRuntimeVersion = 'v9.9';
+      await writeManifest(tamperedAgentVersionPack, tamperedAgentVersionManifest);
+      await refreshAgentRuntimePackChecksums(tamperedAgentVersionPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(tamperedAgentVersionPack, { requireReleaseReceipt: true }),
+        /ERR_UNEXPECTED_agentRuntimeVersion/,
+      );
+
+      const tamperedBoundaryHashPack = path.join(root, 'agent-runtime-v0.1-tampered-boundary-hash');
+      await cp(pack, tamperedBoundaryHashPack, { recursive: true });
+      const tamperedBoundaryHashManifest = JSON.parse(await readFile(path.join(tamperedBoundaryHashPack, 'manifest/agent-runtime-manifest.json'), 'utf8'));
+      tamperedBoundaryHashManifest.boundary.packageHash = 'ffffffffffffffffffffffffffffffffffffffff';
+      await writeManifest(tamperedBoundaryHashPack, tamperedBoundaryHashManifest);
+      await refreshAgentRuntimePackChecksums(tamperedBoundaryHashPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(tamperedBoundaryHashPack, { requireReleaseReceipt: true }),
+        /ERR_AGENT_RUNTIME_BOUNDARY_PACKAGE_HASH/,
+      );
+
+      const tamperedUnknownWorldHeadPack = path.join(root, 'agent-runtime-v0.1-unknown-world-head');
+      await cp(pack, tamperedUnknownWorldHeadPack, { recursive: true });
+      const tamperedUnknownWorldHeadManifest = JSON.parse(await readFile(path.join(tamperedUnknownWorldHeadPack, 'manifest/agent-runtime-manifest.json'), 'utf8'));
+      tamperedUnknownWorldHeadManifest.metadata.buildDiagnostics.worldHead = 'ffffffffffffffffffffffffffffffffffffffff';
+      await writeManifest(tamperedUnknownWorldHeadPack, tamperedUnknownWorldHeadManifest);
+      await refreshAgentRuntimePackChecksums(tamperedUnknownWorldHeadPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(tamperedUnknownWorldHeadPack, { requireReleaseReceipt: true }),
+        /ERR_AGENT_RUNTIME_WORLD_RELEASE_RECEIPT_SOURCE_HEAD/,
+      );
+
+      const tamperedWorldAbiPack = path.join(root, 'agent-runtime-v0.1-tampered-world-abi');
+      await cp(pack, tamperedWorldAbiPack, { recursive: true });
+      const tamperedWorldAbiManifest = JSON.parse(await readFile(path.join(tamperedWorldAbiPack, 'manifest/agent-runtime-manifest.json'), 'utf8'));
+      tamperedWorldAbiManifest.world.applianceAbiVersion = 'v99';
+      await writeManifest(tamperedWorldAbiPack, tamperedWorldAbiManifest);
+      await refreshAgentRuntimePackChecksums(tamperedWorldAbiPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(tamperedWorldAbiPack, { requireReleaseReceipt: true }),
+        /ERR_AGENT_RUNTIME_WORLD_APPLIANCE_ABI_VERSION/,
+      );
+
+      const dependencyPack = path.join(root, 'agent-runtime-v0.1-runtime-dependency');
+      await cp(pack, dependencyPack, { recursive: true });
+      const dependencyPackagePath = path.join(dependencyPack, 'world-host/package.json');
+      const dependencyPackage = JSON.parse(await readFile(dependencyPackagePath, 'utf8'));
+      dependencyPackage.dependencies = { 'left-pad': '1.3.0' };
+      await writeFile(dependencyPackagePath, `${JSON.stringify(dependencyPackage, null, 2)}\n`);
+      await refreshAgentRuntimePackChecksums(dependencyPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(dependencyPack, { requireReleaseReceipt: true }),
+        /ERR_AGENT_RUNTIME_PACKAGE_DEPENDENCIES:dependencies/,
+      );
+
+      const tamperedCarrierModulePack = path.join(root, 'agent-runtime-v0.1-tampered-carrier-module');
+      await cp(pack, tamperedCarrierModulePack, { recursive: true });
+      const carrierModulePath = path.join(tamperedCarrierModulePack, 'world-host/src/protocol/world_manifest.mjs');
+      const carrierModule = await readFile(carrierModulePath, 'utf8');
+      await writeFile(carrierModulePath, carrierModule.replace("carrierVersion: '0.0.0-carrier-v0'", "carrierVersion: '0.0.0-carrier-tampered'"));
+      await refreshAgentRuntimePackChecksums(tamperedCarrierModulePack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(tamperedCarrierModulePack, { requireReleaseReceipt: true }),
+        /ERR_AGENT_RUNTIME_CARRIER_MODULE_FINGERPRINT/,
       );
 
       const sourceOnlyScriptPack = path.join(root, 'agent-runtime-v0.1-source-only-script');

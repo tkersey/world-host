@@ -166,7 +166,7 @@ async function runCheckedPackScenario({ checked, codecs, corpus, runBunCli, scen
       '--pack', checked.root,
       '--store', root,
       '--app', 'agent-runtime-v0.1',
-    ], current.stream, { validateReleaseReceipt: false });
+    ], current.stream, { requireReleaseReceipt: false, validateReleaseReceipt: false });
     if (installCode !== 0) throw new Error(`ERR_AGENT_RUNTIME_PACK_SCENARIO_INSTALL:${scenario}`);
 
     current = io();
