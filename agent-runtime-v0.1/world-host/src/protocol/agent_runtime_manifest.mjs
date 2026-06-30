@@ -7,6 +7,7 @@ export const agentRuntimeManifestFormatVersion = 1;
 export const agentRuntimeManifestFingerprintVersion = 1;
 export const agentRuntimeReleaseReceiptFormatVersion = 1;
 export const agentRuntimeReleaseReceiptFingerprintVersion = 1;
+export const agentRuntimeVersion = 'v0.1';
 
 const REQUIRED_SCENARIOS = Object.freeze([
   'skeleton',
@@ -40,7 +41,7 @@ export function buildAgentRuntimeManifest(input) {
   const manifest = {
     manifestFormatVersion: agentRuntimeManifestFormatVersion,
     manifestFingerprintVersion: agentRuntimeManifestFingerprintVersion,
-    agentRuntimeVersion: requiredString(input.agentRuntimeVersion, 'agentRuntimeVersion'),
+    agentRuntimeVersion: requiredVersion(input.agentRuntimeVersion, agentRuntimeVersion, 'agentRuntimeVersion'),
     boundary: {
       packageVersion: requiredString(input.boundary?.packageVersion, 'boundary.packageVersion'),
       packageHash: requiredString(input.boundary?.packageHash, 'boundary.packageHash'),
@@ -83,7 +84,7 @@ export function assertAgentRuntimeManifest(manifest) {
   if (manifest?.manifestFingerprintVersion !== agentRuntimeManifestFingerprintVersion) throw new Error('ERR_AGENT_RUNTIME_MANIFEST_FINGERPRINT_VERSION');
   const expected = fingerprintOf(withoutFingerprint(manifest));
   if (manifest.manifestFingerprint !== expected) throw new Error('ERR_AGENT_RUNTIME_MANIFEST_FINGERPRINT');
-  requiredString(manifest.agentRuntimeVersion, 'agentRuntimeVersion');
+  requiredVersion(manifest.agentRuntimeVersion, agentRuntimeVersion, 'agentRuntimeVersion');
   requiredString(manifest.boundary?.packageVersion, 'boundary.packageVersion');
   requiredString(manifest.world?.packageVersion, 'world.packageVersion');
   requiredSha256(manifest.world?.universalWasmSha256, 'world.universalWasmSha256');
@@ -113,6 +114,12 @@ function withoutFingerprint(manifest) {
 function requiredString(value, label) {
   if (typeof value !== 'string' || value.length === 0) throw new Error(`ERR_REQUIRED_${label}`);
   return value;
+}
+
+function requiredVersion(value, expected, label) {
+  const text = requiredString(value, label);
+  if (text !== expected) throw new Error(`ERR_UNEXPECTED_${label}`);
+  return text;
 }
 
 function requiredSha256(value, label) {

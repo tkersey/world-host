@@ -114,7 +114,7 @@
       },
       "packageTree": {
         "exportedByOwner": true,
-        "fingerprint": "agent-runtime:bebd2c4e911b699473156a5e10114323"
+        "fingerprint": "agent-runtime:f3fa4dbd23600e5358be7855dccc35a9"
       }
     }
   },
@@ -125,9 +125,9 @@
     "buildDiagnostics": {
       "boundaryHead": "6a416951f8d22d0854616f094f23b2d44ab021a2",
       "worldHead": "a8b594e428d49f93d5dcf5a862e7c28192dd44ef",
-      "worldHostHead": "cfd780343c6813c8a021996039b905089f75e736",
+      "worldHostHead": "9b5b6af19832274521a5925b5f5014f383b20cee",
       "worldHostDirty": false
     }
   },
-  "manifestFingerprint": "agent-runtime:70a883a15a1f14af8c0216dc9bde4a6f"
+  "manifestFingerprint": "agent-runtime:8ff2ad1808bfd50f4da7a9ecd1995c39"
 }

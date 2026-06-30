@@ -747,6 +747,8 @@ async function verifyManifestArtifacts(root, manifest) {
   const carrier = JSON.parse(await readFile(path.join(root, 'world-host/carrier-manifest.json'), 'utf8'));
   const conformanceCorpusFingerprint = await fingerprintDirectory(path.join(root, 'conformance'));
 
+  assertGitSha(manifest.boundary.packageHash, 'ERR_AGENT_RUNTIME_BOUNDARY_PACKAGE_HASH');
+  assertEqual(manifest.boundary.packageHash, manifest.metadata?.buildDiagnostics?.boundaryHead, 'ERR_AGENT_RUNTIME_BOUNDARY_PACKAGE_HASH');
   assertEqual(manifest.boundary.protocolManifestFingerprint, requireOwnerFingerprint(boundaryProfile.boundary_protocol_manifest_fingerprint, 'boundary profile protocol manifest'), 'ERR_AGENT_RUNTIME_BOUNDARY_PROTOCOL_FINGERPRINT');
   assertEqual(manifest.boundary.protocolManifestFingerprint, boundaryProtocolManifestFileFingerprint(await readFile(path.join(root, 'boundary/boundary-protocol-manifest.bin'))), 'ERR_AGENT_RUNTIME_BOUNDARY_PROTOCOL_MANIFEST_FINGERPRINT');
   assertEqual(manifest.boundary.agentProfileFingerprint, requireOwnerFingerprint(boundaryProfile.profile_fingerprint, 'boundary agent profile'), 'ERR_AGENT_RUNTIME_BOUNDARY_PROFILE_FINGERPRINT');
@@ -757,10 +759,14 @@ async function verifyManifestArtifacts(root, manifest) {
   assertEqual(manifest.artifacts?.boundary?.toolboxModule?.byteFingerprint, requireOwnerFingerprint(boundaryProfile.toolbox_full_module_byte_fingerprint, 'boundary toolbox module byte fingerprint'), 'ERR_AGENT_RUNTIME_BOUNDARY_TOOLBOX_BYTE_FINGERPRINT');
   assertEqual(manifest.world.executableImageFingerprint, requireOwnerFingerprint(worldMetadata.world_executable_image_fingerprint, 'world executable image'), 'ERR_AGENT_RUNTIME_WORLD_IMAGE_FINGERPRINT');
   assertEqual(manifest.world.applianceManifestFingerprint, requireOwnerFingerprint(worldMetadata.world_appliance_manifest_fingerprint, 'world appliance manifest'), 'ERR_AGENT_RUNTIME_WORLD_APPLIANCE_FINGERPRINT');
+  assertEqual(manifest.world.applianceAbiVersion, `v${worldMetadata.world_appliance_abi_version ?? 4}`, 'ERR_AGENT_RUNTIME_WORLD_APPLIANCE_ABI_VERSION');
+  assertEqual(manifest.world.turnClosureFormatVersion, `v${worldMetadata.world_turn_closure_format_version ?? 1}`, 'ERR_AGENT_RUNTIME_WORLD_TURN_CLOSURE_VERSION');
+  assertEqual(manifest.world.archiveFormatVersion, `v${worldMetadata.world_archive_format_version ?? 1}`, 'ERR_AGENT_RUNTIME_WORLD_ARCHIVE_VERSION');
   assertEqual(manifest.world.protocolManifestFingerprint, worldProtocolManifestFileFingerprint(await readFile(path.join(root, 'world/world-protocol-manifest.bin'))), 'ERR_AGENT_RUNTIME_WORLD_PROTOCOL_MANIFEST_FINGERPRINT');
   assertEqual(stableJson(manifest.requiredActuatorRefs), stableJson(exactArray(worldMetadata.required_actuator_ref_fingerprints, 'world required actuator ref fingerprints').map(worldActuatorRef)), 'ERR_AGENT_RUNTIME_ACTUATOR_REFS');
   assertEqual(stableJson(manifest.requiredDescriptorFingerprints), stableJson(exactArray(worldMetadata.required_descriptor_fingerprints, 'world required descriptor fingerprints').map(worldDescriptorFingerprint)), 'ERR_AGENT_RUNTIME_DESCRIPTOR_FINGERPRINTS');
   assertEqual(manifest.worldHost.carrierManifestFingerprint, carrierManifestFingerprint(carrier), 'ERR_AGENT_RUNTIME_CARRIER_MANIFEST_FINGERPRINT');
+  assertEqual(manifest.worldHost.carrierManifestFingerprint, await packagedCarrierManifestFingerprint(root), 'ERR_AGENT_RUNTIME_CARRIER_MODULE_FINGERPRINT');
   assertEqual(manifest.conformanceCorpusFingerprint, conformanceCorpusFingerprint, 'ERR_AGENT_RUNTIME_CONFORMANCE_CORPUS_FINGERPRINT');
   assertEqual(stableJson(packagedArtifactMetadata), stableJson(manifest.artifacts), 'ERR_AGENT_RUNTIME_ARTIFACT_METADATA');
   assertEqual(manifest.artifacts?.worldHost?.packageTree?.fingerprint, await fingerprintWorldHostPackageTree(root), 'ERR_AGENT_RUNTIME_WORLD_HOST_TREE_FINGERPRINT');
@@ -804,7 +810,7 @@ async function verifyWorldReleaseReceipt(root, manifest) {
   if (expectedSourceChecksum) {
     assertEqual(receipt.source_package_checksum, expectedSourceChecksum, 'ERR_AGENT_RUNTIME_WORLD_RELEASE_RECEIPT_SOURCE');
   } else {
-    requireOwnerFingerprint(receipt.source_package_checksum, 'world release receipt source package checksum');
+    throw new Error('ERR_AGENT_RUNTIME_WORLD_RELEASE_RECEIPT_SOURCE_HEAD');
   }
   if (receipt.complete !== true) throw new Error('ERR_AGENT_RUNTIME_WORLD_RELEASE_RECEIPT_INCOMPLETE');
   if (!Array.isArray(receipt.blockers) || receipt.blockers.length !== 0) throw new Error('ERR_AGENT_RUNTIME_WORLD_RELEASE_RECEIPT_BLOCKERS');
@@ -999,6 +1005,7 @@ function fnv64(hash, value) {
 async function verifyPackagedPackageScripts(root, manifest) {
   const packageJson = JSON.parse(await readFile(path.join(root, 'world-host/package.json'), 'utf8'));
   if (packageJson.version !== manifest.worldHost.packageVersion) throw new Error('ERR_AGENT_RUNTIME_PACKAGE_VERSION');
+  assertNoRuntimePackageDependencies(packageJson);
   const scripts = packageJson.scripts ?? {};
   const allowedScripts = new Set(['check:agent-runtime']);
   if (scripts['check:agent-runtime'] !== EXPECTED_PACK_CHECK_SCRIPT) throw new Error('ERR_AGENT_RUNTIME_PACKAGE_SCRIPT:check:agent-runtime');
@@ -1024,6 +1031,27 @@ async function verifyPackagedPackageScripts(root, manifest) {
   for (const rel of scriptEntrypoints) {
     await requireFile(path.join(root, 'world-host', rel));
   }
+}
+
+function assertNoRuntimePackageDependencies(packageJson) {
+  for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies', 'bundledDependencies', 'bundleDependencies']) {
+    const value = packageJson[field];
+    if (value == null) continue;
+    if (Array.isArray(value) ? value.length !== 0 : Object.keys(value).length !== 0) {
+      throw new Error(`ERR_AGENT_RUNTIME_PACKAGE_DEPENDENCIES:${field}`);
+    }
+  }
+}
+
+async function packagedCarrierManifestFingerprint(root) {
+  const modulePath = path.join(root, 'world-host/src/protocol/world_manifest.mjs');
+  const moduleUrl = `${pathToFileURL(modulePath).href}?pack=${encodeURIComponent(root)}`;
+  const selected = await import(moduleUrl);
+  return carrierManifestFingerprint(selected.carrierManifest);
+}
+
+function assertGitSha(value, code) {
+  if (typeof value !== 'string' || !/^[0-9a-f]{40}$/i.test(value)) throw new Error(code);
 }
 
 async function safePackageEntry(root, rel) {

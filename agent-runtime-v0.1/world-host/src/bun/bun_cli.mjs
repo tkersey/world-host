@@ -87,7 +87,10 @@ async function runAgentCommand(args, io, options) {
     const storePath = requiredOption(args, '--store');
     const applicationId = valueAfter(args, '--app') ?? valueAfter(args, '--name') ?? 'agent-runtime-v0.1';
     const { checkAgentRuntimePack } = await import('../../scripts/agent_runtime_pack_lib.mjs');
-    const checked = await checkAgentRuntimePack(pack, { validateReleaseReceipt: options.validateReleaseReceipt });
+    const packCheckOptions = options.requireReleaseReceipt === false
+      ? { validateReleaseReceipt: false }
+      : { requireReleaseReceipt: true, validateReleaseReceipt: options.validateReleaseReceipt };
+    const checked = await checkAgentRuntimePack(pack, packCheckOptions);
     const manifest = checked.manifest;
     const requiredActuators = requiredActuatorRequirements(manifest);
     const requiredHostAuthorityLabels = [...manifest.requiredHostAuthorityLabels];
@@ -498,13 +501,14 @@ async function runImport(args, io, storePath, options = {}) {
       runId: receiverRunId,
       preflight: async (candidate) => {
         const pendingRequests = pendingRequestsForImportedHead(candidate);
-        const preflightOptions = pendingRequests.length > 0 && options.agentRuntimeOptionsArgs
+        const mayBypassPreflightRequirements = importedHeadCanBypassPreflightRequirements(candidate.bundle.head);
+        const preflightOptions = !mayBypassPreflightRequirements && options.agentRuntimeOptionsArgs
           ? agentRuntimeRunOptions(options.agentRuntimeOptionsArgs, options)
           : options;
         if (candidate.bundle.head?.status === 'needs_host' && pendingRequests.length === 0) {
           fail('ERR_IMPORT_PREFLIGHT_NEEDS_HOST_REQUESTS_EMPTY', 'receiver preflight rejects needs_host imports with no pending HostRequests');
         }
-        const application = pendingRequests.length === 0 && options.agentRuntimeOptionsArgs
+        const application = mayBypassPreflightRequirements && pendingRequests.length === 0 && options.agentRuntimeOptionsArgs
           ? { ...candidate.bundle.application, requiredActuators: [], requiredHostAuthorityLabels: [] }
           : candidate.bundle.application;
         return preflightCapabilities({
@@ -535,6 +539,10 @@ async function runImport(args, io, storePath, options = {}) {
   } finally {
     await store.releaseLock();
   }
+}
+
+function importedHeadCanBypassPreflightRequirements(head) {
+  return ['genesis', 'completed', 'failed', 'cancelled', 'inspected'].includes(head?.status);
 }
 
 function pendingRequestsForImportedHead(candidate) {
@@ -897,6 +905,7 @@ function agentRuntimePayloadBytes(payloadValueImageBytes, request) {
     return { requestBytes: decoded.payload, agentRuntimePayloadDecoded: true, agentRuntimePayloadFormat: 'world.frame.value_image' };
   }
   const portable = decodeAgentRuntimePayloadValueImage(payloadValueImageBytes);
+  assertLegacyAgentRuntimePayloadMatchesRequest(portable, request);
   if (portable.rootArgumentImageBytes.byteLength > 0) {
     return {
       requestBytes: portable.rootArgumentImageBytes,
@@ -905,6 +914,18 @@ function agentRuntimePayloadBytes(payloadValueImageBytes, request) {
     };
   }
   fail('ERR_AGENT_RUNTIME_EMPTY_PAYLOAD_UNSUPPORTED', 'agent runtime HostRequest payload did not carry request bytes');
+}
+
+function assertLegacyAgentRuntimePayloadMatchesRequest(portable, request = {}) {
+  if (request.commandFingerprint != null && portable.commandFingerprint !== BigInt(request.commandFingerprint)) {
+    fail('ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_COMMAND_REF');
+  }
+  if (request.bindingFingerprint != null && portable.bindingFingerprint !== BigInt(request.bindingFingerprint)) {
+    fail('ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_BINDING_REF');
+  }
+  if (request.worldPortId != null && portable.worldPortId !== Number(request.worldPortId)) {
+    fail('ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_WORLD_PORT');
+  }
 }
 
 function decodeAgentRuntimePayloadValueImage(bytes) {
