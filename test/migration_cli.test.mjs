@@ -929,6 +929,25 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(resumed.advance.effectCount, 2);
       assert.equal(resumed.diagnostics.driversInvokedByCli, true);
       assert.equal(await readFile(path.join(root, 'sandbox/output.txt'), 'utf8'), 'actuate updated the fixture');
+
+      output = '';
+      const replayCode = await runBunCli([
+        'agent',
+        'replay',
+        '--store', root,
+        '--run', 'agent-cli-run',
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      });
+      const replayed = JSON.parse(output);
+
+      assert.equal(replayCode, 0);
+      assert.equal(replayed.command, 'replay');
+      assert.equal(replayed.replay.completed, true);
+      assert.equal(replayed.replay.retainedEffectCount, 2);
+      assert.equal(replayed.replay.freshEffectCount, 0);
+      assert.equal(replayed.diagnostics.driversInvoked, false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1008,8 +1027,11 @@ describe('migration, branching, and CLI diagnostics', () => {
       requestFingerprint: 0xa17n,
       pendingPortFingerprint: 0xa03n,
       targetRefFingerprint: 0xa04n,
-      commandFingerprint: 0xa04n,
-      bindingFingerprint: 0xa03n,
+      frameRequestBytes: encodeAgentRuntimeFrameRequest({
+        commandFingerprint: 0xa04n,
+        bindingFingerprint: 0xa03n,
+        worldPortId: 0,
+      }),
       worldPortId: 0,
       idempotencyKeyBytes: fromUtf8('legacy-agent-runtime-payload'),
       idempotencyKeyFingerprint: 0xa18n,
@@ -2780,6 +2802,21 @@ function encodeLegacyAgentRuntimePayload({ commandFingerprint, bindingFingerprin
     u64(bindingFingerprint),
     u32(worldPortId),
     bytes(rootArgumentImageBytes),
+  ]);
+}
+
+function encodeAgentRuntimeFrameRequest({ commandFingerprint, bindingFingerprint, worldPortId }) {
+  return concat([
+    bytes(fromUtf8('world.appliance.frame_request.v1')),
+    u64(0xa01n),
+    u64(commandFingerprint),
+    u64(0),
+    u64(0),
+    u32(worldPortId),
+    u64(bindingFingerprint),
+    u64(0xa20n),
+    u64(0xa21n),
+    u64(0xa22n),
   ]);
 }
 
