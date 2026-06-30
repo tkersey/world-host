@@ -48,14 +48,19 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
   const coveredRequests = [];
 
   for (const required of application?.requiredActuators ?? []) {
-    const actuatorRef = required.actuatorRef ?? required;
-    const route = findRequiredActuatorManifest(manifests, actuatorRef, policy);
+    const requirement = normalizeRequiredActuator(required);
+    const route = findRequiredActuatorManifest(manifests, requirement, policy);
     if (!route) {
-      const structuralRoute = findRequiredActuatorManifest(manifests, actuatorRef);
+      const structuralRoute = findRequiredActuatorManifest(manifests, requirement);
       if (structuralRoute) {
-        blockers.push(`required-actuator-policy-blocked:${actuatorRef}`, ...policyBlockers(structuralRoute, null, policy));
+        blockers.push(`required-actuator-policy-blocked:${requirement.actuatorRef}`, ...policyBlockers(structuralRoute, null, policy));
+      } else if (
+        requirement.descriptorFingerprint &&
+        findRequiredActuatorManifest(manifests, { actuatorRef: requirement.actuatorRef })
+      ) {
+        blockers.push(`required-actuator-descriptor-uncovered:${requirement.actuatorRef}:${requirement.descriptorFingerprint}`);
       } else {
-        blockers.push(`required-actuator-uncovered:${actuatorRef}`);
+        blockers.push(`required-actuator-uncovered:${requirement.actuatorRef}`);
       }
       continue;
     }
@@ -101,9 +106,24 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
   });
 }
 
-function findRequiredActuatorManifest(manifests, actuatorRef, policy = null) {
+function normalizeRequiredActuator(required) {
+  if (typeof required === 'string') return { actuatorRef: required, descriptorFingerprint: null };
+  return {
+    actuatorRef: required?.actuatorRef,
+    descriptorFingerprint: required?.descriptorFingerprint ?? null,
+  };
+}
+
+function findRequiredActuatorManifest(manifests, requirement, policy = null) {
+  const required = normalizeRequiredActuator(requirement);
   for (const manifest of manifests) {
-    if (!manifest.supportedActuatorRefs.includes(actuatorRef)) continue;
+    if (!manifest.supportedActuatorRefs.includes(required.actuatorRef)) continue;
+    if (
+      required.descriptorFingerprint &&
+      !manifest.supportedDescriptorFingerprints.includes(required.descriptorFingerprint)
+    ) {
+      continue;
+    }
     if (policy && policyBlockers(manifest, null, policy).length) continue;
     return manifest;
   }

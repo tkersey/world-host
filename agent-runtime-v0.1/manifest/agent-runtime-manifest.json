@@ -120,10 +120,10 @@
     "hostSpecificFilesystemPathsIncluded": false,
     "buildDiagnostics": {
       "boundaryHead": "6a416951f8d22d0854616f094f23b2d44ab021a2",
-      "worldHead": "ed5503e4bcb063b4112156b9c212ce884ad5dbb0",
-      "worldHostHead": "3ae3290773aa658eb1716c794dd51e67e8e27db2",
+      "worldHead": "969f23f6bad87ca9d535d92d62b6418612891699",
+      "worldHostHead": "2a339101b7011010f9b53d6a9797a9cb443d41f6",
       "worldHostDirty": false
     }
   },
-  "manifestFingerprint": "agent-runtime:3dd2484391be99db14c743d4f0494cc5"
+  "manifestFingerprint": "agent-runtime:0598eb3727183e1b564abc966f8284ba"
 }
