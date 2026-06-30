@@ -13,7 +13,7 @@ import {
 } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { stableJson } from '../src/core/store.mjs';
 import {
@@ -46,6 +46,15 @@ const WORLD_V0_BOUNDARY_PROTOCOL_MANIFEST_FINGERPRINT = '0x68ce6ebd4448144f';
 const WORLD_V0_CONFORMANCE_CORPUS_ROOT_FINGERPRINT = '0xe727536b60a5e286';
 const WORLD_V0_SOURCE_PACKAGE_CHECKSUM_BY_HEAD = Object.freeze({
   a8b594e428d49f93d5dcf5a862e7c28192dd44ef: '0x21cf0eced28585af',
+});
+const WORLD_V0_PROTOCOL_FINGERPRINT_BY_HEAD = Object.freeze({
+  a8b594e428d49f93d5dcf5a862e7c28192dd44ef: '0xc6fb4236a4b64302:0xdeaadbe889dbe92a',
+});
+const WORLD_V0_EXECUTABLE_IMAGE_SHA256_BY_HEAD = Object.freeze({
+  a8b594e428d49f93d5dcf5a862e7c28192dd44ef: 'f75eda188131e9782dd7b1de3c5083262a13a9007f355a89ba9f79983ba06795',
+});
+const WORLD_V0_APPLIANCE_MANIFEST_SHA256_BY_HEAD = Object.freeze({
+  a8b594e428d49f93d5dcf5a862e7c28192dd44ef: 'd5ff90e2a2738ce18a45303d65799fe4e2687e19e04090859f9e73d750b7df74',
 });
 const WORLD_V0_REQUIRED_PROOF_KINDS = Object.freeze([
   'boundary_portable_v2',
@@ -761,7 +770,11 @@ async function verifyManifestArtifacts(root, manifest) {
   assertEqual(manifest.world.applianceAbiVersion, `v${worldMetadata.world_appliance_abi_version ?? 4}`, 'ERR_AGENT_RUNTIME_WORLD_APPLIANCE_ABI_VERSION');
   assertEqual(manifest.world.turnClosureFormatVersion, `v${worldMetadata.world_turn_closure_format_version ?? 1}`, 'ERR_AGENT_RUNTIME_WORLD_TURN_CLOSURE_VERSION');
   assertEqual(manifest.world.archiveFormatVersion, `v${worldMetadata.world_archive_format_version ?? 1}`, 'ERR_AGENT_RUNTIME_WORLD_ARCHIVE_VERSION');
+  const worldHead = manifest.metadata?.buildDiagnostics?.worldHead;
   assertEqual(manifest.world.protocolManifestFingerprint, worldProtocolManifestFileFingerprint(await readFile(path.join(root, 'world/world-protocol-manifest.bin'))), 'ERR_AGENT_RUNTIME_WORLD_PROTOCOL_MANIFEST_FINGERPRINT');
+  assertEqual(manifest.world.protocolManifestFingerprint, expectedWorldArtifactByHead(WORLD_V0_PROTOCOL_FINGERPRINT_BY_HEAD, worldHead, 'ERR_AGENT_RUNTIME_WORLD_PROTOCOL_HEAD'), 'ERR_AGENT_RUNTIME_WORLD_PROTOCOL_HEAD');
+  assertEqual(sha256Hex(await readFile(path.join(root, 'world/agent.executable-image'))), expectedWorldArtifactByHead(WORLD_V0_EXECUTABLE_IMAGE_SHA256_BY_HEAD, worldHead, 'ERR_AGENT_RUNTIME_WORLD_IMAGE_BYTES_HEAD'), 'ERR_AGENT_RUNTIME_WORLD_IMAGE_BYTES');
+  assertEqual(sha256Hex(await readFile(path.join(root, 'world/appliance-manifest.bin'))), expectedWorldArtifactByHead(WORLD_V0_APPLIANCE_MANIFEST_SHA256_BY_HEAD, worldHead, 'ERR_AGENT_RUNTIME_WORLD_APPLIANCE_BYTES_HEAD'), 'ERR_AGENT_RUNTIME_WORLD_APPLIANCE_BYTES');
   assertEqual(stableJson(manifest.requiredActuatorRefs), stableJson(exactArray(worldMetadata.required_actuator_ref_fingerprints, 'world required actuator ref fingerprints').map(worldActuatorRef)), 'ERR_AGENT_RUNTIME_ACTUATOR_REFS');
   assertEqual(stableJson(manifest.requiredDescriptorFingerprints), stableJson(exactArray(worldMetadata.required_descriptor_fingerprints, 'world required descriptor fingerprints').map(worldDescriptorFingerprint)), 'ERR_AGENT_RUNTIME_DESCRIPTOR_FINGERPRINTS');
   assertEqual(manifest.worldHost.carrierManifestFingerprint, carrierManifestFingerprint(carrier), 'ERR_AGENT_RUNTIME_CARRIER_MANIFEST_FINGERPRINT');
@@ -769,6 +782,7 @@ async function verifyManifestArtifacts(root, manifest) {
   assertEqual(manifest.conformanceCorpusFingerprint, conformanceCorpusFingerprint, 'ERR_AGENT_RUNTIME_CONFORMANCE_CORPUS_FINGERPRINT');
   assertEqual(stableJson(packagedArtifactMetadata), stableJson(manifest.artifacts), 'ERR_AGENT_RUNTIME_ARTIFACT_METADATA');
   assertEqual(manifest.artifacts?.worldHost?.packageTree?.fingerprint, await fingerprintWorldHostPackageTree(root), 'ERR_AGENT_RUNTIME_WORLD_HOST_TREE_FINGERPRINT');
+  await verifyWorldHostPackageTreeMatchesSource(root, manifest);
 
   const artifactChecks = [
     ['boundary.agentRootModule.sha256', manifest.artifacts?.boundary?.agentRootModule?.sha256, async () => readFile(path.join(root, 'boundary/agent-root.full-module'))],
@@ -789,6 +803,12 @@ async function verifyManifestArtifacts(root, manifest) {
     const actual = sha256Hex(await readBytes());
     if (actual !== expected) throw new Error(`ERR_AGENT_RUNTIME_ARTIFACT_SHA:${label}`);
   }
+}
+
+function expectedWorldArtifactByHead(table, worldHead, code) {
+  const expected = table[worldHead];
+  if (!expected) throw new Error(code);
+  return expected;
 }
 
 async function verifyWorldReleaseReceipt(root, manifest) {
@@ -1050,6 +1070,36 @@ async function verifyPackagedCarrierModule(root) {
 
 function assertGitSha(value, code) {
   if (typeof value !== 'string' || !/^[0-9a-f]{40}$/i.test(value)) throw new Error(code);
+}
+
+async function verifyWorldHostPackageTreeMatchesSource(root, manifest) {
+  const head = manifest.metadata?.buildDiagnostics?.worldHostHead;
+  assertGitSha(head, 'ERR_AGENT_RUNTIME_WORLD_HOST_HEAD');
+  const repo = validatorGitRoot();
+  const generatedPackFiles = new Set(['README.md', 'package.json', 'carrier-manifest.json', 'agent-runtime-artifacts.json']);
+  const files = (await listFiles(path.join(root, 'world-host')))
+    .filter((rel) => !generatedPackFiles.has(rel))
+    .sort();
+  for (const rel of files) {
+    const packaged = await readFile(path.join(root, 'world-host', rel));
+    const source = gitShowFile(repo, head, rel);
+    if (sha256Hex(packaged) !== sha256Hex(source)) {
+      throw new Error(`ERR_AGENT_RUNTIME_WORLD_HOST_TREE_SOURCE:${rel}`);
+    }
+  }
+}
+
+function validatorGitRoot() {
+  const start = path.dirname(fileURLToPath(import.meta.url));
+  const result = spawnSync('git', ['-C', start, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' });
+  if (result.status !== 0) throw new Error('ERR_AGENT_RUNTIME_VALIDATOR_GIT_ROOT');
+  return result.stdout.trim();
+}
+
+function gitShowFile(repo, head, rel) {
+  const result = spawnSync('git', ['-C', repo, 'show', `${head}:${rel}`]);
+  if (result.status !== 0) throw new Error(`ERR_AGENT_RUNTIME_WORLD_HOST_TREE_SOURCE:${rel}`);
+  return result.stdout;
 }
 
 async function safePackageEntry(root, rel) {
