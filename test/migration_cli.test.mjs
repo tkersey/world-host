@@ -1047,6 +1047,32 @@ describe('migration, branching, and CLI diagnostics', () => {
       payloadValueImageBytes: payload,
     }).requestBytes, fromUtf8('agent runtime request'));
 
+    assert.deepEqual(agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      targetRefFingerprint: 0xb04n,
+      payloadValueImageBytes: payload,
+    }).requestBytes, fromUtf8('agent runtime request'));
+
+    assert.deepEqual(agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      pendingPortFingerprint: 0xb03n,
+      payloadValueImageBytes: payload,
+    }).requestBytes, fromUtf8('agent runtime request'));
+
+    assert.throws(() => agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      commandFingerprint: 0xb04n,
+      bindingFingerprint: 0xa03n,
+      payloadValueImageBytes: payload,
+    }), { code: 'ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_COMMAND_REF' });
+
+    assert.throws(() => agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      commandFingerprint: 0xa04n,
+      bindingFingerprint: 0xb03n,
+      payloadValueImageBytes: payload,
+    }), { code: 'ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_BINDING_REF' });
+
     assert.throws(() => agentWorldHostRequestToEffectRequest({
       ...baseRequest,
       payloadValueImageBytes: encodeLegacyAgentRuntimePayload({
