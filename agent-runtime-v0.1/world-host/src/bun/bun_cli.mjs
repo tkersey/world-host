@@ -1027,6 +1027,10 @@ function decodeAgentRuntimeFrameRequest(bytes) {
   u64();
   const worldPortId = u32();
   const bindingFingerprint = u64();
+  u64();
+  u64();
+  u64();
+  if (offset !== data.byteLength) fail('ERR_AGENT_RUNTIME_FRAME_REQUEST_MALFORMED');
   return { commandFingerprint, bindingFingerprint, worldPortId };
 }
 
