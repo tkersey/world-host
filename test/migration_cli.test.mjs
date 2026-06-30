@@ -1130,6 +1130,43 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('persists release receipts from agent conformance before install', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-conformance-receipt-'));
+    const pack = path.join(root, 'agent-runtime-v0.1');
+    try {
+      await cp(path.resolve('agent-runtime-v0.1'), pack, { recursive: true });
+      const receiptPath = path.join(pack, 'manifest/agent-runtime-release-receipt.json');
+      await rm(receiptPath);
+      await refreshAgentRuntimePackChecksums(pack);
+
+      const conformanceCode = await runBunCli([
+        'agent',
+        'conformance',
+        '--pack', pack,
+      ], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      });
+      assert.equal(conformanceCode, 0);
+      const receipt = JSON.parse(await readFile(receiptPath, 'utf8'));
+      assert.equal(receipt.complete, true);
+
+      const installCode = await runBunCli([
+        'agent',
+        'install',
+        '--pack', pack,
+        '--store', path.join(root, 'store'),
+        '--app', 'agent-runtime-v0.1',
+      ], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      });
+      assert.equal(installCode, 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('imports installed agent exports with receiver-local agent drivers', async () => {
     const sourceRoot = await mkdtemp(path.join(tmpdir(), 'world-host-agent-import-source-'));
     const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-agent-import-receiver-'));

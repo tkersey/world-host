@@ -124,10 +124,25 @@ async function runAgentCommand(args, io, options) {
   }
   if (subcommand === 'conformance') {
     const pack = requiredOption(args, '--pack');
-    const { checkAgentRuntimePack } = await import('../../scripts/agent_runtime_pack_lib.mjs');
+    const {
+      assertAgentRuntimeReleaseReceipt,
+      checkAgentRuntimePack,
+      refreshAgentRuntimePackChecksums,
+    } = await import('../../scripts/agent_runtime_pack_lib.mjs');
     const { runAgentRuntimeConformance } = await import('../../scripts/run-agent-runtime-conformance.mjs');
     await checkAgentRuntimePack(pack);
     const { receipt, releaseReceipt } = await runAgentRuntimeConformance(pack);
+    const releaseReceiptPath = path.join(pack, 'manifest/agent-runtime-release-receipt.json');
+    const existingReleaseReceipt = await readJsonIfExists(releaseReceiptPath);
+    if (existingReleaseReceipt) {
+      await assertAgentRuntimeReleaseReceipt(pack, existingReleaseReceipt);
+      if (existingReleaseReceipt.receiptFingerprint !== releaseReceipt.receiptFingerprint) {
+        fail('ERR_AGENT_RUNTIME_RELEASE_RECEIPT_MISMATCH');
+      }
+    } else {
+      await writeFile(releaseReceiptPath, `${JSON.stringify(releaseReceipt, null, 2)}\n`);
+      await refreshAgentRuntimePackChecksums(pack);
+    }
     io.stdout.write(`${JSON.stringify(redact({
       command: 'agent conformance',
       pack,
@@ -140,6 +155,15 @@ async function runAgentCommand(args, io, options) {
   }
   io.stdout.write('world-host agent commands: install, run, resume, inspect, replay, migrate, import, conformance\n');
   return subcommand === 'help' || subcommand === '--help' || subcommand === '-h' ? 0 : 2;
+}
+
+async function readJsonIfExists(file) {
+  try {
+    return JSON.parse(await readFile(file, 'utf8'));
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
 }
 
 function requiredActuatorRequirements(manifest) {
