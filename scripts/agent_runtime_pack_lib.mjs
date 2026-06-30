@@ -25,7 +25,6 @@ import {
   sha256Hex,
 } from '../src/protocol/agent_runtime_manifest.mjs';
 import { wyhash64 } from '../src/protocol/world_loaded_value_codec.mjs';
-import { carrierManifest } from '../src/protocol/world_manifest.mjs';
 
 export const PACK_NAME = 'agent-runtime-v0.1';
 export const FIXTURE_INPUT = 'rewrite this file through the agent loop\n';
@@ -766,7 +765,7 @@ async function verifyManifestArtifacts(root, manifest) {
   assertEqual(stableJson(manifest.requiredActuatorRefs), stableJson(exactArray(worldMetadata.required_actuator_ref_fingerprints, 'world required actuator ref fingerprints').map(worldActuatorRef)), 'ERR_AGENT_RUNTIME_ACTUATOR_REFS');
   assertEqual(stableJson(manifest.requiredDescriptorFingerprints), stableJson(exactArray(worldMetadata.required_descriptor_fingerprints, 'world required descriptor fingerprints').map(worldDescriptorFingerprint)), 'ERR_AGENT_RUNTIME_DESCRIPTOR_FINGERPRINTS');
   assertEqual(manifest.worldHost.carrierManifestFingerprint, carrierManifestFingerprint(carrier), 'ERR_AGENT_RUNTIME_CARRIER_MANIFEST_FINGERPRINT');
-  assertEqual(manifest.worldHost.carrierManifestFingerprint, await packagedCarrierManifestFingerprint(root), 'ERR_AGENT_RUNTIME_CARRIER_MODULE_FINGERPRINT');
+  await verifyPackagedCarrierModule(root);
   assertEqual(manifest.conformanceCorpusFingerprint, conformanceCorpusFingerprint, 'ERR_AGENT_RUNTIME_CONFORMANCE_CORPUS_FINGERPRINT');
   assertEqual(stableJson(packagedArtifactMetadata), stableJson(manifest.artifacts), 'ERR_AGENT_RUNTIME_ARTIFACT_METADATA');
   assertEqual(manifest.artifacts?.worldHost?.packageTree?.fingerprint, await fingerprintWorldHostPackageTree(root), 'ERR_AGENT_RUNTIME_WORLD_HOST_TREE_FINGERPRINT');
@@ -1043,11 +1042,10 @@ function assertNoRuntimePackageDependencies(packageJson) {
   }
 }
 
-async function packagedCarrierManifestFingerprint(root) {
-  const modulePath = path.join(root, 'world-host/src/protocol/world_manifest.mjs');
-  const moduleUrl = `${pathToFileURL(modulePath).href}?pack=${encodeURIComponent(root)}`;
-  const selected = await import(moduleUrl);
-  return carrierManifestFingerprint(selected.carrierManifest);
+async function verifyPackagedCarrierModule(root) {
+  const packaged = await readFile(path.join(root, 'world-host/src/protocol/world_manifest.mjs'), 'utf8');
+  const expected = await readFile(new URL('../src/protocol/world_manifest.mjs', import.meta.url), 'utf8');
+  if (packaged !== expected) throw new Error('ERR_AGENT_RUNTIME_CARRIER_MODULE_SOURCE');
 }
 
 function assertGitSha(value, code) {

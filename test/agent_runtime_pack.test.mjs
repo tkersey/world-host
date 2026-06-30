@@ -24,6 +24,7 @@ import {
   sha256Hex,
 } from '../src/protocol/agent_runtime_manifest.mjs';
 import { stableJson } from '../src/core/store.mjs';
+import { carrierManifest } from '../src/protocol/world_manifest.mjs';
 
 describe('Agent Runtime pack', () => {
   it('builds a checksum-covered pack with a self-validating manifest', async () => {
@@ -309,6 +310,39 @@ describe('Agent Runtime pack', () => {
         /ERR_UNEXPECTED_agentRuntimeVersion/,
       );
 
+      const tamperedAuthorityLabelsPack = path.join(root, 'agent-runtime-v0.1-tampered-authority-labels');
+      await cp(pack, tamperedAuthorityLabelsPack, { recursive: true });
+      const tamperedAuthorityLabelsManifest = JSON.parse(await readFile(path.join(tamperedAuthorityLabelsPack, 'manifest/agent-runtime-manifest.json'), 'utf8'));
+      tamperedAuthorityLabelsManifest.requiredHostAuthorityLabels = ['file:sandbox'];
+      await writeManifest(tamperedAuthorityLabelsPack, tamperedAuthorityLabelsManifest);
+      await refreshAgentRuntimePackChecksums(tamperedAuthorityLabelsPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(tamperedAuthorityLabelsPack, { requireReleaseReceipt: true }),
+        /ERR_UNEXPECTED_LIST_requiredHostAuthorityLabels/,
+      );
+
+      const tamperedOwnerVersionPack = path.join(root, 'agent-runtime-v0.1-tampered-owner-version');
+      await cp(pack, tamperedOwnerVersionPack, { recursive: true });
+      const tamperedOwnerVersionManifest = JSON.parse(await readFile(path.join(tamperedOwnerVersionPack, 'manifest/agent-runtime-manifest.json'), 'utf8'));
+      tamperedOwnerVersionManifest.boundary.packageVersion = '9.9.9';
+      await writeManifest(tamperedOwnerVersionPack, tamperedOwnerVersionManifest);
+      await refreshAgentRuntimePackChecksums(tamperedOwnerVersionPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(tamperedOwnerVersionPack, { requireReleaseReceipt: true }),
+        /ERR_UNEXPECTED_boundary\.packageVersion/,
+      );
+
+      const tamperedReceiptPointerPack = path.join(root, 'agent-runtime-v0.1-tampered-receipt-pointer');
+      await cp(pack, tamperedReceiptPointerPack, { recursive: true });
+      const tamperedReceiptPointerManifest = JSON.parse(await readFile(path.join(tamperedReceiptPointerPack, 'manifest/agent-runtime-manifest.json'), 'utf8'));
+      tamperedReceiptPointerManifest.releaseReceiptFingerprint = 'agent-runtime:wrong-but-accepted';
+      await writeManifest(tamperedReceiptPointerPack, tamperedReceiptPointerManifest);
+      await refreshAgentRuntimePackChecksums(tamperedReceiptPointerPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(tamperedReceiptPointerPack, { requireReleaseReceipt: true }),
+        /ERR_AGENT_RUNTIME_MANIFEST_RELEASE_RECEIPT_POINTER/,
+      );
+
       const tamperedBoundaryHashPack = path.join(root, 'agent-runtime-v0.1-tampered-boundary-hash');
       await cp(pack, tamperedBoundaryHashPack, { recursive: true });
       const tamperedBoundaryHashManifest = JSON.parse(await readFile(path.join(tamperedBoundaryHashPack, 'manifest/agent-runtime-manifest.json'), 'utf8'));
@@ -362,7 +396,7 @@ describe('Agent Runtime pack', () => {
       await refreshAgentRuntimePackChecksums(tamperedCarrierModulePack);
       await assert.rejects(
         () => checkAgentRuntimePack(tamperedCarrierModulePack, { requireReleaseReceipt: true }),
-        /ERR_AGENT_RUNTIME_CARRIER_MODULE_FINGERPRINT/,
+        /ERR_AGENT_RUNTIME_CARRIER_MODULE_SOURCE/,
       );
 
       const sourceOnlyScriptPack = path.join(root, 'agent-runtime-v0.1-source-only-script');
@@ -528,13 +562,12 @@ describe('Agent Runtime pack', () => {
       },
       worldHost: {
         packageVersion: '0.0.0-carrier-v0',
-        carrierManifestFingerprint: carrierManifestFingerprint(),
+        carrierManifestFingerprint: carrierManifestFingerprint(carrierManifest),
       },
       requiredActuatorRefs: ['world:actuator-ref:4f0c7160f25c4c62', 'world:actuator-ref:d5e4b1b427522cf2'],
       requiredDescriptorFingerprints: ['world:descriptor:be73177924a6b377', 'world:descriptor:74afc8c3b2fe4c33'],
       requiredHostAuthorityLabels: ['model:fixture-agent', 'file:sandbox'],
       conformanceCorpusFingerprint: 'agent-runtime:corpus',
-      releaseReceiptFingerprint: 'agent-runtime:receipt',
     });
     assert.throws(() => assertAgentRuntimeManifest({ ...manifest, agentRuntimeVersion: 'v0.2' }), /ERR_AGENT_RUNTIME_MANIFEST_FINGERPRINT/);
     assert.throws(() => assertAgentRuntimeManifest({
@@ -612,13 +645,12 @@ describe('Agent Runtime pack', () => {
       },
       worldHost: {
         packageVersion: '0.0.0-carrier-v0',
-        carrierManifestFingerprint: carrierManifestFingerprint(),
+        carrierManifestFingerprint: carrierManifestFingerprint(carrierManifest),
       },
       requiredActuatorRefs: ['world:actuator-ref:4f0c7160f25c4c62', 'world:actuator-ref:d5e4b1b427522cf2'],
       requiredDescriptorFingerprints: ['world:descriptor:be73177924a6b377', 'world:descriptor:74afc8c3b2fe4c33'],
       requiredHostAuthorityLabels: ['model:fixture-agent', 'file:sandbox'],
       conformanceCorpusFingerprint: 'agent-runtime:corpus',
-      releaseReceiptFingerprint: 'agent-runtime:receipt',
     });
 
     assert.deepEqual(manifest.requiredActuatorRefs, ['world:actuator-ref:4f0c7160f25c4c62', 'world:actuator-ref:d5e4b1b427522cf2']);
@@ -640,7 +672,7 @@ describe('Agent Runtime pack', () => {
       const boundaryRepo = path.join(root, 'boundary');
       const worldRepo = path.join(root, 'world');
       const pack = path.join(root, 'agent-runtime-v0.1');
-      await writeBoundaryRepoForPackTest(boundaryRepo, '0.7.1');
+      await writeBoundaryRepoForPackTest(boundaryRepo, '0.6.2');
       await writeWorldRepoForPackTest(worldRepo);
 
       const built = await buildAgentRuntimePack({
@@ -650,10 +682,10 @@ describe('Agent Runtime pack', () => {
         worldHostRepo: process.cwd(),
       });
 
-      assert.equal(built.manifest.boundary.packageVersion, '0.7.1');
+      assert.equal(built.manifest.boundary.packageVersion, '0.6.2');
       assert.equal(
         await readFile(path.join(pack, 'boundary/agent-root.full-module'), 'utf8'),
-        'boundary-root-module-v0.7.1',
+        'boundary-root-module-v0.6.2',
       );
     } finally {
       await rm(root, { recursive: true, force: true });
