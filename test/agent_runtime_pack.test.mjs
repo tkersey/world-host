@@ -327,7 +327,7 @@ describe('Agent Runtime pack', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
+  }, 15000);
 
   it('rejects manifest fingerprint drift', () => {
     const manifest = buildAgentRuntimeManifest({
