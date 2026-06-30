@@ -90,6 +90,7 @@ async function runAgentCommand(args, io, options) {
     const checked = await checkAgentRuntimePack(pack, { validateReleaseReceipt: options.validateReleaseReceipt });
     const manifest = checked.manifest;
     const requiredActuators = requiredActuatorRequirements(manifest);
+    const requiredHostAuthorityLabels = [...manifest.requiredHostAuthorityLabels];
     return await runInstall([
       'install',
       '--store', storePath,
@@ -98,7 +99,7 @@ async function runAgentCommand(args, io, options) {
       '--image', path.join(checked.root, 'world/agent.executable-image'),
       '--image-fingerprint', manifest.world.executableImageFingerprint,
       '--manifest', path.join(checked.root, 'world/appliance-manifest.bin'),
-    ], io, storePath, { requiredActuators });
+    ], io, storePath, { requiredActuators, requiredHostAuthorityLabels });
   }
   if (subcommand === 'run') {
     const runOptions = args.includes('--no-execute') ? options : agentRuntimeRunOptions(args, options);
@@ -250,6 +251,7 @@ async function runInstall(args, io, storePath, options = {}) {
       executableImageWorldFingerprint: imageWorldFingerprint,
       applianceManifestRef: manifestRef,
       requiredActuators: options.requiredActuators ?? [],
+      requiredHostAuthorityLabels: options.requiredHostAuthorityLabels ?? [],
       requiredRuntimeLimits: {},
       installationDiagnostics: {
         command: 'install',
@@ -499,8 +501,11 @@ async function runImport(args, io, storePath, options = {}) {
         const preflightOptions = pendingRequests.length > 0 && options.agentRuntimeOptionsArgs
           ? agentRuntimeRunOptions(options.agentRuntimeOptionsArgs, options)
           : options;
+        if (candidate.bundle.head?.status === 'needs_host' && pendingRequests.length === 0) {
+          fail('ERR_IMPORT_PREFLIGHT_NEEDS_HOST_REQUESTS_EMPTY', 'receiver preflight rejects needs_host imports with no pending HostRequests');
+        }
         const application = pendingRequests.length === 0 && options.agentRuntimeOptionsArgs
-          ? { ...candidate.bundle.application, requiredActuators: [] }
+          ? { ...candidate.bundle.application, requiredActuators: [], requiredHostAuthorityLabels: [] }
           : candidate.bundle.application;
         return preflightCapabilities({
           application,
@@ -865,6 +870,10 @@ function decodeCanonicalValueImage(bytes, request = {}) {
   const requestPayloadRef = request.payloadValueRefFingerprint;
   if (requestPayloadRef != null && boundaryValue.value !== BigInt(requestPayloadRef)) {
     fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_PAYLOAD_REF');
+  }
+  const requestPayloadSchemaRef = request.payloadSchemaRefFingerprint;
+  if (requestPayloadSchemaRef != null && codecSchema.value !== BigInt(requestPayloadSchemaRef)) {
+    fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_PAYLOAD_SCHEMA_REF');
   }
   return {
     payload: decoded.payload,

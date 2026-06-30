@@ -106,17 +106,16 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const defaultReleaseReceiptOut = path.join(pack, 'manifest/agent-runtime-release-receipt.json');
   const defaultReleaseReceiptExists = existsSync(defaultReleaseReceiptOut);
   const { receipt, releaseReceipt } = await runAgentRuntimeConformance(pack);
-  if (options.receiptOut) await writeFile(options.receiptOut, `${JSON.stringify(receipt, null, 2)}\n`);
   const releaseReceiptOut = options.releaseReceiptOut ?? (defaultReleaseReceiptExists ? null : defaultReleaseReceiptOut);
-  if (releaseReceiptOut) {
-    await writeFile(releaseReceiptOut, `${JSON.stringify(releaseReceipt, null, 2)}\n`);
-  } else {
+  if (!releaseReceiptOut) {
     const existingReleaseReceipt = JSON.parse(await readFile(defaultReleaseReceiptOut, 'utf8'));
     await assertAgentRuntimeReleaseReceipt(pack, existingReleaseReceipt);
     if (existingReleaseReceipt.receiptFingerprint !== releaseReceipt.receiptFingerprint) {
       throw new Error('ERR_AGENT_RUNTIME_RELEASE_RECEIPT_MISMATCH');
     }
   }
+  if (options.receiptOut) await writeFile(options.receiptOut, `${JSON.stringify(receipt, null, 2)}\n`);
+  if (releaseReceiptOut) await writeFile(releaseReceiptOut, `${JSON.stringify(releaseReceipt, null, 2)}\n`);
   if ([options.receiptOut, releaseReceiptOut].some((out) => out && isInsidePath(out, pack))) {
     await refreshAgentRuntimePackChecksums(pack);
   }

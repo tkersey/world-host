@@ -11,6 +11,7 @@ export function createApplicationRecord(input) {
     executableImageWorldFingerprint: assertWorldFingerprint(input.executableImageWorldFingerprint, 'executableImageWorldFingerprint'),
     applianceManifestRef: assertBlobRef(input.applianceManifestRef),
     requiredActuators: Array.isArray(input.requiredActuators) ? input.requiredActuators : [],
+    requiredHostAuthorityLabels: stringList(input.requiredHostAuthorityLabels, 'requiredHostAuthorityLabels'),
     requiredRuntimeLimits: input.requiredRuntimeLimits ?? {},
     installationDiagnostics: input.installationDiagnostics ?? {},
   };
@@ -31,4 +32,12 @@ function requiredSha256Checksum(value, label) {
 function requiredNonnegativeInteger(value, label) {
   if (!Number.isSafeInteger(value) || value < 0) fail('ERR_REQUIRED_INTEGER', `${label} must be nonnegative integer`);
   return value;
+}
+
+function stringList(value, label) {
+  if (value == null) return [];
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || item.length === 0)) {
+    fail('ERR_INVALID_STRING_LIST', `${label} must be a list of nonempty strings`);
+  }
+  return [...value];
 }

@@ -77,6 +77,85 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.executableCompatible, false);
   });
 
+  it('requires declared host authority labels during application preflight', () => {
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [{
+          actuatorRef: 'fixture:model',
+          descriptorFingerprint: 'descriptor:fixture-model',
+        }],
+        requiredHostAuthorityLabels: ['model:fixture-agent'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      drivers: [new FixtureModelDriver({ responses: ['ok'] })],
+      policy: createRunPolicy(),
+    });
+
+    assert.ok(report.blockers.includes('required-authority-uncovered:model:fixture-agent'));
+    assert.equal(report.everyRequiredActuatorCovered, false);
+    assert.equal(report.executableCompatible, false);
+  });
+
+  it('preserves detailed policy blockers for required host authority labels', async () => {
+    const allowedRoot = await mkdtemp(path.join(tmpdir(), 'world-host-authority-allowed-'));
+    const blockedRoot = await mkdtemp(path.join(tmpdir(), 'world-host-authority-blocked-'));
+    try {
+      const report = preflightCapabilities({
+        application: {
+          requiredActuators: [],
+          requiredHostAuthorityLabels: ['file:sandbox'],
+          requiredRuntimeLimits: {},
+        },
+        currentHead: { generation: 0 },
+        drivers: [new SandboxFileDriver({ root: blockedRoot })],
+        policy: createRunPolicy({
+          allowBestEffort: true,
+          allowedAuthorityLabels: ['file:sandbox'],
+          allowedFileRoots: [allowedRoot],
+        }),
+      });
+
+      assert.ok(report.blockers.includes('required-authority-policy-blocked:file:sandbox'));
+      assert.ok(report.blockers.includes(`file-root-denied:${path.resolve(blockedRoot)}`));
+      assert.equal(report.fileNetworkAuthoritiesAllowed, false);
+    } finally {
+      await rm(allowedRoot, { recursive: true, force: true });
+      await rm(blockedRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('requires authority labels on selected actuator and request drivers', () => {
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [{
+          actuatorRef: 'fixture:model',
+          descriptorFingerprint: 'descriptor:fixture-model',
+        }],
+        requiredHostAuthorityLabels: ['model:fixture'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      pendingRequests: [fixtureRequest()],
+      drivers: [
+        fixtureDriverWithAuthority([]),
+        fixtureDriverWithAuthority(['model:fixture'], {
+          driverId: 'dummy-authority',
+          actuatorRef: 'fixture:other',
+        }),
+      ],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture'] }),
+    });
+
+    assert.ok(report.blockers.includes('required-authority-unbound:model:fixture'));
+    assert.deepEqual(report.coveredRequests, [{
+      actuatorRef: 'fixture:model',
+      descriptorFingerprint: 'descriptor:fixture-model',
+      driverId: 'fixture-model-custom',
+    }]);
+    assert.equal(report.everyRequiredActuatorCovered, false);
+  });
+
   it('applies receiver policy to required actuators and sandbox roots', async () => {
     const allowedRoot = await mkdtemp(path.join(tmpdir(), 'world-host-allowed-root-'));
     const blockedRoot = await mkdtemp(path.join(tmpdir(), 'world-host-blocked-root-'));
@@ -463,6 +542,26 @@ function policyDeniedFixtureDriver() {
         recoveryClass: EffectRecoveryClass.pure,
         concurrencyLimit: 1,
         authorityLabels: ['denied:fixture'],
+        diagnostics: {},
+      };
+    },
+  };
+}
+
+function fixtureDriverWithAuthority(authorityLabels, options = {}) {
+  return {
+    manifest() {
+      return {
+        driverId: options.driverId ?? 'fixture-model-custom',
+        supportedActuatorRefs: [options.actuatorRef ?? 'fixture:model'],
+        supportedDescriptorFingerprints: ['descriptor:fixture-model'],
+        supportedActuationClasses: ['fixture'],
+        supportedResponseStatuses: ['ok'],
+        maximumRequestBytes: 1024 * 1024,
+        maximumResponseBytes: 1024 * 1024,
+        recoveryClass: EffectRecoveryClass.pure,
+        concurrencyLimit: 1,
+        authorityLabels,
         diagnostics: {},
       };
     },

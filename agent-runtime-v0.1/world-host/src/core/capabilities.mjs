@@ -46,6 +46,7 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
   const warnings = [];
   const manifests = drivers.map((driver) => assertDriverManifest(driver.manifest()));
   const coveredRequests = [];
+  const selectedAuthorityRoutes = [];
 
   for (const required of application?.requiredActuators ?? []) {
     const requirement = normalizeRequiredActuator(required);
@@ -64,6 +65,7 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
       }
       continue;
     }
+    selectedAuthorityRoutes.push(route);
   }
 
   for (const request of pendingRequests) {
@@ -81,6 +83,22 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
       continue;
     }
     coveredRequests.push({ actuatorRef: request.actuatorRef, descriptorFingerprint: request.descriptorFingerprint, driverId: route.driverId });
+    selectedAuthorityRoutes.push(route);
+  }
+
+  for (const label of application?.requiredHostAuthorityLabels ?? []) {
+    if (selectedAuthorityRoutes.some((manifest) => manifest.authorityLabels.includes(label))) continue;
+    const authorityRoutes = manifests.filter((manifest) => manifest.authorityLabels.includes(label));
+    if (!authorityRoutes.length) {
+      blockers.push(`required-authority-uncovered:${label}`);
+      continue;
+    }
+    const routePolicyBlockers = authorityRoutes.map((manifest) => policyBlockers(manifest, null, policy));
+    if (routePolicyBlockers.every((items) => items.length > 0)) {
+      blockers.push(`required-authority-policy-blocked:${label}`, ...uniqueFlat(routePolicyBlockers));
+      continue;
+    }
+    blockers.push(`required-authority-unbound:${label}`);
   }
 
   const runtimeLimits = application?.requiredRuntimeLimits ?? {};
@@ -91,9 +109,9 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
   if (!currentHead) warnings.push('current-head-not-provided');
 
   return new CapabilityReport({
-    executableCompatible: blockers.every((item) => !item.startsWith('required-actuator')),
+    executableCompatible: !blockers.some((item) => item.startsWith('required-actuator') || item.startsWith('required-authority')),
     runtimeCompatible: !blockers.some((item) => item.startsWith('runtime-') || item === 'supervision-policy-rejected'),
-    everyRequiredActuatorCovered: !blockers.some((item) => item.startsWith('required-actuator')),
+    everyRequiredActuatorCovered: !blockers.some((item) => item.startsWith('required-actuator') || item.startsWith('required-authority')),
     everyPendingRequestCovered: !blockers.some((item) => item.startsWith('pending-request')),
     responseStatusesSupported: !blockers.some((item) => item.includes('RESPONSE_STATUS')),
     valueSizeLimitsSupported: !blockers.some((item) => item.startsWith('runtime-') || item === 'request-limit-exceeds-policy' || item === 'response-limit-exceeds-policy'),
@@ -112,6 +130,10 @@ function normalizeRequiredActuator(required) {
     actuatorRef: required?.actuatorRef,
     descriptorFingerprint: required?.descriptorFingerprint ?? null,
   };
+}
+
+function uniqueFlat(groups) {
+  return [...new Set(groups.flat())];
 }
 
 function findRequiredActuatorManifest(manifests, requirement, policy = null) {

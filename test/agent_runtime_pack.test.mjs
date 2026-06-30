@@ -106,6 +106,22 @@ describe('Agent Runtime pack', () => {
       assert.equal(await readFile(releaseReceiptPath, 'utf8'), releaseReceiptBeforeCliConformance);
       assert.equal(await readFile(checksumsPath, 'utf8'), checksumsBeforeCliConformance);
 
+      const cliReceiptOutPack = path.join(root, 'cli-receipt-out', 'agent-runtime-v0.1');
+      await cp(path.resolve('agent-runtime-v0.1'), cliReceiptOutPack, { recursive: true });
+      const cliReceiptOutPath = path.join(cliReceiptOutPack, 'manifest/agent-runtime-conformance-receipt.json');
+      const cliReceiptOutConformance = spawnSync(process.execPath, [
+        path.resolve('scripts/run-agent-runtime-conformance.mjs'),
+        cliReceiptOutPack,
+        '--receipt-out',
+        cliReceiptOutPath,
+      ], {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+      });
+      assert.equal(cliReceiptOutConformance.status, 0, cliReceiptOutConformance.stderr);
+      assert.equal(existsSync(cliReceiptOutPath), true);
+      await checkAgentRuntimePack(cliReceiptOutPack, { requireReleaseReceipt: true });
+
       const tamperedCliConformancePack = path.join(root, 'tampered-cli-conformance', 'agent-runtime-v0.1');
       await cp(path.resolve('agent-runtime-v0.1'), tamperedCliConformancePack, { recursive: true });
       const tamperedCliReceiptPath = path.join(tamperedCliConformancePack, 'manifest/agent-runtime-release-receipt.json');
@@ -187,6 +203,97 @@ describe('Agent Runtime pack', () => {
       await assert.rejects(
         () => checkAgentRuntimePack(missingWorldCorpusPack),
         /missing required file: .*world\/conformance-corpus\.json/,
+      );
+
+      const tamperedWorldCorpusPack = path.join(root, 'agent-runtime-v0.1-tampered-world-corpus');
+      await cp(pack, tamperedWorldCorpusPack, { recursive: true });
+      const tamperedWorldCorpusPath = path.join(tamperedWorldCorpusPack, 'world/conformance-corpus.json');
+      const tamperedWorldCorpus = JSON.parse(await readFile(tamperedWorldCorpusPath, 'utf8'));
+      tamperedWorldCorpus.positive = [...tamperedWorldCorpus.positive, 'extra unproven vector'];
+      const tamperedWorldCorpusBytes = Buffer.from(`${JSON.stringify(tamperedWorldCorpus, null, 2)}\n`);
+      await writeFile(tamperedWorldCorpusPath, tamperedWorldCorpusBytes);
+      await rewriteManifestArtifactSha(tamperedWorldCorpusPack, 'world', 'conformanceCorpus', tamperedWorldCorpusBytes);
+      await refreshAgentRuntimePackChecksums(tamperedWorldCorpusPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(tamperedWorldCorpusPack, { requireReleaseReceipt: true }),
+        /ERR_AGENT_RUNTIME_WORLD_CORPUS_ROOT/,
+      );
+
+      const tamperedWorldReceiptPack = path.join(root, 'agent-runtime-v0.1-tampered-world-receipt');
+      await cp(pack, tamperedWorldReceiptPack, { recursive: true });
+      const tamperedWorldReceiptPath = path.join(tamperedWorldReceiptPack, 'world/release-receipt.bin');
+      const tamperedWorldReceipt = JSON.parse(await readFile(tamperedWorldReceiptPath, 'utf8'));
+      tamperedWorldReceipt.release_receipt_fingerprint = '0x0000000000000001';
+      const tamperedWorldReceiptBytes = Buffer.from(`${JSON.stringify(tamperedWorldReceipt, null, 2)}\n`);
+      await writeFile(tamperedWorldReceiptPath, tamperedWorldReceiptBytes);
+      await rewriteManifestArtifactSha(tamperedWorldReceiptPack, 'world', 'releaseReceipt', tamperedWorldReceiptBytes);
+      await refreshAgentRuntimePackChecksums(tamperedWorldReceiptPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(tamperedWorldReceiptPack, { requireReleaseReceipt: true }),
+        /ERR_AGENT_RUNTIME_WORLD_RELEASE_RECEIPT_FINGERPRINT/,
+      );
+
+      const tamperedArtifactMetadataPack = path.join(root, 'agent-runtime-v0.1-tampered-artifact-metadata');
+      await cp(pack, tamperedArtifactMetadataPack, { recursive: true });
+      const tamperedArtifactMetadataPath = path.join(tamperedArtifactMetadataPack, 'world-host/agent-runtime-artifacts.json');
+      const tamperedArtifactMetadata = JSON.parse(await readFile(tamperedArtifactMetadataPath, 'utf8'));
+      tamperedArtifactMetadata.worldHost.packageTree.fingerprint = 'agent-runtime:tampered';
+      await writeFile(tamperedArtifactMetadataPath, `${JSON.stringify(tamperedArtifactMetadata, null, 2)}\n`);
+      await refreshAgentRuntimePackChecksums(tamperedArtifactMetadataPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(tamperedArtifactMetadataPack, { requireReleaseReceipt: true }),
+        /ERR_AGENT_RUNTIME_ARTIFACT_METADATA/,
+      );
+
+      const tamperedBoundaryBytePack = path.join(root, 'agent-runtime-v0.1-tampered-boundary-byte');
+      await cp(pack, tamperedBoundaryBytePack, { recursive: true });
+      const tamperedBoundaryByteManifest = JSON.parse(await readFile(path.join(tamperedBoundaryBytePack, 'manifest/agent-runtime-manifest.json'), 'utf8'));
+      tamperedBoundaryByteManifest.artifacts.boundary.agentRootModule.byteFingerprint = '0x0000000000000001';
+      await writeManifest(tamperedBoundaryBytePack, tamperedBoundaryByteManifest);
+      await refreshAgentRuntimePackChecksums(tamperedBoundaryBytePack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(tamperedBoundaryBytePack, { requireReleaseReceipt: true }),
+        /ERR_AGENT_RUNTIME_BOUNDARY_ROOT_BYTE_FINGERPRINT/,
+      );
+
+      const tamperedPackageVersionPack = path.join(root, 'agent-runtime-v0.1-tampered-package-version');
+      await cp(pack, tamperedPackageVersionPack, { recursive: true });
+      const tamperedPackageVersionPath = path.join(tamperedPackageVersionPack, 'world-host/package.json');
+      const tamperedPackageVersion = JSON.parse(await readFile(tamperedPackageVersionPath, 'utf8'));
+      tamperedPackageVersion.version = '0.0.0-tampered';
+      await writeFile(tamperedPackageVersionPath, `${JSON.stringify(tamperedPackageVersion, null, 2)}\n`);
+      await refreshAgentRuntimePackChecksums(tamperedPackageVersionPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(tamperedPackageVersionPack, { requireReleaseReceipt: true }),
+        /ERR_AGENT_RUNTIME_PACKAGE_VERSION/,
+      );
+
+      const tamperedWorldSourcePack = path.join(root, 'agent-runtime-v0.1-tampered-world-source');
+      await cp(path.resolve('agent-runtime-v0.1'), tamperedWorldSourcePack, { recursive: true });
+      const tamperedWorldSourceReceiptPath = path.join(tamperedWorldSourcePack, 'world/release-receipt.bin');
+      const tamperedWorldSourceReceipt = JSON.parse(await readFile(tamperedWorldSourceReceiptPath, 'utf8'));
+      tamperedWorldSourceReceipt.source_package_checksum = '0x0000000000000001';
+      const tamperedWorldSourceReceiptBytes = Buffer.from(`${JSON.stringify(tamperedWorldSourceReceipt, null, 2)}\n`);
+      await writeFile(tamperedWorldSourceReceiptPath, tamperedWorldSourceReceiptBytes);
+      await rewriteManifestArtifactSha(tamperedWorldSourcePack, 'world', 'releaseReceipt', tamperedWorldSourceReceiptBytes);
+      await refreshAgentRuntimePackChecksums(tamperedWorldSourcePack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(tamperedWorldSourcePack, { requireReleaseReceipt: true }),
+        /ERR_AGENT_RUNTIME_WORLD_RELEASE_RECEIPT_SOURCE/,
+      );
+
+      const tamperedWorldProofPack = path.join(root, 'agent-runtime-v0.1-tampered-world-proof');
+      await cp(pack, tamperedWorldProofPack, { recursive: true });
+      const tamperedWorldProofReceiptPath = path.join(tamperedWorldProofPack, 'world/release-receipt.bin');
+      const tamperedWorldProofReceipt = JSON.parse(await readFile(tamperedWorldProofReceiptPath, 'utf8'));
+      tamperedWorldProofReceipt.proof_receipts[0].receipt_fingerprint = '0x0000000000000001';
+      const tamperedWorldProofReceiptBytes = Buffer.from(`${JSON.stringify(tamperedWorldProofReceipt, null, 2)}\n`);
+      await writeFile(tamperedWorldProofReceiptPath, tamperedWorldProofReceiptBytes);
+      await rewriteManifestArtifactSha(tamperedWorldProofPack, 'world', 'releaseReceipt', tamperedWorldProofReceiptBytes);
+      await refreshAgentRuntimePackChecksums(tamperedWorldProofPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(tamperedWorldProofPack, { requireReleaseReceipt: true }),
+        /ERR_AGENT_RUNTIME_WORLD_PROOF_RECEIPT_FINGERPRINT/,
       );
 
       const sourceOnlyScriptPack = path.join(root, 'agent-runtime-v0.1-source-only-script');
@@ -327,7 +434,7 @@ describe('Agent Runtime pack', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  }, 15000);
+  }, 30000);
 
   it('rejects manifest fingerprint drift', () => {
     const manifest = buildAgentRuntimeManifest({
@@ -534,6 +641,10 @@ async function writeManifest(pack, manifest) {
   manifest.manifestFingerprint = fingerprintOf(withoutFingerprint);
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   await writeFile(path.join(pack, 'manifest/agent-runtime-manifest.bin'), Buffer.from(stableJson(manifest)));
+  const artifactMetadataPath = path.join(pack, 'world-host/agent-runtime-artifacts.json');
+  if (existsSync(artifactMetadataPath)) {
+    await writeFile(artifactMetadataPath, `${JSON.stringify(manifest.artifacts, null, 2)}\n`);
+  }
 }
 
 async function fingerprintDirectoryForTest(root, prefix = '') {

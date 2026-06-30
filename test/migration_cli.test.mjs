@@ -850,6 +850,7 @@ describe('migration, branching, and CLI diagnostics', () => {
             descriptorFingerprint: 'world:descriptor:74afc8c3b2fe4c33',
           },
         ]);
+        assert.deepEqual(app.requiredHostAuthorityLabels, ['model:fixture-agent', 'file:sandbox']);
       } finally {
         await store.releaseLock();
       }
@@ -982,6 +983,17 @@ describe('migration, branching, and CLI diagnostics', () => {
       payloadValueImageBytes: payload,
       payloadValueRefFingerprint: 0xa22n,
     }), { code: 'ERR_AGENT_RUNTIME_VALUE_IMAGE_PAYLOAD_REF' });
+
+    const schemaPayload = new Uint8Array(encodeCanonicalValueImage({
+      codecSchemaDescriptorFingerprint: 0xa23n,
+      bytes: fromUtf8('agent runtime request'),
+      dynamicSize: true,
+    }));
+    assert.throws(() => agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      payloadValueImageBytes: schemaPayload,
+      payloadSchemaRefFingerprint: 0xa24n,
+    }), { code: 'ERR_AGENT_RUNTIME_VALUE_IMAGE_PAYLOAD_SCHEMA_REF' });
   });
 
   it('imports installed agent exports with receiver-local agent drivers', async () => {
@@ -1083,6 +1095,47 @@ describe('migration, branching, and CLI diagnostics', () => {
       );
 
       const sandboxRoot = path.join(receiverRoot, 'sandbox');
+      const requestlessNeedsHostBytes = fixtureNeedsHostTurnClosureBytes([]);
+      const requestlessNeedsHostSummary = summarizeTurnClosureForRunHead(requestlessNeedsHostBytes);
+      const requestlessNeedsHostBlob = blobEntryForBytes(requestlessNeedsHostBytes);
+      const requestlessNeedsHostPackagePath = path.join(receiverRoot, 'agent-requestless-needs-host-export.json');
+      await writeFile(requestlessNeedsHostPackagePath, JSON.stringify({
+        ...packageJson,
+        bundle: {
+          ...packageJson.bundle,
+          head: {
+            ...packageJson.bundle.head,
+            generation: requestlessNeedsHostSummary.inspectionDiagnostics.turnSequenceNumber + 1,
+            status: 'needs_host',
+            turnClosureRef: {
+              algorithm: 'sha256',
+              checksum: requestlessNeedsHostBlob.checksum,
+              byteLength: requestlessNeedsHostBlob.byteLength,
+            },
+            turnClosureWorldFingerprint: requestlessNeedsHostSummary.turnClosureWorldFingerprint,
+            resultingStateFingerprint: requestlessNeedsHostSummary.resultingStateFingerprint,
+            chronicleCursor: requestlessNeedsHostSummary.chronicleCursor,
+            archiveMomentFingerprint: requestlessNeedsHostSummary.archiveMomentFingerprint,
+            archiveSealFingerprint: requestlessNeedsHostSummary.archiveSealFingerprint,
+          },
+          blobs: [...packageJson.bundle.blobs, requestlessNeedsHostBlob],
+        },
+      }));
+      await assert.rejects(
+        () => runBunCli([
+          'agent',
+          'import',
+          '--store', receiverRoot,
+          '--package', requestlessNeedsHostPackagePath,
+          '--run', 'receiver-agent-import-requestless-needs-host',
+          '--sandbox-root', sandboxRoot,
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_IMPORT_PREFLIGHT_NEEDS_HOST_REQUESTS_EMPTY' },
+      );
+
       await mkdir(sandboxRoot, { recursive: true });
       let output = '';
       const importCode = await runBunCli([
@@ -1116,6 +1169,7 @@ describe('migration, branching, and CLI diagnostics', () => {
             descriptorFingerprint: 'world:descriptor:74afc8c3b2fe4c33',
           },
         ]);
+        assert.deepEqual(app.requiredHostAuthorityLabels, ['model:fixture-agent', 'file:sandbox']);
       } finally {
         await receiverStore.releaseLock();
       }
