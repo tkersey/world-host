@@ -208,17 +208,18 @@ async function runCheckedPackScenario({ checked, codecs, corpus, runBunCli, scen
         '--run', runId,
       ], current.stream);
       if (effectsCode !== 0) throw new Error(`ERR_AGENT_RUNTIME_PACK_SCENARIO_EFFECTS:${scenario}`);
-      const effects = current.json().effects.map((effect) => ({
+      const effects = sortEffectTrace(current.json().effects.map((effect) => ({
         actuatorRef: effect.actuatorRef,
         descriptorFingerprint: effect.descriptorFingerprint,
         state: effect.state,
         requestBytesChecksum: effect.requestBytesChecksum,
         driverId: effect.diagnostics?.driverId ?? null,
-      }));
+      })));
+      const expectedEffects = sortEffectTrace(corpus.expected?.distributedEffects?.[scenario] ?? []);
       return {
         completed: true,
         effectCount: resumed.advance?.effectCount ?? 0,
-        effectTraceMatched: JSON.stringify(effects) === JSON.stringify(corpus.expected?.distributedEffects?.[scenario] ?? []),
+        effectTraceMatched: JSON.stringify(effects) === JSON.stringify(expectedEffects),
         rootResultFingerprint: resumed.head?.rootResultFingerprint ?? null,
         outputVerified: scenario === 'fixture' ? output === FIXTURE_OUTPUT : null,
       };
@@ -245,6 +246,20 @@ async function runCheckedPackScenario({ checked, codecs, corpus, runBunCli, scen
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+}
+
+function sortEffectTrace(effects) {
+  return [...effects].sort((left, right) => effectTraceKey(left).localeCompare(effectTraceKey(right)));
+}
+
+function effectTraceKey(effect) {
+  return [
+    effect.actuatorRef,
+    effect.descriptorFingerprint,
+    effect.state,
+    effect.requestBytesChecksum,
+    effect.driverId,
+  ].join('\0');
 }
 
 function distributedEmptyPayloadTurnInputFactory(codecs) {

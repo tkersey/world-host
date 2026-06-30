@@ -73,6 +73,7 @@ export function buildAgentRuntimeManifest(input) {
     artifacts,
     metadata: input.metadata ?? {},
   };
+  assertRequiredActuatorDescriptorPairs(manifest.requiredActuatorRefs, manifest.requiredDescriptorFingerprints);
   manifest.manifestFingerprint = fingerprintOf(withoutFingerprint(manifest));
   return Object.freeze(manifest);
 }
@@ -87,8 +88,9 @@ export function assertAgentRuntimeManifest(manifest) {
   requiredString(manifest.world?.packageVersion, 'world.packageVersion');
   requiredSha256(manifest.world?.universalWasmSha256, 'world.universalWasmSha256');
   exactStringList(manifest.requiredDriverIds, REQUIRED_DRIVER_IDS, 'requiredDriverIds');
-  worldActuatorRefList(manifest.requiredActuatorRefs, 'requiredActuatorRefs');
-  worldDescriptorFingerprintList(manifest.requiredDescriptorFingerprints, 'requiredDescriptorFingerprints');
+  const requiredActuatorRefs = worldActuatorRefList(manifest.requiredActuatorRefs, 'requiredActuatorRefs');
+  const requiredDescriptorFingerprints = worldDescriptorFingerprintList(manifest.requiredDescriptorFingerprints, 'requiredDescriptorFingerprints');
+  assertRequiredActuatorDescriptorPairs(requiredActuatorRefs, requiredDescriptorFingerprints);
   nonemptyStringList(manifest.requiredHostAuthorityLabels, 'requiredHostAuthorityLabels');
   exactStringList(manifest.supportedExampleScenarios, REQUIRED_SCENARIOS, 'supportedExampleScenarios');
   return manifest;
@@ -148,4 +150,10 @@ function worldDescriptorFingerprintList(value, label) {
     throw new Error(`ERR_UNEXPECTED_LIST_${label}`);
   }
   return Object.freeze([...list]);
+}
+
+function assertRequiredActuatorDescriptorPairs(requiredActuatorRefs, requiredDescriptorFingerprints) {
+  if (requiredActuatorRefs.length !== requiredDescriptorFingerprints.length) {
+    throw new Error('ERR_AGENT_RUNTIME_REQUIRED_ACTUATOR_DESCRIPTOR_MISMATCH');
+  }
 }

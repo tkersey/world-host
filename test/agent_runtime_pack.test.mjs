@@ -149,6 +149,19 @@ describe('Agent Runtime pack', () => {
       assert.equal(fresh.receipt.distributed_fixture_scenario_completed, true);
       await assertAgentRuntimeReleaseReceipt(freshConformancePack, fresh.releaseReceipt);
 
+      const permutedEffectsPack = path.join(root, 'permuted-effects', 'agent-runtime-v0.1');
+      await cp(path.resolve('agent-runtime-v0.1'), permutedEffectsPack, { recursive: true });
+      const permutedCorpusPath = path.join(permutedEffectsPack, 'conformance/corpus.json');
+      const permutedCorpus = JSON.parse(await readFile(permutedCorpusPath, 'utf8'));
+      permutedCorpus.expected.distributedEffects.skeleton.reverse();
+      permutedCorpus.expected.distributedEffects.fixture.reverse();
+      await writeFile(permutedCorpusPath, `${JSON.stringify(permutedCorpus, null, 2)}\n`);
+      await rewriteManifestConformanceFingerprint(permutedEffectsPack);
+      await refreshAgentRuntimePackChecksums(permutedEffectsPack);
+      const permuted = await runAgentRuntimeConformance(permutedEffectsPack);
+      assert.equal(permuted.receipt.distributed_skeleton_effects_matched, true);
+      assert.equal(permuted.receipt.distributed_fixture_effects_matched, true);
+
       const incompletePack = path.join(root, 'agent-runtime-v0.1-missing-runtime');
       await cp(pack, incompletePack, { recursive: true });
       await rm(path.join(incompletePack, 'world-host/src/core/store.mjs'));
@@ -433,6 +446,16 @@ describe('Agent Runtime pack', () => {
     });
 
     assert.deepEqual(manifest.requiredActuatorRefs, ['world:actuator-ref:4f0c7160f25c4c62', 'world:actuator-ref:d5e4b1b427522cf2']);
+
+    assert.throws(() => buildAgentRuntimeManifest({
+      ...manifest,
+      requiredDescriptorFingerprints: ['world:descriptor:be73177924a6b377'],
+    }), /ERR_AGENT_RUNTIME_REQUIRED_ACTUATOR_DESCRIPTOR_MISMATCH/);
+
+    const asserted = { ...manifest, requiredDescriptorFingerprints: ['world:descriptor:be73177924a6b377'] };
+    delete asserted.manifestFingerprint;
+    asserted.manifestFingerprint = fingerprintOf(asserted);
+    assert.throws(() => assertAgentRuntimeManifest(asserted), /ERR_AGENT_RUNTIME_REQUIRED_ACTUATOR_DESCRIPTOR_MISMATCH/);
   });
 
   it('uses the parsed Boundary package version when reading owner artifacts', async () => {
