@@ -1166,6 +1166,9 @@ async function replayStoreRun(store, storePath, runId, branchId) {
   if (!Array.isArray(committedEffectIds) || committedEffectIds.some((id) => typeof id !== 'string' || id.length === 0)) {
     fail('ERR_AGENT_RUNTIME_REPLAY_EFFECT_IDS_REQUIRED', 'agent replay requires committed effect id diagnostics');
   }
+  if (new Set(committedEffectIds).size !== committedEffectIds.length) {
+    fail('ERR_AGENT_RUNTIME_REPLAY_EFFECT_IDS_DUPLICATE', 'agent replay requires unique committed effect id diagnostics');
+  }
   const journal = new EffectJournal({ store, runId, branchId, parentTurnClosureFingerprint });
   const reconciliation = await journal.reconcileCommittedHead(head);
   const effects = (await store.listEffectRecords(runId)).filter((effect) => effect.branchId === branchId);
