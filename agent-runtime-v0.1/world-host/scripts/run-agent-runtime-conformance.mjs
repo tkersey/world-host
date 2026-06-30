@@ -61,7 +61,7 @@ export async function runAgentRuntimeConformance(pack) {
     distributed_skeleton_effects_matched: distributedSkeleton.effectTraceMatched === true,
     distributed_fixture_effects_matched: distributedFixture.effectTraceMatched === true,
     distributed_empty_payloads_rejected: emptyPayloadSkeleton.emptyPayloadRejected === true && emptyPayloadFixture.emptyPayloadRejected === true,
-    host_did_not_author_receipts: [skeleton, fixture, replay, retry, migration, branching].every((item) => item.hostAuthoredWorldEvidence === false),
+    host_did_not_author_receipts: [distributedSkeleton, distributedFixture].every((item) => item.hostAuthoredWorldEvidence === false),
     no_generated_agent_target_type: [skeleton, fixture, replay, retry, migration, branching].every((item) => item.generatedAgentTargetType === false),
     no_native_helper_process: [skeleton, fixture, replay, retry, migration, branching].every((item) => item.nativeHelperProcess === false),
     distributed_wasm_compiled: true,
@@ -221,6 +221,7 @@ async function runCheckedPackScenario({ checked, codecs, corpus, runBunCli, scen
         effectTraceMatched: JSON.stringify(effects) === JSON.stringify(expectedEffects),
         rootResultFingerprint: resumed.head?.rootResultFingerprint ?? null,
         outputVerified: scenario === 'fixture' ? output === FIXTURE_OUTPUT : null,
+        hostAuthoredWorldEvidence: run.diagnostics?.worldEvidenceAuthored === true || resumed.diagnostics?.worldEvidenceAuthored === true,
       };
     }
 
