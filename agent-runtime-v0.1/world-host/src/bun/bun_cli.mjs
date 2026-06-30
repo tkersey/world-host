@@ -12,7 +12,7 @@ import { decodeResolutionInputBytes, encodeBootTurnInput, encodeResolutionInputB
 import { encodeCanonicalValueImage, fingerprintValueImage } from '../protocol/world_loaded_value_codec.mjs';
 import { inspectTurnOutput, summarizeTurnClosureForRunHead } from '../protocol/world_universal_appliance_codec.mjs';
 import { carrierVersionSummary } from '../protocol/world_manifest.mjs';
-import { EffectJournal } from '../core/effect_journal.mjs';
+import { EffectJournal, EffectState } from '../core/effect_journal.mjs';
 import { FixtureAgentModelDriver } from '../drivers/fixture_agent_model_driver.mjs';
 import { SandboxFileDriver } from '../drivers/sandbox_file_driver.mjs';
 import { BunWorldWorker } from './bun_worker.mjs';
@@ -110,7 +110,7 @@ async function runAgentCommand(args, io, options) {
   }
   if (subcommand === 'resume') return await runStoreResume(['resume', ...args.slice(1)], io, requiredOption(args, '--store'), agentRuntimeRunOptions(args, options));
   if (subcommand === 'inspect') return await runStoreDiagnostics('inspect', ['inspect', ...args.slice(1)], io, requiredOption(args, '--store'), requiredOption(args, '--run'));
-  if (subcommand === 'replay') return await runStoreDiagnostics('inspect', ['inspect', ...args.slice(1)], io, requiredOption(args, '--store'), requiredOption(args, '--run'));
+  if (subcommand === 'replay') return await runStoreReplay(['replay', ...args.slice(1)], io, requiredOption(args, '--store'), requiredOption(args, '--run'));
   if (subcommand === 'migrate') {
     const storePath = requiredOption(args, '--store');
     const out = requiredOption(args, '--out');
@@ -414,6 +414,19 @@ async function runStoreDiagnostics(command, args, io, storePath, runId) {
     const result = command === 'inspect'
       ? await inspectStore(store, storePath, runId, branchId)
       : await inspectEffects(store, storePath, runId);
+    io.stdout.write(`${JSON.stringify(redact(result), null, 2)}\n`);
+    return 0;
+  } finally {
+    await store.releaseLock();
+  }
+}
+
+async function runStoreReplay(args, io, storePath, runId) {
+  const branchId = valueAfter(args, '--branch') ?? 'main';
+  const store = new DirectoryStore(storePath);
+  await store.acquireLock();
+  try {
+    const result = await replayStoreRun(store, storePath, runId, branchId);
     io.stdout.write(`${JSON.stringify(redact(result), null, 2)}\n`);
     return 0;
   } finally {
@@ -917,15 +930,59 @@ function agentRuntimePayloadBytes(payloadValueImageBytes, request) {
 }
 
 function assertLegacyAgentRuntimePayloadMatchesRequest(portable, request = {}) {
-  if (request.commandFingerprint != null && portable.commandFingerprint !== BigInt(request.commandFingerprint)) {
+  const refs = legacyAgentRuntimePayloadRefs(request);
+  if (refs.commandFingerprint == null || refs.bindingFingerprint == null) {
+    fail('ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_FRAME_REF');
+  }
+  if (portable.commandFingerprint !== BigInt(refs.commandFingerprint)) {
     fail('ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_COMMAND_REF');
   }
-  if (request.bindingFingerprint != null && portable.bindingFingerprint !== BigInt(request.bindingFingerprint)) {
+  if (portable.bindingFingerprint !== BigInt(refs.bindingFingerprint)) {
     fail('ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_BINDING_REF');
   }
   if (request.worldPortId != null && portable.worldPortId !== Number(request.worldPortId)) {
     fail('ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_WORLD_PORT');
   }
+}
+
+function legacyAgentRuntimePayloadRefs(request) {
+  if (request.commandFingerprint != null || request.bindingFingerprint != null) {
+    return {
+      commandFingerprint: request.commandFingerprint,
+      bindingFingerprint: request.bindingFingerprint,
+    };
+  }
+  if (request.frameRequestBytes != null) return decodeAgentRuntimeFrameRequest(request.frameRequestBytes);
+  return { commandFingerprint: null, bindingFingerprint: null };
+}
+
+function decodeAgentRuntimeFrameRequest(bytes) {
+  const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes ?? []);
+  let offset = 0;
+  const view = (length) => {
+    if (offset > data.byteLength || length > data.byteLength - offset) fail('ERR_AGENT_RUNTIME_FRAME_REQUEST_MALFORMED');
+    const value = new DataView(data.buffer, data.byteOffset + offset, length);
+    offset += length;
+    return value;
+  };
+  const u32 = () => view(4).getUint32(0, true);
+  const u64 = () => view(8).getBigUint64(0, true);
+  const portableBytes = () => {
+    const length = u32();
+    if (offset > data.byteLength || length > data.byteLength - offset) fail('ERR_AGENT_RUNTIME_FRAME_REQUEST_MALFORMED');
+    const value = data.slice(offset, offset + length);
+    offset += length;
+    return value;
+  };
+  const format = new TextDecoder().decode(portableBytes());
+  if (format !== 'world.appliance.frame_request.v1') fail('ERR_AGENT_RUNTIME_FRAME_REQUEST_UNSUPPORTED');
+  u64();
+  const commandFingerprint = u64();
+  u64();
+  u64();
+  u32();
+  const bindingFingerprint = u64();
+  return { commandFingerprint, bindingFingerprint };
 }
 
 function decodeAgentRuntimePayloadValueImage(bytes) {
@@ -1048,6 +1105,65 @@ async function inspectStore(store, storePath, runId, branchId) {
   };
 }
 
+async function replayStoreRun(store, storePath, runId, branchId) {
+  const run = await store.getRun(runId);
+  const head = await store.readHead(runId, branchId);
+  const closureBytes = await store.getBlob(head.turnClosureRef);
+  const parentTurnClosureFingerprint = head.updateDiagnostics?.parentTurnClosureFingerprint;
+  if (typeof parentTurnClosureFingerprint !== 'string' || parentTurnClosureFingerprint.length === 0) {
+    fail('ERR_AGENT_RUNTIME_REPLAY_HEAD_PARENT_REQUIRED', 'agent replay requires a head with committed parent TurnClosure diagnostics');
+  }
+  const committedEffectIds = Array.isArray(head.updateDiagnostics?.committedEffectIds)
+    ? head.updateDiagnostics.committedEffectIds
+    : [];
+  const journal = new EffectJournal({ store, runId, branchId, parentTurnClosureFingerprint });
+  const reconciliation = await journal.reconcileCommittedHead(head);
+  const effects = (await store.listEffectRecords(runId)).filter((effect) => effect.branchId === branchId);
+  const retained = effects.filter((effect) => (
+    effect.parentTurnClosureFingerprint === parentTurnClosureFingerprint &&
+    effect.state === EffectState.closureCommitted &&
+    committedEffectIds.includes(effect.idempotencyKeyWorldFingerprint)
+  ));
+  const retainedIds = new Set(retained.map((effect) => effect.idempotencyKeyWorldFingerprint));
+  const missingEffectIds = committedEffectIds.filter((id) => !retainedIds.has(id));
+  return {
+    command: 'replay',
+    ok: missingEffectIds.length === 0,
+    mode: 'json',
+    store: storePath,
+    run: {
+      runId: run.runId,
+      applicationId: run.applicationId,
+      branchId,
+    },
+    head: {
+      generation: head.generation,
+      status: head.status,
+      turnClosureWorldFingerprint: head.turnClosureWorldFingerprint,
+      resultingStateFingerprint: head.resultingStateFingerprint,
+      closureByteSize: closureBytes.byteLength,
+    },
+    replay: {
+      parentTurnClosureFingerprint,
+      expectedEffectCount: committedEffectIds.length,
+      retainedEffectCount: retained.length,
+      reconciledSubmittedEffectCount: reconciliation.committedCount,
+      missingEffectIds,
+      freshEffectCount: 0,
+      completed: missingEffectIds.length === 0,
+    },
+    effects: summarizeEffectStates(effects),
+    diagnostics: {
+      workerExecuted: false,
+      driversInvoked: false,
+      freshModelEffects: 0,
+      freshFileEffects: 0,
+      retainedEffectsReused: missingEffectIds.length === 0,
+      worldEvidenceAuthored: false,
+    },
+  };
+}
+
 async function inspectEffects(store, storePath, runId) {
   const effects = await store.listEffectRecords(runId);
   return {
@@ -1111,6 +1227,7 @@ function summarizeApplicationInstall(app) {
 }
 
 function summarizeRunLifecycle({ command, storePath, run, branchId, created, head, advance, driversInvokedByCli = false }) {
+  const advanceEffectCount = countAdvanceEffects(advance);
   return {
     command,
     ok: true,
@@ -1133,7 +1250,8 @@ function summarizeRunLifecycle({ command, storePath, run, branchId, created, hea
       status: advance.status,
       workerStatus: advance.workerStatus ?? null,
       closureRef: summarizeBlobRef(advance.closureRef ?? advance.orphanClosureRef),
-      effectCount: advance.effects?.length ?? 0,
+      effectCount: advanceEffectCount,
+      submittedEffectCount: advance.submittedEffects?.length ?? 0,
       unresolvedHostRequestCount: advance.unresolvedHostRequests?.length ?? 0,
       branchConflict: advance.status === 'branch_conflict',
     } : null,
@@ -1141,11 +1259,15 @@ function summarizeRunLifecycle({ command, storePath, run, branchId, created, hea
       workerExecuted: advance !== null,
       runCreated: created,
       schedulerLoop: false,
-      driversInvokedByCli: advance !== null && driversInvokedByCli && (advance.effects?.length ?? 0) > 0,
+      driversInvokedByCli: advance !== null && driversInvokedByCli && advanceEffectCount > 0,
       runHeadMutatedDirectlyByCli: false,
       worldEvidenceAuthored: false,
     },
   };
+}
+
+function countAdvanceEffects(advance) {
+  return (advance?.effects?.length ?? 0) + (advance?.submittedEffects?.length ?? 0);
 }
 
 function summarizeCarrierExport(carrierExport) {
