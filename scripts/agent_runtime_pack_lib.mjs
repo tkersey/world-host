@@ -59,14 +59,18 @@ const WORLD_V0_APPLIANCE_MANIFEST_SHA256_BY_HEAD = Object.freeze({
 const WORLD_V0_UNIVERSAL_WASM_SHA256_BY_HEAD = Object.freeze({
   a8b594e428d49f93d5dcf5a862e7c28192dd44ef: 'a79ae458d3cc5145660dadfc678736e75822c8c70558f8139861dc1103e84add',
 });
-const WORLD_V0_REQUIRED_ACTUATOR_REFS = Object.freeze([
-  'world:actuator-ref:4f0c7160f25c4c62',
-  'world:actuator-ref:d5e4b1b427522cf2',
-]);
-const WORLD_V0_REQUIRED_DESCRIPTOR_FINGERPRINTS = Object.freeze([
-  'world:descriptor:be73177924a6b377',
-  'world:descriptor:74afc8c3b2fe4c33',
-]);
+const WORLD_V0_REQUIRED_ACTUATOR_REFS_BY_HEAD = Object.freeze({
+  a8b594e428d49f93d5dcf5a862e7c28192dd44ef: Object.freeze([
+    'world:actuator-ref:4f0c7160f25c4c62',
+    'world:actuator-ref:d5e4b1b427522cf2',
+  ]),
+});
+const WORLD_V0_REQUIRED_DESCRIPTOR_FINGERPRINTS_BY_HEAD = Object.freeze({
+  a8b594e428d49f93d5dcf5a862e7c28192dd44ef: Object.freeze([
+    'world:descriptor:be73177924a6b377',
+    'world:descriptor:74afc8c3b2fe4c33',
+  ]),
+});
 const WORLD_HOST_CARRIER_MODULE_SHA256 = '322ea7e3baca7a64d4ff48626f85ccd96165e05e9c8fbb878f0e583a656eef31';
 const WORLD_V0_REQUIRED_PROOF_KINDS = Object.freeze([
   'boundary_portable_v2',
@@ -792,8 +796,8 @@ async function verifyManifestArtifacts(root, manifest) {
   const worldMetadataDescriptorFingerprints = exactArray(worldMetadata.required_descriptor_fingerprints, 'world required descriptor fingerprints').map(worldDescriptorFingerprint);
   assertEqual(stableJson(manifest.requiredActuatorRefs), stableJson(worldMetadataActuatorRefs), 'ERR_AGENT_RUNTIME_ACTUATOR_REFS');
   assertEqual(stableJson(manifest.requiredDescriptorFingerprints), stableJson(worldMetadataDescriptorFingerprints), 'ERR_AGENT_RUNTIME_DESCRIPTOR_FINGERPRINTS');
-  assertEqual(stableJson(manifest.requiredActuatorRefs), stableJson(WORLD_V0_REQUIRED_ACTUATOR_REFS), 'ERR_AGENT_RUNTIME_ACTUATOR_REFS_HEAD');
-  assertEqual(stableJson(manifest.requiredDescriptorFingerprints), stableJson(WORLD_V0_REQUIRED_DESCRIPTOR_FINGERPRINTS), 'ERR_AGENT_RUNTIME_DESCRIPTOR_FINGERPRINTS_HEAD');
+  assertEqual(stableJson(manifest.requiredActuatorRefs), stableJson(expectedWorldArtifactByHead(WORLD_V0_REQUIRED_ACTUATOR_REFS_BY_HEAD, worldHead, 'ERR_AGENT_RUNTIME_ACTUATOR_REFS_HEAD')), 'ERR_AGENT_RUNTIME_ACTUATOR_REFS_HEAD');
+  assertEqual(stableJson(manifest.requiredDescriptorFingerprints), stableJson(expectedWorldArtifactByHead(WORLD_V0_REQUIRED_DESCRIPTOR_FINGERPRINTS_BY_HEAD, worldHead, 'ERR_AGENT_RUNTIME_DESCRIPTOR_FINGERPRINTS_HEAD')), 'ERR_AGENT_RUNTIME_DESCRIPTOR_FINGERPRINTS_HEAD');
   assertEqual(manifest.worldHost.carrierManifestFingerprint, carrierManifestFingerprint(carrier), 'ERR_AGENT_RUNTIME_CARRIER_MANIFEST_FINGERPRINT');
   await verifyPackagedCarrierModule(root, carrier);
   assertEqual(manifest.conformanceCorpusFingerprint, conformanceCorpusFingerprint, 'ERR_AGENT_RUNTIME_CONFORMANCE_CORPUS_FINGERPRINT');
