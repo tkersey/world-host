@@ -953,6 +953,37 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('rejects replay heads without committed effect id diagnostics', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-replay-diagnostics-'));
+    try {
+      const { run, head } = await fixtureDirectoryStore(root);
+      const store = new DirectoryStore(root);
+      await store.acquireLock();
+      try {
+        await store.writeHead(run.runId, 'main', createRunHead({
+          ...head,
+          updateDiagnostics: {
+            parentTurnClosureFingerprint: head.updateDiagnostics.parentTurnClosureFingerprint,
+          },
+        }));
+      } finally {
+        await store.releaseLock();
+      }
+
+      await assert.rejects(() => runBunCli([
+        'agent',
+        'replay',
+        '--store', root,
+        '--run', run.runId,
+      ], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      }), { code: 'ERR_AGENT_RUNTIME_REPLAY_EFFECT_IDS_REQUIRED' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('rejects malformed canonical agent runtime payload framing', () => {
     const malformedPayload = new Uint8Array(encodeCanonicalValueImage({
       bytes: fromUtf8('agent runtime request'),
