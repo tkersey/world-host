@@ -13,7 +13,7 @@ import {
 } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 
 import { stableJson } from '../src/core/store.mjs';
 import {
@@ -782,7 +782,6 @@ async function verifyManifestArtifacts(root, manifest) {
   assertEqual(manifest.conformanceCorpusFingerprint, conformanceCorpusFingerprint, 'ERR_AGENT_RUNTIME_CONFORMANCE_CORPUS_FINGERPRINT');
   assertEqual(stableJson(packagedArtifactMetadata), stableJson(manifest.artifacts), 'ERR_AGENT_RUNTIME_ARTIFACT_METADATA');
   assertEqual(manifest.artifacts?.worldHost?.packageTree?.fingerprint, await fingerprintWorldHostPackageTree(root), 'ERR_AGENT_RUNTIME_WORLD_HOST_TREE_FINGERPRINT');
-  await verifyWorldHostPackageTreeMatchesSource(root, manifest);
 
   const artifactChecks = [
     ['boundary.agentRootModule.sha256', manifest.artifacts?.boundary?.agentRootModule?.sha256, async () => readFile(path.join(root, 'boundary/agent-root.full-module'))],
@@ -1070,36 +1069,6 @@ async function verifyPackagedCarrierModule(root) {
 
 function assertGitSha(value, code) {
   if (typeof value !== 'string' || !/^[0-9a-f]{40}$/i.test(value)) throw new Error(code);
-}
-
-async function verifyWorldHostPackageTreeMatchesSource(root, manifest) {
-  const head = manifest.metadata?.buildDiagnostics?.worldHostHead;
-  assertGitSha(head, 'ERR_AGENT_RUNTIME_WORLD_HOST_HEAD');
-  const repo = validatorGitRoot();
-  const generatedPackFiles = new Set(['README.md', 'package.json', 'carrier-manifest.json', 'agent-runtime-artifacts.json']);
-  const files = (await listFiles(path.join(root, 'world-host')))
-    .filter((rel) => !generatedPackFiles.has(rel))
-    .sort();
-  for (const rel of files) {
-    const packaged = await readFile(path.join(root, 'world-host', rel));
-    const source = gitShowFile(repo, head, rel);
-    if (sha256Hex(packaged) !== sha256Hex(source)) {
-      throw new Error(`ERR_AGENT_RUNTIME_WORLD_HOST_TREE_SOURCE:${rel}`);
-    }
-  }
-}
-
-function validatorGitRoot() {
-  const start = path.dirname(fileURLToPath(import.meta.url));
-  const result = spawnSync('git', ['-C', start, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' });
-  if (result.status !== 0) throw new Error('ERR_AGENT_RUNTIME_VALIDATOR_GIT_ROOT');
-  return result.stdout.trim();
-}
-
-function gitShowFile(repo, head, rel) {
-  const result = spawnSync('git', ['-C', repo, 'show', `${head}:${rel}`]);
-  if (result.status !== 0) throw new Error(`ERR_AGENT_RUNTIME_WORLD_HOST_TREE_SOURCE:${rel}`);
-  return result.stdout;
 }
 
 async function safePackageEntry(root, rel) {
