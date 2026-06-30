@@ -1962,7 +1962,9 @@ describe('migration, branching, and CLI diagnostics', () => {
       await receiverStore.acquireLock();
       try {
         for (const blob of bundle.blobs) await receiverStore.putBlob(Uint8Array.from(blob.bytes));
-        await receiverStore.createApplication(bundle.application);
+        const legacyApplication = { ...bundle.application };
+        delete legacyApplication.requiredHostAuthorityLabels;
+        await receiverStore.createApplication(legacyApplication);
         await receiverStore.createRun(bundle.run);
         assert.equal((await receiverStore.listEffectRecords(run.runId)).length, 0);
 

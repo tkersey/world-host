@@ -149,7 +149,7 @@ export class MemoryStore extends ClosureStore {
       }
     }
     if (application && this.applications.has(application.applicationId)) {
-      const existing = this.applications.get(application.applicationId);
+      const existing = createApplicationRecord(this.applications.get(application.applicationId));
       if (stableJson(existing) !== stableJson(application)) fail('ERR_IMPORT_APPLICATION_MISMATCH');
     }
     const runExists = this.runs.has(runRecord.runId);

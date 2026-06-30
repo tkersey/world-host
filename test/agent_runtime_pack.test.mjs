@@ -222,6 +222,31 @@ describe('Agent Runtime pack', () => {
         /ERR_AGENT_RUNTIME_WORLD_CORPUS_ROOT/,
       );
 
+      const tamperedRequiredRefsPack = path.join(root, 'agent-runtime-v0.1-tampered-required-refs');
+      await cp(pack, tamperedRequiredRefsPack, { recursive: true });
+      const tamperedRequiredRefsMetadataPath = path.join(tamperedRequiredRefsPack, 'world/agent-runtime-world-artifacts.json');
+      const tamperedRequiredRefsMetadata = JSON.parse(await readFile(tamperedRequiredRefsMetadataPath, 'utf8'));
+      tamperedRequiredRefsMetadata.required_actuator_ref_fingerprints = ['0x0000000000000001', '0x0000000000000002'];
+      tamperedRequiredRefsMetadata.required_descriptor_fingerprints = ['0x0000000000000003', '0x0000000000000004'];
+      const tamperedRequiredRefsMetadataBytes = Buffer.from(`${JSON.stringify(tamperedRequiredRefsMetadata, null, 2)}\n`);
+      await writeFile(tamperedRequiredRefsMetadataPath, tamperedRequiredRefsMetadataBytes);
+      const tamperedRequiredRefsManifest = JSON.parse(await readFile(path.join(tamperedRequiredRefsPack, 'manifest/agent-runtime-manifest.json'), 'utf8'));
+      tamperedRequiredRefsManifest.requiredActuatorRefs = [
+        'world:actuator-ref:0000000000000001',
+        'world:actuator-ref:0000000000000002',
+      ];
+      tamperedRequiredRefsManifest.requiredDescriptorFingerprints = [
+        'world:descriptor:0000000000000003',
+        'world:descriptor:0000000000000004',
+      ];
+      tamperedRequiredRefsManifest.artifacts.world.agentRuntimeMetadata.sha256 = sha256Hex(tamperedRequiredRefsMetadataBytes);
+      await writeManifest(tamperedRequiredRefsPack, tamperedRequiredRefsManifest);
+      await refreshAgentRuntimePackChecksums(tamperedRequiredRefsPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(tamperedRequiredRefsPack),
+        /ERR_AGENT_RUNTIME_ACTUATOR_REFS_HEAD/,
+      );
+
       const tamperedWorldReceiptPack = path.join(root, 'agent-runtime-v0.1-tampered-world-receipt');
       await cp(pack, tamperedWorldReceiptPack, { recursive: true });
       const tamperedWorldReceiptPath = path.join(tamperedWorldReceiptPack, 'world/release-receipt.bin');
