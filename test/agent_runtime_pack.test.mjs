@@ -399,6 +399,29 @@ describe('Agent Runtime pack', () => {
         /ERR_AGENT_RUNTIME_CARRIER_MODULE_SOURCE/,
       );
 
+      const reboundHostTreePack = path.join(root, 'agent-runtime-v0.1-rebound-host-tree');
+      await cp(pack, reboundHostTreePack, { recursive: true });
+      await writeFile(path.join(reboundHostTreePack, 'world-host/src/core/store.mjs'), '\n// tampered but rebound host tree\n', { flag: 'a' });
+      const reboundHostTreeManifest = JSON.parse(await readFile(path.join(reboundHostTreePack, 'manifest/agent-runtime-manifest.json'), 'utf8'));
+      reboundHostTreeManifest.artifacts.worldHost.packageTree.fingerprint = await fingerprintWorldHostPackageTreeForTest(reboundHostTreePack);
+      await writeManifest(reboundHostTreePack, reboundHostTreeManifest);
+      await refreshAgentRuntimePackChecksums(reboundHostTreePack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(reboundHostTreePack, { requireReleaseReceipt: true }),
+        /ERR_AGENT_RUNTIME_WORLD_HOST_TREE_SOURCE:src\/core\/store\.mjs/,
+      );
+
+      const reboundWorldImagePack = path.join(root, 'agent-runtime-v0.1-rebound-world-image');
+      await cp(pack, reboundWorldImagePack, { recursive: true });
+      const reboundWorldImagePath = path.join(reboundWorldImagePack, 'world/agent.executable-image');
+      await writeFile(reboundWorldImagePath, '\n// tampered world executable image\n', { flag: 'a' });
+      await rewriteManifestArtifactSha(reboundWorldImagePack, 'world', 'executableImage', await readFile(reboundWorldImagePath));
+      await refreshAgentRuntimePackChecksums(reboundWorldImagePack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(reboundWorldImagePack, { requireReleaseReceipt: true }),
+        /ERR_AGENT_RUNTIME_WORLD_IMAGE_BYTES/,
+      );
+
       const sourceOnlyScriptPack = path.join(root, 'agent-runtime-v0.1-source-only-script');
       await cp(pack, sourceOnlyScriptPack, { recursive: true });
       const sourceOnlyPackagePath = path.join(sourceOnlyScriptPack, 'world-host/package.json');
@@ -759,6 +782,12 @@ async function fingerprintDirectoryForTest(root, prefix = '') {
     else if (info.isFile()) entries.push([rel.split(path.sep).join('/'), sha256Hex(await readFile(absolute))]);
   }
   return fingerprintOf(entries.sort(([left], [right]) => left.localeCompare(right)));
+}
+
+async function fingerprintWorldHostPackageTreeForTest(pack) {
+  return fingerprintOf((await fingerprintDirectoryEntriesForTest(path.join(pack, 'world-host'), ''))
+    .filter(([rel]) => rel !== 'agent-runtime-artifacts.json')
+    .sort(([left], [right]) => left.localeCompare(right)));
 }
 
 async function fingerprintDirectoryEntriesForTest(root, prefix) {
