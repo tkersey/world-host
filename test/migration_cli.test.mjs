@@ -1102,6 +1102,18 @@ describe('migration, branching, and CLI diagnostics', () => {
         rootArgumentImageBytes: fromUtf8('agent runtime request'),
       }),
     }), { code: 'ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_WORLD_PORT' });
+
+    assert.throws(() => agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      frameRequestBytes: baseRequest.frameRequestBytes.slice(0, -8),
+      payloadValueImageBytes: payload,
+    }), { code: 'ERR_AGENT_RUNTIME_FRAME_REQUEST_MALFORMED' });
+
+    assert.throws(() => agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      frameRequestBytes: concat([baseRequest.frameRequestBytes, new Uint8Array([0])]),
+      payloadValueImageBytes: payload,
+    }), { code: 'ERR_AGENT_RUNTIME_FRAME_REQUEST_MALFORMED' });
   });
 
   it('requires shipped release receipts before agent installs', async () => {
