@@ -102,7 +102,7 @@
       },
       "agentRuntimeMetadata": {
         "exportedByOwner": true,
-        "sha256": "721c34678b6b37e2536ddb8c621dd29158fd0ed13d754336ed16267f6db35585"
+        "sha256": "08092bd2def56af46d571223b78f04d4616e9a96462bbc8450886b00893f1f32"
       }
     },
     "worldHost": {
@@ -120,10 +120,10 @@
     "hostSpecificFilesystemPathsIncluded": false,
     "buildDiagnostics": {
       "boundaryHead": "6a416951f8d22d0854616f094f23b2d44ab021a2",
-      "worldHead": "unknown",
-      "worldHostHead": "3179873fbabcff9c79919a154b189dc1245f9c25",
+      "worldHead": "ed5503e4bcb063b4112156b9c212ce884ad5dbb0",
+      "worldHostHead": "3ae3290773aa658eb1716c794dd51e67e8e27db2",
       "worldHostDirty": false
     }
   },
-  "manifestFingerprint": "agent-runtime:b845e7b8ba29352560864ce4db17e395"
+  "manifestFingerprint": "agent-runtime:3dd2484391be99db14c743d4f0494cc5"
 }

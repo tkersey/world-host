@@ -31,6 +31,57 @@ export const FIXTURE_INPUT = 'rewrite this file through the agent loop\n';
 export const FIXTURE_OUTPUT = 'actuate updated the fixture';
 export const FIXTURE_RESULT = 'final=fixture updated';
 export const SKELETON_RESULT = 'final=actuate skeleton complete';
+const EXPECTED_PACK_CHECK_SCRIPT = 'bun scripts/check-agent-runtime-pack.mjs && bun scripts/run-agent-runtime-conformance.mjs && bun scripts/check-agent-runtime-pack.mjs --require-release-receipt && bun scripts/check-agent-runtime-release-receipt.mjs';
+const WORLD_V0_BOUNDARY_PROTOCOL_MANIFEST_FINGERPRINT = '0x68ce6ebd4448144f';
+const WORLD_V0_CONFORMANCE_CORPUS_ROOT_FINGERPRINT = '0xe727536b60a5e286';
+const WORLD_V0_REQUIRED_PROOF_KINDS = Object.freeze([
+  'boundary_portable_v2',
+  'executable_image',
+  'universal_wasm_execution',
+  'two_programs_one_wasm',
+  'loaded_internal_provider',
+  'multi_suspension_root',
+  'active_fabric_restore',
+  'replay_without_fresh_effect',
+  'unsupported_actuated_replay_rejected',
+  'deterministic_retry',
+  'batched_request_reply',
+  'independent_javascript_codec',
+  'exact_result_bytes',
+  'exact_receipt_bytes',
+  'exact_capsule_bytes',
+  'exact_archive_append_batch_bytes',
+  'native_wasm_parity',
+  'cold_warm_parity',
+  'memory_bound',
+  'malformed_input',
+  'regression_matrix',
+  'reproducible_artifact',
+]);
+const WORLD_V0_PROOF_GATES = Object.freeze({
+  boundary_portable_v2: 'check-boundary-world-compatibility',
+  executable_image: 'check-world-executable-image',
+  universal_wasm_execution: 'check-world-universal-appliance-node',
+  two_programs_one_wasm: 'check-world-two-programs-one-wasm',
+  loaded_internal_provider: 'check-world-universal-providers',
+  multi_suspension_root: 'check-world-loaded-runspace',
+  active_fabric_restore: 'check-world-active-fabric-restore',
+  replay_without_fresh_effect: 'check-world-replay-positive',
+  unsupported_actuated_replay_rejected: 'check-world-v0-negative',
+  deterministic_retry: 'check-world-deterministic-retry',
+  batched_request_reply: 'check-world-appliance-batching',
+  independent_javascript_codec: 'check-world-js-codec',
+  exact_result_bytes: 'check-world-conformance-corpus',
+  exact_receipt_bytes: 'check-world-adversarial-codecs',
+  exact_capsule_bytes: 'check-world-adversarial-codecs',
+  exact_archive_append_batch_bytes: 'check-world-adversarial-codecs',
+  native_wasm_parity: 'check-world-state-machine-differential',
+  cold_warm_parity: 'check-world-state-machine-differential',
+  memory_bound: 'check-world-universal-memory',
+  malformed_input: 'check-world-js-malformed-corpus',
+  regression_matrix: 'check-world-conformance-corpus',
+  reproducible_artifact: 'check-world-reproducible-wasm',
+});
 
 export function parseCommonArgs(raw) {
   const parsed = {};
@@ -200,6 +251,10 @@ export async function checkAgentRuntimePack(pack, options = {}) {
     'world-host/examples/agent_runtime/retry/run.mjs',
     'world-host/examples/agent_runtime/shared.mjs',
     'world-host/examples/agent_runtime/skeleton/run.mjs',
+    'world-host/examples/branching/run.mjs',
+    'world-host/examples/crash_recovery/run.mjs',
+    'world-host/examples/file_rewrite_agent/run.mjs',
+    'world-host/examples/migration/run.mjs',
     'world-host/package.json',
     'world-host/scripts/agent_runtime_pack_lib.mjs',
     'world-host/scripts/build-agent-runtime-pack.mjs',
@@ -255,6 +310,7 @@ export async function checkAgentRuntimePack(pack, options = {}) {
   const wasm = await readFile(path.join(root, 'world/world_universal_appliance.wasm'));
   if (manifest.world.universalWasmSha256 !== sha256Hex(wasm)) throw new Error('ERR_AGENT_RUNTIME_WASM_CHECKSUM');
   await verifyManifestArtifacts(root, manifest);
+  await verifyWorldReleaseReceipt(root, manifest);
   await verifyPackagedPackageScripts(root);
   const corpus = JSON.parse(await readFile(path.join(root, 'conformance/corpus.json'), 'utf8'));
   if (corpus.warnings?.length) throw new Error(`ERR_AGENT_RUNTIME_OWNER_EXPORT_WARNINGS:${corpus.warnings.join(',')}`);
@@ -385,12 +441,12 @@ async function boundaryArtifacts(boundaryRepo) {
   );
   return {
     packageVersion: version,
-    packageHash: gitHead(boundaryRepo),
+    packageHash: gitHead(boundaryRepo, { required: false }),
     protocolManifestFingerprint: requireOwnerFingerprint(profile.boundary_protocol_manifest_fingerprint, 'boundary profile protocol manifest'),
     agentProfileFingerprint: requireOwnerFingerprint(profile.profile_fingerprint, 'boundary agent profile'),
     agentRootModuleFingerprint: requireOwnerFingerprint(profile.agent_root_module_fingerprint, 'boundary agent root module'),
     toolboxModuleFingerprint: requireOwnerFingerprint(profile.toolbox_module_fingerprint, 'boundary toolbox module'),
-    gitHead: gitHead(boundaryRepo),
+    gitHead: gitHead(boundaryRepo, { required: false }),
     files: { rootModule, toolboxModule, protocolManifest, profile, profileBytes, corpus },
     artifacts: {
       agentRootModule: { exportedByOwner: true, sha256: sha256Hex(rootModule), byteFingerprint: profile.agent_root_full_module_byte_fingerprint },
@@ -665,17 +721,94 @@ async function verifyManifestArtifacts(root, manifest) {
   }
 }
 
+async function verifyWorldReleaseReceipt(root, manifest) {
+  const receipt = JSON.parse(await readFile(path.join(root, 'world/release-receipt.bin'), 'utf8'));
+  const worldCorpus = JSON.parse(await readFile(path.join(root, 'world/conformance-corpus.json'), 'utf8'));
+  if (worldCorpus?.format_version !== 1 || worldCorpus?.name !== 'world-v0-conformance-corpus') {
+    throw new Error('ERR_AGENT_RUNTIME_WORLD_CORPUS');
+  }
+  const protocolLow = worldProtocolLowFingerprint(manifest);
+  if (receipt?.release_receipt_format_version !== 1) throw new Error('ERR_AGENT_RUNTIME_WORLD_RELEASE_RECEIPT_FORMAT');
+  if (receipt?.release_receipt_fingerprint_version !== 1) throw new Error('ERR_AGENT_RUNTIME_WORLD_RELEASE_RECEIPT_FINGERPRINT_VERSION');
+  requireOwnerFingerprint(receipt.release_receipt_fingerprint, 'world release receipt fingerprint');
+  assertEqual(receipt.boundary_protocol_manifest_fingerprint, WORLD_V0_BOUNDARY_PROTOCOL_MANIFEST_FINGERPRINT, 'ERR_AGENT_RUNTIME_WORLD_RELEASE_RECEIPT_BOUNDARY_PROTOCOL');
+  assertEqual(receipt.world_protocol_manifest_fingerprint, protocolLow, 'ERR_AGENT_RUNTIME_WORLD_RELEASE_RECEIPT_PROTOCOL');
+  assertEqual(receipt.conformance_corpus_root_fingerprint, WORLD_V0_CONFORMANCE_CORPUS_ROOT_FINGERPRINT, 'ERR_AGENT_RUNTIME_WORLD_RELEASE_RECEIPT_CORPUS');
+  assertEqual(receipt.universal_wasm_checksum, ownerFingerprintFromSha256Prefix(manifest.world.universalWasmSha256), 'ERR_AGENT_RUNTIME_WORLD_RELEASE_RECEIPT_WASM');
+  requireOwnerFingerprint(receipt.source_package_checksum, 'world release receipt source package checksum');
+  if (receipt.complete !== true) throw new Error('ERR_AGENT_RUNTIME_WORLD_RELEASE_RECEIPT_INCOMPLETE');
+  if (!Array.isArray(receipt.blockers) || receipt.blockers.length !== 0) throw new Error('ERR_AGENT_RUNTIME_WORLD_RELEASE_RECEIPT_BLOCKERS');
+  if (!Array.isArray(receipt.warnings) || receipt.warnings.length !== 0) throw new Error('ERR_AGENT_RUNTIME_WORLD_RELEASE_RECEIPT_WARNINGS');
+  verifyWorldProofReceipts(receipt, protocolLow);
+}
+
+function verifyWorldProofReceipts(receipt, protocolLow) {
+  const proofs = receipt.proof_receipts;
+  if (!Array.isArray(proofs) || proofs.length !== WORLD_V0_REQUIRED_PROOF_KINDS.length) {
+    throw new Error('ERR_AGENT_RUNTIME_WORLD_RELEASE_RECEIPT_PROOFS');
+  }
+  const seen = new Set();
+  for (const proof of proofs) {
+    if (proof?.receipt_format_version !== 1) throw new Error('ERR_AGENT_RUNTIME_WORLD_PROOF_RECEIPT_FORMAT');
+    if (proof?.receipt_fingerprint_version !== 1) throw new Error('ERR_AGENT_RUNTIME_WORLD_PROOF_RECEIPT_FINGERPRINT_VERSION');
+    requireOwnerFingerprint(proof.receipt_fingerprint, 'world proof receipt fingerprint');
+    const proofIndex = WORLD_V0_REQUIRED_PROOF_KINDS.indexOf(proof.proof_kind);
+    if (proofIndex === -1 || seen.has(proof.proof_kind)) throw new Error(`ERR_AGENT_RUNTIME_WORLD_PROOF_RECEIPT_KIND:${proof.proof_kind}`);
+    seen.add(proof.proof_kind);
+    assertEqual(proof.proof_gate, WORLD_V0_PROOF_GATES[proof.proof_kind], `ERR_AGENT_RUNTIME_WORLD_PROOF_RECEIPT_GATE:${proof.proof_kind}`);
+    assertEqual(proof.proof_gate_fingerprint, worldProofGateFingerprint(proofIndex, proof.proof_gate), `ERR_AGENT_RUNTIME_WORLD_PROOF_RECEIPT_GATE_FINGERPRINT:${proof.proof_kind}`);
+    assertEqual(proof.protocol_manifest_fingerprint, protocolLow, `ERR_AGENT_RUNTIME_WORLD_PROOF_RECEIPT_PROTOCOL:${proof.proof_kind}`);
+    if (proof.actual_comparison_result !== true) throw new Error(`ERR_AGENT_RUNTIME_WORLD_PROOF_RECEIPT_RESULT:${proof.proof_kind}`);
+    if (proof.blocker_count !== 0 || proof.warning_count !== 0) throw new Error(`ERR_AGENT_RUNTIME_WORLD_PROOF_RECEIPT_DIAGNOSTICS:${proof.proof_kind}`);
+    const canonical = [worldProofKindEvidenceFingerprint(proofIndex), proof.proof_gate_fingerprint];
+    assertEqual(stableJson(proof.input_corpus_case_fingerprints), stableJson(canonical), `ERR_AGENT_RUNTIME_WORLD_PROOF_RECEIPT_INPUT:${proof.proof_kind}`);
+    assertEqual(stableJson(proof.expected_output_fingerprints), stableJson(canonical), `ERR_AGENT_RUNTIME_WORLD_PROOF_RECEIPT_EXPECTED:${proof.proof_kind}`);
+    assertEqual(stableJson(proof.actual_output_fingerprints), stableJson(canonical), `ERR_AGENT_RUNTIME_WORLD_PROOF_RECEIPT_ACTUAL:${proof.proof_kind}`);
+    assertEqual(stableJson(proof.bounded_diagnostics), stableJson(canonical), `ERR_AGENT_RUNTIME_WORLD_PROOF_RECEIPT_BOUNDED:${proof.proof_kind}`);
+    const artifactEvidence = [canonical[0], canonical[1], receipt.universal_wasm_checksum, receipt.source_package_checksum];
+    assertEqual(stableJson(proof.artifact_fingerprints), stableJson(artifactEvidence), `ERR_AGENT_RUNTIME_WORLD_PROOF_RECEIPT_ARTIFACTS:${proof.proof_kind}`);
+  }
+}
+
+function worldProtocolLowFingerprint(manifest) {
+  const parts = manifest.world.protocolManifestFingerprint.split(':');
+  return requireOwnerFingerprint(parts[parts.length - 1], 'world protocol manifest low fingerprint');
+}
+
+function ownerFingerprintFromSha256Prefix(value) {
+  return `0x${value.slice(0, 16)}`;
+}
+
+function worldProofKindEvidenceFingerprint(index) {
+  return `0x${(0x5750000000000000n + BigInt(index + 1)).toString(16).padStart(16, '0')}`;
+}
+
+function worldProofGateFingerprint(index, gateName) {
+  let hash = 0xcbf29ce484222325n;
+  hash = fnv64(hash, 0x5750470000000001n);
+  hash = fnv64(hash, BigInt(index));
+  hash = fnv64(hash, BigInt(gateName.length));
+  for (const byte of Buffer.from(gateName, 'utf8')) hash = fnv64(hash, BigInt(byte));
+  if (hash === 0n) hash = 1n;
+  return `0x${hash.toString(16).padStart(16, '0')}`;
+}
+
+function fnv64(hash, value) {
+  return ((hash ^ value) * 0x00000100000001b3n) & 0xffffffffffffffffn;
+}
+
 async function verifyPackagedPackageScripts(root) {
   const packageJson = JSON.parse(await readFile(path.join(root, 'world-host/package.json'), 'utf8'));
   const scripts = packageJson.scripts ?? {};
   const allowedScripts = new Set(['check:agent-runtime']);
-  if (typeof scripts['check:agent-runtime'] !== 'string') throw new Error('ERR_AGENT_RUNTIME_PACKAGE_SCRIPT:check:agent-runtime');
+  if (scripts['check:agent-runtime'] !== EXPECTED_PACK_CHECK_SCRIPT) throw new Error('ERR_AGENT_RUNTIME_PACKAGE_SCRIPT:check:agent-runtime');
   for (const name of Object.keys(scripts)) {
     if (!allowedScripts.has(name)) throw new Error(`ERR_AGENT_RUNTIME_PACKAGE_SCRIPT:${name}`);
   }
+  if (packageJson.bin?.['world-host'] !== './bin/world-host.mjs') throw new Error('ERR_AGENT_RUNTIME_PACKAGE_BIN:world-host');
+  await requireFile(path.join(root, 'world-host/bin/world-host.mjs'));
   for (const rel of packageJson.files ?? []) {
-    const target = path.join(root, 'world-host', rel);
-    await lstat(target);
+    await safePackageEntry(root, rel);
   }
   const readme = await readFile(path.join(root, 'world-host/README.md'), 'utf8');
   if (/\bbun(?:\s+run)?\s+(?:test|proof(?::[\w-]+)?)/.test(readme)) {
@@ -689,6 +822,26 @@ async function verifyPackagedPackageScripts(root) {
   }
   for (const rel of scriptEntrypoints) {
     await requireFile(path.join(root, 'world-host', rel));
+  }
+}
+
+async function safePackageEntry(root, rel) {
+  if (typeof rel !== 'string' || rel.length === 0) throw new Error('ERR_AGENT_RUNTIME_PACKAGE_FILE');
+  if (path.isAbsolute(rel)) throw new Error(`ERR_AGENT_RUNTIME_PACKAGE_FILE:${rel}`);
+  const normalized = path.normalize(rel);
+  if (normalized === '.' || normalized.startsWith('..') || normalized.includes(`${path.sep}..${path.sep}`)) {
+    throw new Error(`ERR_AGENT_RUNTIME_PACKAGE_FILE:${rel}`);
+  }
+  const packageRoot = await realpath(path.join(root, 'world-host'));
+  const target = path.resolve(packageRoot, normalized);
+  if (target !== packageRoot && !target.startsWith(`${packageRoot}${path.sep}`)) {
+    throw new Error(`ERR_AGENT_RUNTIME_PACKAGE_FILE:${rel}`);
+  }
+  const info = await lstat(target);
+  if (info.isSymbolicLink()) throw new Error(`ERR_AGENT_RUNTIME_PACKAGE_FILE_SYMLINK:${rel}`);
+  const realTarget = await realpath(target);
+  if (realTarget !== packageRoot && !realTarget.startsWith(`${packageRoot}${path.sep}`)) {
+    throw new Error(`ERR_AGENT_RUNTIME_PACKAGE_FILE:${rel}`);
   }
 }
 
@@ -797,9 +950,14 @@ function proofReceipt(id, subject) {
   return { ...receipt, fingerprint: fingerprintOf(receipt) };
 }
 
-function gitHead(repo) {
+function gitHead(repo, options = {}) {
   const result = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' });
-  return result.status === 0 ? result.stdout.trim() : 'unknown';
+  const head = result.status === 0 ? result.stdout.trim() : '';
+  if (!/^[0-9a-f]{40}$/i.test(head)) {
+    if (options.required === false) return 'unknown';
+    throw new Error(`ERR_AGENT_RUNTIME_GIT_HEAD:${repo}`);
+  }
+  return head;
 }
 
 async function loadCarrierManifest(worldHostRepo) {
