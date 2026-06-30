@@ -59,6 +59,10 @@
     },
     "carrierManifest": {
       "exportedByOwner": true
+    },
+    "packageTree": {
+      "exportedByOwner": true,
+      "fingerprint": "agent-runtime:4403baca0bf44c77c71a90f3ab9db68c"
     }
   }
 }

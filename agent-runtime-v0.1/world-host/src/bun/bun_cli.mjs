@@ -9,7 +9,7 @@ import { assertBlobRef, fail, fromUtf8, makeBlobRef, stableJson } from '../core/
 import { RunController, worldHostRequestToEffectRequest } from '../core/worker.mjs';
 import { createRunPolicy, preflightCapabilities } from '../core/capabilities.mjs';
 import { decodeResolutionInputBytes, encodeBootTurnInput, encodeResolutionInputBytes, encodeRestoreTurnInput, encodeTurnInput, operationBoot } from '../protocol/world_appliance_wire_codec.mjs';
-import { encodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
+import { encodeCanonicalValueImage, fingerprintValueImage } from '../protocol/world_loaded_value_codec.mjs';
 import { inspectTurnOutput, summarizeTurnClosureForRunHead } from '../protocol/world_universal_appliance_codec.mjs';
 import { carrierVersionSummary } from '../protocol/world_manifest.mjs';
 import { EffectJournal } from '../core/effect_journal.mjs';
@@ -696,7 +696,7 @@ export function agentWorldHostRequestToEffectRequest(request, options = {}) {
       ...mapped.diagnostics,
       ...expectedResponseDiagnostics,
     },
-    ...agentRuntimePayloadBytes(request.payloadValueImageBytes),
+    ...agentRuntimePayloadBytes(request.payloadValueImageBytes, request),
   };
 }
 
@@ -729,7 +729,7 @@ function bindAgentRuntimeResolution(hostRequest, result) {
   const shouldBindExpectedRefs = expectedValue != null || expectedSchema != null;
   if (translated === resolution && !shouldBindExpectedRefs) return result;
   if (translated.status !== 0 || translated.responseValueImageBytes.byteLength === 0) return result;
-  const payload = decodeCanonicalValueImagePayload(translated.responseValueImageBytes);
+  const payload = decodeCanonicalValueImage(translated.responseValueImageBytes).payload;
   return {
     ...result,
     resolutionInputBytes: encodeResolutionInputBytes({
@@ -775,10 +775,10 @@ function optionalFingerprintHex(value) {
   return `0x${BigInt(value).toString(16).padStart(16, '0')}`;
 }
 
-function tryDecodeCanonicalValueImagePayload(bytes) {
+function tryDecodeCanonicalValueImage(bytes, request) {
   const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes ?? []);
   if (!hasCanonicalValueImageHeader(data)) return null;
-  return decodeCanonicalValueImagePayload(data);
+  return decodeCanonicalValueImage(data, request);
 }
 
 function hasCanonicalValueImageHeader(data) {
@@ -808,58 +808,84 @@ function canonicalPortableBytes(data, offset) {
   return { payload: data.slice(start, end), offset: end };
 }
 
-function skipCanonicalOptional(data, offset, width) {
+function readCanonicalOptional(data, offset, width, readValue) {
   const tag = canonicalOptionalTag(data, offset);
-  const next = offset + 1 + (tag === 1 ? width : 0);
+  if (tag === 0) return { value: null, offset: offset + 1 };
+  const valueOffset = offset + 1;
+  const next = valueOffset + width;
   if (next > data.byteLength) fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_MALFORMED');
-  return next;
-}
-
-function skipCanonicalOptionalPortableBytes(data, offset) {
-  const tag = canonicalOptionalTag(data, offset);
-  if (tag === 0) return offset + 1;
-  return canonicalPortableBytes(data, offset + 1).offset;
+  return { value: readValue(data, valueOffset), offset: next };
 }
 
 function readCanonicalU32(data, offset) {
   return canonicalView(data, offset, 4).getUint32(0, true);
 }
 
-function skipCanonicalU64(data, offset) {
-  canonicalView(data, offset, 8);
-  return offset + 8;
+function readCanonicalU64(data, offset) {
+  return canonicalView(data, offset, 8).getBigUint64(0, true);
 }
 
 function readCanonicalBool(data, offset) {
   if (offset >= data.byteLength) fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_MALFORMED');
   const value = data[offset];
   if (value !== 0 && value !== 1) fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_MALFORMED');
-  return offset + 1;
+  return { value: value === 1, offset: offset + 1 };
 }
 
-function decodeCanonicalValueImagePayload(bytes) {
+function decodeCanonicalValueImage(bytes, request = {}) {
   const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes ?? []);
   let offset = 0;
   if (readCanonicalU32(data, offset) !== 1) fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_UNSUPPORTED');
   offset += 4;
   if (readCanonicalU32(data, offset) !== 1) fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_UNSUPPORTED');
   offset += 4;
-  offset = skipCanonicalU64(data, offset);
-  offset = skipCanonicalOptional(data, offset, 4);
-  offset = skipCanonicalOptional(data, offset, 8);
-  offset = skipCanonicalOptional(data, offset, 8);
-  offset = readCanonicalBool(data, offset);
+  const embeddedFingerprint = readCanonicalU64(data, offset);
+  offset += 8;
+  const valueTable = readCanonicalOptional(data, offset, 4, readCanonicalU32);
+  offset = valueTable.offset;
+  const boundaryValue = readCanonicalOptional(data, offset, 8, readCanonicalU64);
+  offset = boundaryValue.offset;
+  const codecSchema = readCanonicalOptional(data, offset, 8, readCanonicalU64);
+  offset = codecSchema.offset;
+  const dynamicSize = readCanonicalBool(data, offset);
+  offset = dynamicSize.offset;
   const decoded = canonicalPortableBytes(data, offset);
-  offset = skipCanonicalOptionalPortableBytes(data, decoded.offset);
+  const diagnosticTypeLabel = readCanonicalOptionalPortableBytes(data, decoded.offset);
+  offset = diagnosticTypeLabel.offset;
   if (offset !== data.byteLength) fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_TRAILING_BYTES');
-  return decoded.payload;
+  const actualFingerprint = fingerprintValueImage({
+    valueTableId: valueTable.value,
+    boundaryValueFingerprint: boundaryValue.value,
+    codecSchemaDescriptorFingerprint: codecSchema.value,
+    dynamicSize: dynamicSize.value,
+    diagnosticTypeLabel: diagnosticTypeLabel.value,
+    bytes: decoded.payload,
+  });
+  if (embeddedFingerprint !== actualFingerprint) fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_FINGERPRINT');
+  const requestPayloadRef = request.payloadValueRefFingerprint;
+  if (requestPayloadRef != null && boundaryValue.value !== BigInt(requestPayloadRef)) {
+    fail('ERR_AGENT_RUNTIME_VALUE_IMAGE_PAYLOAD_REF');
+  }
+  return {
+    payload: decoded.payload,
+    boundaryValueFingerprint: boundaryValue.value,
+    codecSchemaDescriptorFingerprint: codecSchema.value,
+    fingerprint: actualFingerprint,
+  };
 }
 
-function agentRuntimePayloadBytes(payloadValueImageBytes) {
-  const decoded = tryDecodeCanonicalValueImagePayload(payloadValueImageBytes);
+function readCanonicalOptionalPortableBytes(data, offset) {
+  const tag = canonicalOptionalTag(data, offset);
+  if (tag === 0) return { value: null, offset: offset + 1 };
+  const decoded = canonicalPortableBytes(data, offset + 1);
+  return { value: decoded.payload, offset: decoded.offset };
+}
+
+function agentRuntimePayloadBytes(payloadValueImageBytes, request) {
+  const decoded = tryDecodeCanonicalValueImage(payloadValueImageBytes, request);
   if (decoded) {
-    if (decoded.byteLength === 0) fail('ERR_AGENT_RUNTIME_EMPTY_PAYLOAD_UNSUPPORTED', 'agent runtime HostRequest payload did not carry request bytes');
-    return { requestBytes: decoded, agentRuntimePayloadDecoded: true, agentRuntimePayloadFormat: 'world.frame.value_image' };
+    if (decoded.payload.byteLength === 0) fail('ERR_AGENT_RUNTIME_EMPTY_PAYLOAD_UNSUPPORTED', 'agent runtime HostRequest payload did not carry request bytes');
+    return { requestBytes: decoded.payload, agentRuntimePayloadDecoded: true, agentRuntimePayloadFormat: 'world.frame.value_image' };
   }
   const portable = decodeAgentRuntimePayloadValueImage(payloadValueImageBytes);
   if (portable.rootArgumentImageBytes.byteLength > 0) {

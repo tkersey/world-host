@@ -1,7 +1,7 @@
 {
   "receiptFormatVersion": 1,
   "receiptFingerprintVersion": 1,
-  "agentRuntimeManifestFingerprint": "agent-runtime:0598eb3727183e1b564abc966f8284ba",
+  "agentRuntimeManifestFingerprint": "agent-runtime:aa3a1c1b5fb695ac2813fbb49d7ad130",
   "boundaryModuleFingerprints": [
     "0xa663b81aa6df6f3e",
     "0x4a4c934becaf32ae"
@@ -9,7 +9,7 @@
   "worldExecutableImageFingerprint": "0x56623af1b7581f29",
   "universalWasmChecksum": "a79ae458d3cc5145660dadfc678736e75822c8c70558f8139861dc1103e84add",
   "worldHostCarrierManifestFingerprint": "agent-runtime:132a4d1bd786256457272a8d2dda815c",
-  "conformanceCorpusFingerprint": "agent-runtime:1349ede338932fb62eb2124e7384bc1a",
+  "conformanceCorpusFingerprint": "agent-runtime:81bbfd675f0fd1a117e76e84abdf292b",
   "proofReceiptFingerprints": [
     "agent-runtime:bf1543a5a3baf589d46eff7ddc334e5d",
     "agent-runtime:aa5e96b305bba9f532ac4e92b6dc89a4",
@@ -24,9 +24,11 @@
   "negativeProofPassed": true,
   "distributedSkeletonScenarioPassed": true,
   "distributedFixtureScenarioPassed": true,
+  "distributedSkeletonEffectsMatched": true,
+  "distributedFixtureEffectsMatched": true,
   "distributedEmptyPayloadsRejected": true,
   "complete": true,
   "blockers": [],
   "warnings": [],
-  "receiptFingerprint": "agent-runtime:3fc3fcc80fde2b0d2e8ce56d2d76903d"
+  "receiptFingerprint": "agent-runtime:7578d03400874bd48ee4bfc08b43bcad"
 }

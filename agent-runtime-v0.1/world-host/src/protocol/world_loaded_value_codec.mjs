@@ -37,6 +37,7 @@ export const releasedLoadedValueCodec = Object.freeze({
   encodeProduct,
   encodeSum,
   encodeCanonicalValueImage,
+  fingerprintValueImage,
   u64WordBytes,
 });
 
@@ -123,7 +124,7 @@ export function u64WordBytes(value) {
   return u64(value);
 }
 
-function fingerprintValueImage({
+export function fingerprintValueImage({
   valueTableId,
   boundaryValueFingerprint,
   codecSchemaDescriptorFingerprint,

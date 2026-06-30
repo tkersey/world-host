@@ -16,7 +16,41 @@
     "fixtureInput": "rewrite this file through the agent loop\n",
     "fixtureOutput": "actuate updated the fixture",
     "fixtureFinalResult": "final=fixture updated",
-    "fixtureRootResultFingerprint": "world:root-result:716ad80792c9e8fe"
+    "fixtureRootResultFingerprint": "world:root-result:716ad80792c9e8fe",
+    "distributedEffects": {
+      "skeleton": [
+        {
+          "actuatorRef": "world:actuator-ref:4f0c7160f25c4c62",
+          "descriptorFingerprint": "world:descriptor:be73177924a6b377",
+          "state": "closure_committed",
+          "requestBytesChecksum": "sha256:9626a572386090b422bfe03a9aa76b971b8314517a741f86585c8d14b81d9991",
+          "driverId": "fixture-agent-model"
+        },
+        {
+          "actuatorRef": "world:actuator-ref:d5e4b1b427522cf2",
+          "descriptorFingerprint": "world:descriptor:74afc8c3b2fe4c33",
+          "state": "closure_committed",
+          "requestBytesChecksum": "sha256:9626a572386090b422bfe03a9aa76b971b8314517a741f86585c8d14b81d9991",
+          "driverId": "sandbox-file"
+        }
+      ],
+      "fixture": [
+        {
+          "actuatorRef": "world:actuator-ref:d5e4b1b427522cf2",
+          "descriptorFingerprint": "world:descriptor:74afc8c3b2fe4c33",
+          "state": "closure_committed",
+          "requestBytesChecksum": "sha256:2674258ca95c6c333ef995ff823a4c425e5a85d5303887b6317c23c7a84ea1e2",
+          "driverId": "sandbox-file"
+        },
+        {
+          "actuatorRef": "world:actuator-ref:4f0c7160f25c4c62",
+          "descriptorFingerprint": "world:descriptor:be73177924a6b377",
+          "state": "closure_committed",
+          "requestBytesChecksum": "sha256:2674258ca95c6c333ef995ff823a4c425e5a85d5303887b6317c23c7a84ea1e2",
+          "driverId": "fixture-agent-model"
+        }
+      ]
+    }
   },
   "proofReceipts": [
     {

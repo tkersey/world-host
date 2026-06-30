@@ -952,6 +952,38 @@ describe('migration, branching, and CLI diagnostics', () => {
     }), { code: 'ERR_AGENT_RUNTIME_VALUE_IMAGE_MALFORMED' });
   });
 
+  it('rejects canonical agent runtime payload fingerprint and ref mismatches', () => {
+    const payload = new Uint8Array(encodeCanonicalValueImage({
+      boundaryValueFingerprint: 0xa21n,
+      bytes: fromUtf8('agent runtime request'),
+      dynamicSize: true,
+    }));
+    const tamperedFingerprint = new Uint8Array(payload);
+    tamperedFingerprint[8] ^= 0xff;
+    const baseRequest = {
+      requestFingerprint: 0xa17n,
+      idempotencyKeyBytes: fromUtf8('agent-runtime-payload-fingerprint'),
+      idempotencyKeyFingerprint: 0xa18n,
+      actuatorRefFingerprint: 0xa19n,
+      expectedResponseDescriptorFingerprint: 0xa20n,
+      actuationClass: 2,
+      allowedResponseStatuses: 1,
+      hostRequestBytes: fromUtf8('host-request-envelope'),
+    };
+
+    assert.throws(() => agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      payloadValueImageBytes: tamperedFingerprint,
+      payloadValueRefFingerprint: 0xa21n,
+    }), { code: 'ERR_AGENT_RUNTIME_VALUE_IMAGE_FINGERPRINT' });
+
+    assert.throws(() => agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      payloadValueImageBytes: payload,
+      payloadValueRefFingerprint: 0xa22n,
+    }), { code: 'ERR_AGENT_RUNTIME_VALUE_IMAGE_PAYLOAD_REF' });
+  });
+
   it('imports installed agent exports with receiver-local agent drivers', async () => {
     const sourceRoot = await mkdtemp(path.join(tmpdir(), 'world-host-agent-import-source-'));
     const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-agent-import-receiver-'));

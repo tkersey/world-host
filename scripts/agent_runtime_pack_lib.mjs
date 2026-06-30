@@ -32,6 +32,16 @@ export const FIXTURE_OUTPUT = 'actuate updated the fixture';
 export const FIXTURE_RESULT = 'final=fixture updated';
 export const SKELETON_RESULT = 'final=actuate skeleton complete';
 const EXPECTED_PACK_CHECK_SCRIPT = 'bun scripts/check-agent-runtime-pack.mjs && bun scripts/run-agent-runtime-conformance.mjs && bun scripts/check-agent-runtime-pack.mjs --require-release-receipt && bun scripts/check-agent-runtime-release-receipt.mjs';
+const EXPECTED_PACKAGE_FILES = Object.freeze([
+  'bin/',
+  'docs/',
+  'examples/',
+  'scripts/',
+  'src/',
+  'carrier-manifest.json',
+  'agent-runtime-artifacts.json',
+  'README.md',
+]);
 const WORLD_V0_BOUNDARY_PROTOCOL_MANIFEST_FINGERPRINT = '0x68ce6ebd4448144f';
 const WORLD_V0_CONFORMANCE_CORPUS_ROOT_FINGERPRINT = '0xe727536b60a5e286';
 const WORLD_V0_REQUIRED_PROOF_KINDS = Object.freeze([
@@ -163,11 +173,22 @@ export async function buildAgentRuntimePack(options = {}) {
   await writeDocs(out, boundary, world, host);
 
   const conformanceCorpusFingerprint = await fingerprintDirectory(path.join(out, 'conformance'));
+  const packagedHost = {
+    ...host,
+    artifacts: {
+      ...host.artifacts,
+      packageTree: {
+        exportedByOwner: true,
+        fingerprint: await fingerprintWorldHostPackageTree(out),
+      },
+    },
+  };
+  await writeAgentRuntimeArtifacts(out, boundary, world, packagedHost);
   const manifest = buildAgentRuntimeManifest({
     agentRuntimeVersion: 'v0.1',
     boundary,
     world,
-    worldHost: host,
+    worldHost: packagedHost,
     requiredActuatorRefs: world.requiredActuatorRefs,
     requiredDescriptorFingerprints: world.requiredDescriptorFingerprints,
     requiredHostAuthorityLabels: [
@@ -178,7 +199,7 @@ export async function buildAgentRuntimePack(options = {}) {
     artifacts: {
       boundary: boundary.artifacts,
       world: world.artifacts,
-      worldHost: host.artifacts,
+      worldHost: packagedHost.artifacts,
     },
     metadata: {
       semanticIdentityHasWallClock: false,
@@ -309,9 +330,9 @@ export async function checkAgentRuntimePack(pack, options = {}) {
   if (Buffer.compare(manifestBin, Buffer.from(stableJson(manifest))) !== 0) throw new Error('ERR_AGENT_RUNTIME_MANIFEST_BIN_MISMATCH');
   const wasm = await readFile(path.join(root, 'world/world_universal_appliance.wasm'));
   if (manifest.world.universalWasmSha256 !== sha256Hex(wasm)) throw new Error('ERR_AGENT_RUNTIME_WASM_CHECKSUM');
+  await verifyPackagedPackageScripts(root);
   await verifyManifestArtifacts(root, manifest);
   await verifyWorldReleaseReceipt(root, manifest);
-  await verifyPackagedPackageScripts(root);
   const corpus = JSON.parse(await readFile(path.join(root, 'conformance/corpus.json'), 'utf8'));
   if (corpus.warnings?.length) throw new Error(`ERR_AGENT_RUNTIME_OWNER_EXPORT_WARNINGS:${corpus.warnings.join(',')}`);
   await verifyProofReceipts(root, corpus, manifest);
@@ -354,6 +375,8 @@ export async function emitReleaseReceipt(pack, conformance) {
     negativeProofPassed: proof.negative_cases_rejected === true,
     distributedSkeletonScenarioPassed: proof.distributed_skeleton_scenario_completed === true,
     distributedFixtureScenarioPassed: proof.distributed_fixture_scenario_completed === true,
+    distributedSkeletonEffectsMatched: proof.distributed_skeleton_effects_matched === true,
+    distributedFixtureEffectsMatched: proof.distributed_fixture_effects_matched === true,
     distributedEmptyPayloadsRejected: proof.distributed_empty_payloads_rejected === true,
     complete: false,
     blockers: [],
@@ -369,6 +392,8 @@ export async function emitReleaseReceipt(pack, conformance) {
     receipt.negativeProofPassed,
     receipt.distributedSkeletonScenarioPassed,
     receipt.distributedFixtureScenarioPassed,
+    receipt.distributedSkeletonEffectsMatched,
+    receipt.distributedFixtureEffectsMatched,
     receipt.distributedEmptyPayloadsRejected,
   ].every(Boolean);
   receipt.receiptFingerprint = releaseReceiptFingerprint(receipt);
@@ -414,6 +439,8 @@ async function assertAgentRuntimeReleaseReceiptContents(root, manifest, corpus, 
     'negativeProofPassed',
     'distributedSkeletonScenarioPassed',
     'distributedFixtureScenarioPassed',
+    'distributedSkeletonEffectsMatched',
+    'distributedFixtureEffectsMatched',
     'distributedEmptyPayloadsRejected',
   ];
   if (!proofFields.every((field) => actual[field] === true)) throw new Error('ERR_AGENT_RUNTIME_RELEASE_RECEIPT_PROOF_INCOMPLETE');
@@ -524,6 +551,10 @@ async function writeArtifactSet(out, boundary, world, host) {
   await writeFile(path.join(out, 'world/conformance-corpus.json'), world.files.corpus);
   await writeFile(path.join(out, 'world/agent-runtime-world-artifacts.json'), world.files.agentRuntimeMetadataBytes);
   await writeFile(path.join(out, 'world-host/carrier-manifest.json'), `${JSON.stringify(host.carrierManifest, null, 2)}\n`);
+  await writeAgentRuntimeArtifacts(out, boundary, world, host);
+}
+
+async function writeAgentRuntimeArtifacts(out, boundary, world, host) {
   await writeFile(path.join(out, 'world-host/agent-runtime-artifacts.json'), `${JSON.stringify({ boundary: boundary.artifacts, world: world.artifacts, worldHost: host.artifacts }, null, 2)}\n`);
 }
 
@@ -544,16 +575,7 @@ async function writePackagedWorldHostPackageJson(worldHostRepo, out) {
   if (typeof checkScript !== 'string') throw new Error('ERR_AGENT_RUNTIME_SOURCE_CHECK_SCRIPT');
   const packageJson = {
     ...sourcePackageJson,
-    files: [
-      'bin/',
-      'docs/',
-      'examples/',
-      'scripts/',
-      'src/',
-      'carrier-manifest.json',
-      'agent-runtime-artifacts.json',
-      'README.md',
-    ],
+    files: [...EXPECTED_PACKAGE_FILES],
     scripts: {
       'check:agent-runtime': checkScript,
     },
@@ -606,6 +628,40 @@ async function writeConformanceCorpus(out, boundary, world, host) {
       fixtureOutput: FIXTURE_OUTPUT,
       fixtureFinalResult: FIXTURE_RESULT,
       fixtureRootResultFingerprint: 'world:root-result:716ad80792c9e8fe',
+      distributedEffects: {
+        skeleton: [
+          {
+            actuatorRef: 'world:actuator-ref:4f0c7160f25c4c62',
+            descriptorFingerprint: 'world:descriptor:be73177924a6b377',
+            state: 'closure_committed',
+            requestBytesChecksum: 'sha256:9626a572386090b422bfe03a9aa76b971b8314517a741f86585c8d14b81d9991',
+            driverId: 'fixture-agent-model',
+          },
+          {
+            actuatorRef: 'world:actuator-ref:d5e4b1b427522cf2',
+            descriptorFingerprint: 'world:descriptor:74afc8c3b2fe4c33',
+            state: 'closure_committed',
+            requestBytesChecksum: 'sha256:9626a572386090b422bfe03a9aa76b971b8314517a741f86585c8d14b81d9991',
+            driverId: 'sandbox-file',
+          },
+        ],
+        fixture: [
+          {
+            actuatorRef: 'world:actuator-ref:d5e4b1b427522cf2',
+            descriptorFingerprint: 'world:descriptor:74afc8c3b2fe4c33',
+            state: 'closure_committed',
+            requestBytesChecksum: 'sha256:2674258ca95c6c333ef995ff823a4c425e5a85d5303887b6317c23c7a84ea1e2',
+            driverId: 'sandbox-file',
+          },
+          {
+            actuatorRef: 'world:actuator-ref:4f0c7160f25c4c62',
+            descriptorFingerprint: 'world:descriptor:be73177924a6b377',
+            state: 'closure_committed',
+            requestBytesChecksum: 'sha256:2674258ca95c6c333ef995ff823a4c425e5a85d5303887b6317c23c7a84ea1e2',
+            driverId: 'fixture-agent-model',
+          },
+        ],
+      },
     },
     proofReceipts,
     warnings: [],
@@ -699,6 +755,7 @@ async function verifyManifestArtifacts(root, manifest) {
   assertEqual(stableJson(manifest.requiredDescriptorFingerprints), stableJson(exactArray(worldMetadata.required_descriptor_fingerprints, 'world required descriptor fingerprints').map(worldDescriptorFingerprint)), 'ERR_AGENT_RUNTIME_DESCRIPTOR_FINGERPRINTS');
   assertEqual(manifest.worldHost.carrierManifestFingerprint, carrierManifestFingerprint(carrier), 'ERR_AGENT_RUNTIME_CARRIER_MANIFEST_FINGERPRINT');
   assertEqual(manifest.conformanceCorpusFingerprint, conformanceCorpusFingerprint, 'ERR_AGENT_RUNTIME_CONFORMANCE_CORPUS_FINGERPRINT');
+  assertEqual(manifest.artifacts?.worldHost?.packageTree?.fingerprint, await fingerprintWorldHostPackageTree(root), 'ERR_AGENT_RUNTIME_WORLD_HOST_TREE_FINGERPRINT');
 
   const artifactChecks = [
     ['boundary.agentRootModule.sha256', manifest.artifacts?.boundary?.agentRootModule?.sha256, async () => readFile(path.join(root, 'boundary/agent-root.full-module'))],
@@ -806,6 +863,7 @@ async function verifyPackagedPackageScripts(root) {
     if (!allowedScripts.has(name)) throw new Error(`ERR_AGENT_RUNTIME_PACKAGE_SCRIPT:${name}`);
   }
   if (packageJson.bin?.['world-host'] !== './bin/world-host.mjs') throw new Error('ERR_AGENT_RUNTIME_PACKAGE_BIN:world-host');
+  if (stableJson(packageJson.files) !== stableJson(EXPECTED_PACKAGE_FILES)) throw new Error('ERR_AGENT_RUNTIME_PACKAGE_FILES');
   await requireFile(path.join(root, 'world-host/bin/world-host.mjs'));
   for (const rel of packageJson.files ?? []) {
     await safePackageEntry(root, rel);
@@ -883,6 +941,8 @@ function requireConformanceReceipt(conformance, manifest) {
     'world_evidence_validated',
     'distributed_skeleton_scenario_completed',
     'distributed_fixture_scenario_completed',
+    'distributed_skeleton_effects_matched',
+    'distributed_fixture_effects_matched',
     'distributed_empty_payloads_rejected',
     'host_did_not_author_receipts',
     'no_generated_agent_target_type',
@@ -933,11 +993,18 @@ async function listFiles(root, prefix = '') {
   return out;
 }
 
-async function fingerprintDirectory(root) {
-  const files = await listFiles(root);
+async function fingerprintDirectory(root, options = {}) {
+  const excluded = options.exclude ?? new Set();
+  const files = (await listFiles(root)).filter((rel) => !excluded.has(rel));
   const entries = [];
   for (const rel of files.sort()) entries.push([rel, sha256Hex(await readFile(path.join(root, rel)))]);
   return fingerprintOf(entries);
+}
+
+async function fingerprintWorldHostPackageTree(packRoot) {
+  return await fingerprintDirectory(path.join(packRoot, 'world-host'), {
+    exclude: new Set(['agent-runtime-artifacts.json']),
+  });
 }
 
 function proofReceipt(id, subject) {

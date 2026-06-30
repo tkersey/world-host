@@ -126,6 +126,20 @@ describe('Agent Runtime pack', () => {
       assert.notEqual(tamperedCliConformance.status, 0);
       assert.match(tamperedCliConformance.stderr, /ERR_AGENT_RUNTIME_RELEASE_RECEIPT_FINGERPRINT/);
 
+      const tamperedExistingReceiptPack = path.join(root, 'tampered-existing-receipt', 'agent-runtime-v0.1');
+      await cp(path.resolve('agent-runtime-v0.1'), tamperedExistingReceiptPack, { recursive: true });
+      const tamperedExistingReceiptPath = path.join(tamperedExistingReceiptPack, 'manifest/agent-runtime-release-receipt.json');
+      const tamperedExistingReceipt = JSON.parse(await readFile(tamperedExistingReceiptPath, 'utf8'));
+      tamperedExistingReceipt.universalWasmChecksum = '0'.repeat(64);
+      await writeFile(tamperedExistingReceiptPath, `${JSON.stringify(tamperedExistingReceipt, null, 2)}\n`);
+      await refreshAgentRuntimePackChecksums(tamperedExistingReceiptPack);
+      const tamperedExistingConformance = spawnSync(process.execPath, [path.resolve('scripts/run-agent-runtime-conformance.mjs'), tamperedExistingReceiptPack], {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+      });
+      assert.notEqual(tamperedExistingConformance.status, 0);
+      assert.match(tamperedExistingConformance.stderr, /ERR_AGENT_RUNTIME_RELEASE_RECEIPT_FINGERPRINT/);
+
       const freshConformancePack = path.join(root, 'fresh-conformance', 'agent-runtime-v0.1');
       await cp(path.resolve('agent-runtime-v0.1'), freshConformancePack, { recursive: true });
       await rm(path.join(freshConformancePack, 'manifest/agent-runtime-release-receipt.json'), { force: true });
@@ -172,6 +186,27 @@ describe('Agent Runtime pack', () => {
       await assert.rejects(
         () => checkAgentRuntimePack(sourceOnlyScriptPack),
         /ERR_AGENT_RUNTIME_PACKAGE_SCRIPT:proof/,
+      );
+
+      const missingPackageFilesPack = path.join(root, 'agent-runtime-v0.1-missing-package-files');
+      await cp(pack, missingPackageFilesPack, { recursive: true });
+      const missingPackageFilesPackagePath = path.join(missingPackageFilesPack, 'world-host/package.json');
+      const missingPackageFilesPackage = JSON.parse(await readFile(missingPackageFilesPackagePath, 'utf8'));
+      missingPackageFilesPackage.files = missingPackageFilesPackage.files.filter((item) => item !== 'src/');
+      await writeFile(missingPackageFilesPackagePath, `${JSON.stringify(missingPackageFilesPackage, null, 2)}\n`);
+      await refreshAgentRuntimePackChecksums(missingPackageFilesPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(missingPackageFilesPack),
+        /ERR_AGENT_RUNTIME_PACKAGE_FILES/,
+      );
+
+      const tamperedHostTreePack = path.join(root, 'agent-runtime-v0.1-tampered-host-tree');
+      await cp(pack, tamperedHostTreePack, { recursive: true });
+      await writeFile(path.join(tamperedHostTreePack, 'world-host/src/core/store.mjs'), '\n// tampered packaged host tree\n', { flag: 'a' });
+      await refreshAgentRuntimePackChecksums(tamperedHostTreePack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(tamperedHostTreePack),
+        /ERR_AGENT_RUNTIME_WORLD_HOST_TREE_FINGERPRINT/,
       );
 
       const directoryStoreModulePack = path.join(root, 'agent-runtime-v0.1-directory-store-module');
@@ -443,6 +478,8 @@ function passingConformanceReceipt(manifest) {
     distributed_empty_payloads_rejected: true,
     distributed_skeleton_scenario_completed: true,
     distributed_fixture_scenario_completed: true,
+    distributed_skeleton_effects_matched: true,
+    distributed_fixture_effects_matched: true,
     host_did_not_author_receipts: true,
     no_generated_agent_target_type: true,
     no_native_helper_process: true,

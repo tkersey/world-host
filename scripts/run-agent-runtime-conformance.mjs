@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { checkAgentRuntimePack, defaultPackPath, emitReleaseReceipt, FIXTURE_INPUT, FIXTURE_OUTPUT, parseCommonArgs, refreshAgentRuntimePackChecksums } from './agent_runtime_pack_lib.mjs';
+import { assertAgentRuntimeReleaseReceipt, checkAgentRuntimePack, defaultPackPath, emitReleaseReceipt, FIXTURE_INPUT, FIXTURE_OUTPUT, parseCommonArgs, refreshAgentRuntimePackChecksums } from './agent_runtime_pack_lib.mjs';
 
 export async function runAgentRuntimeConformance(pack) {
   const checked = await checkAgentRuntimePack(pack, { validateReleaseReceipt: false });
@@ -27,8 +27,8 @@ export async function runAgentRuntimeConformance(pack) {
 
   const skeleton = await examples.runSkeletonExample();
   const fixture = await examples.runFixtureExample();
-  const distributedSkeleton = await runCheckedPackScenario({ checked, codecs, runBunCli, scenario: 'skeleton', mode: 'success' });
-  const distributedFixture = await runCheckedPackScenario({ checked, codecs, runBunCli, scenario: 'fixture', mode: 'success' });
+  const distributedSkeleton = await runCheckedPackScenario({ checked, codecs, corpus, runBunCli, scenario: 'skeleton', mode: 'success' });
+  const distributedFixture = await runCheckedPackScenario({ checked, codecs, corpus, runBunCli, scenario: 'fixture', mode: 'success' });
   const emptyPayloadSkeleton = await runCheckedPackScenario({ checked, codecs, runBunCli, scenario: 'skeleton', mode: 'empty-payload' });
   const emptyPayloadFixture = await runCheckedPackScenario({ checked, codecs, runBunCli, scenario: 'fixture', mode: 'empty-payload' });
   const replay = await examples.runReplayExample();
@@ -52,12 +52,14 @@ export async function runAgentRuntimeConformance(pack) {
     negative_cases_rejected: Object.values(negative).every((value) => value === true),
     world_evidence_validated: true,
     distributed_skeleton_scenario_completed: distributedSkeleton.completed === true &&
-      distributedSkeleton.effectCount >= 2 &&
+      distributedSkeleton.effectTraceMatched === true &&
       distributedSkeleton.rootResultFingerprint === corpus.expected?.skeletonRootResultFingerprint,
     distributed_fixture_scenario_completed: distributedFixture.completed === true &&
-      distributedFixture.effectCount >= 2 &&
+      distributedFixture.effectTraceMatched === true &&
       distributedFixture.outputVerified === true &&
       distributedFixture.rootResultFingerprint === corpus.expected?.fixtureRootResultFingerprint,
+    distributed_skeleton_effects_matched: distributedSkeleton.effectTraceMatched === true,
+    distributed_fixture_effects_matched: distributedFixture.effectTraceMatched === true,
     distributed_empty_payloads_rejected: emptyPayloadSkeleton.emptyPayloadRejected === true && emptyPayloadFixture.emptyPayloadRejected === true,
     host_did_not_author_receipts: [skeleton, fixture, replay, retry, migration, branching].every((item) => item.hostAuthoredWorldEvidence === false),
     no_generated_agent_target_type: [skeleton, fixture, replay, retry, migration, branching].every((item) => item.generatedAgentTargetType === false),
@@ -110,6 +112,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     await writeFile(releaseReceiptOut, `${JSON.stringify(releaseReceipt, null, 2)}\n`);
   } else {
     const existingReleaseReceipt = JSON.parse(await readFile(defaultReleaseReceiptOut, 'utf8'));
+    await assertAgentRuntimeReleaseReceipt(pack, existingReleaseReceipt);
     if (existingReleaseReceipt.receiptFingerprint !== releaseReceipt.receiptFingerprint) {
       throw new Error('ERR_AGENT_RUNTIME_RELEASE_RECEIPT_MISMATCH');
     }
@@ -138,7 +141,7 @@ function isInsidePath(candidate, root) {
   return resolvedCandidate === resolvedRoot || resolvedCandidate.startsWith(`${resolvedRoot}${path.sep}`);
 }
 
-async function runCheckedPackScenario({ checked, codecs, runBunCli, scenario, mode }) {
+async function runCheckedPackScenario({ checked, codecs, corpus, runBunCli, scenario, mode }) {
   const root = await mkdtemp(path.join(tmpdir(), `world-host-agent-runtime-${scenario}-`));
   const sandboxRoot = path.join(root, 'sandbox');
   const runId = `agent-runtime-${mode}-${scenario}`;
@@ -197,9 +200,25 @@ async function runCheckedPackScenario({ checked, codecs, runBunCli, scenario, mo
       if (resumeCode !== 0 || resumed.head?.status !== 'completed') throw new Error(`ERR_AGENT_RUNTIME_PACK_SCENARIO_COMPLETE:${scenario}`);
       const output = scenario === 'fixture' ? await readFile(path.join(sandboxRoot, 'output.txt'), 'utf8') : null;
       if (scenario === 'fixture' && output !== FIXTURE_OUTPUT) throw new Error(`ERR_AGENT_RUNTIME_PACK_SCENARIO_OUTPUT:${scenario}`);
+      current = io();
+      const effectsCode = await runBunCli([
+        'effects',
+        '--json',
+        '--store', root,
+        '--run', runId,
+      ], current.stream);
+      if (effectsCode !== 0) throw new Error(`ERR_AGENT_RUNTIME_PACK_SCENARIO_EFFECTS:${scenario}`);
+      const effects = current.json().effects.map((effect) => ({
+        actuatorRef: effect.actuatorRef,
+        descriptorFingerprint: effect.descriptorFingerprint,
+        state: effect.state,
+        requestBytesChecksum: effect.requestBytesChecksum,
+        driverId: effect.diagnostics?.driverId ?? null,
+      }));
       return {
         completed: true,
         effectCount: resumed.advance?.effectCount ?? 0,
+        effectTraceMatched: JSON.stringify(effects) === JSON.stringify(corpus.expected?.distributedEffects?.[scenario] ?? []),
         rootResultFingerprint: resumed.head?.rootResultFingerprint ?? null,
         outputVerified: scenario === 'fixture' ? output === FIXTURE_OUTPUT : null,
       };

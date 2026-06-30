@@ -49,7 +49,7 @@
     "branching",
     "negative"
   ],
-  "conformanceCorpusFingerprint": "agent-runtime:1349ede338932fb62eb2124e7384bc1a",
+  "conformanceCorpusFingerprint": "agent-runtime:81bbfd675f0fd1a117e76e84abdf292b",
   "artifacts": {
     "boundary": {
       "agentRootModule": {
@@ -111,6 +111,10 @@
       },
       "carrierManifest": {
         "exportedByOwner": true
+      },
+      "packageTree": {
+        "exportedByOwner": true,
+        "fingerprint": "agent-runtime:4403baca0bf44c77c71a90f3ab9db68c"
       }
     }
   },
@@ -120,10 +124,10 @@
     "hostSpecificFilesystemPathsIncluded": false,
     "buildDiagnostics": {
       "boundaryHead": "6a416951f8d22d0854616f094f23b2d44ab021a2",
-      "worldHead": "969f23f6bad87ca9d535d92d62b6418612891699",
-      "worldHostHead": "2a339101b7011010f9b53d6a9797a9cb443d41f6",
+      "worldHead": "a8b594e428d49f93d5dcf5a862e7c28192dd44ef",
+      "worldHostHead": "46cf057fae6cacd3ffa436d4220fdb5b6af5252d",
       "worldHostDirty": false
     }
   },
-  "manifestFingerprint": "agent-runtime:0598eb3727183e1b564abc966f8284ba"
+  "manifestFingerprint": "agent-runtime:aa3a1c1b5fb695ac2813fbb49d7ad130"
 }
