@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 
 import { stableJson } from '../core/store.mjs';
-import { carrierManifest } from './world_manifest.mjs';
 
 export const agentRuntimeManifestFormatVersion = 1;
 export const agentRuntimeManifestFingerprintVersion = 1;
@@ -23,6 +22,12 @@ const REQUIRED_DRIVER_IDS = Object.freeze([
   'fixture-agent-model',
   'sandbox-file',
 ]);
+const REQUIRED_HOST_AUTHORITY_LABELS = Object.freeze([
+  'model:fixture-agent',
+  'file:sandbox',
+]);
+const BOUNDARY_PACKAGE_VERSION = '0.6.2';
+const WORLD_PACKAGE_VERSION = 'world-v0.1.0';
 
 export function sha256Hex(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
@@ -43,7 +48,7 @@ export function buildAgentRuntimeManifest(input) {
     manifestFingerprintVersion: agentRuntimeManifestFingerprintVersion,
     agentRuntimeVersion: requiredVersion(input.agentRuntimeVersion, agentRuntimeVersion, 'agentRuntimeVersion'),
     boundary: {
-      packageVersion: requiredString(input.boundary?.packageVersion, 'boundary.packageVersion'),
+      packageVersion: requiredVersion(input.boundary?.packageVersion, BOUNDARY_PACKAGE_VERSION, 'boundary.packageVersion'),
       packageHash: requiredString(input.boundary?.packageHash, 'boundary.packageHash'),
       protocolManifestFingerprint: requiredString(input.boundary?.protocolManifestFingerprint, 'boundary.protocolManifestFingerprint'),
       agentProfileFingerprint: requiredString(input.boundary?.agentProfileFingerprint, 'boundary.agentProfileFingerprint'),
@@ -51,7 +56,7 @@ export function buildAgentRuntimeManifest(input) {
       toolboxModuleFingerprint: requiredString(input.boundary?.toolboxModuleFingerprint, 'boundary.toolboxModuleFingerprint'),
     },
     world: {
-      packageVersion: requiredString(input.world?.packageVersion, 'world.packageVersion'),
+      packageVersion: requiredVersion(input.world?.packageVersion, WORLD_PACKAGE_VERSION, 'world.packageVersion'),
       protocolManifestFingerprint: requiredString(input.world?.protocolManifestFingerprint, 'world.protocolManifestFingerprint'),
       executableImageFingerprint: requiredString(input.world?.executableImageFingerprint, 'world.executableImageFingerprint'),
       applianceManifestFingerprint: requiredString(input.world?.applianceManifestFingerprint, 'world.applianceManifestFingerprint'),
@@ -67,13 +72,13 @@ export function buildAgentRuntimeManifest(input) {
     requiredDriverIds: exactStringList(input.requiredDriverIds ?? REQUIRED_DRIVER_IDS, REQUIRED_DRIVER_IDS, 'requiredDriverIds'),
     requiredActuatorRefs: worldActuatorRefList(input.requiredActuatorRefs, 'requiredActuatorRefs'),
     requiredDescriptorFingerprints: worldDescriptorFingerprintList(input.requiredDescriptorFingerprints, 'requiredDescriptorFingerprints'),
-    requiredHostAuthorityLabels: nonemptyStringList(input.requiredHostAuthorityLabels, 'requiredHostAuthorityLabels'),
+    requiredHostAuthorityLabels: exactStringList(input.requiredHostAuthorityLabels, REQUIRED_HOST_AUTHORITY_LABELS, 'requiredHostAuthorityLabels'),
     supportedExampleScenarios: exactStringList(input.supportedExampleScenarios ?? REQUIRED_SCENARIOS, REQUIRED_SCENARIOS, 'supportedExampleScenarios'),
     conformanceCorpusFingerprint: requiredString(input.conformanceCorpusFingerprint, 'conformanceCorpusFingerprint'),
-    ...(input.releaseReceiptFingerprint ? { releaseReceiptFingerprint: requiredString(input.releaseReceiptFingerprint, 'releaseReceiptFingerprint') } : {}),
     artifacts,
     metadata: input.metadata ?? {},
   };
+  rejectReleaseReceiptPointer(input.releaseReceiptFingerprint);
   assertRequiredActuatorDescriptorPairs(manifest.requiredActuatorRefs, manifest.requiredDescriptorFingerprints);
   manifest.manifestFingerprint = fingerprintOf(withoutFingerprint(manifest));
   return Object.freeze(manifest);
@@ -85,19 +90,20 @@ export function assertAgentRuntimeManifest(manifest) {
   const expected = fingerprintOf(withoutFingerprint(manifest));
   if (manifest.manifestFingerprint !== expected) throw new Error('ERR_AGENT_RUNTIME_MANIFEST_FINGERPRINT');
   requiredVersion(manifest.agentRuntimeVersion, agentRuntimeVersion, 'agentRuntimeVersion');
-  requiredString(manifest.boundary?.packageVersion, 'boundary.packageVersion');
-  requiredString(manifest.world?.packageVersion, 'world.packageVersion');
+  requiredVersion(manifest.boundary?.packageVersion, BOUNDARY_PACKAGE_VERSION, 'boundary.packageVersion');
+  requiredVersion(manifest.world?.packageVersion, WORLD_PACKAGE_VERSION, 'world.packageVersion');
   requiredSha256(manifest.world?.universalWasmSha256, 'world.universalWasmSha256');
   exactStringList(manifest.requiredDriverIds, REQUIRED_DRIVER_IDS, 'requiredDriverIds');
   const requiredActuatorRefs = worldActuatorRefList(manifest.requiredActuatorRefs, 'requiredActuatorRefs');
   const requiredDescriptorFingerprints = worldDescriptorFingerprintList(manifest.requiredDescriptorFingerprints, 'requiredDescriptorFingerprints');
   assertRequiredActuatorDescriptorPairs(requiredActuatorRefs, requiredDescriptorFingerprints);
-  nonemptyStringList(manifest.requiredHostAuthorityLabels, 'requiredHostAuthorityLabels');
+  exactStringList(manifest.requiredHostAuthorityLabels, REQUIRED_HOST_AUTHORITY_LABELS, 'requiredHostAuthorityLabels');
   exactStringList(manifest.supportedExampleScenarios, REQUIRED_SCENARIOS, 'supportedExampleScenarios');
+  rejectReleaseReceiptPointer(manifest.releaseReceiptFingerprint);
   return manifest;
 }
 
-export function carrierManifestFingerprint(manifest = carrierManifest) {
+export function carrierManifestFingerprint(manifest) {
   return fingerprintOf(manifest);
 }
 
@@ -120,6 +126,10 @@ function requiredVersion(value, expected, label) {
   const text = requiredString(value, label);
   if (text !== expected) throw new Error(`ERR_UNEXPECTED_${label}`);
   return text;
+}
+
+function rejectReleaseReceiptPointer(value) {
+  if (value != null) throw new Error('ERR_AGENT_RUNTIME_MANIFEST_RELEASE_RECEIPT_POINTER');
 }
 
 function requiredSha256(value, label) {
