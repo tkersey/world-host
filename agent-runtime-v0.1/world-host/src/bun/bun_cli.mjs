@@ -545,7 +545,7 @@ async function runImport(args, io, storePath, options = {}) {
         if (candidate.bundle.head?.status === 'needs_host' && pendingRequests.length === 0) {
           fail('ERR_IMPORT_PREFLIGHT_NEEDS_HOST_REQUESTS_EMPTY', 'receiver preflight rejects needs_host imports with no pending HostRequests');
         }
-        const application = mayBypassPreflightRequirements && pendingRequests.length === 0 && options.agentRuntimeOptionsArgs
+        const application = mayBypassPreflightRequirements && pendingRequests.length === 0
           ? { ...candidate.bundle.application, requiredActuators: [], requiredHostAuthorityLabels: [] }
           : candidate.bundle.application;
         return preflightCapabilities({

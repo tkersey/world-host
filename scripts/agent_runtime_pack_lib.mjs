@@ -236,7 +236,7 @@ export async function buildAgentRuntimePack(options = {}) {
       buildDiagnostics: {
         boundaryHead: boundary.gitHead,
         worldHead: world.gitHead,
-        worldHostHead: host.gitHead,
+        worldHostHead: packagedHost.artifacts.packageTree.fingerprint,
         worldHostDirty: host.gitDirty,
       },
     },
@@ -787,6 +787,7 @@ async function verifyManifestArtifacts(root, manifest) {
   assertEqual(manifest.world.turnClosureFormatVersion, `v${worldMetadata.world_turn_closure_format_version ?? 1}`, 'ERR_AGENT_RUNTIME_WORLD_TURN_CLOSURE_VERSION');
   assertEqual(manifest.world.archiveFormatVersion, `v${worldMetadata.world_archive_format_version ?? 1}`, 'ERR_AGENT_RUNTIME_WORLD_ARCHIVE_VERSION');
   const worldHead = manifest.metadata?.buildDiagnostics?.worldHead;
+  assertEqual(manifest.metadata?.buildDiagnostics?.worldHostHead, manifest.artifacts?.worldHost?.packageTree?.fingerprint, 'ERR_AGENT_RUNTIME_WORLD_HOST_SOURCE_HEAD');
   assertEqual(manifest.world.protocolManifestFingerprint, worldProtocolManifestFileFingerprint(await readFile(path.join(root, 'world/world-protocol-manifest.bin'))), 'ERR_AGENT_RUNTIME_WORLD_PROTOCOL_MANIFEST_FINGERPRINT');
   assertEqual(manifest.world.protocolManifestFingerprint, expectedWorldArtifactByHead(WORLD_V0_PROTOCOL_FINGERPRINT_BY_HEAD, worldHead, 'ERR_AGENT_RUNTIME_WORLD_PROTOCOL_HEAD'), 'ERR_AGENT_RUNTIME_WORLD_PROTOCOL_HEAD');
   assertEqual(sha256Hex(await readFile(path.join(root, 'world/agent.executable-image'))), expectedWorldArtifactByHead(WORLD_V0_EXECUTABLE_IMAGE_SHA256_BY_HEAD, worldHead, 'ERR_AGENT_RUNTIME_WORLD_IMAGE_BYTES_HEAD'), 'ERR_AGENT_RUNTIME_WORLD_IMAGE_BYTES');
@@ -798,6 +799,7 @@ async function verifyManifestArtifacts(root, manifest) {
   assertEqual(stableJson(manifest.requiredDescriptorFingerprints), stableJson(worldMetadataDescriptorFingerprints), 'ERR_AGENT_RUNTIME_DESCRIPTOR_FINGERPRINTS');
   assertEqual(stableJson(manifest.requiredActuatorRefs), stableJson(expectedWorldArtifactByHead(WORLD_V0_REQUIRED_ACTUATOR_REFS_BY_HEAD, worldHead, 'ERR_AGENT_RUNTIME_ACTUATOR_REFS_HEAD')), 'ERR_AGENT_RUNTIME_ACTUATOR_REFS_HEAD');
   assertEqual(stableJson(manifest.requiredDescriptorFingerprints), stableJson(expectedWorldArtifactByHead(WORLD_V0_REQUIRED_DESCRIPTOR_FINGERPRINTS_BY_HEAD, worldHead, 'ERR_AGENT_RUNTIME_DESCRIPTOR_FINGERPRINTS_HEAD')), 'ERR_AGENT_RUNTIME_DESCRIPTOR_FINGERPRINTS_HEAD');
+  assertEqual(manifest.worldHost.packageVersion, carrier.carrierVersion, 'ERR_AGENT_RUNTIME_PACKAGE_VERSION');
   assertEqual(manifest.worldHost.carrierManifestFingerprint, carrierManifestFingerprint(carrier), 'ERR_AGENT_RUNTIME_CARRIER_MANIFEST_FINGERPRINT');
   await verifyPackagedCarrierModule(root, carrier);
   assertEqual(manifest.conformanceCorpusFingerprint, conformanceCorpusFingerprint, 'ERR_AGENT_RUNTIME_CONFORMANCE_CORPUS_FINGERPRINT');

@@ -358,6 +358,21 @@ describe('Agent Runtime pack', () => {
         /ERR_UNEXPECTED_boundary\.packageVersion/,
       );
 
+      const tamperedWorldHostVersionPack = path.join(root, 'agent-runtime-v0.1-tampered-world-host-version');
+      await cp(pack, tamperedWorldHostVersionPack, { recursive: true });
+      const tamperedWorldHostVersionManifest = JSON.parse(await readFile(path.join(tamperedWorldHostVersionPack, 'manifest/agent-runtime-manifest.json'), 'utf8'));
+      const tamperedWorldHostVersionPackagePath = path.join(tamperedWorldHostVersionPack, 'world-host/package.json');
+      const tamperedWorldHostVersionPackage = JSON.parse(await readFile(tamperedWorldHostVersionPackagePath, 'utf8'));
+      tamperedWorldHostVersionManifest.worldHost.packageVersion = '9.9.9';
+      tamperedWorldHostVersionPackage.version = '9.9.9';
+      await writeFile(tamperedWorldHostVersionPackagePath, `${JSON.stringify(tamperedWorldHostVersionPackage, null, 2)}\n`);
+      await writeManifest(tamperedWorldHostVersionPack, tamperedWorldHostVersionManifest);
+      await refreshAgentRuntimePackChecksums(tamperedWorldHostVersionPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(tamperedWorldHostVersionPack, { requireReleaseReceipt: true }),
+        /ERR_AGENT_RUNTIME_PACKAGE_VERSION/,
+      );
+
       const tamperedReceiptPointerPack = path.join(root, 'agent-runtime-v0.1-tampered-receipt-pointer');
       await cp(pack, tamperedReceiptPointerPack, { recursive: true });
       const tamperedReceiptPointerManifest = JSON.parse(await readFile(path.join(tamperedReceiptPointerPack, 'manifest/agent-runtime-manifest.json'), 'utf8'));
@@ -389,6 +404,17 @@ describe('Agent Runtime pack', () => {
       await assert.rejects(
         () => checkAgentRuntimePack(tamperedUnknownWorldHeadPack, { requireReleaseReceipt: true }),
         /ERR_AGENT_RUNTIME_WORLD_RELEASE_RECEIPT_SOURCE_HEAD/,
+      );
+
+      const tamperedWorldHostHeadPack = path.join(root, 'agent-runtime-v0.1-tampered-world-host-head');
+      await cp(pack, tamperedWorldHostHeadPack, { recursive: true });
+      const tamperedWorldHostHeadManifest = JSON.parse(await readFile(path.join(tamperedWorldHostHeadPack, 'manifest/agent-runtime-manifest.json'), 'utf8'));
+      tamperedWorldHostHeadManifest.metadata.buildDiagnostics.worldHostHead = 'ffffffffffffffffffffffffffffffffffffffff';
+      await writeManifest(tamperedWorldHostHeadPack, tamperedWorldHostHeadManifest);
+      await refreshAgentRuntimePackChecksums(tamperedWorldHostHeadPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(tamperedWorldHostHeadPack, { requireReleaseReceipt: true }),
+        /ERR_AGENT_RUNTIME_WORLD_HOST_SOURCE_HEAD/,
       );
 
       const tamperedWorldAbiPack = path.join(root, 'agent-runtime-v0.1-tampered-world-abi');

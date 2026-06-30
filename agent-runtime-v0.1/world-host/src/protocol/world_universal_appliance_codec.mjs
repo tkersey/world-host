@@ -126,7 +126,13 @@ function assertRootResultMatchesClosure(receiptValue, closureValue, rootResultBy
     if (closureValue == null && rootResultValueRefFingerprint == null && rootResultBytes.byteLength === 0) return;
     throw new Error('TurnReceipt root result does not match TurnClosure root result');
   }
-  if (closureValue == null || rootResultValueRefFingerprint == null || rootResultBytes.byteLength === 0) throw new Error('TurnReceipt root result does not match TurnClosure root result');
+  if (closureValue == null || rootResultValueRefFingerprint == null || rootResultBytes.byteLength === 0) {
+    throw new Error('TurnReceipt root result does not match TurnClosure root result');
+  }
+  const rootResultObjectFingerprint = fingerprintContinuityObjectPayload(rootResultObjectKind, 1n, rootResultBytes);
+  if (rootResultObjectFingerprint !== closureValue) {
+    throw new Error('TurnReceipt root result does not match TurnClosure root result');
+  }
   const reader = new BinaryReader(rootResultBytes);
   const labelLength = reader.u32();
   reader.require(labelLength);
@@ -134,10 +140,6 @@ function assertRootResultMatchesClosure(receiptValue, closureValue, rootResultBy
   reader.offset += labelLength;
   const value = reader.u64();
   if (reader.remaining() !== 0 || label !== 'world.appliance.root_result.value_image' || value !== receiptValue) {
-    throw new Error('TurnReceipt root result does not match TurnClosure root result');
-  }
-  const rootResultObjectFingerprint = fingerprintContinuityObjectPayload(rootResultObjectKind, 1n, rootResultBytes);
-  if (rootResultObjectFingerprint !== closureValue) {
     throw new Error('TurnReceipt root result does not match TurnClosure root result');
   }
   if (fingerprintContinuityObjectRef(rootResultObjectKind, 1n, rootResultObjectFingerprint, rootResultBytes.byteLength) !== rootResultValueRefFingerprint) {

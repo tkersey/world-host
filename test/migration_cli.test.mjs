@@ -1237,6 +1237,21 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(noPendingImported.runId, 'receiver-agent-import-no-pending');
       assert.equal(noPendingImported.receiverPolicyApplied, true);
 
+      let genericNoPendingOutput = '';
+      const genericNoPendingImportCode = await runBunCli([
+        'import',
+        '--store', noPendingReceiverRoot,
+        '--package', packagePath,
+        '--run', 'generic-agent-import-no-pending',
+      ], {
+        stdout: { write: (text) => { genericNoPendingOutput += text; } },
+        stderr: { write() {} },
+      });
+      const genericNoPendingImported = JSON.parse(genericNoPendingOutput);
+      assert.equal(genericNoPendingImportCode, 0);
+      assert.equal(genericNoPendingImported.runId, 'generic-agent-import-no-pending');
+      assert.equal(genericNoPendingImported.receiverPolicyApplied, true);
+
       const pendingClosureBytes = fixtureNeedsHostTurnClosureBytes([agentModelHostRequestBytes()]);
       const pendingClosureSummary = summarizeTurnClosureForRunHead(pendingClosureBytes);
       const pendingClosureBlob = blobEntryForBytes(pendingClosureBytes);
@@ -2140,13 +2155,14 @@ describe('migration, branching, and CLI diagnostics', () => {
   });
 
   it('exports, imports, and forks DirectoryStore runs through redacted CLI operations', async () => {
-      const sourceRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-migrate-source-'));
-      const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-migrate-receiver-'));
-      const packagePath = path.join(receiverRoot, 'carrier-export.json');
-      let diagnosticRef = null;
-      let retainedDiagnosticRef = null;
-      let unreferencedRef = null;
-      try {
+    const sourceRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-migrate-source-'));
+    const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-migrate-receiver-'));
+    const blockedReceiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-migrate-terminal-receiver-'));
+    const packagePath = path.join(receiverRoot, 'carrier-export.json');
+    let diagnosticRef = null;
+    let retainedDiagnosticRef = null;
+    let unreferencedRef = null;
+    try {
       const { run, head } = await fixtureDirectoryStore(sourceRoot, { closureOptions: { turnSequenceNumber: 0n } });
       let output = '';
       const forkCode = await runBunCli([
@@ -2256,19 +2272,19 @@ describe('migration, branching, and CLI diagnostics', () => {
           },
         },
       }));
-      await assert.rejects(
-        () => runBunCli([
-          'import',
-          '--json',
-          '--store', receiverRoot,
-          '--package', blockedPackagePath,
-          '--run', 'blocked-run',
-        ], {
-          stdout: { write() {} },
-          stderr: { write() {} },
-        }),
-        { code: 'ERR_IMPORT_PREFLIGHT_BLOCKED' },
-      );
+      let blockedOutput = '';
+      const blockedCode = await runBunCli([
+        'import',
+        '--json',
+        '--store', blockedReceiverRoot,
+        '--package', blockedPackagePath,
+        '--run', 'blocked-run',
+      ], {
+        stdout: { write: (text) => { blockedOutput += text; } },
+        stderr: { write() {} },
+      });
+      assert.equal(blockedCode, 0);
+      assert.equal(JSON.parse(blockedOutput).runId, 'blocked-run');
       const pendingClosureBytes = fixtureNeedsHostTurnClosureBytes();
       const pendingClosureSummary = summarizeTurnClosureForRunHead(pendingClosureBytes);
       const pendingClosureBlob = blobEntryForBytes(pendingClosureBytes);
@@ -2461,6 +2477,7 @@ describe('migration, branching, and CLI diagnostics', () => {
     } finally {
       await rm(sourceRoot, { recursive: true, force: true });
       await rm(receiverRoot, { recursive: true, force: true });
+      await rm(blockedReceiverRoot, { recursive: true, force: true });
     }
   });
 
