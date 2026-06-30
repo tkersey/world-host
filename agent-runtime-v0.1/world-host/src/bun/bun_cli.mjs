@@ -946,14 +946,35 @@ function assertLegacyAgentRuntimePayloadMatchesRequest(portable, request = {}) {
 }
 
 function legacyAgentRuntimePayloadRefs(request) {
-  if (request.commandFingerprint != null || request.bindingFingerprint != null) {
-    return {
-      commandFingerprint: request.commandFingerprint,
-      bindingFingerprint: request.bindingFingerprint,
-    };
+  const frameRefs = request.frameRequestBytes != null
+    ? decodeAgentRuntimeFrameRequest(request.frameRequestBytes)
+    : null;
+  const legacyRefs = request.commandFingerprint != null || request.bindingFingerprint != null
+    ? {
+        commandFingerprint: request.commandFingerprint,
+        bindingFingerprint: request.bindingFingerprint,
+      }
+    : null;
+  // HostRequest targetRefFingerprint and pendingPortFingerprint are World routing refs,
+  // not the frame command/binding refs carried by the legacy payload wrapper.
+  if (legacyRefs && frameRefs) assertLegacyPayloadRefPairMatches(legacyRefs, frameRefs);
+  if (frameRefs?.worldPortId != null && request.worldPortId != null && frameRefs.worldPortId !== Number(request.worldPortId)) {
+    fail('ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_WORLD_PORT');
   }
-  if (request.frameRequestBytes != null) return decodeAgentRuntimeFrameRequest(request.frameRequestBytes);
-  return { commandFingerprint: null, bindingFingerprint: null };
+  return legacyRefs ?? frameRefs ?? { commandFingerprint: null, bindingFingerprint: null };
+}
+
+function assertLegacyPayloadRefPairMatches(actual, expected) {
+  if (actual.commandFingerprint == null || actual.bindingFingerprint == null ||
+    expected.commandFingerprint == null || expected.bindingFingerprint == null) {
+    fail('ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_FRAME_REF');
+  }
+  if (BigInt(actual.commandFingerprint) !== BigInt(expected.commandFingerprint)) {
+    fail('ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_COMMAND_REF');
+  }
+  if (BigInt(actual.bindingFingerprint) !== BigInt(expected.bindingFingerprint)) {
+    fail('ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_BINDING_REF');
+  }
 }
 
 function decodeAgentRuntimeFrameRequest(bytes) {
@@ -980,9 +1001,9 @@ function decodeAgentRuntimeFrameRequest(bytes) {
   const commandFingerprint = u64();
   u64();
   u64();
-  u32();
+  const worldPortId = u32();
   const bindingFingerprint = u64();
-  return { commandFingerprint, bindingFingerprint };
+  return { commandFingerprint, bindingFingerprint, worldPortId };
 }
 
 function decodeAgentRuntimePayloadValueImage(bytes) {
