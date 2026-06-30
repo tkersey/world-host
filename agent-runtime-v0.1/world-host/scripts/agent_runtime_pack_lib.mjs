@@ -56,6 +56,22 @@ const WORLD_V0_EXECUTABLE_IMAGE_SHA256_BY_HEAD = Object.freeze({
 const WORLD_V0_APPLIANCE_MANIFEST_SHA256_BY_HEAD = Object.freeze({
   a8b594e428d49f93d5dcf5a862e7c28192dd44ef: 'd5ff90e2a2738ce18a45303d65799fe4e2687e19e04090859f9e73d750b7df74',
 });
+const WORLD_V0_UNIVERSAL_WASM_SHA256_BY_HEAD = Object.freeze({
+  a8b594e428d49f93d5dcf5a862e7c28192dd44ef: 'a79ae458d3cc5145660dadfc678736e75822c8c70558f8139861dc1103e84add',
+});
+const WORLD_V0_REQUIRED_ACTUATOR_REFS_BY_HEAD = Object.freeze({
+  a8b594e428d49f93d5dcf5a862e7c28192dd44ef: Object.freeze([
+    'world:actuator-ref:4f0c7160f25c4c62',
+    'world:actuator-ref:d5e4b1b427522cf2',
+  ]),
+});
+const WORLD_V0_REQUIRED_DESCRIPTOR_FINGERPRINTS_BY_HEAD = Object.freeze({
+  a8b594e428d49f93d5dcf5a862e7c28192dd44ef: Object.freeze([
+    'world:descriptor:be73177924a6b377',
+    'world:descriptor:74afc8c3b2fe4c33',
+  ]),
+});
+const WORLD_HOST_CARRIER_MODULE_SHA256 = '322ea7e3baca7a64d4ff48626f85ccd96165e05e9c8fbb878f0e583a656eef31';
 const WORLD_V0_REQUIRED_PROOF_KINDS = Object.freeze([
   'boundary_portable_v2',
   'executable_image',
@@ -775,10 +791,15 @@ async function verifyManifestArtifacts(root, manifest) {
   assertEqual(manifest.world.protocolManifestFingerprint, expectedWorldArtifactByHead(WORLD_V0_PROTOCOL_FINGERPRINT_BY_HEAD, worldHead, 'ERR_AGENT_RUNTIME_WORLD_PROTOCOL_HEAD'), 'ERR_AGENT_RUNTIME_WORLD_PROTOCOL_HEAD');
   assertEqual(sha256Hex(await readFile(path.join(root, 'world/agent.executable-image'))), expectedWorldArtifactByHead(WORLD_V0_EXECUTABLE_IMAGE_SHA256_BY_HEAD, worldHead, 'ERR_AGENT_RUNTIME_WORLD_IMAGE_BYTES_HEAD'), 'ERR_AGENT_RUNTIME_WORLD_IMAGE_BYTES');
   assertEqual(sha256Hex(await readFile(path.join(root, 'world/appliance-manifest.bin'))), expectedWorldArtifactByHead(WORLD_V0_APPLIANCE_MANIFEST_SHA256_BY_HEAD, worldHead, 'ERR_AGENT_RUNTIME_WORLD_APPLIANCE_BYTES_HEAD'), 'ERR_AGENT_RUNTIME_WORLD_APPLIANCE_BYTES');
-  assertEqual(stableJson(manifest.requiredActuatorRefs), stableJson(exactArray(worldMetadata.required_actuator_ref_fingerprints, 'world required actuator ref fingerprints').map(worldActuatorRef)), 'ERR_AGENT_RUNTIME_ACTUATOR_REFS');
-  assertEqual(stableJson(manifest.requiredDescriptorFingerprints), stableJson(exactArray(worldMetadata.required_descriptor_fingerprints, 'world required descriptor fingerprints').map(worldDescriptorFingerprint)), 'ERR_AGENT_RUNTIME_DESCRIPTOR_FINGERPRINTS');
+  assertEqual(sha256Hex(await readFile(path.join(root, 'world/world_universal_appliance.wasm'))), expectedWorldArtifactByHead(WORLD_V0_UNIVERSAL_WASM_SHA256_BY_HEAD, worldHead, 'ERR_AGENT_RUNTIME_WORLD_WASM_BYTES_HEAD'), 'ERR_AGENT_RUNTIME_WORLD_WASM_BYTES');
+  const worldMetadataActuatorRefs = exactArray(worldMetadata.required_actuator_ref_fingerprints, 'world required actuator ref fingerprints').map(worldActuatorRef);
+  const worldMetadataDescriptorFingerprints = exactArray(worldMetadata.required_descriptor_fingerprints, 'world required descriptor fingerprints').map(worldDescriptorFingerprint);
+  assertEqual(stableJson(manifest.requiredActuatorRefs), stableJson(worldMetadataActuatorRefs), 'ERR_AGENT_RUNTIME_ACTUATOR_REFS');
+  assertEqual(stableJson(manifest.requiredDescriptorFingerprints), stableJson(worldMetadataDescriptorFingerprints), 'ERR_AGENT_RUNTIME_DESCRIPTOR_FINGERPRINTS');
+  assertEqual(stableJson(manifest.requiredActuatorRefs), stableJson(expectedWorldArtifactByHead(WORLD_V0_REQUIRED_ACTUATOR_REFS_BY_HEAD, worldHead, 'ERR_AGENT_RUNTIME_ACTUATOR_REFS_HEAD')), 'ERR_AGENT_RUNTIME_ACTUATOR_REFS_HEAD');
+  assertEqual(stableJson(manifest.requiredDescriptorFingerprints), stableJson(expectedWorldArtifactByHead(WORLD_V0_REQUIRED_DESCRIPTOR_FINGERPRINTS_BY_HEAD, worldHead, 'ERR_AGENT_RUNTIME_DESCRIPTOR_FINGERPRINTS_HEAD')), 'ERR_AGENT_RUNTIME_DESCRIPTOR_FINGERPRINTS_HEAD');
   assertEqual(manifest.worldHost.carrierManifestFingerprint, carrierManifestFingerprint(carrier), 'ERR_AGENT_RUNTIME_CARRIER_MANIFEST_FINGERPRINT');
-  await verifyPackagedCarrierModule(root);
+  await verifyPackagedCarrierModule(root, carrier);
   assertEqual(manifest.conformanceCorpusFingerprint, conformanceCorpusFingerprint, 'ERR_AGENT_RUNTIME_CONFORMANCE_CORPUS_FINGERPRINT');
   assertEqual(stableJson(packagedArtifactMetadata), stableJson(manifest.artifacts), 'ERR_AGENT_RUNTIME_ARTIFACT_METADATA');
   assertEqual(manifest.artifacts?.worldHost?.packageTree?.fingerprint, await fingerprintWorldHostPackageTree(root), 'ERR_AGENT_RUNTIME_WORLD_HOST_TREE_FINGERPRINT');
@@ -1061,10 +1082,58 @@ function assertNoRuntimePackageDependencies(packageJson) {
   }
 }
 
-async function verifyPackagedCarrierModule(root) {
+async function verifyPackagedCarrierModule(root, carrier) {
   const packaged = await readFile(path.join(root, 'world-host/src/protocol/world_manifest.mjs'), 'utf8');
-  const expected = await readFile(new URL('../src/protocol/world_manifest.mjs', import.meta.url), 'utf8');
-  if (packaged !== expected) throw new Error('ERR_AGENT_RUNTIME_CARRIER_MODULE_SOURCE');
+  if (sha256Hex(Buffer.from(packaged)) !== WORLD_HOST_CARRIER_MODULE_SHA256) {
+    throw new Error('ERR_AGENT_RUNTIME_CARRIER_MODULE_SOURCE');
+  }
+  const sourceSummary = carrierModuleSummary(packaged);
+  const manifestSummary = {
+    carrierVersion: carrier.carrierVersion,
+    supportedWorldRelease: carrier.supportedWorldRelease,
+    supportedBoundaryRelease: carrier.supportedBoundaryRelease,
+    applianceAbiVersion: carrier.applianceAbiVersion,
+    turnClosureFormatVersion: carrier.turnClosureFormatVersion,
+    universalWasmSha256: carrier.universalWasm?.sha256,
+    runtimeDependencies: carrier.runtime?.runtimeDependencies,
+    allowsNativeWorldHelperProcess: carrier.runtime?.allowsNativeWorldHelperProcess,
+    allowsChildProcessProtocolEncoding: carrier.runtime?.allowsChildProcessProtocolEncoding,
+  };
+  if (stableJson(sourceSummary) !== stableJson(manifestSummary)) {
+    throw new Error('ERR_AGENT_RUNTIME_CARRIER_MODULE_MANIFEST');
+  }
+}
+
+function carrierModuleSummary(source) {
+  return {
+    carrierVersion: carrierModuleString(source, 'carrierVersion'),
+    supportedWorldRelease: carrierModuleString(source, 'supportedWorldRelease'),
+    supportedBoundaryRelease: carrierModuleString(source, 'supportedBoundaryRelease'),
+    applianceAbiVersion: carrierModuleString(source, 'applianceAbiVersion'),
+    turnClosureFormatVersion: carrierModuleString(source, 'turnClosureFormatVersion'),
+    universalWasmSha256: carrierModuleString(source, 'sha256'),
+    runtimeDependencies: carrierModuleInteger(source, 'runtimeDependencies'),
+    allowsNativeWorldHelperProcess: carrierModuleBoolean(source, 'allowsNativeWorldHelperProcess'),
+    allowsChildProcessProtocolEncoding: carrierModuleBoolean(source, 'allowsChildProcessProtocolEncoding'),
+  };
+}
+
+function carrierModuleString(source, key) {
+  const match = source.match(new RegExp(`${key}:\\s*'([^']+)'`));
+  if (!match) throw new Error(`ERR_AGENT_RUNTIME_CARRIER_MODULE_FIELD:${key}`);
+  return match[1];
+}
+
+function carrierModuleInteger(source, key) {
+  const match = source.match(new RegExp(`${key}:\\s*(\\d+)`));
+  if (!match) throw new Error(`ERR_AGENT_RUNTIME_CARRIER_MODULE_FIELD:${key}`);
+  return Number(match[1]);
+}
+
+function carrierModuleBoolean(source, key) {
+  const match = source.match(new RegExp(`${key}:\\s*(true|false)`));
+  if (!match) throw new Error(`ERR_AGENT_RUNTIME_CARRIER_MODULE_FIELD:${key}`);
+  return match[1] === 'true';
 }
 
 function assertGitSha(value, code) {

@@ -197,7 +197,7 @@ export class DirectoryStore extends ClosureStore {
     const headExists = await exists(this.headPath(runRecord.runId, bundle.branchId));
     if (application) {
       if (await exists(applicationPath(this.root, application.applicationId))) {
-        const existing = await this.getApplication(application.applicationId);
+        const existing = createApplicationRecord(await this.getApplication(application.applicationId));
         if (stableJson(existing) !== stableJson(application)) fail('ERR_IMPORT_APPLICATION_MISMATCH');
       } else if (runExists || headExists) {
         fail('ERR_IMPORT_RUN_EXISTS');
