@@ -156,6 +156,32 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.everyRequiredActuatorCovered, false);
   });
 
+  it('requires authority labels on selected actuator drivers before requests are inspected', () => {
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [{
+          actuatorRef: 'fixture:model',
+          descriptorFingerprint: 'descriptor:fixture-model',
+        }],
+        requiredHostAuthorityLabels: ['model:fixture'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      drivers: [
+        fixtureDriverWithAuthority([]),
+        fixtureDriverWithAuthority(['model:fixture'], {
+          driverId: 'dummy-authority',
+          actuatorRef: 'fixture:other',
+        }),
+      ],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture'] }),
+    });
+
+    assert.ok(report.blockers.includes('required-authority-unbound:model:fixture'));
+    assert.equal(report.everyRequiredActuatorCovered, false);
+    assert.equal(report.executableCompatible, false);
+  });
+
   it('defers authority binding when pending requests are not available yet', () => {
     const report = preflightCapabilities({
       application: {

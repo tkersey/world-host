@@ -99,7 +99,7 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
       blockers.push(`required-authority-policy-blocked:${label}`, ...uniqueFlat(routePolicyBlockers));
       continue;
     }
-    if (hasPendingRequestContext) blockers.push(`required-authority-unbound:${label}`);
+    if (hasPendingRequestContext || selectedAuthorityRoutes.length > 0) blockers.push(`required-authority-unbound:${label}`);
   }
 
   const runtimeLimits = application?.requiredRuntimeLimits ?? {};
