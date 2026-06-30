@@ -569,4 +569,19 @@ async function writeWorldRepoForPackTest(root) {
     required_actuator_ref_fingerprints: ['0x4f0c7160f25c4c62', '0xd5e4b1b427522cf2'],
     required_descriptor_fingerprints: ['0xbe73177924a6b377', '0x74afc8c3b2fe4c33'],
   }, null, 2)}\n`);
+  initializeGitRepoForPackTest(root);
+}
+
+function initializeGitRepoForPackTest(root) {
+  const init = spawnSync('git', ['init'], { cwd: root, encoding: 'utf8' });
+  assert.equal(init.status, 0, init.stderr);
+  const add = spawnSync('git', ['add', '.'], { cwd: root, encoding: 'utf8' });
+  assert.equal(add.status, 0, add.stderr);
+  const commit = spawnSync('git', [
+    '-c', 'user.name=world-host-test',
+    '-c', 'user.email=world-host-test@example.invalid',
+    'commit',
+    '-m', 'fixture world artifacts',
+  ], { cwd: root, encoding: 'utf8' });
+  assert.equal(commit.status, 0, commit.stderr);
 }
