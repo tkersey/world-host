@@ -841,8 +841,14 @@ describe('migration, branching, and CLI diagnostics', () => {
       try {
         const app = await store.getApplication('agent-runtime-v0.1');
         assert.deepEqual(app.requiredActuators, [
-          { actuatorRef: 'world:actuator-ref:4f0c7160f25c4c62' },
-          { actuatorRef: 'world:actuator-ref:d5e4b1b427522cf2' },
+          {
+            actuatorRef: 'world:actuator-ref:4f0c7160f25c4c62',
+            descriptorFingerprint: 'world:descriptor:be73177924a6b377',
+          },
+          {
+            actuatorRef: 'world:actuator-ref:d5e4b1b427522cf2',
+            descriptorFingerprint: 'world:descriptor:74afc8c3b2fe4c33',
+          },
         ]);
       } finally {
         await store.releaseLock();
@@ -1069,8 +1075,14 @@ describe('migration, branching, and CLI diagnostics', () => {
       try {
         const app = await receiverStore.getApplication('agent-runtime-v0.1');
         assert.deepEqual(app.requiredActuators, [
-          { actuatorRef: 'world:actuator-ref:4f0c7160f25c4c62' },
-          { actuatorRef: 'world:actuator-ref:d5e4b1b427522cf2' },
+          {
+            actuatorRef: 'world:actuator-ref:4f0c7160f25c4c62',
+            descriptorFingerprint: 'world:descriptor:be73177924a6b377',
+          },
+          {
+            actuatorRef: 'world:actuator-ref:d5e4b1b427522cf2',
+            descriptorFingerprint: 'world:descriptor:74afc8c3b2fe4c33',
+          },
         ]);
       } finally {
         await receiverStore.releaseLock();

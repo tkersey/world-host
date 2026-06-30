@@ -89,7 +89,7 @@ async function runAgentCommand(args, io, options) {
     const { checkAgentRuntimePack } = await import('../../scripts/agent_runtime_pack_lib.mjs');
     const checked = await checkAgentRuntimePack(pack, { validateReleaseReceipt: options.validateReleaseReceipt });
     const manifest = checked.manifest;
-    const requiredActuators = manifest.requiredActuatorRefs.map((actuatorRef) => ({ actuatorRef }));
+    const requiredActuators = requiredActuatorRequirements(manifest);
     return await runInstall([
       'install',
       '--store', storePath,
@@ -136,6 +136,16 @@ async function runAgentCommand(args, io, options) {
   }
   io.stdout.write('world-host agent commands: install, run, resume, inspect, replay, migrate, import, conformance\n');
   return subcommand === 'help' || subcommand === '--help' || subcommand === '-h' ? 0 : 2;
+}
+
+function requiredActuatorRequirements(manifest) {
+  if (manifest.requiredActuatorRefs.length !== manifest.requiredDescriptorFingerprints.length) {
+    throw new Error('ERR_AGENT_RUNTIME_REQUIRED_ACTUATOR_DESCRIPTOR_MISMATCH');
+  }
+  return manifest.requiredActuatorRefs.map((actuatorRef, index) => ({
+    actuatorRef,
+    descriptorFingerprint: manifest.requiredDescriptorFingerprints[index],
+  }));
 }
 
 async function runStoreRun(args, io, storePath, options) {

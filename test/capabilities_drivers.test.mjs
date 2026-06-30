@@ -58,6 +58,25 @@ describe('capability preflight and reference drivers', () => {
     }]);
   });
 
+  it('requires descriptor coverage for application-level actuator requirements', () => {
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [{
+          actuatorRef: 'fixture:model',
+          descriptorFingerprint: 'descriptor:other-model',
+        }],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      drivers: [new FixtureModelDriver({ responses: ['ok'] })],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture'] }),
+    });
+
+    assert.ok(report.blockers.includes('required-actuator-descriptor-uncovered:fixture:model:descriptor:other-model'));
+    assert.equal(report.everyRequiredActuatorCovered, false);
+    assert.equal(report.executableCompatible, false);
+  });
+
   it('applies receiver policy to required actuators and sandbox roots', async () => {
     const allowedRoot = await mkdtemp(path.join(tmpdir(), 'world-host-allowed-root-'));
     const blockedRoot = await mkdtemp(path.join(tmpdir(), 'world-host-blocked-root-'));
