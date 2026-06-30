@@ -156,6 +156,22 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.everyRequiredActuatorCovered, false);
   });
 
+  it('defers authority binding when pending requests are not available yet', () => {
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [],
+        requiredHostAuthorityLabels: ['model:fixture'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      drivers: [fixtureDriverWithAuthority(['model:fixture'])],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture'] }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.everyRequiredActuatorCovered, true);
+  });
+
   it('applies receiver policy to required actuators and sandbox roots', async () => {
     const allowedRoot = await mkdtemp(path.join(tmpdir(), 'world-host-allowed-root-'));
     const blockedRoot = await mkdtemp(path.join(tmpdir(), 'world-host-blocked-root-'));

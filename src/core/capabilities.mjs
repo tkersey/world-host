@@ -47,6 +47,7 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
   const manifests = drivers.map((driver) => assertDriverManifest(driver.manifest()));
   const coveredRequests = [];
   const selectedAuthorityRoutes = [];
+  const hasPendingRequestContext = pendingRequests.length > 0;
 
   for (const required of application?.requiredActuators ?? []) {
     const requirement = normalizeRequiredActuator(required);
@@ -98,7 +99,7 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
       blockers.push(`required-authority-policy-blocked:${label}`, ...uniqueFlat(routePolicyBlockers));
       continue;
     }
-    blockers.push(`required-authority-unbound:${label}`);
+    if (hasPendingRequestContext) blockers.push(`required-authority-unbound:${label}`);
   }
 
   const runtimeLimits = application?.requiredRuntimeLimits ?? {};
