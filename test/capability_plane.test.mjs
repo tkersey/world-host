@@ -293,6 +293,61 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(observedHeaders.Authorization, 'Bearer fixture-token-value');
       assert.equal(JSON.stringify(result.diagnostics).includes('secret'), false);
       assert.equal(decodeResolutionInputBytes(result.resolutionInputBytes).status, 0);
+      assert.equal(driver.dryRun({}, httpRequest()).wouldInvoke, true);
+
+      let reuseFetchCount = 0;
+      globalThis.fetch = async () => {
+        reuseFetchCount += 1;
+        return new Response('{"action":{"variant":"final","text":"reused"}}', {
+          status: 200,
+          headers: { 'x-request-id': 'request-reused' },
+        });
+      };
+      const reuseStore = new MemoryStore();
+      const reuseJournalOptions = {
+        store: reuseStore,
+        runId: 'secret-reuse-run',
+        branchId: 'main',
+        parentTurnClosureFingerprint: 'world:turn-closure:parent',
+      };
+      const firstSecretRun = await runCapabilityMode({
+        mode: 'live',
+        driver: new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          secretHeaders: { Authorization: 'API_TOKEN' },
+          secretProvider: new EnvSecretProvider({ API_TOKEN: 'Bearer reusable-token' }),
+        }),
+        hostRequest: httpRequest(),
+        journalOptions: reuseJournalOptions,
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      });
+      assert.equal(firstSecretRun.reused, false);
+      globalThis.fetch = async () => {
+        reuseFetchCount += 1;
+        throw new Error('reused effect should not fetch');
+      };
+      const secondSecretRun = await runCapabilityMode({
+        mode: 'live',
+        driver: new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          secretHeaders: { Authorization: 'API_TOKEN' },
+        }),
+        hostRequest: httpRequest(),
+        journalOptions: reuseJournalOptions,
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      });
+      assert.equal(secondSecretRun.reused, true);
+      assert.equal(reuseFetchCount, 1);
 
       let directLimitedRequestFetchCalled = false;
       globalThis.fetch = async () => {
@@ -459,6 +514,43 @@ describe('Capability Plane v0.2 core contracts', () => {
       });
       assert.equal(configuredEndpointFetchCalled, true);
       assert.equal(decodeResolutionInputBytes(configuredEndpointLive.resolutionInputBytes).status, 0);
+
+      let defaultMethod = null;
+      globalThis.fetch = async (url, options) => {
+        defaultMethod = options.method;
+        return new Response('{"action":{"variant":"final","text":"default-method"}}', {
+          status: 200,
+          headers: { 'x-request-id': 'request-default-method' },
+        });
+      };
+      await runCapabilityMode({
+        mode: 'live',
+        driver: new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://fallback.example/decide',
+          allowEndpointFromRequest: true,
+          origins: ['https://allowed.example', 'https://fallback.example'],
+        }),
+        hostRequest: {
+          ...httpRequest(),
+          hostRequestFingerprint: 'world:host-request:00000000000000a3',
+          idempotencyKeyBytes: fromUtf8('http-key-default-method'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-default-method',
+          requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/decide', body: { prompt: 'hi' } })),
+        },
+        journalOptions: {
+          store: new MemoryStore(),
+          runId: 'default-method-run',
+          branchId: 'main',
+          parentTurnClosureFingerprint: 'world:turn-closure:parent',
+        },
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      });
+      assert.equal(defaultMethod, 'POST');
 
       const envelopeDriver = new GenericHttpJsonCapabilityDriver({
         endpointUrl: 'https://allowed.example/decide',
@@ -770,6 +862,7 @@ describe('Capability Plane v0.2 core contracts', () => {
         headers: { 'x-request-id': 'request-2' },
       });
       const driver = new GenericHttpJsonModelDriver({ endpointUrl: 'https://allowed.example/decide' });
+      assert.equal(driver.dryRun({}, modelRequest('goal=invoke', 'model-dry-key')).wouldInvoke, true);
       const deniedPreflight = driver.preflight(
         { policy: { allowLiveEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] } },
         modelRequest('goal=invoke', 'model-preflight-key'),

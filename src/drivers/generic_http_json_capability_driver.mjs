@@ -81,7 +81,7 @@ export class GenericHttpJsonCapabilityDriver {
   dryRun(context, hostRequest) {
     const request = this.#request(hostRequest);
     return new DryRunReport({
-      wouldInvoke: false,
+      wouldInvoke: true,
       proposedAction: {
         method: request.method,
         url: `${new URL(request.url).origin}${new URL(request.url).pathname}`,

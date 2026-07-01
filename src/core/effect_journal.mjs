@@ -73,6 +73,7 @@ export class EffectJournal {
 
     const reusable = await this.#branchLocalReusableRecord(prepared);
     if (reusable) return reusable;
+    if (options.createIfMissing === false) return null;
 
     const manifest = options.manifest ? normalizeManifest(options.manifest) : null;
     const recoveryClass = options.recoveryClass ?? manifest?.recoveryClass ?? hostRequest.recoveryClass;
@@ -102,7 +103,7 @@ export class EffectJournal {
     return await this.store.putEffectRecord(record);
   }
 
-  async resolve(context, hostRequest, driverLike) {
+  async resolve(context, hostRequest, driverLike, options = {}) {
     const driver = defineActuatorDriver(driverLike);
     const manifest = driver.manifest();
     assertDriverCanResolve(manifest, hostRequest);
@@ -112,20 +113,13 @@ export class EffectJournal {
     assertPreparedRequestWithinLimits(prepared, manifest, this.policy);
     assertDurableRecoveryAllowed(manifest.recoveryClass, this.policy);
     return await withEffectKeyLock(this.store, effectLockKey(this.runId, prepared.idempotencyKey), async () => {
-      const observed = await this.#observePrepared(hostRequest, prepared, { manifest });
-      assertDurableRecoveryAllowed(observed.driverRecoveryClass, this.policy);
-      if (observed.state === EffectState.operatorInterventionRequired) {
-        return { record: observed, resolutionInputBytes: null, reused: false, operatorInterventionRequired: true };
-      }
-      if (observed.state === EffectState.failed) {
-        fail('ERR_EFFECT_FAILED_REQUIRES_OPERATOR', 'failed effects require explicit operator recovery before retry');
-      }
-      assertEffectRecoveryClassMatchesManifest(manifest, observed);
-      const reused = await this.#resolutionFromRecord(observed);
-      if (reused) {
-        assertResolutionAccepted(reused.resolutionInputBytes, normalizedHostRequest, manifest, this.policy);
-        return reused;
-      }
+      let observed = await this.#observePrepared(hostRequest, prepared, { manifest, createIfMissing: false });
+      const existingOutcome = observed ? await this.#nonInvokingResolution(observed, normalizedHostRequest, manifest) : null;
+      if (existingOutcome) return existingOutcome;
+      if (typeof options.beforeInvoke === 'function') await options.beforeInvoke(context, normalizedHostRequest);
+      if (!observed) observed = await this.#observePrepared(hostRequest, prepared, { manifest });
+      const observedOutcome = await this.#nonInvokingResolution(observed, normalizedHostRequest, manifest);
+      if (observedOutcome) return observedOutcome;
       if (observed.state === EffectState.running) return await this.#recoverLocked(context, observed, driver);
       assertManifestResponseWithinPolicy(manifest, this.policy);
 
@@ -258,6 +252,21 @@ export class EffectJournal {
     }
 
     fail('ERR_EFFECT_RECOVERY_UNAVAILABLE', 'driver does not expose recovery for unresolved effect');
+  }
+
+  async #nonInvokingResolution(observed, normalizedHostRequest, manifest) {
+    assertDurableRecoveryAllowed(observed.driverRecoveryClass, this.policy);
+    if (observed.state === EffectState.operatorInterventionRequired) {
+      return { record: observed, resolutionInputBytes: null, reused: false, operatorInterventionRequired: true };
+    }
+    if (observed.state === EffectState.failed) {
+      fail('ERR_EFFECT_FAILED_REQUIRES_OPERATOR', 'failed effects require explicit operator recovery before retry');
+    }
+    assertEffectRecoveryClassMatchesManifest(manifest, observed);
+    const reused = await this.#resolutionFromRecord(observed);
+    if (!reused) return null;
+    assertResolutionAccepted(reused.resolutionInputBytes, normalizedHostRequest, manifest, this.policy);
+    return reused;
   }
 
   async markSubmitted(record) {

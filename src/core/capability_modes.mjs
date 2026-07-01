@@ -70,8 +70,11 @@ export async function runCapabilityMode({
     if (!journalOptions) fail('ERR_CAPABILITY_APPROVAL_JOURNAL_REQUIRED', 'approval mode live effects require EffectJournal options');
     const journal = journalOptions instanceof EffectJournal ? journalOptions : new EffectJournal({ ...journalOptions, policy: livePolicy });
     const approvedContext = liveContext(context, livePolicy, { approved: true });
-    assertCapabilityPreflightAccepted(driver.preflight(approvedContext, hostRequest));
-    const resolved = await journal.resolve(approvedContext, hostRequest, driver);
+    const resolved = await journal.resolve(approvedContext, hostRequest, driver, {
+      beforeInvoke: (preflightContext, preflightHostRequest) => {
+        assertCapabilityPreflightAccepted(driver.preflight(preflightContext, preflightHostRequest));
+      },
+    });
     return { mode, submittedToWorld: true, approved: true, proposed, ...resolved };
   }
   assertCapabilityPolicyAllows({
@@ -84,8 +87,11 @@ export async function runCapabilityMode({
   if (!journalOptions) fail('ERR_CAPABILITY_LIVE_JOURNAL_REQUIRED', 'live mode requires EffectJournal options');
   const journal = journalOptions instanceof EffectJournal ? journalOptions : new EffectJournal({ ...journalOptions, policy: livePolicy });
   const liveDriverContext = liveContext(context, livePolicy);
-  assertCapabilityPreflightAccepted(driver.preflight(liveDriverContext, hostRequest));
-  const resolved = await journal.resolve(liveDriverContext, hostRequest, driver);
+  const resolved = await journal.resolve(liveDriverContext, hostRequest, driver, {
+    beforeInvoke: (preflightContext, preflightHostRequest) => {
+      assertCapabilityPreflightAccepted(driver.preflight(preflightContext, preflightHostRequest));
+    },
+  });
   return { mode, submittedToWorld: true, ...resolved };
 }
 

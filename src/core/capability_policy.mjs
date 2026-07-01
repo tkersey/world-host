@@ -151,8 +151,9 @@ function assertOriginAndMethodAllowed(hostRequest, policy) {
   }
   if (!policy.allowedOrigins.size) fail('ERR_CAPABILITY_ORIGIN_ALLOWLIST_REQUIRED');
   if (!policy.allowedOrigins.has(origin)) fail('ERR_CAPABILITY_ORIGIN_DENIED', `origin denied: ${origin}`);
-  const method = String(parsed.method ?? 'GET').toUpperCase();
   if (!policy.allowedMethods.size) fail('ERR_CAPABILITY_METHOD_ALLOWLIST_REQUIRED');
+  const method = parsed.method === undefined ? null : String(parsed.method).toUpperCase();
+  if (method === null) return;
   if (!policy.allowedMethods.has(method)) fail('ERR_CAPABILITY_METHOD_DENIED', `method denied: ${method}`);
 }
 

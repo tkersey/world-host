@@ -103,6 +103,19 @@ describe('Capability sidecar transport', () => {
         },
       );
 
+      const exitFastPath = path.join(root, 'exit-fast.mjs');
+      await writeFile(exitFastPath, `
+        process.exit(2);
+      `);
+      await assert.rejects(
+        () => new CapabilitySidecar({
+          command: [process.execPath, exitFastPath],
+          timeoutMs: 1000,
+          maximumFrameBytes: 2 * 1024 * 1024,
+        }).resolve({ body: 'x'.repeat(1024 * 1024) }),
+        { code: 'ERR_CAPABILITY_SIDECAR_EXIT' },
+      );
+
       const stderrPath = path.join(root, 'stderr.mjs');
       await writeFile(stderrPath, `
         process.stderr.write('x'.repeat(2048));

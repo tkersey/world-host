@@ -108,6 +108,7 @@ async function runSidecarCommand({ argv, input, timeoutMs, maximumFrameBytes, en
     let stderr = '';
     let settled = false;
     let terminalError = null;
+    let stdinError = null;
     let killTimer = null;
     const timer = setTimeout(() => {
       terminateWith(Object.assign(new Error('sidecar timeout'), { code: 'ERR_CAPABILITY_SIDECAR_TIMEOUT' }));
@@ -134,6 +135,9 @@ async function runSidecarCommand({ argv, input, timeoutMs, maximumFrameBytes, en
         terminateWith(Object.assign(new Error('sidecar stderr too large'), { code: 'ERR_CAPABILITY_SIDECAR_STDERR_TOO_LARGE' }));
       }
     });
+    child.stdin.on('error', (error) => {
+      stdinError = error;
+    });
     child.on('error', (error) => {
       clearTimeout(timer);
       if (killTimer) clearTimeout(killTimer);
@@ -155,6 +159,10 @@ async function runSidecarCommand({ argv, input, timeoutMs, maximumFrameBytes, en
         reject(Object.assign(new Error(`sidecar exited ${status}: stderr ${Buffer.byteLength(stderr)} bytes redacted`), { code: 'ERR_CAPABILITY_SIDECAR_EXIT' }));
         return;
       }
+      if (stdinError) {
+        reject(Object.assign(new Error(`sidecar stdin write failed: ${stdinError.code ?? 'error'}`), { code: 'ERR_CAPABILITY_SIDECAR_STDIN_WRITE' }));
+        return;
+      }
       try {
         resolve(decodeSidecarFrame(stdout, maximumFrameBytes));
       } catch (error) {
@@ -162,7 +170,11 @@ async function runSidecarCommand({ argv, input, timeoutMs, maximumFrameBytes, en
         reject(error);
       }
     });
-    child.stdin.end(input);
+    try {
+      child.stdin.end(input);
+    } catch (error) {
+      stdinError = error;
+    }
   });
 }
 

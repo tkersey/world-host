@@ -117,7 +117,7 @@ export class GenericHttpJsonModelDriver {
   dryRun(context, hostRequest) {
     const prompt = parseDecisionPrompt(hostRequest.requestBytes);
     return new DryRunReport({
-      wouldInvoke: false,
+      wouldInvoke: true,
       proposedAction: { endpoint: this.http.endpointUrl, observationBytes: prompt.observation.length },
     });
   }
