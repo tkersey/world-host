@@ -132,6 +132,15 @@ export class RunController {
     const parentClosureBytes = await this.store.getBlob(parentHead.turnClosureRef);
     assertParentHeadMatchesClosure(parentHead, parentClosureBytes);
     const needsHostEffectPlan = prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, this.hostRequestMapper, this.effectDrivers, policy);
+    if (needsHostEffectPlan?.pending.length > 0) {
+      assertCapabilityReportAccepted(preflightCapabilities({
+        application,
+        currentHead: parentHead,
+        pendingRequests: needsHostEffectPlan.pending.map((item) => item.hostRequest),
+        drivers: this.effectDrivers,
+        policy,
+      }));
+    }
     const imageBytes = await this.store.getBlob(application.executableImageRef);
     const executableHostFingerprint = `sha256:${await sha256Hex(imageBytes)}`;
     const { worker, reused: workerReused } = await this.#workerFor({

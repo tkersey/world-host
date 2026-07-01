@@ -749,6 +749,42 @@ describe('RunController and WorldWorker', () => {
     assert.equal((await store.listEffectRecords(runId)).length, 0);
   });
 
+  it('requires selected needs_host drivers to carry required authority labels', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+      applicationOverrides: {
+        requiredHostAuthorityLabels: ['model:fixture'],
+      },
+    });
+    const selected = fixtureEffectDriver({ authorityLabels: [] });
+    const dummyAuthorityDriver = fixtureEffectDriver({
+      driverId: 'dummy-authority',
+      actuatorRef: 'world:actuator-ref:0000000000000bad',
+      authorityLabels: ['model:fixture'],
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [selected, dummyAuthorityDriver],
+      effectPolicy: {
+        allowedAuthorityLabels: ['model:fixture'],
+      },
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      (error) => {
+        assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+        assert.ok(error.details?.blockers?.includes('required-authority-unbound:model:fixture'));
+        return true;
+      },
+    );
+    assert.equal(selected.invocationCount, 0);
+    assert.equal(dummyAuthorityDriver.invocationCount, 0);
+    assert.equal((await store.listEffectRecords(runId)).length, 0);
+  });
+
   it('rejects HTTP requests outside the selected driver origin coverage', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
@@ -1257,13 +1293,13 @@ function needsHostHeadSummary() {
   };
 }
 
-function fixtureEffectDriver() {
+function fixtureEffectDriver(options = {}) {
   return {
     invocationCount: 0,
     manifest() {
       return {
-        driverId: 'test.effect.driver',
-        supportedActuatorRefs: ['world:actuator-ref:0000000000000a05'],
+        driverId: options.driverId ?? 'test.effect.driver',
+        supportedActuatorRefs: [options.actuatorRef ?? 'world:actuator-ref:0000000000000a05'],
         supportedDescriptorFingerprints: ['world:descriptor:0000000000000a0b'],
         supportedActuationClasses: ['world:actuation-class:1'],
         supportedResponseStatuses: ['responded'],
@@ -1271,7 +1307,7 @@ function fixtureEffectDriver() {
         maximumResponseBytes: 4096,
         recoveryClass: EffectRecoveryClass.pure,
         concurrencyLimit: 1,
-        authorityLabels: ['test'],
+        authorityLabels: options.authorityLabels ?? ['test'],
       };
     },
     async resolve() {
