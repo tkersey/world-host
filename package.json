@@ -24,6 +24,13 @@
     "proof:world-real": "bun scripts/run-world-conformance.mjs --world-repo ../world",
     "proof:agent": "bun scripts/run-agent-closure-conformance.mjs",
     "proof:boundaries": "bun scripts/check-boundaries.mjs",
+    "proof:capabilities": "bun test test/capability_plane.test.mjs test/capability_sidecar.test.mjs",
+    "proof:capability-packs": "bun scripts/check-capability-packs.mjs",
+    "proof:sidecars": "bun test test/capability_sidecar.test.mjs",
+    "proof:secrets": "bun test test/capability_plane.test.mjs",
+    "proof:policy": "bun test test/capability_plane.test.mjs",
+    "proof:modes": "bun test test/capability_plane.test.mjs",
+    "proof:observability": "bun test test/capability_plane.test.mjs",
     "build:agent-runtime": "bun scripts/build-agent-runtime-pack.mjs",
     "check:agent-runtime": "bun scripts/check-agent-runtime-pack.mjs && bun scripts/run-agent-runtime-conformance.mjs && bun scripts/check-agent-runtime-pack.mjs --require-release-receipt && bun scripts/check-agent-runtime-release-receipt.mjs"
   },

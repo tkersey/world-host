@@ -42,6 +42,7 @@ export async function runBunCli(args, io, options = {}) {
     return 0;
   }
   if (command === 'agent') return await runAgentCommand(args.slice(1), io, options);
+  if (command === 'capability') return await runCapabilityCommand(args.slice(1), io);
   if (command === 'inspect' || command === 'effects') {
     const storePath = valueAfter(args, '--store');
     const runId = valueAfter(args, '--run');
@@ -76,8 +77,35 @@ export async function runBunCli(args, io, options = {}) {
     throw new Error('missing required option: --store');
   }
   if (command === 'run-example') return await runExample(args[1], io);
-  io.stdout.write('world-host commands: agent, install, doctor, run, resume, inspect, effects, recover, fork, export, import, run-example, version\n');
+  io.stdout.write('world-host commands: agent, capability, install, doctor, run, resume, inspect, effects, recover, fork, export, import, run-example, version\n');
   return command === 'help' || command === '--help' || command === '-h' ? 0 : 2;
+}
+
+async function runCapabilityCommand(args, io) {
+  const subcommand = args[0] ?? 'help';
+  if (subcommand === 'check-pack') {
+    const pack = requiredOption(args, '--pack');
+    const {
+      assertCapabilityPackChecksums,
+      validateCapabilityPackManifest,
+    } = await import('../core/capability_pack.mjs');
+    const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+    const checked = await validateCapabilityPackManifest(manifest, { requirePackFingerprint: true, verifyFingerprint: true });
+    const artifacts = {};
+    for (const item of checked.checksums) artifacts[item.path] = new Uint8Array(await readFile(path.join(pack, item.path)));
+    await assertCapabilityPackChecksums(checked, artifacts);
+    io.stdout.write(`${JSON.stringify(redact({
+      command: 'capability check-pack',
+      pack,
+      driverId: checked.driverId,
+      packFingerprint: checked.packFingerprint,
+      artifactCount: checked.checksums.length,
+      worldAuthoredEvidence: false,
+    }), null, 2)}\n`);
+    return 0;
+  }
+  io.stdout.write('world-host capability commands: check-pack\n');
+  return subcommand === 'help' || subcommand === '--help' || subcommand === '-h' ? 0 : 2;
 }
 
 async function runAgentCommand(args, io, options) {
@@ -1509,6 +1537,7 @@ export async function runExample(name, io) {
     'agent-retry': '../../examples/agent_runtime/retry/run.mjs',
     'agent-migration': '../../examples/agent_runtime/migration/run.mjs',
     'agent-branching': '../../examples/agent_runtime/branching/run.mjs',
+    'capability-runtime': '../../examples/capability_runtime/run.mjs',
     'crash-recovery': '../../examples/crash_recovery/run.mjs',
     migration: '../../examples/migration/run.mjs',
     branching: '../../examples/branching/run.mjs',

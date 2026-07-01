@@ -10,6 +10,7 @@
 - deterministic examples under `examples`;
 - conformance scripts under `scripts`;
 - security and migration documentation under `docs`.
+- Capability Plane v0.2 contracts, sidecar support, reference packs, operator smoke harness, and conformance docs.
 
 Runtime third-party dependencies: zero.
 

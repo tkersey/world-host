@@ -1,0 +1,136 @@
+import { assertDriverCanResolve, assertDriverManifest, defineActuatorDriver } from './actuator.mjs';
+import { fail, fromUtf8, stableJson } from './store.mjs';
+import { decodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
+
+const FORBIDDEN_WORLD_EVIDENCE_KEYS = new Set([
+  'boundaryModuleBytes',
+  'worldReceiptBytes',
+  'turnClosureBytes',
+  'capsuleBytes',
+  'chronicleEventBytes',
+  'archiveAppendBatchBytes',
+  'actuationReceiptBytes',
+  'executableImageBytes',
+  'runHead',
+]);
+
+export class CapabilityPreflightReport {
+  constructor(fields = {}) {
+    this.accepted = fields.accepted === true;
+    this.blockers = Object.freeze([...(fields.blockers ?? [])]);
+    this.warnings = Object.freeze([...(fields.warnings ?? [])]);
+    this.diagnostics = Object.freeze(fields.diagnostics ?? {});
+    Object.freeze(this);
+  }
+}
+
+export class DryRunReport {
+  constructor(fields = {}) {
+    this.wouldInvoke = fields.wouldInvoke === true;
+    this.proposedAction = fields.proposedAction ?? null;
+    this.resolutionPolicy = fields.resolutionPolicy ?? 'not-submitted';
+    this.diagnostics = Object.freeze(fields.diagnostics ?? {});
+    Object.freeze(this);
+  }
+}
+
+export class ShadowReport {
+  constructor(fields = {}) {
+    this.liveInvoked = fields.liveInvoked === true;
+    this.submittedToWorld = false;
+    this.schemaAccepted = fields.schemaAccepted === true;
+    this.diagnostics = Object.freeze(fields.diagnostics ?? {});
+    Object.freeze(this);
+  }
+}
+
+export function defineCapabilityDriver(driver) {
+  const actuator = defineActuatorDriver(driver);
+  for (const method of ['preflight', 'dryRun', 'shadow']) {
+    if (typeof driver?.[method] !== 'function') fail('ERR_CAPABILITY_DRIVER_ABI_INCOMPLETE', `${method} is required`);
+  }
+  return Object.freeze({
+    manifest: actuator.manifest,
+    preflight(context, hostRequest) {
+      return assertCapabilityPreflightReport(driver.preflight(context, hostRequest));
+    },
+    async resolve(context, hostRequest) {
+      const result = await actuator.resolve(context, hostRequest);
+      assertCapabilityResolutionBoundary(result);
+      return result;
+    },
+    recover: typeof actuator.recover === 'function'
+      ? async (context, effectRecord) => {
+          const result = await actuator.recover(context, effectRecord);
+          assertCapabilityResolutionBoundary(result);
+          return result;
+        }
+      : undefined,
+    dryRun(context, hostRequest) {
+      return assertDryRunReport(driver.dryRun(context, hostRequest));
+    },
+    shadow(context, hostRequest, recordedResolution) {
+      return assertShadowReport(driver.shadow(context, hostRequest, recordedResolution));
+    },
+    cancel: typeof actuator.cancel === 'function' ? actuator.cancel : undefined,
+    query: typeof actuator.query === 'function' ? actuator.query : undefined,
+  });
+}
+
+export function defaultCapabilityPreflight(manifestLike, hostRequest) {
+  const manifest = assertDriverManifest(manifestLike);
+  try {
+    assertDriverCanResolve(manifest, hostRequest);
+    return new CapabilityPreflightReport({ accepted: true });
+  } catch (error) {
+    return new CapabilityPreflightReport({
+      accepted: false,
+      blockers: [error.code ?? 'ERR_CAPABILITY_PREFLIGHT_REJECTED'],
+      diagnostics: { message: error.message },
+    });
+  }
+}
+
+export function assertCapabilityPreflightReport(value) {
+  if (value instanceof CapabilityPreflightReport) return value;
+  if (!value || typeof value !== 'object') fail('ERR_CAPABILITY_PREFLIGHT_REPORT_INVALID');
+  return new CapabilityPreflightReport(value);
+}
+
+export function assertDryRunReport(value) {
+  if (value instanceof DryRunReport) return value;
+  if (!value || typeof value !== 'object') fail('ERR_CAPABILITY_DRY_RUN_REPORT_INVALID');
+  return new DryRunReport(value);
+}
+
+export function assertShadowReport(value) {
+  if (value instanceof ShadowReport) return value;
+  if (!value || typeof value !== 'object') fail('ERR_CAPABILITY_SHADOW_REPORT_INVALID');
+  return new ShadowReport(value);
+}
+
+export function assertCapabilityResolutionBoundary(value) {
+  if (!value || typeof value !== 'object') fail('ERR_CAPABILITY_RESOLUTION_INVALID');
+  assertNoWorldEvidenceKeys(value);
+  if (value.resolutionInputBytes) decodeResolutionInputBytes(value.resolutionInputBytes);
+  return true;
+}
+
+export function assertNoWorldEvidenceKeys(value, path = []) {
+  if (value == null || typeof value !== 'object') return true;
+  for (const [key, child] of Object.entries(value)) {
+    if (FORBIDDEN_WORLD_EVIDENCE_KEYS.has(key)) {
+      fail('ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN', `capability driver must not author ${key}`, { path: [...path, key].join('.') });
+    }
+    assertNoWorldEvidenceKeys(child, [...path, key]);
+  }
+  return true;
+}
+
+export function capabilityHostClaimBytes(value) {
+  return fromUtf8(stableJson({
+    kind: 'world-host.capability.host-claim.v0',
+    value,
+    worldAuthoredEvidence: false,
+  }));
+}

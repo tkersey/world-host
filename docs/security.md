@@ -10,6 +10,7 @@ The implemented v0 host protections are:
 - sandbox file path escape and symlink rejection;
 - HTTP origin and method allowlists;
 - credential redaction in CLI-shaped diagnostics;
-- no runtime dependencies, shell driver, helper process, or child-process protocol encoding.
+- no runtime dependencies, shell driver, native World helper process, or child-process protocol encoding in the World wire boundary;
+- optional capability sidecars are host-owned effect resolvers with bounded frames, explicit timeouts, and untrusted output.
 
 Explicit non-claims: no exactly-once effects, signing, encryption, distributed consensus, hostile-host protection, multi-writer durability, or malicious-runtime protection.

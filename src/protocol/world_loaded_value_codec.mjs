@@ -37,6 +37,7 @@ export const releasedLoadedValueCodec = Object.freeze({
   encodeProduct,
   encodeSum,
   encodeCanonicalValueImage,
+  decodeCanonicalValueImage,
   fingerprintValueImage,
   u64WordBytes,
 });
@@ -120,6 +121,52 @@ export function encodeCanonicalValueImage({
   ]);
 }
 
+export function decodeCanonicalValueImage(bytes, request = {}) {
+  const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes ?? []);
+  let offset = 0;
+  if (readCanonicalU32(data, offset) !== 1) throw codecError('ERR_WORLD_VALUE_IMAGE_UNSUPPORTED');
+  offset += 4;
+  if (readCanonicalU32(data, offset) !== 1) throw codecError('ERR_WORLD_VALUE_IMAGE_UNSUPPORTED');
+  offset += 4;
+  const embeddedFingerprint = readCanonicalU64(data, offset);
+  offset += 8;
+  const valueTable = readCanonicalOptional(data, offset, 4, readCanonicalU32);
+  offset = valueTable.offset;
+  const boundaryValue = readCanonicalOptional(data, offset, 8, readCanonicalU64);
+  offset = boundaryValue.offset;
+  const codecSchema = readCanonicalOptional(data, offset, 8, readCanonicalU64);
+  offset = codecSchema.offset;
+  const dynamicSize = readCanonicalBool(data, offset);
+  offset = dynamicSize.offset;
+  const payload = readCanonicalPortableBytes(data, offset);
+  offset = payload.offset;
+  const diagnosticTypeLabel = readCanonicalOptionalPortableBytes(data, offset);
+  offset = diagnosticTypeLabel.offset;
+  if (offset !== data.byteLength) throw codecError('ERR_WORLD_VALUE_IMAGE_TRAILING_BYTES');
+  const actualFingerprint = fingerprintValueImage({
+    valueTableId: valueTable.value,
+    boundaryValueFingerprint: boundaryValue.value,
+    codecSchemaDescriptorFingerprint: codecSchema.value,
+    dynamicSize: dynamicSize.value,
+    diagnosticTypeLabel: diagnosticTypeLabel.value,
+    bytes: payload.value,
+  });
+  if (embeddedFingerprint !== actualFingerprint) throw codecError('ERR_WORLD_VALUE_IMAGE_FINGERPRINT');
+  if (request.payloadValueRefFingerprint != null && boundaryValue.value !== BigInt(request.payloadValueRefFingerprint)) {
+    throw codecError('ERR_WORLD_VALUE_IMAGE_PAYLOAD_REF');
+  }
+  if (request.payloadSchemaRefFingerprint != null && codecSchema.value !== BigInt(request.payloadSchemaRefFingerprint)) {
+    throw codecError('ERR_WORLD_VALUE_IMAGE_PAYLOAD_SCHEMA_REF');
+  }
+  return {
+    payload: payload.value,
+    boundaryValueFingerprint: boundaryValue.value,
+    codecSchemaDescriptorFingerprint: codecSchema.value,
+    diagnosticTypeLabel: diagnosticTypeLabel.value,
+    fingerprint: actualFingerprint,
+  };
+}
+
 export function u64WordBytes(value) {
   return u64(value);
 }
@@ -171,6 +218,63 @@ function optionalU64(value) {
 
 function optionalPortableBytes(value) {
   return value == null ? u8(0) : concat([u8(1), portableBytes(value)]);
+}
+
+function readCanonicalOptionalPortableBytes(data, offset) {
+  const tag = readCanonicalOptionalTag(data, offset);
+  if (tag === 0) return { value: null, offset: offset + 1 };
+  return readCanonicalPortableBytes(data, offset + 1);
+}
+
+function readCanonicalOptional(data, offset, width, readValue) {
+  const tag = readCanonicalOptionalTag(data, offset);
+  if (tag === 0) return { value: null, offset: offset + 1 };
+  const valueOffset = offset + 1;
+  const next = valueOffset + width;
+  if (next > data.byteLength) throw codecError('ERR_WORLD_VALUE_IMAGE_MALFORMED');
+  return { value: readValue(data, valueOffset), offset: next };
+}
+
+function readCanonicalOptionalTag(data, offset) {
+  if (offset >= data.byteLength) throw codecError('ERR_WORLD_VALUE_IMAGE_MALFORMED');
+  const tag = data[offset];
+  if (tag !== 0 && tag !== 1) throw codecError('ERR_WORLD_VALUE_IMAGE_MALFORMED');
+  return tag;
+}
+
+function readCanonicalPortableBytes(data, offset) {
+  const length = Number(canonicalView(data, offset, 8).getBigUint64(0, true));
+  if (!Number.isSafeInteger(length)) throw codecError('ERR_WORLD_VALUE_IMAGE_MALFORMED');
+  const start = offset + 8;
+  const end = start + length;
+  if (end > data.byteLength) throw codecError('ERR_WORLD_VALUE_IMAGE_MALFORMED');
+  return { value: data.slice(start, end), offset: end };
+}
+
+function readCanonicalU32(data, offset) {
+  return canonicalView(data, offset, 4).getUint32(0, true);
+}
+
+function readCanonicalU64(data, offset) {
+  return canonicalView(data, offset, 8).getBigUint64(0, true);
+}
+
+function readCanonicalBool(data, offset) {
+  if (offset >= data.byteLength) throw codecError('ERR_WORLD_VALUE_IMAGE_MALFORMED');
+  const value = data[offset];
+  if (value !== 0 && value !== 1) throw codecError('ERR_WORLD_VALUE_IMAGE_MALFORMED');
+  return { value: value === 1, offset: offset + 1 };
+}
+
+function canonicalView(data, offset, length) {
+  if (offset > data.byteLength || length > data.byteLength - offset) throw codecError('ERR_WORLD_VALUE_IMAGE_MALFORMED');
+  return new DataView(data.buffer, data.byteOffset + offset, length);
+}
+
+function codecError(code) {
+  const error = new Error(code);
+  error.code = code;
+  return error;
 }
 
 function portableBytes(value) {
