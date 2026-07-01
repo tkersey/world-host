@@ -94,7 +94,7 @@ export class GenericHttpJsonCapabilityDriver {
   shadow(context, hostRequest, recordedResolution) {
     const dryRun = this.dryRun(context, hostRequest);
     return new ShadowReport({
-      liveInvoked: context?.allowShadowNetwork === true,
+      liveInvoked: false,
       schemaAccepted: Boolean(recordedResolution),
       diagnostics: { proposedAction: dryRun.proposedAction },
     });

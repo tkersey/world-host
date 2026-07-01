@@ -243,6 +243,18 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.equal(dry.submittedToWorld, false);
     const shadow = await runCapabilityMode({ mode: 'shadow', driver, hostRequest: request, recordedResolution: fromUtf8('recorded') });
     assert.equal(shadow.submittedToWorld, false);
+    let fixtureLiveEffectResolveCalled = false;
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'fixture',
+        driver: deterministicLiveEffectDriver(() => {
+          fixtureLiveEffectResolveCalled = true;
+        }),
+        hostRequest: httpRequest(),
+      }),
+      { code: 'ERR_CAPABILITY_FIXTURE_LIVE_EFFECT_DENIED' },
+    );
+    assert.equal(fixtureLiveEffectResolveCalled, false);
 
     const approved = await runCapabilityMode({
       mode: 'approval',
@@ -515,6 +527,39 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(configuredEndpointFetchCalled, true);
       assert.equal(decodeResolutionInputBytes(configuredEndpointLive.resolutionInputBytes).status, 0);
 
+      let configuredPayloadUrlFetchUrl = null;
+      globalThis.fetch = async (url) => {
+        configuredPayloadUrlFetchUrl = url;
+        return new Response('{"action":{"variant":"final","text":"configured-payload-url"}}', {
+          status: 200,
+          headers: { 'x-request-id': 'request-configured-payload-url' },
+        });
+      };
+      await runCapabilityMode({
+        mode: 'live',
+        driver: new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }),
+        hostRequest: {
+          ...httpRequest(),
+          hostRequestFingerprint: 'world:host-request:00000000000000a4',
+          idempotencyKeyBytes: fromUtf8('http-key-configured-payload-url'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-configured-payload-url',
+          requestBytes: fromUtf8(stableJson({ url: 'https://denied.example/data', prompt: 'payload data only' })),
+        },
+        journalOptions: {
+          store: new MemoryStore(),
+          runId: 'configured-payload-url-run',
+          branchId: 'main',
+          parentTurnClosureFingerprint: 'world:turn-closure:parent',
+        },
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      });
+      assert.equal(configuredPayloadUrlFetchUrl, 'https://allowed.example/decide');
+
       let defaultMethod = null;
       globalThis.fetch = async (url, options) => {
         defaultMethod = options.method;
@@ -551,6 +596,27 @@ describe('Capability Plane v0.2 core contracts', () => {
         },
       });
       assert.equal(defaultMethod, 'POST');
+
+      let shadowFetchCalled = false;
+      globalThis.fetch = async () => {
+        shadowFetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const httpShadow = await runCapabilityMode({
+        mode: 'shadow',
+        driver: new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }),
+        hostRequest: httpRequest(),
+        context: { allowShadowNetwork: true },
+        recordedResolution: null,
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      });
+      assert.equal(httpShadow.shadow.liveInvoked, false);
+      assert.equal(shadowFetchCalled, false);
 
       const envelopeDriver = new GenericHttpJsonCapabilityDriver({
         endpointUrl: 'https://allowed.example/decide',
@@ -1007,6 +1073,41 @@ function preflightBlockedDriver() {
       resolveCalled = true;
       const error = new Error('preflight bypassed');
       error.code = 'ERR_PREFLIGHT_BYPASS_EFFECT';
+      throw error;
+    },
+  };
+}
+
+function deterministicLiveEffectDriver(onResolve) {
+  return {
+    manifest() {
+      return {
+        driverId: 'deterministic-live-effect',
+        supportedActuatorRefs: ['http:json'],
+        supportedDescriptorFingerprints: ['descriptor:http-json'],
+        supportedActuationClasses: ['http'],
+        supportedResponseStatuses: ['ok'],
+        maximumRequestBytes: 1024,
+        maximumResponseBytes: 1024,
+        recoveryClass: EffectRecoveryClass.idempotent,
+        concurrencyLimit: 1,
+        authorityLabels: ['network:http'],
+        diagnostics: { deterministic: true },
+      };
+    },
+    preflight() {
+      return { accepted: true };
+    },
+    dryRun() {
+      return { wouldInvoke: true, proposedAction: { driver: 'deterministic-live-effect' } };
+    },
+    shadow() {
+      return { liveInvoked: false, schemaAccepted: false };
+    },
+    async resolve() {
+      onResolve();
+      const error = new Error('fixture live effect should not resolve');
+      error.code = 'ERR_FIXTURE_LIVE_EFFECT_RESOLVED';
       throw error;
     },
   };

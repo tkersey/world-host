@@ -26,7 +26,7 @@ export async function runCapabilityMode({
   const manifest = driver.manifest();
   const livePolicy = createCapabilityPolicy(policy);
   if (mode === CapabilityExecutionMode.fixture) {
-    if (manifest.diagnostics?.deterministic !== true) fail('ERR_CAPABILITY_FIXTURE_REQUIRES_DETERMINISTIC_DRIVER');
+    assertFixtureModeAllowed(manifest);
     assertCapabilityPreflightAccepted(driver.preflight(context, hostRequest));
     const resolved = await driver.resolve(context, hostRequest);
     assertCapabilityResolutionBoundary(resolved);
@@ -43,7 +43,7 @@ export async function runCapabilityMode({
         hostRequest,
         policy: livePolicy,
         mode: 'live',
-        enforceNetworkTarget: shouldEnforceNetworkTarget(hostRequest),
+        enforceNetworkTarget: shouldEnforceNetworkTarget(hostRequest, manifest),
       });
       assertCapabilityPreflightAccepted(driver.preflight(shadowContext, hostRequest));
     }
@@ -65,7 +65,7 @@ export async function runCapabilityMode({
       policy: livePolicy,
       mode: 'live',
       action: { approved: true },
-      enforceNetworkTarget: shouldEnforceNetworkTarget(hostRequest),
+      enforceNetworkTarget: shouldEnforceNetworkTarget(hostRequest, manifest),
     });
     if (!journalOptions) fail('ERR_CAPABILITY_APPROVAL_JOURNAL_REQUIRED', 'approval mode live effects require EffectJournal options');
     const journal = journalOptions instanceof EffectJournal ? journalOptions : new EffectJournal({ ...journalOptions, policy: livePolicy });
@@ -82,7 +82,7 @@ export async function runCapabilityMode({
     hostRequest,
     policy: livePolicy,
     mode: 'live',
-    enforceNetworkTarget: shouldEnforceNetworkTarget(hostRequest),
+    enforceNetworkTarget: shouldEnforceNetworkTarget(hostRequest, manifest),
   });
   if (!journalOptions) fail('ERR_CAPABILITY_LIVE_JOURNAL_REQUIRED', 'live mode requires EffectJournal options');
   const journal = journalOptions instanceof EffectJournal ? journalOptions : new EffectJournal({ ...journalOptions, policy: livePolicy });
@@ -104,12 +104,25 @@ function assertCapabilityPreflightAccepted(report) {
   return true;
 }
 
-function shouldEnforceNetworkTarget(hostRequest) {
+function shouldEnforceNetworkTarget(hostRequest, manifest) {
+  if (manifest?.diagnostics?.endpointSource === 'config') return false;
   if (!hostRequest?.requestBytes) return true;
   try {
     return JSON.parse(new TextDecoder().decode(hostRequest.requestBytes))?.url !== undefined;
   } catch {
     return true;
+  }
+}
+
+function assertFixtureModeAllowed(manifest) {
+  if (manifest.diagnostics?.deterministic !== true) fail('ERR_CAPABILITY_FIXTURE_REQUIRES_DETERMINISTIC_DRIVER');
+  const liveAuthorityLabels = (manifest.authorityLabels ?? []).filter((label) => (
+    label.startsWith('network:') ||
+    label.startsWith('file:') ||
+    label.startsWith('human:')
+  ));
+  if (liveAuthorityLabels.length) {
+    fail('ERR_CAPABILITY_FIXTURE_LIVE_EFFECT_DENIED', 'fixture mode cannot invoke live-effect authority labels', { labels: liveAuthorityLabels });
   }
 }
 

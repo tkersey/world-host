@@ -13,6 +13,7 @@ export const CapabilitySidecarCommand = Object.freeze({
 });
 
 const COMMANDS = new Set(Object.values(CapabilitySidecarCommand));
+const DEFAULT_SIDECAR_PATH = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin';
 
 export class CapabilitySidecar {
   constructor({ command, timeoutMs = 5000, maximumFrameBytes = 1024 * 1024, env = {} } = {}) {
@@ -22,7 +23,7 @@ export class CapabilitySidecar {
     this.command = command;
     this.timeoutMs = timeoutMs;
     this.maximumFrameBytes = maximumFrameBytes;
-    this.env = sidecarEnv(env);
+    this.env = sidecarEnv({ PATH: sidecarPath(), ...env });
   }
 
   async request(command, payload = {}) {
@@ -185,6 +186,12 @@ function sidecarEnv(value) {
     if (typeof child !== 'string') fail('ERR_CAPABILITY_SIDECAR_ENV_INVALID');
     return [key, child];
   })));
+}
+
+function sidecarPath() {
+  const value = process.env.PATH;
+  if (typeof value === 'string' && value.length > 0 && !value.includes('\0')) return value;
+  return DEFAULT_SIDECAR_PATH;
 }
 
 function encodeBytes(value) {

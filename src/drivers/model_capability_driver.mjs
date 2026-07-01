@@ -124,7 +124,7 @@ export class GenericHttpJsonModelDriver {
 
   shadow(context, hostRequest, recordedResolution) {
     return new ShadowReport({
-      liveInvoked: context?.allowShadowNetwork === true,
+      liveInvoked: false,
       schemaAccepted: Boolean(recordedResolution),
     });
   }
