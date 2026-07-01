@@ -27,6 +27,7 @@ export async function runCapabilityMode({
   const livePolicy = createCapabilityPolicy(policy);
   if (mode === CapabilityExecutionMode.fixture) {
     if (manifest.diagnostics?.deterministic !== true) fail('ERR_CAPABILITY_FIXTURE_REQUIRES_DETERMINISTIC_DRIVER');
+    assertCapabilityPreflightAccepted(driver.preflight(context, hostRequest));
     const resolved = await driver.resolve(context, hostRequest);
     assertCapabilityResolutionBoundary(resolved);
     return { mode, submittedToWorld: true, ...resolved };

@@ -18,7 +18,8 @@ export class CapabilityPolicy {
     this.maximumLiveModelCalls = nonNegativeSafeInteger(input.maximumLiveModelCalls ?? 0, 'maximumLiveModelCalls');
     this.maximumToolCalls = nonNegativeSafeInteger(input.maximumToolCalls ?? 0, 'maximumToolCalls');
     this.maximumRunTurns = nonNegativeSafeInteger(input.maximumRunTurns ?? 0, 'maximumRunTurns');
-    this.maximumPromptBytes = positiveSafeInteger(input.maximumPromptBytes ?? 1024 * 1024, 'maximumPromptBytes');
+    this.maximumRequestBytes = positiveSafeInteger(input.maximumRequestBytes ?? input.maximumPromptBytes ?? 1024 * 1024, 'maximumRequestBytes');
+    this.maximumPromptBytes = positiveSafeInteger(input.maximumPromptBytes ?? this.maximumRequestBytes, 'maximumPromptBytes');
     this.maximumResponseBytes = positiveSafeInteger(input.maximumResponseBytes ?? 1024 * 1024, 'maximumResponseBytes');
     this.allowedOrigins = new Set(iterable(input.allowedOrigins));
     this.allowedMethods = new Set(iterable(input.allowedMethods).map((item) => String(item).toUpperCase()));
@@ -66,7 +67,7 @@ export function assertCapabilityPolicyAllows({ manifest, hostRequest = null, pol
   if (isFile(manifest, hostRequest) && policy.allowFileEffects !== true) fail('ERR_CAPABILITY_FILE_DENIED');
   if (isHuman(manifest, hostRequest) && policy.allowHumanEffects !== true) fail('ERR_CAPABILITY_HUMAN_DENIED');
   if (manifest?.recoveryClass === EffectRecoveryClass.bestEffort && policy.allowBestEffort !== true) fail('ERR_BEST_EFFORT_REQUIRES_OPERATOR_OPT_IN');
-  if (hostRequest?.requestBytes?.byteLength > policy.maximumPromptBytes) fail('ERR_CAPABILITY_PROMPT_TOO_LARGE');
+  if (hostRequest?.requestBytes?.byteLength > policy.maximumRequestBytes) fail('ERR_CAPABILITY_PROMPT_TOO_LARGE');
   if (manifest?.maximumResponseBytes > policy.maximumResponseBytes) fail('ERR_CAPABILITY_RESPONSE_LIMIT_EXCEEDS_POLICY');
   if (isNetwork(manifest, hostRequest) && enforceNetworkTarget) assertOriginAndMethodAllowed(hostRequest, policy);
   assertFileRootAllowed(manifest, policy);

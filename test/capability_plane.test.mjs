@@ -227,6 +227,14 @@ describe('Capability Plane v0.2 core contracts', () => {
     const request = modelRequest('goal=invoke', 'model-key');
     const fixture = await runCapabilityMode({ mode: 'fixture', driver, hostRequest: request });
     assert.equal(decodeResolutionInputBytes(fixture.resolutionInputBytes).status, 0);
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'fixture',
+        driver,
+        hostRequest: { ...request, actuatorRef: 'http:json' },
+      }),
+      { code: 'ERR_CAPABILITY_PREFLIGHT_BLOCKED' },
+    );
     const dry = await runCapabilityMode({ mode: 'dry-run', driver, hostRequest: request });
     assert.equal(dry.submittedToWorld, false);
     const shadow = await runCapabilityMode({ mode: 'shadow', driver, hostRequest: request, recordedResolution: fromUtf8('recorded') });
@@ -281,6 +289,34 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(observedHeaders.Authorization, 'Bearer fixture-token-value');
       assert.equal(JSON.stringify(result.diagnostics).includes('secret'), false);
       assert.equal(decodeResolutionInputBytes(result.resolutionInputBytes).status, 0);
+
+      let limitedRequestFetchCalled = false;
+      globalThis.fetch = async () => {
+        limitedRequestFetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      await assert.rejects(
+        () => runCapabilityMode({
+          mode: 'live',
+          driver: new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }),
+          hostRequest: httpRequest(),
+          journalOptions: {
+            store: new MemoryStore(),
+            runId: 'request-limit-run',
+            branchId: 'main',
+            parentTurnClosureFingerprint: 'world:turn-closure:parent',
+          },
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            maximumRequestBytes: 1,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }),
+        { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+      );
+      assert.equal(limitedRequestFetchCalled, false);
 
       let configuredEndpointFetchCalled = false;
       globalThis.fetch = async () => {
