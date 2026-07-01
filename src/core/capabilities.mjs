@@ -49,10 +49,11 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
   const selectedRequiredActuatorRoutes = [];
   const selectedPendingRequestRoutes = [];
   const hasPendingRequestContext = pendingRequests.length > 0;
+  const requiredAuthorityLabels = application?.requiredHostAuthorityLabels ?? [];
 
   for (const required of application?.requiredActuators ?? []) {
     const requirement = normalizeRequiredActuator(required);
-    const route = findRequiredActuatorManifest(manifests, requirement, policy);
+    const route = findRequiredActuatorManifest(manifests, requirement, policy, requiredAuthorityLabels);
     if (!route) {
       const structuralRoute = findRequiredActuatorManifest(manifests, requirement);
       if (structuralRoute) {
@@ -71,7 +72,7 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
   }
 
   for (const request of pendingRequests) {
-    const route = findDriverManifestForRequest(manifests, request, policy);
+    const route = findDriverManifestForRequest(manifests, request, policy, requiredAuthorityLabels);
     if (!route) {
       const structuralRoute = findDriverManifestForRequest(manifests, request);
       if (structuralRoute) {
@@ -88,9 +89,9 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
     selectedPendingRequestRoutes.push({ manifest: route, request });
   }
 
-  for (const label of application?.requiredHostAuthorityLabels ?? []) {
+  for (const label of requiredAuthorityLabels) {
     const pendingBindingState = hasPendingRequestContext
-      ? pendingAuthorityBindingState(label, application.requiredHostAuthorityLabels, selectedRequiredActuatorRoutes, selectedPendingRequestRoutes)
+      ? pendingAuthorityBindingState(label, requiredAuthorityLabels, selectedRequiredActuatorRoutes, selectedPendingRequestRoutes)
       : null;
     if (pendingBindingState === 'bound') continue;
     if (!hasPendingRequestContext && selectedRequiredActuatorRoutes.some(({ manifest }) => manifest.authorityLabels.includes(label))) continue;
@@ -162,8 +163,9 @@ function requirementMatchesRequest(requirement, request) {
     (!requirement.descriptorFingerprint || requirement.descriptorFingerprint === request.descriptorFingerprint);
 }
 
-function findRequiredActuatorManifest(manifests, requirement, policy = null) {
+function findRequiredActuatorManifest(manifests, requirement, policy = null, preferredAuthorityLabels = []) {
   const required = normalizeRequiredActuator(requirement);
+  const matches = [];
   for (const manifest of manifests) {
     if (!manifest.supportedActuatorRefs.includes(required.actuatorRef)) continue;
     if (
@@ -173,9 +175,9 @@ function findRequiredActuatorManifest(manifests, requirement, policy = null) {
       continue;
     }
     if (policy && policyBlockers(manifest, null, policy).length) continue;
-    return manifest;
+    matches.push(manifest);
   }
-  return null;
+  return selectPreferredAuthorityManifest(matches, preferredAuthorityLabels);
 }
 
 function policyBlockers(route, request, policy) {
@@ -216,17 +218,28 @@ function driverMatchesExceptResponseStatus(manifest, request) {
     !manifest.supportedResponseStatuses.includes(request.responseSchema.status);
 }
 
-export function findDriverManifestForRequest(manifests, request, policy = null) {
+export function findDriverManifestForRequest(manifests, request, policy = null, preferredAuthorityLabels = []) {
+  const matches = [];
   for (const manifest of manifests) {
     try {
       assertDriverCanResolve(manifest, request);
       if (policy && policyBlockers(manifest, request, policy).length) continue;
-      return manifest;
+      matches.push(manifest);
     } catch {
       continue;
     }
   }
-  return null;
+  return selectPreferredAuthorityManifest(matches, preferredAuthorityLabels);
+}
+
+function selectPreferredAuthorityManifest(manifests, preferredAuthorityLabels) {
+  if (!manifests.length) return null;
+  const preferred = manifests.find((manifest) => manifestCarriesPreferredAuthority(manifest, preferredAuthorityLabels));
+  return preferred ?? manifests[0];
+}
+
+function manifestCarriesPreferredAuthority(manifest, preferredAuthorityLabels) {
+  return preferredAuthorityLabels.some((label) => manifest.authorityLabels.includes(label));
 }
 
 export function assertCapabilityReportAccepted(report) {

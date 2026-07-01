@@ -131,7 +131,14 @@ export class RunController {
     }));
     const parentClosureBytes = await this.store.getBlob(parentHead.turnClosureRef);
     assertParentHeadMatchesClosure(parentHead, parentClosureBytes);
-    const needsHostEffectPlan = prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, this.hostRequestMapper, this.effectDrivers, policy);
+    const needsHostEffectPlan = prepareNeedsHostEffectPlan(
+      parentHead,
+      parentClosureBytes,
+      this.hostRequestMapper,
+      this.effectDrivers,
+      policy,
+      application.requiredHostAuthorityLabels ?? [],
+    );
     if (needsHostEffectPlan?.pending.length > 0) {
       assertCapabilityReportAccepted(preflightCapabilities({
         application,
@@ -266,7 +273,14 @@ export class RunController {
   async #effectTurnInput({ run, branchId, application, parentHead, parentClosureBytes, worker, options, needsHostEffectPlan }) {
     if (parentHead.status !== 'needs_host') return null;
     const policy = createRunPolicy(options.effectPolicy ?? this.effectPolicy);
-    const plan = needsHostEffectPlan ?? prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, this.hostRequestMapper, this.effectDrivers, policy);
+    const plan = needsHostEffectPlan ?? prepareNeedsHostEffectPlan(
+      parentHead,
+      parentClosureBytes,
+      this.hostRequestMapper,
+      this.effectDrivers,
+      policy,
+      application.requiredHostAuthorityLabels ?? [],
+    );
     const journal = new EffectJournal({
       store: this.store,
       runId: run.runId,
@@ -620,14 +634,21 @@ async function defaultEffectContextFactory(context) {
   return context;
 }
 
-function selectEffectDriver(drivers, hostRequest, policy = {}) {
+function selectEffectDriver(drivers, hostRequest, policy = {}, preferredAuthorityLabels = []) {
+  let firstMatch = null;
   for (const driver of drivers) {
     const manifest = driverManifest(driver);
     if (manifest && driverSupportsManifest(manifest, hostRequest, policy)) {
-      return { driver, manifest };
+      const selection = { driver, manifest };
+      firstMatch ??= selection;
+      if (manifestCarriesPreferredAuthority(manifest, preferredAuthorityLabels)) return selection;
     }
   }
-  return null;
+  return firstMatch;
+}
+
+function manifestCarriesPreferredAuthority(manifest, preferredAuthorityLabels) {
+  return preferredAuthorityLabels.some((label) => manifest.authorityLabels.includes(label));
 }
 
 function driverManifest(driver) {
@@ -885,7 +906,7 @@ function assertNextClosureManifestMatchesWorker(worker, inspected) {
   }
 }
 
-function prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, hostRequestMapper, effectDrivers, policy) {
+function prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, hostRequestMapper, effectDrivers, policy, preferredAuthorityLabels = []) {
   if (parentHead.status !== 'needs_host') return null;
   let parentSummary;
   try {
@@ -906,7 +927,7 @@ function prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, hostRequestM
       unresolvedHostRequests.push(unresolvedHostRequestDiagnostic(index, { diagnostics: { mapperError: error?.message ?? String(error) } }));
       continue;
     }
-    const selection = selectEffectDriver(effectDrivers, hostRequest, policy);
+    const selection = selectEffectDriver(effectDrivers, hostRequest, policy, preferredAuthorityLabels);
     if (selection) pending.push({ index, worldHostRequest, hostRequest, ...selection });
     else unresolvedHostRequests.push(unresolvedHostRequestDiagnostic(index, hostRequest));
   }

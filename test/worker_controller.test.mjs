@@ -785,6 +785,39 @@ describe('RunController and WorldWorker', () => {
     assert.equal((await store.listEffectRecords(runId)).length, 0);
   });
 
+  it('prefers authority-bound needs_host drivers over earlier unlabeled matches', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+      applicationOverrides: {
+        requiredActuators: [{
+          actuatorRef: 'world:actuator-ref:0000000000000a05',
+          descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+        }],
+        requiredHostAuthorityLabels: ['model:fixture'],
+      },
+    });
+    const unlabeled = fixtureEffectDriver({ authorityLabels: [] });
+    const labeled = fixtureEffectDriver({
+      driverId: 'authority-bound-fixture',
+      authorityLabels: ['model:fixture'],
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [unlabeled, labeled],
+      effectPolicy: {
+        allowedAuthorityLabels: ['model:fixture'],
+      },
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(unlabeled.invocationCount, 0);
+    assert.equal(labeled.invocationCount, 1);
+  });
+
   it('rejects HTTP requests outside the selected driver origin coverage', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
