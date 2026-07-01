@@ -71,6 +71,7 @@ const WORLD_V0_REQUIRED_DESCRIPTOR_FINGERPRINTS_BY_HEAD = Object.freeze({
     'world:descriptor:74afc8c3b2fe4c33',
   ]),
 });
+const WORLD_HOST_PACKAGE_VERSION = '0.0.0-carrier-v0';
 const WORLD_HOST_CARRIER_MODULE_SHA256 = '322ea7e3baca7a64d4ff48626f85ccd96165e05e9c8fbb878f0e583a656eef31';
 const WORLD_V0_REQUIRED_PROOF_KINDS = Object.freeze([
   'boundary_portable_v2',
@@ -799,7 +800,8 @@ async function verifyManifestArtifacts(root, manifest) {
   assertEqual(stableJson(manifest.requiredDescriptorFingerprints), stableJson(worldMetadataDescriptorFingerprints), 'ERR_AGENT_RUNTIME_DESCRIPTOR_FINGERPRINTS');
   assertEqual(stableJson(manifest.requiredActuatorRefs), stableJson(expectedWorldArtifactByHead(WORLD_V0_REQUIRED_ACTUATOR_REFS_BY_HEAD, worldHead, 'ERR_AGENT_RUNTIME_ACTUATOR_REFS_HEAD')), 'ERR_AGENT_RUNTIME_ACTUATOR_REFS_HEAD');
   assertEqual(stableJson(manifest.requiredDescriptorFingerprints), stableJson(expectedWorldArtifactByHead(WORLD_V0_REQUIRED_DESCRIPTOR_FINGERPRINTS_BY_HEAD, worldHead, 'ERR_AGENT_RUNTIME_DESCRIPTOR_FINGERPRINTS_HEAD')), 'ERR_AGENT_RUNTIME_DESCRIPTOR_FINGERPRINTS_HEAD');
-  assertEqual(manifest.worldHost.packageVersion, carrier.carrierVersion, 'ERR_AGENT_RUNTIME_PACKAGE_VERSION');
+  assertEqual(manifest.worldHost.packageVersion, WORLD_HOST_PACKAGE_VERSION, 'ERR_AGENT_RUNTIME_PACKAGE_VERSION');
+  assertEqual(carrier.carrierVersion, WORLD_HOST_PACKAGE_VERSION, 'ERR_AGENT_RUNTIME_PACKAGE_VERSION');
   assertEqual(manifest.worldHost.carrierManifestFingerprint, carrierManifestFingerprint(carrier), 'ERR_AGENT_RUNTIME_CARRIER_MANIFEST_FINGERPRINT');
   await verifyPackagedCarrierModule(root, carrier);
   assertEqual(manifest.conformanceCorpusFingerprint, conformanceCorpusFingerprint, 'ERR_AGENT_RUNTIME_CONFORMANCE_CORPUS_FINGERPRINT');
@@ -1045,7 +1047,8 @@ function fnv64(hash, value) {
 
 async function verifyPackagedPackageScripts(root, manifest) {
   const packageJson = JSON.parse(await readFile(path.join(root, 'world-host/package.json'), 'utf8'));
-  if (packageJson.version !== manifest.worldHost.packageVersion) throw new Error('ERR_AGENT_RUNTIME_PACKAGE_VERSION');
+  if (packageJson.version !== WORLD_HOST_PACKAGE_VERSION) throw new Error('ERR_AGENT_RUNTIME_PACKAGE_VERSION');
+  if (manifest.worldHost.packageVersion !== WORLD_HOST_PACKAGE_VERSION) throw new Error('ERR_AGENT_RUNTIME_PACKAGE_VERSION');
   assertNoRuntimePackageDependencies(packageJson);
   const scripts = packageJson.scripts ?? {};
   const allowedScripts = new Set(['check:agent-runtime']);

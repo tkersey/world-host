@@ -481,43 +481,88 @@ function confirmedTurnEffects(effects, inspected) {
   });
 }
 
-function effectHostReplyFingerprint(effect) {
+export function effectHostReplyFingerprint(effect) {
   if (!effect.worldHostRequest) return null;
   try {
-    const request = effect.worldHostRequest;
-    const resolution = decodeResolutionInputBytes(effect.resolutionInputBytes);
-    const responseFingerprint = resolution.status === 0 ? valueImageFingerprint(resolution.responseValueImageBytes) : null;
-    const responseKind = resolution.status === 0 ? 1n : 0n;
-    const outcomeFingerprint = nonzero(wyhash64(concatBytes([
-      hashBytes(fromUtf8('world.appliance.host_outcome.fingerprint')),
-      u64(1n),
-      u64(1n),
-      u64(request.requestFingerprint),
-      u64(request.intentFingerprint),
-      u64(request.envelopeFingerprint),
-      u64(request.idempotencyKeyFingerprint),
-      u64(resolution.status),
-      optionalU64(responseFingerprint),
-      u64(responseKind),
-      hashBytes(resolution.responseValueImageBytes),
-      optionalU64(null),
-      hashBytes(resolution.hostClaimBytes),
-      u64(resolution.attemptNumber),
-      hashBytes(resolution.metadata),
-    ])));
-    return nonzero(wyhash64(concatBytes([
-      hashBytes(fromUtf8('world.appliance.host_reply.fingerprint')),
-      u64(1n),
-      u64(1n),
-      u64(request.requestFingerprint),
-      u64(outcomeFingerprint),
-      optionalU64(null),
-      u64(0n),
-      hashBytes(resolution.metadata),
-    ]))).toString(16).padStart(16, '0');
+    return hostReplyFingerprintForBinding(effect.worldHostRequest, effect.resolutionInputBytes);
   } catch {
     return null;
   }
+}
+
+export function effectRecordHostReplyFingerprint(record, resolutionInputBytes) {
+  return hostReplyFingerprintForBinding(record?.diagnostics?.worldHostReplyBinding, resolutionInputBytes);
+}
+
+function hostReplyFingerprintForBinding(binding, resolutionInputBytes) {
+  const request = normalizeHostReplyBinding(binding);
+  const resolution = decodeResolutionInputBytes(resolutionInputBytes);
+  const responseFingerprint = resolution.status === 0 ? valueImageFingerprint(resolution.responseValueImageBytes) : null;
+  const responseKind = resolution.status === 0 ? 1n : 0n;
+  const outcomeFingerprint = nonzero(wyhash64(concatBytes([
+    hashBytes(fromUtf8('world.appliance.host_outcome.fingerprint')),
+    u64(1n),
+    u64(1n),
+    u64(request.requestFingerprint),
+    u64(request.intentFingerprint),
+    u64(request.envelopeFingerprint),
+    u64(request.idempotencyKeyFingerprint),
+    u64(resolution.status),
+    optionalU64(responseFingerprint),
+    u64(responseKind),
+    hashBytes(resolution.responseValueImageBytes),
+    optionalU64(null),
+    hashBytes(resolution.hostClaimBytes),
+    u64(resolution.attemptNumber),
+    hashBytes(resolution.metadata),
+  ])));
+  return nonzero(wyhash64(concatBytes([
+    hashBytes(fromUtf8('world.appliance.host_reply.fingerprint')),
+    u64(1n),
+    u64(1n),
+    u64(request.requestFingerprint),
+    u64(outcomeFingerprint),
+    optionalU64(null),
+    u64(0n),
+    hashBytes(resolution.metadata),
+  ]))).toString(16).padStart(16, '0');
+}
+
+function normalizeHostReplyBinding(binding) {
+  if (!binding || typeof binding !== 'object') fail('ERR_EFFECT_HOST_REPLY_BINDING_REQUIRED');
+  return {
+    requestFingerprint: parseFingerprintU64(binding.requestFingerprint, 'requestFingerprint'),
+    intentFingerprint: parseFingerprintU64(binding.intentFingerprint, 'intentFingerprint'),
+    envelopeFingerprint: parseFingerprintU64(binding.envelopeFingerprint, 'envelopeFingerprint'),
+    idempotencyKeyFingerprint: parseFingerprintU64(binding.idempotencyKeyFingerprint, 'idempotencyKeyFingerprint'),
+  };
+}
+
+function hostReplyBindingDiagnostics(request) {
+  return {
+    requestFingerprint: fingerprintString(request.requestFingerprint),
+    intentFingerprint: fingerprintString(request.intentFingerprint),
+    envelopeFingerprint: fingerprintString(request.envelopeFingerprint),
+    idempotencyKeyFingerprint: fingerprintString(request.idempotencyKeyFingerprint),
+  };
+}
+
+function maybeHostReplyBindingDiagnostics(request) {
+  try {
+    return hostReplyBindingDiagnostics(request);
+  } catch {
+    return null;
+  }
+}
+
+function parseFingerprintU64(value, label) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  if (typeof value === 'string') {
+    const bare = value.includes(':') ? value.slice(value.lastIndexOf(':') + 1) : value.replace(/^0x/i, '');
+    if (/^[0-9a-f]{1,16}$/i.test(bare)) return BigInt(`0x${bare}`);
+  }
+  fail('ERR_EFFECT_HOST_REPLY_BINDING_INVALID', `${label} must be a u64 fingerprint`);
 }
 
 function valueImageFingerprint(bytes) {
@@ -892,6 +937,7 @@ function assertHeadGenerationMatchesClosure(head, summary) {
 
 export function worldHostRequestToEffectRequest(request) {
   assertWorldResponseStatusAllowed(request, resolutionResponded, 'responded');
+  const worldHostReplyBinding = maybeHostReplyBindingDiagnostics(request);
   return {
     hostRequestFingerprint: `world:host-request:${fingerprintString(request.requestFingerprint)}`,
     idempotencyKeyBytes: assertBytes(request.idempotencyKeyBytes, 'idempotencyKeyBytes'),
@@ -902,6 +948,9 @@ export function worldHostRequestToEffectRequest(request) {
     responseSchema: {
       status: 'responded',
     },
+    ...(worldHostReplyBinding ? { diagnostics: {
+      worldHostReplyBinding: hostReplyBindingDiagnostics(request),
+    } } : {}),
     requestBytes: request.hostRequestBytes ?? concatBytes([
       request.metadata,
       request.frameRequestBytes,

@@ -1,7 +1,7 @@
 {
   "receiptFormatVersion": 1,
   "receiptFingerprintVersion": 1,
-  "agentRuntimeManifestFingerprint": "agent-runtime:3cf2539f02bfc1e4a39fce7608e24b51",
+  "agentRuntimeManifestFingerprint": "agent-runtime:ebfa0bd0a4a2673e7cd8cddc86a05a53",
   "boundaryModuleFingerprints": [
     "0xa663b81aa6df6f3e",
     "0x4a4c934becaf32ae"
@@ -30,5 +30,5 @@
   "complete": true,
   "blockers": [],
   "warnings": [],
-  "receiptFingerprint": "agent-runtime:e0aeee5b0ae8902ab6e47bd9df88d46a"
+  "receiptFingerprint": "agent-runtime:2a821b97908aa1dfd0e5e616ec7ee2f9"
 }

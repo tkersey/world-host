@@ -6,7 +6,7 @@ import { createApplicationRecord } from '../core/application.mjs';
 import { exportCarrierRun, forkRunBranch, importCarrierRun } from '../core/migration.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from '../core/run.mjs';
 import { assertBlobRef, fail, fromUtf8, makeBlobRef, stableJson } from '../core/store.mjs';
-import { RunController, worldHostRequestToEffectRequest } from '../core/worker.mjs';
+import { RunController, effectRecordHostReplyFingerprint, worldHostRequestToEffectRequest } from '../core/worker.mjs';
 import { createRunPolicy, preflightCapabilities } from '../core/capabilities.mjs';
 import { decodeResolutionInputBytes, encodeBootTurnInput, encodeResolutionInputBytes, encodeRestoreTurnInput, encodeTurnInput, operationBoot } from '../protocol/world_appliance_wire_codec.mjs';
 import { encodeCanonicalValueImage, fingerprintValueImage } from '../protocol/world_loaded_value_codec.mjs';
@@ -452,7 +452,7 @@ async function runStoreReplay(args, io, storePath, runId) {
   try {
     const result = await replayStoreRun(store, storePath, runId, branchId);
     io.stdout.write(`${JSON.stringify(redact(result), null, 2)}\n`);
-    return 0;
+    return result.ok ? 0 : 1;
   } finally {
     await store.releaseLock();
   }
@@ -1158,6 +1158,7 @@ async function replayStoreRun(store, storePath, runId, branchId) {
   const run = await store.getRun(runId);
   const head = await store.readHead(runId, branchId);
   const closureBytes = await store.getBlob(head.turnClosureRef);
+  const inspected = inspectTurnOutput(closureBytes);
   const parentTurnClosureFingerprint = head.updateDiagnostics?.parentTurnClosureFingerprint;
   if (typeof parentTurnClosureFingerprint !== 'string' || parentTurnClosureFingerprint.length === 0) {
     fail('ERR_AGENT_RUNTIME_REPLAY_HEAD_PARENT_REQUIRED', 'agent replay requires a head with committed parent TurnClosure diagnostics');
@@ -1169,16 +1170,34 @@ async function replayStoreRun(store, storePath, runId, branchId) {
   if (new Set(committedEffectIds).size !== committedEffectIds.length) {
     fail('ERR_AGENT_RUNTIME_REPLAY_EFFECT_IDS_DUPLICATE', 'agent replay requires unique committed effect id diagnostics');
   }
+  const appliedHostReplyFingerprints = inspected.turnReceipt.appliedHostReplyFingerprints.map((value) => value.toString(16).padStart(16, '0'));
+  if (new Set(appliedHostReplyFingerprints).size !== appliedHostReplyFingerprints.length) {
+    fail('ERR_AGENT_RUNTIME_REPLAY_RECEIPT_DUPLICATE_REPLY', 'agent replay requires unique applied HostReply fingerprints');
+  }
+  if (appliedHostReplyFingerprints.length !== committedEffectIds.length) {
+    fail('ERR_AGENT_RUNTIME_REPLAY_EFFECT_RECEIPT_MISMATCH', 'agent replay committed effect diagnostics must match the TurnReceipt applied replies');
+  }
   const journal = new EffectJournal({ store, runId, branchId, parentTurnClosureFingerprint });
-  const reconciliation = await journal.reconcileCommittedHead(head);
   const effects = (await store.listEffectRecords(runId)).filter((effect) => effect.branchId === branchId);
-  const retained = effects.filter((effect) => (
+  const retainedBeforeReconcile = effects.filter((effect) => (
+    effect.parentTurnClosureFingerprint === parentTurnClosureFingerprint &&
+    (effect.state === EffectState.closureCommitted || effect.state === EffectState.submitted) &&
+    committedEffectIds.includes(effect.idempotencyKeyWorldFingerprint)
+  ));
+  const retainedIds = new Set(retainedBeforeReconcile.map((effect) => effect.idempotencyKeyWorldFingerprint));
+  const missingEffectIds = committedEffectIds.filter((id) => !retainedIds.has(id));
+  let reconciliation = { committedCount: 0 };
+  let effectsAfterReconcile = effects;
+  if (missingEffectIds.length === 0) {
+    await validateRetainedReplayEffects(store, committedEffectIds, retainedBeforeReconcile, appliedHostReplyFingerprints);
+    reconciliation = await journal.reconcileCommittedHead(head);
+    effectsAfterReconcile = (await store.listEffectRecords(runId)).filter((effect) => effect.branchId === branchId);
+  }
+  const retained = effectsAfterReconcile.filter((effect) => (
     effect.parentTurnClosureFingerprint === parentTurnClosureFingerprint &&
     effect.state === EffectState.closureCommitted &&
     committedEffectIds.includes(effect.idempotencyKeyWorldFingerprint)
   ));
-  const retainedIds = new Set(retained.map((effect) => effect.idempotencyKeyWorldFingerprint));
-  const missingEffectIds = committedEffectIds.filter((id) => !retainedIds.has(id));
   return {
     command: 'replay',
     ok: missingEffectIds.length === 0,
@@ -1205,7 +1224,7 @@ async function replayStoreRun(store, storePath, runId, branchId) {
       freshEffectCount: 0,
       completed: missingEffectIds.length === 0,
     },
-    effects: summarizeEffectStates(effects),
+    effects: summarizeEffectStates(effectsAfterReconcile),
     diagnostics: {
       workerExecuted: false,
       driversInvoked: false,
@@ -1215,6 +1234,55 @@ async function replayStoreRun(store, storePath, runId, branchId) {
       worldEvidenceAuthored: false,
     },
   };
+}
+
+async function validateRetainedReplayEffects(store, committedEffectIds, retainedEffects, appliedHostReplyFingerprints) {
+  const effectsById = new Map();
+  for (const effect of retainedEffects) {
+    if (effectsById.has(effect.idempotencyKeyWorldFingerprint)) {
+      fail('ERR_AGENT_RUNTIME_REPLAY_EFFECT_IDS_DUPLICATE', 'agent replay requires unique retained effect ids');
+    }
+    effectsById.set(effect.idempotencyKeyWorldFingerprint, effect);
+  }
+  const appliedReplies = new Set(appliedHostReplyFingerprints);
+  const retainedReplies = new Set();
+  for (const effectId of committedEffectIds) {
+    const effect = effectsById.get(effectId);
+    const resolutionInputBytes = await replayResolutionInputBytes(store, effect);
+    const resolution = decodeResolutionInputBytes(resolutionInputBytes);
+    const expectedTarget = `world:host-request:${resolution.targetHostRequestFingerprint.toString(16).padStart(16, '0')}`;
+    if (effect.hostRequestFingerprint !== expectedTarget) {
+      fail('ERR_AGENT_RUNTIME_REPLAY_EFFECT_TARGET_MISMATCH', 'retained replay ResolutionInput targets a different HostRequest');
+    }
+    let replyFingerprint;
+    try {
+      replyFingerprint = effectRecordHostReplyFingerprint(effect, resolutionInputBytes);
+    } catch (error) {
+      fail('ERR_AGENT_RUNTIME_REPLAY_EFFECT_RECEIPT_BINDING_REQUIRED', 'retained replay effects must carry HostReply binding diagnostics', {
+        cause: error?.message ?? String(error),
+      });
+    }
+    if (!appliedReplies.has(replyFingerprint)) {
+      fail('ERR_AGENT_RUNTIME_REPLAY_EFFECT_RECEIPT_MISMATCH', 'retained replay effect was not applied by the TurnReceipt');
+    }
+    if (retainedReplies.has(replyFingerprint)) {
+      fail('ERR_AGENT_RUNTIME_REPLAY_RECEIPT_DUPLICATE_REPLY', 'retained replay effects must map to unique HostReply fingerprints');
+    }
+    retainedReplies.add(replyFingerprint);
+  }
+}
+
+async function replayResolutionInputBytes(store, effect) {
+  if (!effect?.resolutionInputRef) {
+    fail('ERR_AGENT_RUNTIME_REPLAY_EFFECT_RESOLUTION_MISSING', 'retained replay effects require ResolutionInput blobs');
+  }
+  try {
+    return await store.getBlob(effect.resolutionInputRef);
+  } catch (error) {
+    fail('ERR_AGENT_RUNTIME_REPLAY_EFFECT_RESOLUTION_MISSING', 'retained replay ResolutionInput blob is missing or unreadable', {
+      cause: error?.message ?? String(error),
+    });
+  }
 }
 
 async function inspectEffects(store, storePath, runId) {

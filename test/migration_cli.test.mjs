@@ -1017,6 +1017,140 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('returns nonzero when replay cannot retain every committed effect', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-replay-incomplete-'));
+    try {
+      const { run, head } = await fixtureDirectoryStore(root, {
+        closureOptions: {
+          appliedHostReplyFingerprints: [0xa01n],
+        },
+      });
+      const store = new DirectoryStore(root);
+      await store.acquireLock();
+      try {
+        await store.writeHead(run.runId, 'main', createRunHead({
+          ...head,
+          updateDiagnostics: {
+            ...head.updateDiagnostics,
+            committedEffectIds: ['world:key:missing'],
+          },
+        }));
+      } finally {
+        await store.releaseLock();
+      }
+
+      let output = '';
+      const replayCode = await runBunCli([
+        'agent',
+        'replay',
+        '--store', root,
+        '--run', run.runId,
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      });
+      const replayed = JSON.parse(output);
+
+      assert.equal(replayCode, 1);
+      assert.equal(replayed.ok, false);
+      assert.deepEqual(replayed.replay.missingEffectIds, ['world:key:missing']);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects replay effects that are not applied by the TurnReceipt', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-replay-receipt-mismatch-'));
+    try {
+      const { run } = await fixtureDirectoryStore(root, {
+        closureOptions: {
+          appliedHostReplyFingerprints: [0xdeadn],
+        },
+      });
+      const store = new DirectoryStore(root);
+      await store.acquireLock();
+      try {
+        const [effect] = await store.listEffectRecords(run.runId);
+        const resolutionInputRef = await store.putBlob(encodeResolutionInputBytes({
+          targetHostRequestFingerprint: 0xa01n,
+          status: 0,
+          responseValueImageBytes: encodeCanonicalValueImage({
+            bytes: fromUtf8('receipt mismatch response'),
+            dynamicSize: true,
+          }),
+          hostClaimBytes: new Uint8Array(),
+          attemptNumber: 1,
+          metadata: new Uint8Array(),
+        }));
+        await store.putEffectRecord({
+          ...effect,
+          resolutionInputRef,
+          diagnostics: {
+            ...effect.diagnostics,
+            worldHostReplyBinding: {
+              requestFingerprint: '0000000000000a01',
+              intentFingerprint: '0000000000000a06',
+              envelopeFingerprint: '0000000000000a07',
+              idempotencyKeyFingerprint: '0000000000000a09',
+            },
+          },
+        });
+      } finally {
+        await store.releaseLock();
+      }
+
+      await assert.rejects(() => runBunCli([
+        'agent',
+        'replay',
+        '--store', root,
+        '--run', run.runId,
+      ], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      }), { code: 'ERR_AGENT_RUNTIME_REPLAY_EFFECT_RECEIPT_MISMATCH' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects replay when a retained ResolutionInput blob is missing', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-replay-missing-resolution-'));
+    try {
+      const { run } = await fixtureDirectoryStore(root, {
+        closureOptions: {
+          appliedHostReplyFingerprints: [0xa01n],
+        },
+      });
+      const store = new DirectoryStore(root);
+      await store.acquireLock();
+      try {
+        const [effect] = await store.listEffectRecords(run.runId);
+        await store.putEffectRecord({
+          ...effect,
+          resolutionInputRef: {
+            algorithm: 'sha256',
+            checksum: '0'.repeat(64),
+            byteLength: 1,
+          },
+        });
+      } finally {
+        await store.releaseLock();
+      }
+
+      await assert.rejects(() => runBunCli([
+        'agent',
+        'replay',
+        '--store', root,
+        '--run', run.runId,
+      ], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      }), { code: 'ERR_AGENT_RUNTIME_REPLAY_EFFECT_RESOLUTION_MISSING' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('rejects malformed canonical agent runtime payload framing', () => {
     const malformedPayload = new Uint8Array(encodeCanonicalValueImage({
       bytes: fromUtf8('agent runtime request'),
@@ -2819,7 +2953,7 @@ function fixtureTurnClosureBytes(options = {}) {
     u64(options.turnSequenceNumber ?? 1n),
     u64(0x301n),
     optionalU64(null),
-    u64Slice([]),
+    u64Slice(options.appliedHostReplyFingerprints ?? []),
     u64Slice([]),
     optionalU64(null),
     u64(0x501n),
