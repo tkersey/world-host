@@ -313,6 +313,35 @@ describe('Capability Plane v0.2 core contracts', () => {
       );
       assert.equal(directLimitedRequestFetchCalled, false);
 
+      assert.throws(
+        () => new GenericHttpJsonCapabilityDriver({ endpointUrl: 'file:///tmp/world-host-capability.json' }),
+        { code: 'ERR_HTTP_URL_SCHEME_REJECTED' },
+      );
+      let nonHttpFetchCalled = false;
+      globalThis.fetch = async () => {
+        nonHttpFetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      await assert.rejects(
+        () => new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          allowEndpointFromRequest: true,
+          origins: ['null', 'https://allowed.example'],
+        }).resolve({
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            allowedOrigins: ['null'],
+            allowedMethods: ['POST'],
+          },
+        }, {
+          ...httpRequest(),
+          requestBytes: fromUtf8(stableJson({ url: 'file:///tmp/world-host-capability.json', method: 'POST', body: { prompt: 'hi' } })),
+        }),
+        { code: 'ERR_HTTP_URL_SCHEME_REJECTED' },
+      );
+      assert.equal(nonHttpFetchCalled, false);
+
       let limitedRequestFetchCalled = false;
       globalThis.fetch = async () => {
         limitedRequestFetchCalled = true;
@@ -340,6 +369,43 @@ describe('Capability Plane v0.2 core contracts', () => {
         { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
       );
       assert.equal(limitedRequestFetchCalled, false);
+
+      const renderedTemplate = { prompt: 'x'.repeat(128) };
+      const renderedLimitedHostRequest = { ...httpRequest(), requestBytes: fromUtf8(stableJson({ body: 'x' })) };
+      let renderedLimitedFetchCalled = false;
+      globalThis.fetch = async () => {
+        renderedLimitedFetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      await assert.rejects(
+        () => runCapabilityMode({
+          mode: 'live',
+          driver: new GenericHttpJsonCapabilityDriver({
+            endpointUrl: 'https://allowed.example/decide',
+            requestTemplate: renderedTemplate,
+          }),
+          hostRequest: renderedLimitedHostRequest,
+          journalOptions: {
+            store: new MemoryStore(),
+            runId: 'rendered-request-limit-run',
+            branchId: 'main',
+            parentTurnClosureFingerprint: 'world:turn-closure:parent',
+          },
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            maximumRequestBytes: renderedLimitedHostRequest.requestBytes.byteLength + 8,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }),
+        (error) => {
+          assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+          assert.deepEqual(error.details.blockers, ['ERR_CAPABILITY_PROMPT_TOO_LARGE']);
+          return true;
+        },
+      );
+      assert.equal(renderedLimitedFetchCalled, false);
 
       let missingAllowlistFetchCalled = false;
       globalThis.fetch = async () => {

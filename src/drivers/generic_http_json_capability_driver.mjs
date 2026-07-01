@@ -1,6 +1,6 @@
 import { EffectRecoveryClass } from '../core/actuator.mjs';
 import { CapabilityPreflightReport, DryRunReport, ShadowReport, capabilityHostClaimBytes, defaultCapabilityPreflight } from '../core/capability_driver.mjs';
-import { assertCapabilityPolicyAllows } from '../core/capability_policy.mjs';
+import { assertCapabilityPolicyAllows, createCapabilityPolicy } from '../core/capability_policy.mjs';
 import { assertRequiredSecretsAvailable } from '../core/secrets.mjs';
 import { assertBytes, fail, fromUtf8, stableJson } from '../core/store.mjs';
 import { encodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
@@ -28,9 +28,10 @@ export class GenericHttpJsonCapabilityDriver {
     redactionRules = [],
   } = {}) {
     if (!endpointUrl) fail('ERR_HTTP_CAPABILITY_ENDPOINT_REQUIRED');
+    const parsedEndpointUrl = parseHttpUrl(endpointUrl);
     this.endpointUrl = endpointUrl;
     this.methods = new Set(methods.map((method) => String(method).toUpperCase()));
-    this.origins = new Set(origins.length ? origins : [new URL(endpointUrl).origin]);
+    this.origins = new Set(origins.length ? origins : [parsedEndpointUrl.origin]);
     this.secretHeaders = secretHeaders;
     this.secretProvider = secretProvider;
     this.requestTemplate = requestTemplate;
@@ -145,7 +146,7 @@ export class GenericHttpJsonCapabilityDriver {
   #request(hostRequest) {
     const payload = parseJsonBytes(hostRequest.requestBytes);
     const url = this.allowEndpointFromRequest && payload.url ? payload.url : this.endpointUrl;
-    const parsedUrl = new URL(url);
+    const parsedUrl = parseHttpUrl(url);
     if (!this.origins.has(parsedUrl.origin)) fail('ERR_HTTP_ORIGIN_REJECTED');
     const method = String(payload.method ?? [...this.methods][0] ?? 'POST').toUpperCase();
     if (!this.methods.has(method)) fail('ERR_HTTP_METHOD_REJECTED');
@@ -156,8 +157,7 @@ export class GenericHttpJsonCapabilityDriver {
     return { url, method, body, bodyBytes };
   }
 
-  #policyHostRequest(hostRequest) {
-    const request = this.#request(hostRequest);
+  #policyHostRequest(hostRequest, request = this.#request(hostRequest)) {
     return { ...hostRequest, requestBytes: fromUtf8(stableJson({ url: request.url, method: request.method })) };
   }
 
@@ -173,9 +173,11 @@ export class GenericHttpJsonCapabilityDriver {
       action,
       enforceNetworkTarget: false,
     });
+    const request = this.#request(hostRequest);
+    assertRenderedRequestWithinPolicy(request, policy);
     assertCapabilityPolicyAllows({
       manifest,
-      hostRequest: this.#policyHostRequest(hostRequest),
+      hostRequest: this.#policyHostRequest(hostRequest, request),
       policy,
       mode: 'live',
       action,
@@ -229,6 +231,22 @@ export class GenericHttpJsonCapabilityDriver {
 function parseJsonBytes(bytes) {
   assertBytes(bytes, 'requestBytes');
   return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+function parseHttpUrl(value) {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    fail('ERR_HTTP_URL_INVALID');
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') fail('ERR_HTTP_URL_SCHEME_REJECTED');
+  return parsed;
+}
+
+function assertRenderedRequestWithinPolicy(request, inputPolicy) {
+  const policy = createCapabilityPolicy(inputPolicy);
+  if (request.bodyBytes > policy.maximumRequestBytes) fail('ERR_CAPABILITY_PROMPT_TOO_LARGE');
 }
 
 function extractPath(value, path) {
