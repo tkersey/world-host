@@ -513,12 +513,18 @@ export function effectHostReplyFingerprint(effect) {
   }
 }
 
-export function effectRecordHostReplyFingerprint(record, resolutionInputBytes) {
-  return hostReplyFingerprintForBinding(record?.diagnostics?.worldHostReplyBinding, resolutionInputBytes);
+export function effectRecordHostReplyFingerprint(record, resolutionInputBytes, expectedRequestFingerprint = null) {
+  return hostReplyFingerprintForBinding(record?.diagnostics?.worldHostReplyBinding, resolutionInputBytes, expectedRequestFingerprint);
 }
 
-function hostReplyFingerprintForBinding(binding, resolutionInputBytes) {
+function hostReplyFingerprintForBinding(binding, resolutionInputBytes, expectedRequestFingerprint = null) {
   const request = normalizeHostReplyBinding(binding);
+  if (expectedRequestFingerprint != null) {
+    const expected = parseFingerprintU64(expectedRequestFingerprint, 'expectedRequestFingerprint');
+    if (request.requestFingerprint !== expected) {
+      fail('ERR_EFFECT_HOST_REPLY_BINDING_TARGET_MISMATCH', 'HostReply binding targets a different HostRequest');
+    }
+  }
   const resolution = decodeResolutionInputBytes(resolutionInputBytes);
   const responseFingerprint = resolution.status === 0 ? valueImageFingerprint(resolution.responseValueImageBytes) : null;
   const responseKind = resolution.status === 0 ? 1n : 0n;

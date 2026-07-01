@@ -1125,6 +1125,62 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('rejects replay HostReply binding diagnostics copied from another HostRequest', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-replay-binding-target-'));
+    const copiedBinding = {
+      requestFingerprint: '0000000000000b02',
+      intentFingerprint: '0000000000000b06',
+      envelopeFingerprint: '0000000000000b07',
+      idempotencyKeyFingerprint: '0000000000000b09',
+    };
+    const resolutionInputBytes = encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xa01n,
+      status: 0,
+      responseValueImageBytes: encodeCanonicalValueImage({
+        bytes: fromUtf8('copied binding response'),
+        dynamicSize: true,
+      }),
+      hostClaimBytes: new Uint8Array(),
+      attemptNumber: 1,
+      metadata: new Uint8Array(),
+    });
+    try {
+      const { run } = await fixtureDirectoryStore(root, {
+        closureOptions: {
+          appliedHostReplyFingerprints: [fixtureHostReplyFingerprint(copiedBinding, resolutionInputBytes)],
+        },
+      });
+      const store = new DirectoryStore(root);
+      await store.acquireLock();
+      try {
+        const [effect] = await store.listEffectRecords(run.runId);
+        const resolutionInputRef = await store.putBlob(resolutionInputBytes);
+        await store.putEffectRecord({
+          ...effect,
+          resolutionInputRef,
+          diagnostics: {
+            ...effect.diagnostics,
+            worldHostReplyBinding: copiedBinding,
+          },
+        });
+      } finally {
+        await store.releaseLock();
+      }
+
+      await assert.rejects(() => runBunCli([
+        'agent',
+        'replay',
+        '--store', root,
+        '--run', run.runId,
+      ], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      }), { code: 'ERR_AGENT_RUNTIME_REPLAY_EFFECT_RECEIPT_TARGET_MISMATCH' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('rejects replay when a retained ResolutionInput blob is missing', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-replay-missing-resolution-'));
     try {
@@ -3286,6 +3342,69 @@ function bytes(value) {
 
 function u64Slice(values) {
   return concat([u64(values.length), ...values.map(u64)]);
+}
+
+function fixtureHostReplyFingerprint(binding, resolutionInputBytes) {
+  const request = {
+    requestFingerprint: fingerprintValue(binding.requestFingerprint),
+    intentFingerprint: fingerprintValue(binding.intentFingerprint),
+    envelopeFingerprint: fingerprintValue(binding.envelopeFingerprint),
+    idempotencyKeyFingerprint: fingerprintValue(binding.idempotencyKeyFingerprint),
+  };
+  const resolution = decodeResolutionInputBytes(resolutionInputBytes);
+  const responseFingerprint = resolution.status === 0 ? fixtureValueImageFingerprint(resolution.responseValueImageBytes) : null;
+  const responseKind = resolution.status === 0 ? 1n : 0n;
+  const outcomeFingerprint = nonzero(wyhash64(concat([
+    replyHashBytes(fromUtf8('world.appliance.host_outcome.fingerprint')),
+    u64(1n),
+    u64(1n),
+    u64(request.requestFingerprint),
+    u64(request.intentFingerprint),
+    u64(request.envelopeFingerprint),
+    u64(request.idempotencyKeyFingerprint),
+    u64(resolution.status),
+    replyOptionalU64(responseFingerprint),
+    u64(responseKind),
+    replyHashBytes(resolution.responseValueImageBytes),
+    replyOptionalU64(null),
+    replyHashBytes(resolution.hostClaimBytes),
+    u64(resolution.attemptNumber),
+    replyHashBytes(resolution.metadata),
+  ])));
+  return nonzero(wyhash64(concat([
+    replyHashBytes(fromUtf8('world.appliance.host_reply.fingerprint')),
+    u64(1n),
+    u64(1n),
+    u64(request.requestFingerprint),
+    u64(outcomeFingerprint),
+    replyOptionalU64(null),
+    u64(0n),
+    replyHashBytes(resolution.metadata),
+  ])));
+}
+
+function fingerprintValue(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return BigInt(value);
+  const bare = String(value).includes(':') ? String(value).slice(String(value).lastIndexOf(':') + 1) : String(value).replace(/^0x/i, '');
+  return BigInt(`0x${bare}`);
+}
+
+function fixtureValueImageFingerprint(value) {
+  const view = new DataView(value.buffer, value.byteOffset, value.byteLength);
+  return (BigInt(view.getUint32(12, true)) << 32n) | BigInt(view.getUint32(8, true));
+}
+
+function replyHashBytes(value) {
+  return concat([u64(value.byteLength), value]);
+}
+
+function replyOptionalU64(value) {
+  return value == null ? u64(0n) : concat([u64(1n), u64(value)]);
+}
+
+function nonzero(value) {
+  return value === 0n ? 1n : value;
 }
 
 function byteSlices(values) {
