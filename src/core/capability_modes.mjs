@@ -42,6 +42,7 @@ export async function runCapabilityMode({
     const decision = await approvalDecision(approval, { manifest, hostRequest, proposed });
     if (decision.approved !== true) return { mode, submittedToWorld: false, approved: false, proposed };
     if (isEffectFreeFixture(manifest) && !journalOptions) {
+      assertCapabilityPreflightAccepted(driver.preflight(context, hostRequest));
       const resolved = await driver.resolve(context, hostRequest);
       assertCapabilityResolutionBoundary(resolved);
       return { mode, submittedToWorld: true, approved: true, proposed, ...resolved };
@@ -49,18 +50,27 @@ export async function runCapabilityMode({
     assertCapabilityPolicyAllows({ manifest, hostRequest, policy: livePolicy, mode: 'live', action: { approved: true } });
     if (!journalOptions) fail('ERR_CAPABILITY_APPROVAL_JOURNAL_REQUIRED', 'approval mode live effects require EffectJournal options');
     const journal = journalOptions instanceof EffectJournal ? journalOptions : new EffectJournal({ ...journalOptions, policy: livePolicy });
-    const resolved = await journal.resolve(liveContext(context, livePolicy, { approved: true }), hostRequest, driver);
+    const approvedContext = liveContext(context, livePolicy, { approved: true });
+    assertCapabilityPreflightAccepted(driver.preflight(approvedContext, hostRequest));
+    const resolved = await journal.resolve(approvedContext, hostRequest, driver);
     return { mode, submittedToWorld: true, approved: true, proposed, ...resolved };
   }
   assertCapabilityPolicyAllows({ manifest, hostRequest, policy: livePolicy, mode: 'live' });
   if (!journalOptions) fail('ERR_CAPABILITY_LIVE_JOURNAL_REQUIRED', 'live mode requires EffectJournal options');
   const journal = journalOptions instanceof EffectJournal ? journalOptions : new EffectJournal({ ...journalOptions, policy: livePolicy });
-  const resolved = await journal.resolve(liveContext(context, livePolicy), hostRequest, driver);
+  const liveDriverContext = liveContext(context, livePolicy);
+  assertCapabilityPreflightAccepted(driver.preflight(liveDriverContext, hostRequest));
+  const resolved = await journal.resolve(liveDriverContext, hostRequest, driver);
   return { mode, submittedToWorld: true, ...resolved };
 }
 
 function liveContext(context, policy, action = null) {
   return { ...context, mode: 'live', policy, action };
+}
+
+function assertCapabilityPreflightAccepted(report) {
+  if (report.accepted !== true) fail('ERR_CAPABILITY_PREFLIGHT_BLOCKED', 'capability preflight blocked', { blockers: report.blockers });
+  return true;
 }
 
 function isEffectFreeFixture(manifest) {

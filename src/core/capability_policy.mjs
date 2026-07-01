@@ -133,10 +133,15 @@ function isHuman(manifest, hostRequest) {
 }
 
 function assertOriginAndMethodAllowed(hostRequest, policy) {
-  if (!hostRequest?.requestBytes) return;
+  if (!hostRequest?.requestBytes) fail('ERR_CAPABILITY_NETWORK_TARGET_REQUIRED');
   const parsed = parseJsonRequest(hostRequest);
-  if (!parsed?.url) return;
-  const origin = new URL(parsed.url).origin;
+  if (!parsed?.url) fail('ERR_CAPABILITY_NETWORK_TARGET_REQUIRED');
+  let origin;
+  try {
+    origin = new URL(parsed.url).origin;
+  } catch {
+    fail('ERR_CAPABILITY_NETWORK_TARGET_REQUIRED');
+  }
   if (!policy.allowedOrigins.size) fail('ERR_CAPABILITY_ORIGIN_ALLOWLIST_REQUIRED');
   if (!policy.allowedOrigins.has(origin)) fail('ERR_CAPABILITY_ORIGIN_DENIED', `origin denied: ${origin}`);
   const method = String(parsed.method ?? 'GET').toUpperCase();

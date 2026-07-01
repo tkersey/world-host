@@ -271,7 +271,9 @@ function assertNoCredentialMaterial(value, path = []) {
   if (value == null) return;
   if (typeof value === 'string') {
     const descriptorLabel = path[0] === 'requiredSecrets' && ['name', 'class', 'purpose'].includes(path.at(-1));
-    if (!descriptorLabel && SECRET_PATTERN.test(path.join('.')) && value.length > 0 && !['opaque', 'required', 'redacted'].includes(value)) {
+    const allowedSentinel = ['opaque', 'required', 'redacted'].includes(value);
+    const credentialLike = SECRET_PATTERN.test(path.join('.')) || SECRET_PATTERN.test(value);
+    if (!descriptorLabel && credentialLike && value.length > 0 && !allowedSentinel) {
       fail('ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN', `credential-like value forbidden at ${path.join('.')}`);
     }
     if (/sk-[A-Za-z0-9_-]{8,}/.test(value)) fail('ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN', `secret-looking value forbidden at ${path.join('.')}`);

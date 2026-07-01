@@ -92,6 +92,16 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
     );
     assert.throws(
+      () => assertCapabilityManifest({ ...manifest, metadataBytes: 'Bearer persisted-token-value' }),
+      { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
+    );
+    assert.doesNotThrow(
+      () => assertCapabilityManifest({
+        ...manifest,
+        requiredSecrets: [{ name: 'HTTP_AUTHORIZATION', class: 'header', purpose: 'optional authorization header' }],
+      }),
+    );
+    assert.throws(
       () => assertCapabilityManifest({ ...manifest, requiredSecrets: [{ name: 'sk-abcdefghijklmnop' }] }),
       { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
     );
@@ -145,6 +155,20 @@ describe('Capability Plane v0.2 core contracts', () => {
         mode: 'live',
       }),
       { code: 'ERR_CAPABILITY_METHOD_ALLOWLIST_REQUIRED' },
+    );
+    assert.throws(
+      () => assertCapabilityPolicyAllows({
+        manifest: { ...manifest, recoveryClass: EffectRecoveryClass.idempotent },
+        hostRequest: { ...httpRequest(), requestBytes: fromUtf8('{') },
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+        mode: 'live',
+      }),
+      { code: 'ERR_CAPABILITY_NETWORK_TARGET_REQUIRED' },
     );
     assert.equal(assertCapabilityPolicyAllows({
       manifest: { ...manifest, recoveryClass: EffectRecoveryClass.idempotent },
@@ -326,7 +350,11 @@ describe('Capability Plane v0.2 core contracts', () => {
           },
           policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
         }),
-        { code: 'ERR_CAPABILITY_ORIGIN_DENIED' },
+        (error) => {
+          assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+          assert.deepEqual(error.details.blockers, ['ERR_CAPABILITY_ORIGIN_DENIED']);
+          return true;
+        },
       );
       assert.equal(blockedFetchCalled, false);
 
@@ -405,6 +433,55 @@ describe('Capability Plane v0.2 core contracts', () => {
     const approved = await approval.resolve({}, approvalRequest());
     assert.equal(decodeResolutionInputBytes(approved.resolutionInputBytes).status, 0);
     assert.equal(approved.diagnostics.decision, 'approved');
+  });
+
+  it('honors driver preflight before live and approved live resolution', async () => {
+    const liveDriver = preflightBlockedDriver();
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'live',
+        driver: liveDriver,
+        hostRequest: httpRequest(),
+        journalOptions: {
+          store: new MemoryStore(),
+          runId: 'preflight-live-run',
+          branchId: 'main',
+          parentTurnClosureFingerprint: 'world:turn-closure:parent',
+        },
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      }),
+      { code: 'ERR_CAPABILITY_PREFLIGHT_BLOCKED' },
+    );
+    assert.equal(liveDriver.resolveCalled, false);
+
+    const approvalDriver = preflightBlockedDriver();
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'approval',
+        driver: approvalDriver,
+        hostRequest: httpRequest(),
+        approval: () => ({ approved: true }),
+        journalOptions: {
+          store: new MemoryStore(),
+          runId: 'preflight-approval-run',
+          branchId: 'main',
+          parentTurnClosureFingerprint: 'world:turn-closure:parent',
+        },
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      }),
+      { code: 'ERR_CAPABILITY_PREFLIGHT_BLOCKED' },
+    );
+    assert.equal(approvalDriver.resolveCalled, false);
   });
 
   it('validates model capability output as Boundary Agent.Action', async () => {
@@ -505,6 +582,44 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.equal(stream.summary().counts.capability_pack_loaded, 1);
   });
 });
+
+function preflightBlockedDriver() {
+  let resolveCalled = false;
+  return {
+    get resolveCalled() {
+      return resolveCalled;
+    },
+    manifest() {
+      return {
+        driverId: 'preflight-blocked-http',
+        supportedActuatorRefs: ['http:json'],
+        supportedDescriptorFingerprints: ['descriptor:http-json'],
+        supportedActuationClasses: ['http'],
+        supportedResponseStatuses: ['ok'],
+        maximumRequestBytes: 1024,
+        maximumResponseBytes: 1024,
+        recoveryClass: EffectRecoveryClass.idempotent,
+        concurrencyLimit: 1,
+        authorityLabels: ['network:http'],
+      };
+    },
+    preflight() {
+      return { accepted: false, blockers: ['driver-specific-blocker'] };
+    },
+    dryRun() {
+      return { wouldInvoke: true, proposedAction: { driver: 'preflight-blocked-http' } };
+    },
+    shadow() {
+      return { liveInvoked: false, schemaAccepted: false };
+    },
+    async resolve() {
+      resolveCalled = true;
+      const error = new Error('preflight bypassed');
+      error.code = 'ERR_PREFLIGHT_BYPASS_EFFECT';
+      throw error;
+    },
+  };
+}
 
 function fixtureCapabilityManifest() {
   return {
