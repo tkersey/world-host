@@ -866,6 +866,58 @@ describe('RunController and WorldWorker', () => {
     assert.equal(fileAuthority.invocationCount, 0);
   });
 
+  it('rejects unlabeled active needs_host drivers despite cross-labeled inactive actuators', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({
+        requestFingerprint: 0xa01n,
+        actuatorRefFingerprint: 0xbadn,
+      })]),
+      applicationOverrides: {
+        requiredActuators: [
+          {
+            actuatorRef: 'world:actuator-ref:0000000000000a05',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+          },
+          {
+            actuatorRef: 'world:actuator-ref:0000000000000bad',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+          },
+        ],
+        requiredHostAuthorityLabels: ['model:fixture', 'file:sandbox'],
+      },
+    });
+    const crossLabeledModel = fixtureEffectDriver({
+      driverId: 'cross-labeled-model',
+      authorityLabels: ['model:fixture', 'file:sandbox'],
+    });
+    const unlabeledFile = fixtureEffectDriver({
+      driverId: 'unlabeled-file',
+      actuatorRef: 'world:actuator-ref:0000000000000bad',
+      authorityLabels: [],
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [crossLabeledModel, unlabeledFile],
+      effectPolicy: {
+        allowedAuthorityLabels: ['model:fixture', 'file:sandbox'],
+      },
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      (error) => {
+        assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+        assert.ok(error.details?.blockers?.includes('required-authority-unbound:file:sandbox'));
+        return true;
+      },
+    );
+    assert.equal(crossLabeledModel.invocationCount, 0);
+    assert.equal(unlabeledFile.invocationCount, 0);
+    assert.equal((await store.listEffectRecords(runId)).length, 0);
+  });
+
   it('rejects HTTP requests outside the selected driver origin coverage', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
@@ -2023,6 +2075,8 @@ function fixtureHostRequestBytes(options = {}) {
   const requestOrdinal = options.requestOrdinal ?? 0;
   const idempotencyKey = options.idempotencyKey ?? 'idempotency-key';
   const idempotencyKeyFingerprint = options.idempotencyKeyFingerprint ?? 0xa09n;
+  const actuatorRefFingerprint = options.actuatorRefFingerprint ?? 0xa05n;
+  const actuationClass = options.actuationClass ?? 1;
   const expectedResponseDescriptorFingerprint = options.expectedResponseDescriptorFingerprint ?? 0xa0bn;
   const allowedResponseStatuses = options.allowedResponseStatuses ?? 1;
   return concat([
@@ -2036,8 +2090,8 @@ function fixtureHostRequestBytes(options = {}) {
     u32(0),
     u64(0xa04n),
     u64(0xa05n),
-    u64(0xa05n),
-    u8(1),
+    u64(actuatorRefFingerprint),
+    u8(actuationClass),
     u8(allowedResponseStatuses),
     u64(0xa06n),
     u64(0xa07n),

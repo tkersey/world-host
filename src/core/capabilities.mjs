@@ -161,21 +161,33 @@ function uniqueFlat(groups) {
 
 function pendingAuthorityBindingState(label, requiredLabels, selectedRequiredActuatorRoutes, selectedPendingRequestRoutes) {
   if (!selectedPendingRequestRoutes.length) return 'inactive';
-  const otherLabels = new Set(requiredLabels.filter((item) => item !== label));
-  const labelBearingRequirementIsPending = selectedRequiredActuatorRoutes.some(({ manifest, requirement }) =>
-    manifest.authorityLabels.includes(label) &&
-    selectedPendingRequestRoutes.some(({ request }) => requirementMatchesRequest(requirement, request)));
+  const requiredLabelSet = new Set(requiredLabels);
   const activePendingRoutes = selectedPendingRequestRoutes.filter(({ request }) => {
     const requiredRoute = selectedRequiredActuatorRoutes.find(({ requirement }) => requirementMatchesRequest(requirement, request));
     if (!requiredRoute) return true;
     if (requiredRoute.manifest.authorityLabels.includes(label)) return true;
-    const labelBoundToAnotherRequirement = selectedRequiredActuatorRoutes.some(({ manifest, requirement }) =>
+    const labelBearingOtherRoutes = selectedRequiredActuatorRoutes.filter(({ manifest, requirement }) =>
       !requirementMatchesRequest(requirement, request) && manifest.authorityLabels.includes(label));
-    if (labelBoundToAnotherRequirement && !labelBearingRequirementIsPending) return false;
-    return !(labelBoundToAnotherRequirement && requiredRoute.manifest.authorityLabels.some((item) => otherLabels.has(item)));
+    const hasAnotherRequiredLabel = requiredRoute.manifest.authorityLabels.some((item) =>
+      item !== label && requiredLabelSet.has(item));
+    const labelBearingOtherRouteIsPending = labelBearingOtherRoutes.some(({ requirement }) =>
+      selectedPendingRequestRoutes.some((pendingRoute) => requirementMatchesRequest(requirement, pendingRoute.request)));
+    if (labelBearingOtherRouteIsPending && hasAnotherRequiredLabel) return false;
+    if (
+      labelBearingOtherRoutes.length &&
+      !labelBearingOtherRouteIsPending &&
+      labelBearingOtherRoutes.every(({ manifest }) => countRequiredAuthorityLabels(manifest, requiredLabelSet) === 1)
+    ) {
+      return false;
+    }
+    return true;
   });
   if (!activePendingRoutes.length) return 'inactive';
   return activePendingRoutes.every(({ manifest }) => manifest.authorityLabels.includes(label)) ? 'bound' : 'unbound';
+}
+
+function countRequiredAuthorityLabels(manifest, requiredLabelSet) {
+  return manifest.authorityLabels.filter((item) => requiredLabelSet.has(item)).length;
 }
 
 function requirementMatchesRequest(requirement, request) {
