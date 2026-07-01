@@ -88,6 +88,10 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_CAPABILITY_HOST_PATH_FORBIDDEN' },
     );
     assert.throws(
+      () => assertCapabilityManifest({ ...manifest, policyRequirements: { allowedFileRoots: ['/etc'] } }),
+      { code: 'ERR_CAPABILITY_HOST_PATH_FORBIDDEN' },
+    );
+    assert.throws(
       () => assertCapabilityManifest({ ...manifest, metadataBytes: ['sk', 'test-secret-value'].join('-') }),
       { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
     );
@@ -336,6 +340,31 @@ describe('Capability Plane v0.2 core contracts', () => {
         { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
       );
       assert.equal(limitedRequestFetchCalled, false);
+
+      let missingAllowlistFetchCalled = false;
+      globalThis.fetch = async () => {
+        missingAllowlistFetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      await assert.rejects(
+        () => runCapabilityMode({
+          mode: 'live',
+          driver: new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }),
+          hostRequest: { ...httpRequest(), requestBytes: fromUtf8(stableJson({ body: { prompt: 'hi' } })) },
+          journalOptions: {
+            store: new MemoryStore(),
+            runId: 'missing-allowlist-run',
+            branchId: 'main',
+            parentTurnClosureFingerprint: 'world:turn-closure:parent',
+          },
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+          },
+        }),
+        { code: 'ERR_CAPABILITY_ORIGIN_ALLOWLIST_REQUIRED' },
+      );
+      assert.equal(missingAllowlistFetchCalled, false);
 
       let configuredEndpointFetchCalled = false;
       globalThis.fetch = async () => {

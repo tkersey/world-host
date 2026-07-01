@@ -84,6 +84,25 @@ describe('Capability sidecar transport', () => {
         { code: 'ERR_CAPABILITY_SIDECAR_RESPONSE_COMMAND' },
       );
 
+      const exitSecretPath = path.join(root, 'exit-secret.mjs');
+      await writeFile(exitSecretPath, `
+        process.stderr.write('DECLARED_SECRET=' + process.env.DECLARED_SECRET);
+        process.exit(2);
+      `);
+      await assert.rejects(
+        () => new CapabilitySidecar({
+          command: [process.execPath, exitSecretPath],
+          timeoutMs: 1000,
+          env: { DECLARED_SECRET: 'mapped-secret' },
+        }).manifest(),
+        (error) => {
+          assert.equal(error.code, 'ERR_CAPABILITY_SIDECAR_EXIT');
+          assert.equal(error.message.includes('mapped-secret'), false);
+          assert.equal(error.message.includes('DECLARED_SECRET'), false);
+          return true;
+        },
+      );
+
       const stderrPath = path.join(root, 'stderr.mjs');
       await writeFile(stderrPath, `
         process.stderr.write('x'.repeat(2048));

@@ -248,7 +248,8 @@ function normalizePolicyRequirements(value) {
     allowBestEffort: value.allowBestEffort === true,
     allowedOrigins: requiredStringList(value.allowedOrigins ?? [], 'policyRequirements.allowedOrigins'),
     allowedMethods: requiredStringList(value.allowedMethods ?? [], 'policyRequirements.allowedMethods').map((item) => item.toUpperCase()),
-    allowedFileRoots: requiredStringList(value.allowedFileRoots ?? [], 'policyRequirements.allowedFileRoots'),
+    allowedFileRoots: requiredStringList(value.allowedFileRoots ?? [], 'policyRequirements.allowedFileRoots')
+      .map((item) => optionalRelativePath(item, 'policyRequirements.allowedFileRoots')),
   });
 }
 

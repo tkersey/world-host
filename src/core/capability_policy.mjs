@@ -69,7 +69,13 @@ export function assertCapabilityPolicyAllows({ manifest, hostRequest = null, pol
   if (manifest?.recoveryClass === EffectRecoveryClass.bestEffort && policy.allowBestEffort !== true) fail('ERR_BEST_EFFORT_REQUIRES_OPERATOR_OPT_IN');
   if (hostRequest?.requestBytes?.byteLength > policy.maximumRequestBytes) fail('ERR_CAPABILITY_PROMPT_TOO_LARGE');
   if (manifest?.maximumResponseBytes > policy.maximumResponseBytes) fail('ERR_CAPABILITY_RESPONSE_LIMIT_EXCEEDS_POLICY');
-  if (isNetwork(manifest, hostRequest) && enforceNetworkTarget) assertOriginAndMethodAllowed(hostRequest, policy);
+  if (isNetwork(manifest, hostRequest)) {
+    if (enforceNetworkTarget) {
+      assertOriginAndMethodAllowed(hostRequest, policy);
+    } else {
+      assertNetworkAllowlistsPresent(policy);
+    }
+  }
   assertFileRootAllowed(manifest, policy);
   const approved = action?.approved === true;
   if (action?.destructive === true && policy.requireApprovalForDestructiveEffects && !approved) fail('ERR_CAPABILITY_APPROVAL_REQUIRED');
@@ -148,6 +154,11 @@ function assertOriginAndMethodAllowed(hostRequest, policy) {
   const method = String(parsed.method ?? 'GET').toUpperCase();
   if (!policy.allowedMethods.size) fail('ERR_CAPABILITY_METHOD_ALLOWLIST_REQUIRED');
   if (!policy.allowedMethods.has(method)) fail('ERR_CAPABILITY_METHOD_DENIED', `method denied: ${method}`);
+}
+
+function assertNetworkAllowlistsPresent(policy) {
+  if (!policy.allowedOrigins.size) fail('ERR_CAPABILITY_ORIGIN_ALLOWLIST_REQUIRED');
+  if (!policy.allowedMethods.size) fail('ERR_CAPABILITY_METHOD_ALLOWLIST_REQUIRED');
 }
 
 function assertFileRootAllowed(manifest, policy) {

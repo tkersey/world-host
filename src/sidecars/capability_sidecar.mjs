@@ -152,7 +152,7 @@ async function runSidecarCommand({ argv, input, timeoutMs, maximumFrameBytes, en
         return;
       }
       if (status !== 0) {
-        reject(Object.assign(new Error(`sidecar exited ${status}: ${stderr}`), { code: 'ERR_CAPABILITY_SIDECAR_EXIT' }));
+        reject(Object.assign(new Error(`sidecar exited ${status}: stderr ${Buffer.byteLength(stderr)} bytes redacted`), { code: 'ERR_CAPABILITY_SIDECAR_EXIT' }));
         return;
       }
       try {
