@@ -15,13 +15,14 @@ export const CapabilitySidecarCommand = Object.freeze({
 const COMMANDS = new Set(Object.values(CapabilitySidecarCommand));
 
 export class CapabilitySidecar {
-  constructor({ command, timeoutMs = 5000, maximumFrameBytes = 1024 * 1024 } = {}) {
+  constructor({ command, timeoutMs = 5000, maximumFrameBytes = 1024 * 1024, env = {} } = {}) {
     if (!Array.isArray(command) || command.length === 0 || command.some((item) => typeof item !== 'string' || item.length === 0)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar command must be an argv array');
     }
     this.command = command;
     this.timeoutMs = timeoutMs;
     this.maximumFrameBytes = maximumFrameBytes;
+    this.env = sidecarEnv(env);
   }
 
   async request(command, payload = {}) {
@@ -33,6 +34,7 @@ export class CapabilitySidecar {
       input: frame,
       timeoutMs: this.timeoutMs,
       maximumFrameBytes: this.maximumFrameBytes,
+      env: this.env,
     });
     if (!response || response.command !== command) fail('ERR_CAPABILITY_SIDECAR_RESPONSE_COMMAND');
     return response;
@@ -95,11 +97,12 @@ export function decodeSidecarFrame(bytes, maximumFrameBytes = 1024 * 1024) {
   return decodeBytes(parsed);
 }
 
-async function runSidecarCommand({ argv, input, timeoutMs, maximumFrameBytes }) {
+async function runSidecarCommand({ argv, input, timeoutMs, maximumFrameBytes, env }) {
   return await new Promise((resolve, reject) => {
     const child = spawn(argv[0], argv.slice(1), {
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: false,
+      env,
     });
     let stdout = new Uint8Array();
     let stderr = '';
@@ -161,6 +164,15 @@ async function runSidecarCommand({ argv, input, timeoutMs, maximumFrameBytes }) 
     });
     child.stdin.end(input);
   });
+}
+
+function sidecarEnv(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('ERR_CAPABILITY_SIDECAR_ENV_INVALID');
+  return Object.freeze(Object.fromEntries(Object.entries(value).map(([key, child]) => {
+    if (typeof key !== 'string' || key.length === 0 || key.includes('\0')) fail('ERR_CAPABILITY_SIDECAR_ENV_INVALID');
+    if (typeof child !== 'string') fail('ERR_CAPABILITY_SIDECAR_ENV_INVALID');
+    return [key, child];
+  })));
 }
 
 function encodeBytes(value) {

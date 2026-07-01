@@ -42,6 +42,38 @@ describe('Capability sidecar transport', () => {
       assert.equal((await sidecar.resolve({ request: 'ok' })).payload.ok, true);
       await assert.rejects(() => sidecar.dryRun({}), { code: 'ERR_CAPABILITY_SIDECAR_EXIT' });
 
+      const envPath = path.join(root, 'env.mjs');
+      await writeFile(envPath, `
+        await new Response(Bun.stdin.stream()).text();
+        process.stdout.write(JSON.stringify({
+          command: 'manifest',
+          payload: {
+            ambientSecret: process.env.WORLD_HOST_SIDECAR_AMBIENT_SECRET ?? null,
+            declaredSecret: process.env.DECLARED_SECRET ?? null
+          }
+        }) + '\\n');
+      `);
+      const originalAmbient = process.env.WORLD_HOST_SIDECAR_AMBIENT_SECRET;
+      process.env.WORLD_HOST_SIDECAR_AMBIENT_SECRET = 'ambient-secret';
+      try {
+        const isolated = await new CapabilitySidecar({ command: [process.execPath, envPath], timeoutMs: 1000 }).manifest();
+        assert.equal(isolated.payload.ambientSecret, null);
+        assert.equal(isolated.payload.declaredSecret, null);
+        const declared = await new CapabilitySidecar({
+          command: [process.execPath, envPath],
+          timeoutMs: 1000,
+          env: { DECLARED_SECRET: 'mapped-secret' },
+        }).manifest();
+        assert.equal(declared.payload.ambientSecret, null);
+        assert.equal(declared.payload.declaredSecret, 'mapped-secret');
+      } finally {
+        if (originalAmbient === undefined) {
+          delete process.env.WORLD_HOST_SIDECAR_AMBIENT_SECRET;
+        } else {
+          process.env.WORLD_HOST_SIDECAR_AMBIENT_SECRET = originalAmbient;
+        }
+      }
+
       const mismatchPath = path.join(root, 'mismatch.mjs');
       await writeFile(mismatchPath, `
         await new Response(Bun.stdin.stream()).text();

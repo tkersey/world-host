@@ -278,6 +278,34 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(JSON.stringify(result.diagnostics).includes('secret'), false);
       assert.equal(decodeResolutionInputBytes(result.resolutionInputBytes).status, 0);
 
+      let configuredEndpointFetchCalled = false;
+      globalThis.fetch = async () => {
+        configuredEndpointFetchCalled = true;
+        return new Response('{"action":{"variant":"final","text":"configured"}}', {
+          status: 200,
+          headers: { 'x-request-id': 'request-configured' },
+        });
+      };
+      const configuredEndpointLive = await runCapabilityMode({
+        mode: 'live',
+        driver: new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }),
+        hostRequest: { ...httpRequest(), requestBytes: fromUtf8(stableJson({ body: { prompt: 'hi' } })) },
+        journalOptions: {
+          store: new MemoryStore(),
+          runId: 'configured-endpoint-run',
+          branchId: 'main',
+          parentTurnClosureFingerprint: 'world:turn-closure:parent',
+        },
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      });
+      assert.equal(configuredEndpointFetchCalled, true);
+      assert.equal(decodeResolutionInputBytes(configuredEndpointLive.resolutionInputBytes).status, 0);
+
       const envelopeDriver = new GenericHttpJsonCapabilityDriver({
         endpointUrl: 'https://allowed.example/decide',
         maximumResponseBytes: 4,
@@ -525,6 +553,36 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(semanticMetadata.driver, 'generic-http-json-model');
       assert.equal(semanticMetadata.transportDriver, 'generic-http-json');
       assert.equal(semanticMetadata.outputSchema, 'boundary.Agent.Action.v0');
+
+      globalThis.fetch = async () => new Response('{"action":{"variant":"final","text":"live ok"}}', {
+        status: 200,
+        headers: { 'x-request-id': 'request-live-model' },
+      });
+      const liveModel = await runCapabilityMode({
+        mode: 'live',
+        driver,
+        hostRequest: {
+          ...modelRequest('goal=invoke', 'model-live-key'),
+          actuatorRef: 'model:decision',
+          descriptorFingerprint: 'descriptor:agent-decision-prompt',
+        },
+        journalOptions: {
+          store: new MemoryStore(),
+          runId: 'model-live-run',
+          branchId: 'main',
+          parentTurnClosureFingerprint: 'world:turn-closure:parent',
+        },
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      });
+      assert.deepEqual(
+        decodeAgentActionFromResolutionInput(liveModel.resolutionInputBytes),
+        { variant: 'final', text: 'live ok' },
+      );
 
       globalThis.fetch = async () => new Response('{"action":{"variant":"tool","toolId":"unknown_tool","payload":""}}', { status: 200 });
       await assert.rejects(
