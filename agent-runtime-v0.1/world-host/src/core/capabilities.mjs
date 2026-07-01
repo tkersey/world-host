@@ -89,7 +89,10 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
   }
 
   for (const label of application?.requiredHostAuthorityLabels ?? []) {
-    if (hasPendingRequestContext && selectedPendingRequestRoutes.some(({ manifest }) => manifest.authorityLabels.includes(label))) continue;
+    const pendingBindingState = hasPendingRequestContext
+      ? pendingAuthorityBindingState(label, application.requiredHostAuthorityLabels, selectedRequiredActuatorRoutes, selectedPendingRequestRoutes)
+      : null;
+    if (pendingBindingState === 'bound') continue;
     if (!hasPendingRequestContext && selectedRequiredActuatorRoutes.some(({ manifest }) => manifest.authorityLabels.includes(label))) continue;
     const authorityRoutes = manifests.filter((manifest) => manifest.authorityLabels.includes(label));
     if (!authorityRoutes.length) {
@@ -101,7 +104,7 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
       blockers.push(`required-authority-policy-blocked:${label}`, ...uniqueFlat(routePolicyBlockers));
       continue;
     }
-    if (requiredAuthorityLabelNeedsPendingBinding(label, selectedRequiredActuatorRoutes, selectedPendingRequestRoutes, hasPendingRequestContext)) {
+    if (hasPendingRequestContext ? pendingBindingState === 'unbound' : selectedRequiredActuatorRoutes.length > 0) {
       blockers.push(`required-authority-unbound:${label}`);
     }
   }
@@ -141,12 +144,17 @@ function uniqueFlat(groups) {
   return [...new Set(groups.flat())];
 }
 
-function requiredAuthorityLabelNeedsPendingBinding(label, selectedRequiredActuatorRoutes, selectedPendingRequestRoutes, hasPendingRequestContext) {
-  if (!hasPendingRequestContext) return selectedRequiredActuatorRoutes.length > 0;
-  if (!selectedRequiredActuatorRoutes.length) return selectedPendingRequestRoutes.length > 0;
-  const labeledRequiredRoutes = selectedRequiredActuatorRoutes.filter(({ manifest }) => manifest.authorityLabels.includes(label));
-  if (!labeledRequiredRoutes.length) return true;
-  return labeledRequiredRoutes.some(({ requirement }) => selectedPendingRequestRoutes.some(({ request }) => requirementMatchesRequest(requirement, request)));
+function pendingAuthorityBindingState(label, requiredLabels, selectedRequiredActuatorRoutes, selectedPendingRequestRoutes) {
+  if (!selectedPendingRequestRoutes.length) return 'inactive';
+  const otherLabels = new Set(requiredLabels.filter((item) => item !== label));
+  const activePendingRoutes = selectedPendingRequestRoutes.filter(({ request }) => {
+    const requiredRoute = selectedRequiredActuatorRoutes.find(({ requirement }) => requirementMatchesRequest(requirement, request));
+    if (!requiredRoute) return true;
+    if (requiredRoute.manifest.authorityLabels.includes(label)) return true;
+    return !requiredRoute.manifest.authorityLabels.some((item) => otherLabels.has(item));
+  });
+  if (!activePendingRoutes.length) return 'inactive';
+  return activePendingRoutes.every(({ manifest }) => manifest.authorityLabels.includes(label)) ? 'bound' : 'unbound';
 }
 
 function requirementMatchesRequest(requirement, request) {
