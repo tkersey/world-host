@@ -1290,8 +1290,13 @@ async function validateRetainedReplayEffects(store, committedEffectIds, retained
     }
     let replyFingerprint;
     try {
-      replyFingerprint = effectRecordHostReplyFingerprint(effect, resolutionInputBytes);
+      replyFingerprint = effectRecordHostReplyFingerprint(effect, resolutionInputBytes, resolution.targetHostRequestFingerprint);
     } catch (error) {
+      if (error?.code === 'ERR_EFFECT_HOST_REPLY_BINDING_TARGET_MISMATCH') {
+        fail('ERR_AGENT_RUNTIME_REPLAY_EFFECT_RECEIPT_TARGET_MISMATCH', 'retained replay HostReply binding targets a different HostRequest', {
+          cause: error?.message ?? String(error),
+        });
+      }
       fail('ERR_AGENT_RUNTIME_REPLAY_EFFECT_RECEIPT_BINDING_REQUIRED', 'retained replay effects must carry HostReply binding diagnostics', {
         cause: error?.message ?? String(error),
       });
