@@ -46,7 +46,8 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
   const warnings = [];
   const manifests = drivers.map((driver) => assertDriverManifest(driver.manifest()));
   const coveredRequests = [];
-  const selectedAuthorityRoutes = [];
+  const selectedRequiredActuatorRoutes = [];
+  const selectedPendingRequestRoutes = [];
   const hasPendingRequestContext = pendingRequests.length > 0;
 
   for (const required of application?.requiredActuators ?? []) {
@@ -66,7 +67,7 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
       }
       continue;
     }
-    selectedAuthorityRoutes.push(route);
+    selectedRequiredActuatorRoutes.push({ manifest: route, requirement });
   }
 
   for (const request of pendingRequests) {
@@ -84,11 +85,12 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
       continue;
     }
     coveredRequests.push({ actuatorRef: request.actuatorRef, descriptorFingerprint: request.descriptorFingerprint, driverId: route.driverId });
-    selectedAuthorityRoutes.push(route);
+    selectedPendingRequestRoutes.push({ manifest: route, request });
   }
 
   for (const label of application?.requiredHostAuthorityLabels ?? []) {
-    if (selectedAuthorityRoutes.some((manifest) => manifest.authorityLabels.includes(label))) continue;
+    if (hasPendingRequestContext && selectedPendingRequestRoutes.some(({ manifest }) => manifest.authorityLabels.includes(label))) continue;
+    if (!hasPendingRequestContext && selectedRequiredActuatorRoutes.some(({ manifest }) => manifest.authorityLabels.includes(label))) continue;
     const authorityRoutes = manifests.filter((manifest) => manifest.authorityLabels.includes(label));
     if (!authorityRoutes.length) {
       blockers.push(`required-authority-uncovered:${label}`);
@@ -99,7 +101,9 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
       blockers.push(`required-authority-policy-blocked:${label}`, ...uniqueFlat(routePolicyBlockers));
       continue;
     }
-    if (hasPendingRequestContext || selectedAuthorityRoutes.length > 0) blockers.push(`required-authority-unbound:${label}`);
+    if (requiredAuthorityLabelNeedsPendingBinding(label, selectedRequiredActuatorRoutes, selectedPendingRequestRoutes, hasPendingRequestContext)) {
+      blockers.push(`required-authority-unbound:${label}`);
+    }
   }
 
   const runtimeLimits = application?.requiredRuntimeLimits ?? {};
@@ -135,6 +139,19 @@ function normalizeRequiredActuator(required) {
 
 function uniqueFlat(groups) {
   return [...new Set(groups.flat())];
+}
+
+function requiredAuthorityLabelNeedsPendingBinding(label, selectedRequiredActuatorRoutes, selectedPendingRequestRoutes, hasPendingRequestContext) {
+  if (!hasPendingRequestContext) return selectedRequiredActuatorRoutes.length > 0;
+  if (!selectedRequiredActuatorRoutes.length) return selectedPendingRequestRoutes.length > 0;
+  const labeledRequiredRoutes = selectedRequiredActuatorRoutes.filter(({ manifest }) => manifest.authorityLabels.includes(label));
+  if (!labeledRequiredRoutes.length) return true;
+  return labeledRequiredRoutes.some(({ requirement }) => selectedPendingRequestRoutes.some(({ request }) => requirementMatchesRequest(requirement, request)));
+}
+
+function requirementMatchesRequest(requirement, request) {
+  return requirement.actuatorRef === request.actuatorRef &&
+    (!requirement.descriptorFingerprint || requirement.descriptorFingerprint === request.descriptorFingerprint);
 }
 
 function findRequiredActuatorManifest(manifests, requirement, policy = null) {

@@ -156,6 +156,71 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.everyRequiredActuatorCovered, false);
   });
 
+  it('does not bind pending request authority to an unused required actuator route', () => {
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [{
+          actuatorRef: 'fixture:model',
+          descriptorFingerprint: 'descriptor:fixture-model',
+        }],
+        requiredHostAuthorityLabels: ['model:fixture'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      pendingRequests: [fixtureRequest()],
+      drivers: [
+        fixtureDriverWithAuthority(['model:fixture'], {
+          driverId: 'labeled-required-only',
+          actuationClasses: ['fixture:unused'],
+        }),
+        fixtureDriverWithAuthority([], { driverId: 'selected-unlabeled-request' }),
+      ],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture'] }),
+    });
+
+    assert.ok(report.blockers.includes('required-authority-unbound:model:fixture'));
+    assert.deepEqual(report.coveredRequests, [{
+      actuatorRef: 'fixture:model',
+      descriptorFingerprint: 'descriptor:fixture-model',
+      driverId: 'selected-unlabeled-request',
+    }]);
+    assert.equal(report.everyRequiredActuatorCovered, false);
+  });
+
+  it('does not require inactive actuator authorities on unrelated pending request routes', () => {
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [
+          {
+            actuatorRef: 'fixture:model',
+            descriptorFingerprint: 'descriptor:fixture-model',
+          },
+          {
+            actuatorRef: 'sandbox:file',
+            descriptorFingerprint: 'descriptor:sandbox-file',
+          },
+        ],
+        requiredHostAuthorityLabels: ['model:fixture', 'file:sandbox'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      pendingRequests: [fixtureRequest()],
+      drivers: [
+        fixtureDriverWithAuthority(['model:fixture']),
+        fixtureDriverWithAuthority(['file:sandbox'], {
+          driverId: 'file-required',
+          actuatorRef: 'sandbox:file',
+          descriptorFingerprint: 'descriptor:sandbox-file',
+          actuationClasses: ['file'],
+        }),
+      ],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture', 'file:sandbox'] }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.everyRequiredActuatorCovered, true);
+  });
+
   it('requires authority labels on selected actuator drivers before requests are inspected', () => {
     const report = preflightCapabilities({
       application: {
@@ -596,8 +661,8 @@ function fixtureDriverWithAuthority(authorityLabels, options = {}) {
       return {
         driverId: options.driverId ?? 'fixture-model-custom',
         supportedActuatorRefs: [options.actuatorRef ?? 'fixture:model'],
-        supportedDescriptorFingerprints: ['descriptor:fixture-model'],
-        supportedActuationClasses: ['fixture'],
+        supportedDescriptorFingerprints: [options.descriptorFingerprint ?? 'descriptor:fixture-model'],
+        supportedActuationClasses: options.actuationClasses ?? ['fixture'],
         supportedResponseStatuses: ['ok'],
         maximumRequestBytes: 1024 * 1024,
         maximumResponseBytes: 1024 * 1024,
