@@ -262,7 +262,7 @@ function normalizeChecksums(value) {
 function assertConformanceVector(value) {
   if (!value || typeof value !== 'object') fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_INVALID');
   requiredString(value.name, 'vector.name');
-  requiredString(value.status, 'vector.status');
+  if (value.status !== 'passed') fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_INVALID', 'conformance vectors must pass');
   return Object.freeze({ ...value });
 }
 

@@ -42,8 +42,21 @@ describe('Capability sidecar transport', () => {
       assert.equal((await sidecar.resolve({ request: 'ok' })).payload.ok, true);
       await assert.rejects(() => sidecar.dryRun({}), { code: 'ERR_CAPABILITY_SIDECAR_EXIT' });
 
+      const stderrPath = path.join(root, 'stderr.mjs');
+      await writeFile(stderrPath, `
+        process.stderr.write('x'.repeat(2048));
+        await new Promise(() => {});
+      `);
+      await assert.rejects(
+        () => new CapabilitySidecar({ command: [process.execPath, stderrPath], timeoutMs: 1000, maximumFrameBytes: 1024 }).manifest(),
+        { code: 'ERR_CAPABILITY_SIDECAR_STDERR_TOO_LARGE' },
+      );
+
       const sleepPath = path.join(root, 'sleep.mjs');
-      await writeFile(sleepPath, 'await new Promise(() => {});');
+      await writeFile(sleepPath, `
+        process.on('SIGTERM', () => {});
+        await new Promise(() => {});
+      `);
       await assert.rejects(
         () => new CapabilitySidecar({ command: [process.execPath, sleepPath], timeoutMs: 10 }).manifest(),
         { code: 'ERR_CAPABILITY_SIDECAR_TIMEOUT' },

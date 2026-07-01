@@ -61,10 +61,10 @@ export class HostEventStream {
 export function createHostEvent(type, fields = {}, redact = redactCapabilityDiagnostics) {
   if (!EVENT_TYPES.has(type)) throw new Error(`ERR_HOST_EVENT_TYPE_UNSUPPORTED:${type}`);
   return Object.freeze({
+    ...redact(fields),
     type,
     at: new Date().toISOString(),
     wallClockDiagnosticOnly: true,
     worldAuthoredEvidence: false,
-    ...redact(fields),
   });
 }

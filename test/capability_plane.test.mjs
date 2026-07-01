@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { EffectRecoveryClass } from '../src/core/actuator.mjs';
 import {
   assertCapabilityManifest,
+  assertCapabilityConformanceReceipt,
   assertCapabilityPackChecksums,
   capabilityPackFingerprint,
   validateCapabilityPackManifest,
@@ -51,6 +52,15 @@ describe('Capability Plane v0.2 core contracts', () => {
     await assert.rejects(
       () => assertCapabilityPackChecksums({ ...withFingerprint, checksums: withFingerprint.checksums.slice(0, 1) }, { 'adapter.mjs': artifact }),
       { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
+    assert.throws(
+      () => assertCapabilityConformanceReceipt({
+        driverId: 'fixture-agent-model',
+        packFingerprint: 'sha256:'.concat('1'.repeat(64)),
+        corpusFingerprint: 'sha256:'.concat('2'.repeat(64)),
+        vectors: [{ name: 'failed-vector', status: 'failed' }],
+      }),
+      { code: 'ERR_CAPABILITY_CONFORMANCE_RECEIPT_INVALID' },
     );
     assert.throws(
       () => assertCapabilityManifest({ ...manifest, driverAbiVersion: 99 }),
@@ -310,6 +320,19 @@ describe('Capability Plane v0.2 core contracts', () => {
         { code: 'ERR_AGENT_ACTION_TOOL_UNKNOWN' },
       );
 
+      let malformedPromptFetchCalled = false;
+      globalThis.fetch = async () => {
+        malformedPromptFetchCalled = true;
+        return new Response('{"action":{"variant":"final","text":"ok"}}', { status: 200 });
+      };
+      await assert.rejects(
+        () => driver.resolve({
+          policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+        }, { ...modelRequest('goal=invoke', 'model-http-key-bad-prompt'), requestBytes: fromUtf8(stableJson({ schema: 'wrong', observation: 'goal=invoke' })) }),
+        { code: 'ERR_AGENT_DECISION_PROMPT_SCHEMA' },
+      );
+      assert.equal(malformedPromptFetchCalled, false);
+
       globalThis.fetch = async () => new Response('transport failed', { status: 500 });
       const failed = await driver.resolve({
         policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
@@ -328,7 +351,16 @@ describe('Capability Plane v0.2 core contracts', () => {
 
   it('emits operational-only observability JSONL without secrets', () => {
     const stream = new HostEventStream();
-    stream.emit(HostEventType.capabilityPackLoaded, { driverId: 'fixture', apiKey: 'secret' });
+    const event = stream.emit(HostEventType.capabilityPackLoaded, {
+      driverId: 'fixture',
+      apiKey: 'secret',
+      type: HostEventType.runFailed,
+      at: 'caller-clock',
+      worldAuthoredEvidence: true,
+    });
+    assert.equal(event.type, HostEventType.capabilityPackLoaded);
+    assert.equal(event.at === 'caller-clock', false);
+    assert.equal(event.worldAuthoredEvidence, false);
     stream.emit(HostEventType.runCompleted, { worldFingerprint: 'world:turn-closure:1' });
     const jsonl = stream.toJsonl();
     assert.equal(jsonl.includes('secret'), false);

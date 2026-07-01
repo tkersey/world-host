@@ -102,28 +102,36 @@ async function runSidecarCommand({ argv, input, timeoutMs, maximumFrameBytes }) 
     let stdout = new Uint8Array();
     let stderr = '';
     let settled = false;
+    let terminalError = null;
+    let killTimer = null;
     const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      child.kill('SIGTERM');
-      reject(Object.assign(new Error('sidecar timeout'), { code: 'ERR_CAPABILITY_SIDECAR_TIMEOUT' }));
+      terminateWith(Object.assign(new Error('sidecar timeout'), { code: 'ERR_CAPABILITY_SIDECAR_TIMEOUT' }));
     }, timeoutMs);
+    function terminateWith(error) {
+      if (settled || terminalError) return;
+      terminalError = error;
+      child.kill('SIGTERM');
+      killTimer = setTimeout(() => {
+        if (!settled) child.kill('SIGKILL');
+      }, 100);
+    }
     child.stdout.on('data', (chunk) => {
+      if (terminalError) return;
       stdout = concat(stdout, chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk));
       if (stdout.byteLength > maximumFrameBytes) {
-        clearTimeout(timer);
-        if (!settled) {
-          settled = true;
-          child.kill('SIGTERM');
-          reject(Object.assign(new Error('sidecar output too large'), { code: 'ERR_CAPABILITY_SIDECAR_FRAME_TOO_LARGE' }));
-        }
+        terminateWith(Object.assign(new Error('sidecar output too large'), { code: 'ERR_CAPABILITY_SIDECAR_FRAME_TOO_LARGE' }));
       }
     });
     child.stderr.on('data', (chunk) => {
+      if (terminalError) return;
       stderr += String(chunk);
+      if (Buffer.byteLength(stderr) > maximumFrameBytes) {
+        terminateWith(Object.assign(new Error('sidecar stderr too large'), { code: 'ERR_CAPABILITY_SIDECAR_STDERR_TOO_LARGE' }));
+      }
     });
     child.on('error', (error) => {
       clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
       if (!settled) {
         settled = true;
         reject(error);
@@ -131,8 +139,13 @@ async function runSidecarCommand({ argv, input, timeoutMs, maximumFrameBytes }) 
     });
     child.on('close', (status) => {
       clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
       if (settled) return;
       settled = true;
+      if (terminalError) {
+        reject(terminalError);
+        return;
+      }
       if (status !== 0) {
         reject(Object.assign(new Error(`sidecar exited ${status}: ${stderr}`), { code: 'ERR_CAPABILITY_SIDECAR_EXIT' }));
         return;

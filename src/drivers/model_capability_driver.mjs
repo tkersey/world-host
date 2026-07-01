@@ -73,6 +73,7 @@ export class GenericHttpJsonModelDriver {
   }
 
   async resolve(context, hostRequest) {
+    parseDecisionPrompt(hostRequest.requestBytes);
     const result = await this.http.resolve(context, {
       ...hostRequest,
       actuatorRef: 'http:json',

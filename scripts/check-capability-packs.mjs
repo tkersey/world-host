@@ -27,6 +27,8 @@ for (const name of names) {
   const receipt = JSON.parse(await readFile(path.join(packRoot, 'conformance.json'), 'utf8'));
   assertCapabilityConformanceReceipt(receipt);
   if (receipt.packFingerprint !== checked.packFingerprint) throw new Error(`ERR_CAPABILITY_CONFORMANCE_PACK_FINGERPRINT:${name}`);
+  if (receipt.driverId !== checked.driverId) throw new Error(`ERR_CAPABILITY_CONFORMANCE_DRIVER:${name}`);
+  if (receipt.corpusFingerprint !== checked.conformanceCorpusFingerprint) throw new Error(`ERR_CAPABILITY_CONFORMANCE_CORPUS:${name}`);
   results.push({
     pack: name,
     driverId: checked.driverId,
