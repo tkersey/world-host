@@ -162,12 +162,16 @@ function uniqueFlat(groups) {
 function pendingAuthorityBindingState(label, requiredLabels, selectedRequiredActuatorRoutes, selectedPendingRequestRoutes) {
   if (!selectedPendingRequestRoutes.length) return 'inactive';
   const otherLabels = new Set(requiredLabels.filter((item) => item !== label));
+  const labelBearingRequirementIsPending = selectedRequiredActuatorRoutes.some(({ manifest, requirement }) =>
+    manifest.authorityLabels.includes(label) &&
+    selectedPendingRequestRoutes.some(({ request }) => requirementMatchesRequest(requirement, request)));
   const activePendingRoutes = selectedPendingRequestRoutes.filter(({ request }) => {
     const requiredRoute = selectedRequiredActuatorRoutes.find(({ requirement }) => requirementMatchesRequest(requirement, request));
     if (!requiredRoute) return true;
     if (requiredRoute.manifest.authorityLabels.includes(label)) return true;
     const labelBoundToAnotherRequirement = selectedRequiredActuatorRoutes.some(({ manifest, requirement }) =>
       !requirementMatchesRequest(requirement, request) && manifest.authorityLabels.includes(label));
+    if (labelBoundToAnotherRequirement && !labelBearingRequirementIsPending) return false;
     return !(labelBoundToAnotherRequirement && requiredRoute.manifest.authorityLabels.some((item) => otherLabels.has(item)));
   });
   if (!activePendingRoutes.length) return 'inactive';
