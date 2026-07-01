@@ -724,6 +724,34 @@ describe('Agent Runtime pack', () => {
     }
   });
 
+  it('rejects fresh pack outputs inside source roots reached through symlinked ancestors', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agent-runtime-pack-source-symlink-out-'));
+    try {
+      const sourceRoot = path.join(root, 'source');
+      const sourceLink = path.join(root, 'source-link');
+      const worldRoot = path.join(root, 'world');
+      const boundaryRoot = path.join(root, 'boundary');
+      await mkdir(path.join(sourceRoot, 'src'), { recursive: true });
+      await mkdir(worldRoot, { recursive: true });
+      await mkdir(boundaryRoot, { recursive: true });
+      await symlink(sourceRoot, sourceLink, 'dir');
+      const out = path.join(sourceLink, 'src', 'agent-runtime-v0.1');
+
+      await assert.rejects(
+        () => buildAgentRuntimePack({
+          out,
+          worldHostRepo: sourceRoot,
+          worldRepo: worldRoot,
+          boundaryRepo: boundaryRoot,
+        }),
+        /ERR_AGENT_RUNTIME_UNSAFE_OUT:worldHostRepo/,
+      );
+      assert.equal(existsSync(path.join(sourceRoot, 'src', 'agent-runtime-v0.1')), false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('accepts owner-exported actuator fingerprint refs in the manifest', () => {
     const manifest = buildAgentRuntimeManifest({
       agentRuntimeVersion: 'v0.1',

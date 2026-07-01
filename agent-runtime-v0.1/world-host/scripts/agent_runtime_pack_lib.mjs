@@ -250,19 +250,33 @@ export async function buildAgentRuntimePack(options = {}) {
 
 async function assertSafePackOutput(out, roots) {
   const resolvedOut = path.resolve(out);
+  const outputCandidates = await candidatePackOutputPaths(resolvedOut);
   for (const [label, root] of Object.entries(roots)) {
     const resolvedRoot = path.resolve(root);
-    if (resolvedOut === resolvedRoot || isPathInside(resolvedRoot, resolvedOut)) {
-      throw new Error(`ERR_AGENT_RUNTIME_UNSAFE_OUT:${label}`);
-    }
-    if (isPathInside(resolvedOut, resolvedRoot) && path.relative(resolvedRoot, resolvedOut).split(path.sep).join('/') !== PACK_NAME) {
-      throw new Error(`ERR_AGENT_RUNTIME_UNSAFE_OUT:${label}`);
+    const rootCandidates = new Set([resolvedRoot, await realpath(resolvedRoot)]);
+    for (const rootCandidate of rootCandidates) {
+      for (const outputCandidate of outputCandidates) {
+        if (outputCandidate === rootCandidate || isPathInside(rootCandidate, outputCandidate)) {
+          throw new Error(`ERR_AGENT_RUNTIME_UNSAFE_OUT:${label}`);
+        }
+        if (isPathInside(outputCandidate, rootCandidate) && path.relative(rootCandidate, outputCandidate).split(path.sep).join('/') !== PACK_NAME) {
+          throw new Error(`ERR_AGENT_RUNTIME_UNSAFE_OUT:${label}`);
+        }
+      }
     }
   }
   if (path.basename(resolvedOut) !== PACK_NAME) {
     throw new Error('ERR_AGENT_RUNTIME_UNSAFE_OUT:packName');
   }
   await assertNoSymlinkedExistingOutputPath(resolvedOut);
+}
+
+async function candidatePackOutputPaths(resolvedOut) {
+  const existing = await nearestExistingPath(resolvedOut);
+  if (!existing) return new Set([resolvedOut]);
+  const suffix = path.relative(existing.path, resolvedOut);
+  const realExisting = await realpath(existing.path);
+  return new Set([resolvedOut, suffix ? path.resolve(realExisting, suffix) : realExisting]);
 }
 
 async function assertNoSymlinkedExistingOutputPath(resolvedOut) {
