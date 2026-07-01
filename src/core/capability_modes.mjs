@@ -25,7 +25,12 @@ export async function runCapabilityMode({
   const driver = defineCapabilityDriver(driverLike);
   const manifest = driver.manifest();
   const livePolicy = createCapabilityPolicy(policy);
-  if (mode === CapabilityExecutionMode.fixture && manifest.diagnostics?.deterministic !== true) fail('ERR_CAPABILITY_FIXTURE_REQUIRES_DETERMINISTIC_DRIVER');
+  if (mode === CapabilityExecutionMode.fixture) {
+    if (manifest.diagnostics?.deterministic !== true) fail('ERR_CAPABILITY_FIXTURE_REQUIRES_DETERMINISTIC_DRIVER');
+    const resolved = await driver.resolve(context, hostRequest);
+    assertCapabilityResolutionBoundary(resolved);
+    return { mode, submittedToWorld: true, ...resolved };
+  }
   if (mode === CapabilityExecutionMode.dryRun) {
     return { mode, submittedToWorld: false, dryRun: await driver.dryRun(context, hostRequest) };
   }
@@ -33,17 +38,29 @@ export async function runCapabilityMode({
     return { mode, submittedToWorld: false, shadow: await driver.shadow(context, hostRequest, recordedResolution) };
   }
   if (mode === CapabilityExecutionMode.approval) {
-    const proposed = await driver.resolve(context, hostRequest);
-    assertCapabilityResolutionBoundary(proposed);
+    const proposed = await driver.dryRun(context, hostRequest);
     const decision = await approvalDecision(approval, { manifest, hostRequest, proposed });
     if (decision.approved !== true) return { mode, submittedToWorld: false, approved: false, proposed };
-    return { mode, submittedToWorld: true, approved: true, resolutionInputBytes: proposed.resolutionInputBytes, proposed };
+    if (manifest.diagnostics?.deterministic === true && !journalOptions) {
+      const resolved = await driver.resolve(context, hostRequest);
+      assertCapabilityResolutionBoundary(resolved);
+      return { mode, submittedToWorld: true, approved: true, proposed, ...resolved };
+    }
+    assertCapabilityPolicyAllows({ manifest, hostRequest, policy: livePolicy, mode: 'live' });
+    if (!journalOptions) fail('ERR_CAPABILITY_APPROVAL_JOURNAL_REQUIRED', 'approval mode live effects require EffectJournal options');
+    const journal = journalOptions instanceof EffectJournal ? journalOptions : new EffectJournal({ ...journalOptions, policy: livePolicy });
+    const resolved = await journal.resolve(liveContext(context, livePolicy), hostRequest, driver);
+    return { mode, submittedToWorld: true, approved: true, proposed, ...resolved };
   }
   assertCapabilityPolicyAllows({ manifest, hostRequest, policy: livePolicy, mode: 'live' });
   if (!journalOptions) fail('ERR_CAPABILITY_LIVE_JOURNAL_REQUIRED', 'live mode requires EffectJournal options');
   const journal = journalOptions instanceof EffectJournal ? journalOptions : new EffectJournal({ ...journalOptions, policy: livePolicy });
-  const resolved = await journal.resolve(context, hostRequest, driver);
+  const resolved = await journal.resolve(liveContext(context, livePolicy), hostRequest, driver);
   return { mode, submittedToWorld: true, ...resolved };
+}
+
+function liveContext(context, policy) {
+  return { ...context, mode: 'live', policy };
 }
 
 async function approvalDecision(approval, proposal) {

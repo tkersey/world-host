@@ -180,6 +180,7 @@ export function assertCapabilityConformanceReceipt(input) {
 
 export async function assertCapabilityPackChecksums(manifestLike, artifacts = {}) {
   const manifest = assertCapabilityManifest(manifestLike);
+  assertReferencedArtifactsCovered(manifest);
   for (const item of manifest.checksums) {
     const bytes = artifacts[item.path];
     if (!(bytes instanceof Uint8Array)) fail('ERR_CAPABILITY_PACK_ARTIFACT_MISSING', `artifact missing: ${item.path}`);
@@ -187,6 +188,18 @@ export async function assertCapabilityPackChecksums(manifestLike, artifacts = {}
     if (actual !== item.checksum) fail('ERR_CAPABILITY_PACK_CHECKSUM_MISMATCH', `artifact checksum mismatch: ${item.path}`, { expected: item.checksum, actual });
   }
   return true;
+}
+
+function assertReferencedArtifactsCovered(manifest) {
+  const covered = new Set(manifest.checksums.map((item) => item.path));
+  const required = new Set([
+    ...manifest.docs,
+    ...(manifest.conformanceCorpusFingerprint ? ['conformance.json'] : []),
+  ]);
+  if (manifest.adapter.kind === 'in_process' && manifest.adapter.module) required.add(manifest.adapter.module);
+  for (const path of required) {
+    if (!covered.has(path)) fail('ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED', `referenced artifact is not checksum-covered: ${path}`);
+  }
 }
 
 function normalizeAdapter(adapter) {

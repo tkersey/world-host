@@ -16,7 +16,7 @@ import {
 import { assertCapabilityResolutionBoundary } from '../src/core/capability_driver.mjs';
 import { assertCapabilityPolicyAllows, createCapabilityPolicy, redactCapabilityDiagnostics } from '../src/core/capability_policy.mjs';
 import { runCapabilityMode } from '../src/core/capability_modes.mjs';
-import { EnvSecretProvider, assertNoSecretValuePersisted, redactSecrets } from '../src/core/secrets.mjs';
+import { EnvSecretProvider, assertNoSecretValuePersisted, assertRequiredSecretsAvailable, redactSecrets } from '../src/core/secrets.mjs';
 import { FileSecretProvider } from '../src/bun/secret_providers.mjs';
 import { HostEventStream, HostEventType } from '../src/core/observability.mjs';
 import {
@@ -37,13 +37,21 @@ describe('Capability Plane v0.2 core contracts', () => {
     const packFingerprint = await capabilityPackFingerprint(manifest);
     assert.match(packFingerprint, /^sha256:[0-9a-f]{64}$/);
     const artifact = fromUtf8('adapter bytes');
+    const readme = fromUtf8('readme bytes');
     const withFingerprint = {
       ...manifest,
       packFingerprint,
-      checksums: [{ path: 'adapter.mjs', checksum: `sha256:${await sha256Hex(artifact)}` }],
+      checksums: [
+        { path: 'adapter.mjs', checksum: `sha256:${await sha256Hex(artifact)}` },
+        { path: 'README.md', checksum: `sha256:${await sha256Hex(readme)}` },
+      ],
     };
     assert.equal((await validateCapabilityPackManifest(withFingerprint, { verifyFingerprint: true })).packFingerprint, packFingerprint);
-    assert.equal(await assertCapabilityPackChecksums(withFingerprint, { 'adapter.mjs': artifact }), true);
+    assert.equal(await assertCapabilityPackChecksums(withFingerprint, { 'adapter.mjs': artifact, 'README.md': readme }), true);
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({ ...withFingerprint, checksums: withFingerprint.checksums.slice(0, 1) }, { 'adapter.mjs': artifact }),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
     assert.throws(
       () => assertCapabilityManifest({ ...manifest, driverAbiVersion: 99 }),
       { code: 'ERR_CAPABILITY_VERSION_UNSUPPORTED' },
@@ -113,8 +121,11 @@ describe('Capability Plane v0.2 core contracts', () => {
     try {
       await writeFile(path.join(root, 'api-token'), 'fixture-file-value\n');
       const fileProvider = new FileSecretProvider({ root, mapping: { API_TOKEN: 'api-token' } });
+      assert.equal(fileProvider.has('API_TOKEN'), true);
+      assert.equal(fileProvider.has('MISSING'), false);
       assert.equal(await fileProvider.get('API_TOKEN'), 'fixture-file-value');
       assert.equal((await fileProvider.accessReport('API_TOKEN')).valueRedacted, true);
+      assert.throws(() => assertRequiredSecretsAvailable(fileProvider, ['MISSING']), { code: 'ERR_SECRET_MISSING' });
       await assert.rejects(() => new FileSecretProvider({ root, mapping: { BAD: '../secret' } }).get('BAD'), { code: 'ERR_SECRET_FILE_PATH_INVALID' });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -124,6 +135,8 @@ describe('Capability Plane v0.2 core contracts', () => {
   it('runs fixture, dry-run, shadow, approval, and live modes without host-authored World evidence', async () => {
     const driver = new FixtureAgentModelCapabilityDriver();
     const request = modelRequest('goal=invoke', 'model-key');
+    const fixture = await runCapabilityMode({ mode: 'fixture', driver, hostRequest: request });
+    assert.equal(decodeResolutionInputBytes(fixture.resolutionInputBytes).status, 0);
     const dry = await runCapabilityMode({ mode: 'dry-run', driver, hostRequest: request });
     assert.equal(dry.submittedToWorld, false);
     const shadow = await runCapabilityMode({ mode: 'shadow', driver, hostRequest: request, recordedResolution: fromUtf8('recorded') });
@@ -136,7 +149,8 @@ describe('Capability Plane v0.2 core contracts', () => {
       approval: () => ({ approved: true }),
     });
     assert.equal(approved.approved, true);
-    assertCapabilityResolutionBoundary(approved.proposed);
+    assert.equal(approved.proposed.wouldInvoke, false);
+    assertCapabilityResolutionBoundary(approved);
 
     const store = new MemoryStore();
     const live = await runCapabilityMode({
@@ -177,6 +191,71 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(observedHeaders.Authorization, 'Bearer fixture-token-value');
       assert.equal(JSON.stringify(result.diagnostics).includes('secret'), false);
       assert.equal(decodeResolutionInputBytes(result.resolutionInputBytes).status, 0);
+
+      globalThis.fetch = async () => new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array(8));
+          controller.enqueue(new Uint8Array(8));
+          controller.close();
+        },
+      }), { status: 200 });
+      const limitedDriver = new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        maximumResponseBytes: 10,
+      });
+      await assert.rejects(
+        () => limitedDriver.resolve({
+          policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+        }, httpRequest()),
+        { code: 'ERR_HTTP_RESPONSE_TOO_LARGE' },
+      );
+
+      let blockedFetchCalled = false;
+      globalThis.fetch = async () => {
+        blockedFetchCalled = true;
+        return new Response('{}', { status: 200 });
+      };
+      const blockedDriver = new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://blocked.example/decide' });
+      await assert.rejects(
+        () => runCapabilityMode({
+          mode: 'live',
+          driver: blockedDriver,
+          hostRequest: httpRequest(),
+          journalOptions: {
+            store: new MemoryStore(),
+            runId: 'policy-run',
+            branchId: 'main',
+            parentTurnClosureFingerprint: 'world:turn-closure:parent',
+          },
+          policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+        }),
+        { code: 'ERR_CAPABILITY_ORIGIN_DENIED' },
+      );
+      assert.equal(blockedFetchCalled, false);
+
+      let approvalFetchCalled = false;
+      globalThis.fetch = async () => {
+        approvalFetchCalled = true;
+        return new Response('{}', { status: 200 });
+      };
+      const denied = await runCapabilityMode({
+        mode: 'approval',
+        driver: new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }),
+        hostRequest: httpRequest(),
+        approval: () => ({ approved: false }),
+      });
+      assert.equal(denied.approved, false);
+      assert.equal(approvalFetchCalled, false);
+      await assert.rejects(
+        () => runCapabilityMode({
+          mode: 'approval',
+          driver: new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }),
+          hostRequest: httpRequest(),
+          approval: () => ({ approved: true }),
+        }),
+        { code: 'ERR_CAPABILITY_LIVE_DENIED' },
+      );
+      assert.equal(approvalFetchCalled, false);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -208,10 +287,20 @@ describe('Capability Plane v0.2 core contracts', () => {
       const result = await driver.resolve({
         policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
       }, modelRequest('goal=invoke', 'model-http-key'));
+      const semanticResolution = decodeResolutionInputBytes(result.resolutionInputBytes);
+      const semanticHostClaim = JSON.parse(new TextDecoder().decode(semanticResolution.hostClaimBytes));
+      const semanticMetadata = JSON.parse(new TextDecoder().decode(semanticResolution.metadata));
       assert.deepEqual(
         decodeAgentActionFromResolutionInput(result.resolutionInputBytes),
         { variant: 'tool', toolId: 'actuate', payload: '' },
       );
+      assert.deepEqual(result.hostClaimBytes, semanticResolution.hostClaimBytes);
+      assert.equal(semanticHostClaim.worldAuthoredEvidence, false);
+      assert.equal(semanticHostClaim.value.driver, 'generic-http-json-model');
+      assert.equal(semanticHostClaim.value.transportDriver, 'generic-http-json');
+      assert.equal(semanticMetadata.driver, 'generic-http-json-model');
+      assert.equal(semanticMetadata.transportDriver, 'generic-http-json');
+      assert.equal(semanticMetadata.outputSchema, 'boundary.Agent.Action.v0');
 
       globalThis.fetch = async () => new Response('{"action":{"variant":"tool","toolId":"unknown_tool","payload":""}}', { status: 200 });
       await assert.rejects(
@@ -220,6 +309,18 @@ describe('Capability Plane v0.2 core contracts', () => {
         }, modelRequest('goal=invoke', 'model-http-key-unknown')),
         { code: 'ERR_AGENT_ACTION_TOOL_UNKNOWN' },
       );
+
+      globalThis.fetch = async () => new Response('transport failed', { status: 500 });
+      const failed = await driver.resolve({
+        policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+      }, modelRequest('goal=invoke', 'model-http-key-failed'));
+      const failedResolution = decodeResolutionInputBytes(failed.resolutionInputBytes);
+      const failedMetadata = JSON.parse(new TextDecoder().decode(failedResolution.metadata));
+      assert.equal(failedResolution.status, 2);
+      assert.equal(failedResolution.responseValueImageBytes.byteLength, 0);
+      assert.equal(failedMetadata.driver, 'generic-http-json-model');
+      assert.equal(failedMetadata.status, 'failed');
+      assert.equal(failedMetadata.transportStatus, 'http_error');
     } finally {
       globalThis.fetch = originalFetch;
     }

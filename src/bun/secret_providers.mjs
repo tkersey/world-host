@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -18,17 +19,16 @@ export class FileSecretProvider extends SecretProvider {
     return new SecretDescriptor({ name, provider: 'file', required: true });
   }
 
-  async has(name) {
+  has(name) {
     try {
-      await this.#path(name);
-      return true;
+      return existsSync(this.#path(name));
     } catch {
       return false;
     }
   }
 
   async get(name, purpose = 'capability') {
-    const file = await this.#path(name);
+    const file = this.#path(name);
     const value = await readFile(file, 'utf8');
     if (!value.length) fail('ERR_SECRET_MISSING', `empty secret: ${name}`, { name, purpose });
     return value.replace(/\n$/, '');
@@ -38,7 +38,7 @@ export class FileSecretProvider extends SecretProvider {
     return new SecretAccessReport({ name, purpose, available: await this.has(name) });
   }
 
-  async #path(name) {
+  #path(name) {
     const relative = this.mapping[name] ?? name;
     if (typeof relative !== 'string' || relative.length === 0 || path.isAbsolute(relative) || relative.split(/[\\/]+/).includes('..')) {
       fail('ERR_SECRET_FILE_PATH_INVALID');

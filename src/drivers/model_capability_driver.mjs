@@ -1,6 +1,6 @@
 import { EffectRecoveryClass } from '../core/actuator.mjs';
-import { CapabilityPreflightReport, DryRunReport, ShadowReport, defaultCapabilityPreflight } from '../core/capability_driver.mjs';
-import { fail } from '../core/store.mjs';
+import { CapabilityPreflightReport, DryRunReport, ShadowReport, capabilityHostClaimBytes, defaultCapabilityPreflight } from '../core/capability_driver.mjs';
+import { fail, fromUtf8, stableJson } from '../core/store.mjs';
 import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
 import { decodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
 import { FixtureAgentModelDriver, agentActionValueImage, parseDecisionPrompt } from './fixture_agent_model_driver.mjs';
@@ -80,21 +80,15 @@ export class GenericHttpJsonModelDriver {
       actuationClass: 'http',
     });
     const resolution = decodeResolutionInputBytes(result.resolutionInputBytes);
-    if (resolution.status !== 0) return result;
+    if (resolution.status !== 0) {
+      return modelResolutionFromTransport(result, resolution, { status: resolution.status === 4 ? 'deferred' : 'failed' });
+    }
     const action = decodeAgentActionFromValueImage(resolution.responseValueImageBytes, { allowedToolIds: this.allowedToolIds });
-    return {
-      ...result,
-      resolutionInputBytes: encodeResolutionInputBytes({
-        ...resolution,
-        responseValueImageBytes: agentActionValueImage(action),
-      }),
-      diagnostics: {
-        ...result.diagnostics,
-        outputSchema: 'boundary.Agent.Action.v0',
-        actionVariant: action.variant,
-        toolId: action.variant === 'tool' ? action.toolId : null,
-      },
-    };
+    return modelResolutionFromTransport(result, resolution, {
+      status: 'ok',
+      responseValueImageBytes: agentActionValueImage(action),
+      action,
+    });
   }
 
   async recover(context, effectRecord) {
@@ -167,4 +161,42 @@ export function validateAgentAction(action, { allowedToolIds = DEFAULT_ALLOWED_T
     return { variant: 'defer', reason: action.reason };
   }
   fail('ERR_AGENT_ACTION_MALFORMED');
+}
+
+function modelResolutionFromTransport(result, resolution, { status, responseValueImageBytes = new Uint8Array(), action = null }) {
+  const hostClaimBytes = capabilityHostClaimBytes({
+    driver: 'generic-http-json-model',
+    transportDriver: 'generic-http-json',
+    status,
+    transportStatus: result.diagnostics?.status ?? null,
+    outputSchema: 'boundary.Agent.Action.v0',
+    actionVariant: action?.variant ?? null,
+  });
+  return {
+    ...result,
+    hostClaimBytes,
+    resolutionInputBytes: encodeResolutionInputBytes({
+      ...resolution,
+      status: status === 'ok' ? 0 : status === 'deferred' ? 4 : 2,
+      responseValueImageBytes,
+      hostClaimBytes,
+      metadata: fromUtf8(stableJson({
+        driver: 'generic-http-json-model',
+        transportDriver: 'generic-http-json',
+        status,
+        transportStatus: result.diagnostics?.status ?? null,
+        outputSchema: 'boundary.Agent.Action.v0',
+        actionVariant: action?.variant ?? null,
+        toolId: action?.variant === 'tool' ? action.toolId : null,
+      })),
+    }),
+    diagnostics: {
+      ...result.diagnostics,
+      status,
+      transportStatus: result.diagnostics?.status ?? null,
+      outputSchema: 'boundary.Agent.Action.v0',
+      actionVariant: action?.variant ?? null,
+      toolId: action?.variant === 'tool' ? action.toolId : null,
+    },
+  };
 }

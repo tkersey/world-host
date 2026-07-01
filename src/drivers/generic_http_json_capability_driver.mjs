@@ -235,7 +235,32 @@ function resolutionTarget(hostRequest = {}) {
 async function readResponseBytes(response, maximumResponseBytes) {
   const contentLength = response.headers.get('content-length');
   if (contentLength && Number(contentLength) > maximumResponseBytes) fail('ERR_HTTP_RESPONSE_TOO_LARGE');
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength > maximumResponseBytes) fail('ERR_HTTP_RESPONSE_TOO_LARGE');
-  return bytes;
+  if (!response.body) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+      total += chunk.byteLength;
+      if (total > maximumResponseBytes) fail('ERR_HTTP_RESPONSE_TOO_LARGE');
+      chunks.push(chunk);
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
+  }
+  return concatChunks(chunks, total);
+}
+
+function concatChunks(chunks, total) {
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
 }
