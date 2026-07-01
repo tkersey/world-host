@@ -18,7 +18,7 @@ import { assertCapabilityResolutionBoundary } from '../src/core/capability_drive
 import { assertCapabilityPolicyAllows, createCapabilityPolicy, redactCapabilityDiagnostics } from '../src/core/capability_policy.mjs';
 import { runCapabilityMode } from '../src/core/capability_modes.mjs';
 import { EnvSecretProvider, assertNoSecretValuePersisted, assertRequiredSecretsAvailable, redactSecrets } from '../src/core/secrets.mjs';
-import { FileSecretProvider } from '../src/bun/secret_providers.mjs';
+import { FileSecretProvider, PromptSecretProvider } from '../src/bun/secret_providers.mjs';
 import { HostEventStream, HostEventType } from '../src/core/observability.mjs';
 import {
   FixtureAgentModelCapabilityDriver,
@@ -53,6 +53,15 @@ describe('Capability Plane v0.2 core contracts', () => {
       () => assertCapabilityPackChecksums({ ...withFingerprint, checksums: withFingerprint.checksums.slice(0, 1) }, { 'adapter.mjs': artifact }),
       { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
     );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['sidecar.mjs'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
     assert.throws(
       () => assertCapabilityConformanceReceipt({
         driverId: 'fixture-agent-model',
@@ -80,6 +89,10 @@ describe('Capability Plane v0.2 core contracts', () => {
     );
     assert.throws(
       () => assertCapabilityManifest({ ...manifest, metadataBytes: ['sk', 'test-secret-value'].join('-') }),
+      { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
+    );
+    assert.throws(
+      () => assertCapabilityManifest({ ...manifest, requiredSecrets: [{ name: 'sk-abcdefghijklmnop' }] }),
       { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
     );
   });
@@ -118,6 +131,17 @@ describe('Capability Plane v0.2 core contracts', () => {
         allowedOrigins: ['https://allowed.example'],
         allowedMethods: ['POST'],
       },
+      mode: 'live',
+    }), true);
+    assert.equal(assertCapabilityPolicyAllows({
+      manifest: {
+        driverId: 'model',
+        authorityLabels: ['model:fixture'],
+        recoveryClass: EffectRecoveryClass.idempotent,
+        maximumResponseBytes: 1024,
+      },
+      hostRequest: { ...httpRequest(), actuationClass: 'model' },
+      policy: { allowLiveEffects: true, allowedOrigins: ['https://other.example'], allowedMethods: ['POST'] },
       mode: 'live',
     }), true);
   });
@@ -281,11 +305,55 @@ describe('Capability Plane v0.2 core contracts', () => {
         { code: 'ERR_CAPABILITY_LIVE_DENIED' },
       );
       assert.equal(approvalFetchCalled, false);
+
+      globalThis.fetch = async () => new Response('{"status":"ok"}', {
+        status: 200,
+        headers: { 'x-request-id': 'request-approved' },
+      });
+      const approvedNetwork = await runCapabilityMode({
+        mode: 'approval',
+        driver: new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }),
+        hostRequest: httpRequest(),
+        journalOptions: {
+          store: new MemoryStore(),
+          runId: 'approval-network-run',
+          branchId: 'main',
+          parentTurnClosureFingerprint: 'world:turn-closure:parent',
+        },
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          requireApprovalForNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+        approval: () => ({ approved: true }),
+      });
+      assert.equal(decodeResolutionInputBytes(approvedNetwork.resolutionInputBytes).status, 0);
+
+      let promptedHeader = null;
+      const promptProvider = new PromptSecretProvider({
+        prompt: async () => 'Bearer prompted-token',
+      });
+      assert.equal(promptProvider.has('API_TOKEN'), true);
+      globalThis.fetch = async (url, options) => {
+        promptedHeader = options.headers.Authorization;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      await new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        secretHeaders: { Authorization: 'API_TOKEN' },
+        secretProvider: promptProvider,
+      }).resolve({
+        policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+      }, httpRequest());
+      assert.equal(promptedHeader, 'Bearer prompted-token');
     } finally {
       globalThis.fetch = originalFetch;
     }
 
     const approval = new HumanApprovalCapabilityDriver({ mode: 'noninteractive-allow' });
+    assert.equal(approval.preflight({}, httpRequest()).accepted, false);
     const approved = await approval.resolve({}, approvalRequest());
     assert.equal(decodeResolutionInputBytes(approved.resolutionInputBytes).status, 0);
     assert.equal(approved.diagnostics.decision, 'approved');

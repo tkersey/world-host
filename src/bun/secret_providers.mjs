@@ -62,7 +62,7 @@ export class PromptSecretProvider extends SecretProvider {
   }
 
   has(name) {
-    return this.cache.has(name);
+    return this.cache.has(name) || typeof this.prompt === 'function';
   }
 
   async get(name, purpose = 'capability') {

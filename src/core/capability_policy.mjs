@@ -68,11 +68,12 @@ export function assertCapabilityPolicyAllows({ manifest, hostRequest = null, pol
   if (manifest?.recoveryClass === EffectRecoveryClass.bestEffort && policy.allowBestEffort !== true) fail('ERR_BEST_EFFORT_REQUIRES_OPERATOR_OPT_IN');
   if (hostRequest?.requestBytes?.byteLength > policy.maximumPromptBytes) fail('ERR_CAPABILITY_PROMPT_TOO_LARGE');
   if (manifest?.maximumResponseBytes > policy.maximumResponseBytes) fail('ERR_CAPABILITY_RESPONSE_LIMIT_EXCEEDS_POLICY');
-  assertOriginAndMethodAllowed(hostRequest, policy);
+  if (isNetwork(manifest, hostRequest)) assertOriginAndMethodAllowed(hostRequest, policy);
   assertFileRootAllowed(manifest, policy);
-  if (action?.destructive === true && policy.requireApprovalForDestructiveEffects) fail('ERR_CAPABILITY_APPROVAL_REQUIRED');
-  if (isNetwork(manifest, hostRequest) && policy.requireApprovalForNetworkEffects) fail('ERR_CAPABILITY_APPROVAL_REQUIRED');
-  if (manifest?.recoveryClass === EffectRecoveryClass.bestEffort && policy.requireApprovalForBestEffort) fail('ERR_CAPABILITY_APPROVAL_REQUIRED');
+  const approved = action?.approved === true;
+  if (action?.destructive === true && policy.requireApprovalForDestructiveEffects && !approved) fail('ERR_CAPABILITY_APPROVAL_REQUIRED');
+  if (isNetwork(manifest, hostRequest) && policy.requireApprovalForNetworkEffects && !approved) fail('ERR_CAPABILITY_APPROVAL_REQUIRED');
+  if (manifest?.recoveryClass === EffectRecoveryClass.bestEffort && policy.requireApprovalForBestEffort && !approved) fail('ERR_CAPABILITY_APPROVAL_REQUIRED');
   return true;
 }
 

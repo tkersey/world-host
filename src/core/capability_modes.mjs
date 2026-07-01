@@ -41,15 +41,15 @@ export async function runCapabilityMode({
     const proposed = await driver.dryRun(context, hostRequest);
     const decision = await approvalDecision(approval, { manifest, hostRequest, proposed });
     if (decision.approved !== true) return { mode, submittedToWorld: false, approved: false, proposed };
-    if (manifest.diagnostics?.deterministic === true && !journalOptions) {
+    if (isEffectFreeFixture(manifest) && !journalOptions) {
       const resolved = await driver.resolve(context, hostRequest);
       assertCapabilityResolutionBoundary(resolved);
       return { mode, submittedToWorld: true, approved: true, proposed, ...resolved };
     }
-    assertCapabilityPolicyAllows({ manifest, hostRequest, policy: livePolicy, mode: 'live' });
+    assertCapabilityPolicyAllows({ manifest, hostRequest, policy: livePolicy, mode: 'live', action: { approved: true } });
     if (!journalOptions) fail('ERR_CAPABILITY_APPROVAL_JOURNAL_REQUIRED', 'approval mode live effects require EffectJournal options');
     const journal = journalOptions instanceof EffectJournal ? journalOptions : new EffectJournal({ ...journalOptions, policy: livePolicy });
-    const resolved = await journal.resolve(liveContext(context, livePolicy), hostRequest, driver);
+    const resolved = await journal.resolve(liveContext(context, livePolicy, { approved: true }), hostRequest, driver);
     return { mode, submittedToWorld: true, approved: true, proposed, ...resolved };
   }
   assertCapabilityPolicyAllows({ manifest, hostRequest, policy: livePolicy, mode: 'live' });
@@ -59,8 +59,12 @@ export async function runCapabilityMode({
   return { mode, submittedToWorld: true, ...resolved };
 }
 
-function liveContext(context, policy) {
-  return { ...context, mode: 'live', policy };
+function liveContext(context, policy, action = null) {
+  return { ...context, mode: 'live', policy, action };
+}
+
+function isEffectFreeFixture(manifest) {
+  return manifest.driverId === 'fixture-agent-model' && manifest.diagnostics?.deterministic === true;
 }
 
 async function approvalDecision(approval, proposal) {

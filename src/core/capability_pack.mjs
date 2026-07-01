@@ -197,6 +197,7 @@ function assertReferencedArtifactsCovered(manifest) {
     ...(manifest.conformanceCorpusFingerprint ? ['conformance.json'] : []),
   ]);
   if (manifest.adapter.kind === 'in_process' && manifest.adapter.module) required.add(manifest.adapter.module);
+  if (manifest.adapter.kind === 'sidecar') required.add(manifest.adapter.command[0]);
   for (const path of required) {
     if (!covered.has(path)) fail('ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED', `referenced artifact is not checksum-covered: ${path}`);
   }
@@ -268,9 +269,9 @@ function assertConformanceVector(value) {
 
 function assertNoCredentialMaterial(value, path = []) {
   if (value == null) return;
-  if (path[0] === 'requiredSecrets') return;
   if (typeof value === 'string') {
-    if (SECRET_PATTERN.test(path.join('.')) && value.length > 0 && !['opaque', 'required', 'redacted'].includes(value)) {
+    const descriptorLabel = path[0] === 'requiredSecrets' && ['name', 'class', 'purpose'].includes(path.at(-1));
+    if (!descriptorLabel && SECRET_PATTERN.test(path.join('.')) && value.length > 0 && !['opaque', 'required', 'redacted'].includes(value)) {
       fail('ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN', `credential-like value forbidden at ${path.join('.')}`);
     }
     if (/sk-[A-Za-z0-9_-]{8,}/.test(value)) fail('ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN', `secret-looking value forbidden at ${path.join('.')}`);

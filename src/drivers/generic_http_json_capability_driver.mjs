@@ -71,6 +71,7 @@ export class GenericHttpJsonCapabilityDriver {
         hostRequest: this.#policyHostRequest(hostRequest),
         policy: context?.policy ?? {},
         mode: 'live',
+        action: context?.action ?? null,
       });
     } catch (error) {
       blockers.push(error.code ?? 'ERR_HTTP_CAPABILITY_PREFLIGHT_REJECTED');
@@ -107,6 +108,7 @@ export class GenericHttpJsonCapabilityDriver {
       hostRequest: this.#policyHostRequest(hostRequest),
       policy: context?.policy ?? {},
       mode: 'live',
+      action: context?.action ?? null,
     });
     const request = this.#request(hostRequest);
     const controller = new AbortController();

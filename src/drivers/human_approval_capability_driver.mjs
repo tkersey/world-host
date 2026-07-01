@@ -1,5 +1,5 @@
 import { EffectRecoveryClass } from '../core/actuator.mjs';
-import { CapabilityPreflightReport, DryRunReport, ShadowReport, capabilityHostClaimBytes } from '../core/capability_driver.mjs';
+import { DryRunReport, ShadowReport, capabilityHostClaimBytes, defaultCapabilityPreflight } from '../core/capability_driver.mjs';
 import { fail, fromUtf8, stableJson } from '../core/store.mjs';
 import { encodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
 import { encodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
@@ -26,8 +26,8 @@ export class HumanApprovalCapabilityDriver {
     };
   }
 
-  preflight() {
-    return new CapabilityPreflightReport({ accepted: true });
+  preflight(context, hostRequest) {
+    return defaultCapabilityPreflight(this.manifest(), hostRequest);
   }
 
   dryRun(context, hostRequest) {
