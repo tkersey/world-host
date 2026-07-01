@@ -771,6 +771,7 @@ async function verifyManifestArtifacts(root, manifest) {
   const packagedArtifactMetadata = JSON.parse(await readFile(path.join(root, 'world-host/agent-runtime-artifacts.json'), 'utf8'));
   const carrier = JSON.parse(await readFile(path.join(root, 'world-host/carrier-manifest.json'), 'utf8'));
   const conformanceCorpusFingerprint = await fingerprintDirectory(path.join(root, 'conformance'));
+  const worldHostPackageTreeFingerprint = await fingerprintWorldHostPackageTree(root);
 
   assertGitSha(manifest.boundary.packageHash, 'ERR_AGENT_RUNTIME_BOUNDARY_PACKAGE_HASH');
   assertEqual(manifest.boundary.packageHash, manifest.metadata?.buildDiagnostics?.boundaryHead, 'ERR_AGENT_RUNTIME_BOUNDARY_PACKAGE_HASH');
@@ -788,7 +789,7 @@ async function verifyManifestArtifacts(root, manifest) {
   assertEqual(manifest.world.turnClosureFormatVersion, `v${worldMetadata.world_turn_closure_format_version ?? 1}`, 'ERR_AGENT_RUNTIME_WORLD_TURN_CLOSURE_VERSION');
   assertEqual(manifest.world.archiveFormatVersion, `v${worldMetadata.world_archive_format_version ?? 1}`, 'ERR_AGENT_RUNTIME_WORLD_ARCHIVE_VERSION');
   const worldHead = manifest.metadata?.buildDiagnostics?.worldHead;
-  assertEqual(manifest.metadata?.buildDiagnostics?.worldHostHead, manifest.artifacts?.worldHost?.packageTree?.fingerprint, 'ERR_AGENT_RUNTIME_WORLD_HOST_SOURCE_HEAD');
+  assertEqual(manifest.metadata?.buildDiagnostics?.worldHostHead, worldHostPackageTreeFingerprint, 'ERR_AGENT_RUNTIME_WORLD_HOST_SOURCE_HEAD');
   assertEqual(manifest.world.protocolManifestFingerprint, worldProtocolManifestFileFingerprint(await readFile(path.join(root, 'world/world-protocol-manifest.bin'))), 'ERR_AGENT_RUNTIME_WORLD_PROTOCOL_MANIFEST_FINGERPRINT');
   assertEqual(manifest.world.protocolManifestFingerprint, expectedWorldArtifactByHead(WORLD_V0_PROTOCOL_FINGERPRINT_BY_HEAD, worldHead, 'ERR_AGENT_RUNTIME_WORLD_PROTOCOL_HEAD'), 'ERR_AGENT_RUNTIME_WORLD_PROTOCOL_HEAD');
   assertEqual(sha256Hex(await readFile(path.join(root, 'world/agent.executable-image'))), expectedWorldArtifactByHead(WORLD_V0_EXECUTABLE_IMAGE_SHA256_BY_HEAD, worldHead, 'ERR_AGENT_RUNTIME_WORLD_IMAGE_BYTES_HEAD'), 'ERR_AGENT_RUNTIME_WORLD_IMAGE_BYTES');
@@ -806,7 +807,7 @@ async function verifyManifestArtifacts(root, manifest) {
   await verifyPackagedCarrierModule(root, carrier);
   assertEqual(manifest.conformanceCorpusFingerprint, conformanceCorpusFingerprint, 'ERR_AGENT_RUNTIME_CONFORMANCE_CORPUS_FINGERPRINT');
   assertEqual(stableJson(packagedArtifactMetadata), stableJson(manifest.artifacts), 'ERR_AGENT_RUNTIME_ARTIFACT_METADATA');
-  assertEqual(manifest.artifacts?.worldHost?.packageTree?.fingerprint, await fingerprintWorldHostPackageTree(root), 'ERR_AGENT_RUNTIME_WORLD_HOST_TREE_FINGERPRINT');
+  assertEqual(manifest.artifacts?.worldHost?.packageTree?.fingerprint, worldHostPackageTreeFingerprint, 'ERR_AGENT_RUNTIME_WORLD_HOST_TREE_FINGERPRINT');
 
   const artifactChecks = [
     ['boundary.agentRootModule.sha256', manifest.artifacts?.boundary?.agentRootModule?.sha256, async () => readFile(path.join(root, 'boundary/agent-root.full-module'))],

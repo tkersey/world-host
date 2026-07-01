@@ -417,6 +417,22 @@ describe('Agent Runtime pack', () => {
         /ERR_AGENT_RUNTIME_WORLD_HOST_SOURCE_HEAD/,
       );
 
+      const reboundWorldHostHeadPack = path.join(root, 'agent-runtime-v0.1-rebound-world-host-head');
+      await cp(pack, reboundWorldHostHeadPack, { recursive: true });
+      const reboundWorldHostHeadManifest = JSON.parse(await readFile(path.join(reboundWorldHostHeadPack, 'manifest/agent-runtime-manifest.json'), 'utf8'));
+      const reboundWorldHostHeadArtifactsPath = path.join(reboundWorldHostHeadPack, 'world-host/agent-runtime-artifacts.json');
+      const reboundWorldHostHeadArtifacts = JSON.parse(await readFile(reboundWorldHostHeadArtifactsPath, 'utf8'));
+      reboundWorldHostHeadManifest.metadata.buildDiagnostics.worldHostHead = 'ffffffffffffffffffffffffffffffffffffffff';
+      reboundWorldHostHeadManifest.artifacts.worldHost.packageTree.fingerprint = 'ffffffffffffffffffffffffffffffffffffffff';
+      reboundWorldHostHeadArtifacts.worldHost.packageTree.fingerprint = 'ffffffffffffffffffffffffffffffffffffffff';
+      await writeFile(reboundWorldHostHeadArtifactsPath, `${JSON.stringify(reboundWorldHostHeadArtifacts, null, 2)}\n`);
+      await writeManifest(reboundWorldHostHeadPack, reboundWorldHostHeadManifest);
+      await refreshAgentRuntimePackChecksums(reboundWorldHostHeadPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(reboundWorldHostHeadPack, { requireReleaseReceipt: true }),
+        /ERR_AGENT_RUNTIME_WORLD_HOST_SOURCE_HEAD/,
+      );
+
       const tamperedWorldAbiPack = path.join(root, 'agent-runtime-v0.1-tampered-world-abi');
       await cp(pack, tamperedWorldAbiPack, { recursive: true });
       const tamperedWorldAbiManifest = JSON.parse(await readFile(path.join(tamperedWorldAbiPack, 'manifest/agent-runtime-manifest.json'), 'utf8'));
