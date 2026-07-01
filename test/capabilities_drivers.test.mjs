@@ -289,6 +289,45 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.everyRequiredActuatorCovered, true);
   });
 
+  it('does not require an inactive single authority label on unrelated pending request routes', () => {
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [
+          {
+            actuatorRef: 'fixture:model',
+            descriptorFingerprint: 'descriptor:fixture-model',
+          },
+          {
+            actuatorRef: 'sandbox:file',
+            descriptorFingerprint: 'descriptor:sandbox-file',
+          },
+        ],
+        requiredHostAuthorityLabels: ['model:fixture'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      pendingRequests: [fileRequest('out.txt')],
+      drivers: [
+        fixtureDriverWithAuthority(['model:fixture']),
+        fixtureDriverWithAuthority([], {
+          driverId: 'unlabeled-file',
+          actuatorRef: 'sandbox:file',
+          descriptorFingerprint: 'descriptor:sandbox-file',
+          actuationClasses: ['file'],
+        }),
+      ],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture'] }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.deepEqual(report.coveredRequests, [{
+      actuatorRef: 'sandbox:file',
+      descriptorFingerprint: 'descriptor:sandbox-file',
+      driverId: 'unlabeled-file',
+    }]);
+    assert.equal(report.everyRequiredActuatorCovered, true);
+  });
+
   it('does not bind one pending request authority to another pending request route', () => {
     const report = preflightCapabilities({
       application: {
