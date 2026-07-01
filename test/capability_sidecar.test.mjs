@@ -42,6 +42,16 @@ describe('Capability sidecar transport', () => {
       assert.equal((await sidecar.resolve({ request: 'ok' })).payload.ok, true);
       await assert.rejects(() => sidecar.dryRun({}), { code: 'ERR_CAPABILITY_SIDECAR_EXIT' });
 
+      const mismatchPath = path.join(root, 'mismatch.mjs');
+      await writeFile(mismatchPath, `
+        await new Response(Bun.stdin.stream()).text();
+        process.stdout.write(JSON.stringify({ command: 'manifest', payload: { ok: true } }) + '\\n');
+      `);
+      await assert.rejects(
+        () => new CapabilitySidecar({ command: [process.execPath, mismatchPath], timeoutMs: 1000 }).resolve({}),
+        { code: 'ERR_CAPABILITY_SIDECAR_RESPONSE_COMMAND' },
+      );
+
       const stderrPath = path.join(root, 'stderr.mjs');
       await writeFile(stderrPath, `
         process.stderr.write('x'.repeat(2048));

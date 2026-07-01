@@ -75,6 +75,10 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_CAPABILITY_HOST_PATH_FORBIDDEN' },
     );
     assert.throws(
+      () => assertCapabilityManifest({ ...manifest, adapter: { kind: 'sidecar', command: ['/tmp/provider'] } }),
+      { code: 'ERR_CAPABILITY_HOST_PATH_FORBIDDEN' },
+    );
+    assert.throws(
       () => assertCapabilityManifest({ ...manifest, metadataBytes: ['sk', 'test-secret-value'].join('-') }),
       { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
     );
@@ -220,6 +224,17 @@ describe('Capability Plane v0.2 core contracts', () => {
         { code: 'ERR_HTTP_RESPONSE_TOO_LARGE' },
       );
 
+      let directFetchCalled = false;
+      globalThis.fetch = async () => {
+        directFetchCalled = true;
+        return new Response('{"action":{"variant":"final","text":"ok"}}', { status: 200 });
+      };
+      await assert.rejects(
+        () => new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }).resolve({}, httpRequest()),
+        { code: 'ERR_CAPABILITY_LIVE_DENIED' },
+      );
+      assert.equal(directFetchCalled, false);
+
       let blockedFetchCalled = false;
       globalThis.fetch = async () => {
         blockedFetchCalled = true;
@@ -294,6 +309,12 @@ describe('Capability Plane v0.2 core contracts', () => {
         headers: { 'x-request-id': 'request-2' },
       });
       const driver = new GenericHttpJsonModelDriver({ endpointUrl: 'https://allowed.example/decide' });
+      const deniedPreflight = driver.preflight(
+        { policy: { allowLiveEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] } },
+        modelRequest('goal=invoke', 'model-preflight-key'),
+      );
+      assert.equal(deniedPreflight.accepted, false);
+      assert.equal(deniedPreflight.blockers.includes('ERR_CAPABILITY_NETWORK_DENIED'), true);
       const result = await driver.resolve({
         policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
       }, modelRequest('goal=invoke', 'model-http-key'));

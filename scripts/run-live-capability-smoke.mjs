@@ -46,7 +46,7 @@ const hostRequest = {
 };
 
 const diagnostics = live
-  ? await driver.resolve({
+  ? summarizeLiveResult(await driver.resolve({
       mode: 'live',
       policy: {
         allowLiveEffects: true,
@@ -54,7 +54,7 @@ const diagnostics = live
         allowedOrigins: [allowOrigin],
         allowedMethods: config.methods ?? ['POST'],
       },
-    }, hostRequest)
+    }, hostRequest))
   : await driver.dryRun({}, hostRequest);
 
 console.log(JSON.stringify(redactCapabilityDiagnostics({
@@ -69,4 +69,17 @@ function valueAfter(name) {
   if (index < 0) return null;
   const value = process.argv[index + 1];
   return value && !value.startsWith('--') ? value : null;
+}
+
+function summarizeLiveResult(result) {
+  return {
+    diagnostics: result.diagnostics ?? {},
+    driverTransactionRef: result.driverTransactionRef ?? null,
+    resolutionInputBytes: byteCount(result.resolutionInputBytes),
+    hostClaimBytes: byteCount(result.hostClaimBytes),
+  };
+}
+
+function byteCount(value) {
+  return value instanceof Uint8Array ? { byteLength: value.byteLength } : null;
 }

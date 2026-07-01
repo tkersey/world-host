@@ -28,12 +28,14 @@ export class CapabilitySidecar {
     if (!COMMANDS.has(command)) fail('ERR_CAPABILITY_SIDECAR_COMMAND_UNSUPPORTED');
     const frame = encodeSidecarFrame({ command, payload });
     if (frame.byteLength > this.maximumFrameBytes) fail('ERR_CAPABILITY_SIDECAR_FRAME_TOO_LARGE');
-    return await runSidecarCommand({
+    const response = await runSidecarCommand({
       argv: this.command,
       input: frame,
       timeoutMs: this.timeoutMs,
       maximumFrameBytes: this.maximumFrameBytes,
     });
+    if (!response || response.command !== command) fail('ERR_CAPABILITY_SIDECAR_RESPONSE_COMMAND');
+    return response;
   }
 
   manifest() {

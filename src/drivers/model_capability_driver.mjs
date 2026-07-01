@@ -69,7 +69,12 @@ export class GenericHttpJsonModelDriver {
     } catch (error) {
       return new CapabilityPreflightReport({ accepted: false, blockers: [error.code ?? 'ERR_MODEL_PROMPT_INVALID'] });
     }
-    return new CapabilityPreflightReport({ accepted: true });
+    return this.http.preflight(context, {
+      ...hostRequest,
+      actuatorRef: 'http:json',
+      descriptorFingerprint: 'descriptor:http-json',
+      actuationClass: 'http',
+    });
   }
 
   async resolve(context, hostRequest) {

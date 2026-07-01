@@ -69,8 +69,8 @@ export class GenericHttpJsonCapabilityDriver {
       assertCapabilityPolicyAllows({
         manifest: this.manifest(),
         hostRequest: this.#policyHostRequest(hostRequest),
-        policy: context?.policy ?? { allowLiveEffects: true, allowNetworkEffects: true },
-        mode: context?.mode ?? 'live',
+        policy: context?.policy ?? {},
+        mode: 'live',
       });
     } catch (error) {
       blockers.push(error.code ?? 'ERR_HTTP_CAPABILITY_PREFLIGHT_REJECTED');
@@ -105,8 +105,8 @@ export class GenericHttpJsonCapabilityDriver {
     assertCapabilityPolicyAllows({
       manifest: this.manifest(),
       hostRequest: this.#policyHostRequest(hostRequest),
-      policy: context?.policy ?? { allowLiveEffects: true, allowNetworkEffects: true },
-      mode: context?.mode ?? 'live',
+      policy: context?.policy ?? {},
+      mode: 'live',
     });
     const request = this.#request(hostRequest);
     const controller = new AbortController();

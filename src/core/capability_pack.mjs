@@ -219,7 +219,7 @@ function normalizeAdapter(adapter) {
   }
   return Object.freeze({
     kind,
-    command: adapter.command.map((item) => requiredString(item, 'adapter.command')),
+    command: adapter.command.map((item) => optionalRelativePath(item, 'adapter.command')),
   });
 }
 
