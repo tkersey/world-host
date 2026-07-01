@@ -613,6 +613,18 @@ describe('Agent Runtime pack', () => {
         () => checkAgentRuntimePack(staleBoundaryCorpusPack),
         /ERR_AGENT_RUNTIME_BOUNDARY_CORPUS_PROFILE_FINGERPRINT/,
       );
+
+      const tamperedBoundaryCorpusPack = path.join(root, 'agent-runtime-v0.1-tampered-boundary-corpus');
+      await cp(pack, tamperedBoundaryCorpusPack, { recursive: true });
+      const tamperedBoundaryCorpusPath = path.join(tamperedBoundaryCorpusPack, 'boundary/corpus.boundary-agent.txt');
+      const tamperedBoundaryCorpusBytes = Buffer.from(`${await readFile(tamperedBoundaryCorpusPath, 'utf8')}\nextra owner case\n`);
+      await writeFile(tamperedBoundaryCorpusPath, tamperedBoundaryCorpusBytes);
+      await rewriteManifestArtifactSha(tamperedBoundaryCorpusPack, 'boundary', 'corpus', tamperedBoundaryCorpusBytes);
+      await refreshAgentRuntimePackChecksums(tamperedBoundaryCorpusPack);
+      await assert.rejects(
+        () => checkAgentRuntimePack(tamperedBoundaryCorpusPack, { validateReleaseReceipt: false }),
+        /ERR_AGENT_RUNTIME_BOUNDARY_CORPUS_HEAD/,
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -676,7 +688,7 @@ describe('Agent Runtime pack', () => {
   it('rejects source roots as pack build output targets', async () => {
     await assert.rejects(
       () => buildAgentRuntimePack({ out: process.cwd(), worldHostRepo: process.cwd() }),
-      /ERR_AGENT_RUNTIME_UNSAFE_OUT:worldHostRepo/,
+      /ERR_AGENT_RUNTIME_UNSAFE_OUT:packName/,
     );
   });
 
@@ -693,6 +705,29 @@ describe('Agent Runtime pack', () => {
       await writeFile(marker, 'keep');
       await assert.rejects(
         () => buildAgentRuntimePack({ out: root, worldHostRepo: process.cwd() }),
+        /ERR_AGENT_RUNTIME_UNSAFE_OUT:packName/,
+      );
+      assert.equal(await readFile(marker, 'utf8'), 'keep');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects invalid output names before resolving missing source roots', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agent-runtime-pack-missing-roots-'));
+    try {
+      const out = path.join(root, 'not-a-pack');
+      await mkdir(out, { recursive: true });
+      const marker = path.join(out, 'marker.txt');
+      await writeFile(marker, 'keep');
+
+      await assert.rejects(
+        () => buildAgentRuntimePack({
+          out,
+          worldHostRepo: path.join(root, 'missing-world-host'),
+          worldRepo: path.join(root, 'missing-world'),
+          boundaryRepo: path.join(root, 'missing-boundary'),
+        }),
         /ERR_AGENT_RUNTIME_UNSAFE_OUT:packName/,
       );
       assert.equal(await readFile(marker, 'utf8'), 'keep');
@@ -776,9 +811,39 @@ describe('Agent Runtime pack', () => {
           worldRepo: worldRoot,
           boundaryRepo: boundaryRoot,
         }),
-        /ERR_AGENT_RUNTIME_UNSAFE_OUT:worldHostRepo/,
+        /ERR_AGENT_RUNTIME_UNSAFE_OUT:realpath/,
       );
       assert.equal(existsSync(path.join(sourceRoot, 'src', 'agent-runtime-v0.1')), false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects existing pack outputs below symlinked ancestors', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agent-runtime-pack-symlink-existing-'));
+    try {
+      const sourceRoot = path.join(root, 'source');
+      const target = path.join(root, 'target');
+      const sourceLink = path.join(root, 'source-link');
+      const worldRoot = path.join(root, 'world');
+      const boundaryRoot = path.join(root, 'boundary');
+      await mkdir(path.join(sourceRoot, 'src'), { recursive: true });
+      await mkdir(path.join(target, 'existing'), { recursive: true });
+      await mkdir(worldRoot, { recursive: true });
+      await mkdir(boundaryRoot, { recursive: true });
+      await symlink(target, sourceLink, 'dir');
+      const out = path.join(sourceLink, 'existing', 'agent-runtime-v0.1');
+
+      await assert.rejects(
+        () => buildAgentRuntimePack({
+          out,
+          worldHostRepo: sourceRoot,
+          worldRepo: worldRoot,
+          boundaryRepo: boundaryRoot,
+        }),
+        /ERR_AGENT_RUNTIME_UNSAFE_OUT:realpath/,
+      );
+      assert.equal(existsSync(out), false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -829,7 +894,8 @@ describe('Agent Runtime pack', () => {
   });
 
   it('uses the parsed Boundary package version when reading owner artifacts', async () => {
-    const root = await mkdtemp(path.join(tmpdir(), 'agent-runtime-pack-boundary-version-'));
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'agent-runtime-pack-boundary-version-'));
+    const root = await realpath(tempRoot);
     try {
       const boundaryRepo = path.join(root, 'boundary');
       const worldRepo = path.join(root, 'world');
@@ -850,7 +916,7 @@ describe('Agent Runtime pack', () => {
         'boundary-root-module-v0.6.2',
       );
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(tempRoot, { recursive: true, force: true });
     }
   });
 });

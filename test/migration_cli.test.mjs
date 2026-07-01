@@ -910,6 +910,18 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(run.head.status, 'needs_host');
       assert.equal(run.advance.effectCount, 0);
       assert.equal(run.diagnostics.driversInvokedByCli, false);
+      await assert.rejects(
+        () => runBunCli([
+          'agent',
+          'replay',
+          '--store', root,
+          '--run', 'agent-cli-run',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_AGENT_RUNTIME_REPLAY_HEAD_INCOMPLETE' },
+      );
       output = '';
       const resumeCode = await runBunCli([
         'agent',
@@ -1381,6 +1393,7 @@ describe('migration, branching, and CLI diagnostics', () => {
     const sourceRoot = await mkdtemp(path.join(tmpdir(), 'world-host-agent-import-source-'));
     const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-agent-import-receiver-'));
     const noPendingReceiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-agent-import-complete-receiver-'));
+    const highLimitReceiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-agent-import-high-limit-receiver-'));
     const packagePath = path.join(receiverRoot, 'agent-export.json');
     try {
       await runBunCli([
@@ -1449,6 +1462,55 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(genericNoPendingImportCode, 0);
       assert.equal(genericNoPendingImported.runId, 'generic-agent-import-no-pending');
       assert.equal(genericNoPendingImported.receiverPolicyApplied, true);
+
+      const completedBytes = fixtureTurnClosureBytes({ status: 2, turnSequenceNumber: 9n, closureFingerprint: 0x919n });
+      const completedSummary = summarizeTurnClosureForRunHead(completedBytes);
+      const completedBlob = blobEntryForBytes(completedBytes);
+      const highLimitCompletedPackagePath = path.join(receiverRoot, 'agent-completed-high-limits-export.json');
+      await writeFile(highLimitCompletedPackagePath, JSON.stringify({
+        ...packageJson,
+        bundle: {
+          ...packageJson.bundle,
+          application: {
+            ...packageJson.bundle.application,
+            requiredRuntimeLimits: {
+              maximumConcurrentEffects: 99,
+              maximumRequestBytes: 99 * 1024 * 1024,
+              maximumResponseBytes: 99 * 1024 * 1024,
+            },
+          },
+          head: {
+            ...packageJson.bundle.head,
+            generation: completedSummary.inspectionDiagnostics.turnSequenceNumber + 1,
+            status: 'completed',
+            turnClosureRef: {
+              algorithm: 'sha256',
+              checksum: completedBlob.checksum,
+              byteLength: completedBlob.byteLength,
+            },
+            turnClosureWorldFingerprint: completedSummary.turnClosureWorldFingerprint,
+            resultingStateFingerprint: completedSummary.resultingStateFingerprint,
+            chronicleCursor: completedSummary.chronicleCursor,
+            archiveMomentFingerprint: completedSummary.archiveMomentFingerprint,
+            archiveSealFingerprint: completedSummary.archiveSealFingerprint,
+          },
+          blobs: [...packageJson.bundle.blobs, completedBlob],
+        },
+      }));
+      let highLimitCompletedOutput = '';
+      const highLimitCompletedImportCode = await runBunCli([
+        'agent',
+        'import',
+        '--store', highLimitReceiverRoot,
+        '--package', highLimitCompletedPackagePath,
+        '--run', 'receiver-agent-import-high-limit-completed',
+      ], {
+        stdout: { write: (text) => { highLimitCompletedOutput += text; } },
+        stderr: { write() {} },
+      });
+      const highLimitCompletedImported = JSON.parse(highLimitCompletedOutput);
+      assert.equal(highLimitCompletedImportCode, 0);
+      assert.equal(highLimitCompletedImported.runId, 'receiver-agent-import-high-limit-completed');
 
       const pendingClosureBytes = fixtureNeedsHostTurnClosureBytes([agentModelHostRequestBytes()]);
       const pendingClosureSummary = summarizeTurnClosureForRunHead(pendingClosureBytes);
@@ -1613,6 +1675,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       await rm(sourceRoot, { recursive: true, force: true });
       await rm(receiverRoot, { recursive: true, force: true });
       await rm(noPendingReceiverRoot, { recursive: true, force: true });
+      await rm(highLimitReceiverRoot, { recursive: true, force: true });
     }
   });
 

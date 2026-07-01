@@ -546,7 +546,7 @@ async function runImport(args, io, storePath, options = {}) {
           fail('ERR_IMPORT_PREFLIGHT_NEEDS_HOST_REQUESTS_EMPTY', 'receiver preflight rejects needs_host imports with no pending HostRequests');
         }
         const application = mayBypassPreflightRequirements && pendingRequests.length === 0
-          ? { ...candidate.bundle.application, requiredActuators: [], requiredHostAuthorityLabels: [] }
+          ? { ...candidate.bundle.application, requiredActuators: [], requiredHostAuthorityLabels: [], requiredRuntimeLimits: {} }
           : candidate.bundle.application;
         return preflightCapabilities({
           application,
@@ -1159,6 +1159,11 @@ async function replayStoreRun(store, storePath, runId, branchId) {
   const head = await store.readHead(runId, branchId);
   const closureBytes = await store.getBlob(head.turnClosureRef);
   const inspected = inspectTurnOutput(closureBytes);
+  const headSummary = summarizeTurnClosureForRunHead(closureBytes);
+  assertReplayHeadMatchesClosure(head, headSummary);
+  if (head.status === 'needs_host') {
+    fail('ERR_AGENT_RUNTIME_REPLAY_HEAD_INCOMPLETE', 'agent replay requires a terminal head with no pending HostRequests');
+  }
   const parentTurnClosureFingerprint = head.updateDiagnostics?.parentTurnClosureFingerprint;
   if (typeof parentTurnClosureFingerprint !== 'string' || parentTurnClosureFingerprint.length === 0) {
     fail('ERR_AGENT_RUNTIME_REPLAY_HEAD_PARENT_REQUIRED', 'agent replay requires a head with committed parent TurnClosure diagnostics');
@@ -1198,9 +1203,10 @@ async function replayStoreRun(store, storePath, runId, branchId) {
     effect.state === EffectState.closureCommitted &&
     committedEffectIds.includes(effect.idempotencyKeyWorldFingerprint)
   ));
+  const completed = missingEffectIds.length === 0 && head.status === 'completed';
   return {
     command: 'replay',
-    ok: missingEffectIds.length === 0,
+    ok: completed,
     mode: 'json',
     store: storePath,
     run: {
@@ -1222,7 +1228,7 @@ async function replayStoreRun(store, storePath, runId, branchId) {
       reconciledSubmittedEffectCount: reconciliation.committedCount,
       missingEffectIds,
       freshEffectCount: 0,
-      completed: missingEffectIds.length === 0,
+      completed,
     },
     effects: summarizeEffectStates(effectsAfterReconcile),
     diagnostics: {
@@ -1234,6 +1240,34 @@ async function replayStoreRun(store, storePath, runId, branchId) {
       worldEvidenceAuthored: false,
     },
   };
+}
+
+function assertReplayHeadMatchesClosure(head, summary) {
+  const expectedGeneration = summary.inspectionDiagnostics.turnSequenceNumber + 1;
+  if (head.generation !== expectedGeneration) {
+    fail('ERR_AGENT_RUNTIME_REPLAY_HEAD_GENERATION_MISMATCH', 'agent replay requires head generation to match selected closure sequence', {
+      headGeneration: head.generation,
+      closureTurnSequenceNumber: summary.inspectionDiagnostics.turnSequenceNumber,
+      expectedGeneration,
+    });
+  }
+  for (const field of [
+    'turnClosureWorldFingerprint',
+    'resultingStateFingerprint',
+    'chronicleCursor',
+    'archiveMomentFingerprint',
+    'archiveSealFingerprint',
+    'status',
+  ]) {
+    if ((field === 'archiveMomentFingerprint' || field === 'archiveSealFingerprint') && summary[field] == null) continue;
+    if (head[field] !== summary[field]) {
+      fail('ERR_AGENT_RUNTIME_REPLAY_HEAD_CLOSURE_MISMATCH', 'agent replay requires head metadata to match selected closure', {
+        field,
+        headValue: head[field],
+        closureValue: summary[field],
+      });
+    }
+  }
 }
 
 async function validateRetainedReplayEffects(store, committedEffectIds, retainedEffects, appliedHostReplyFingerprints) {

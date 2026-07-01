@@ -44,6 +44,21 @@ const EXPECTED_PACKAGE_FILES = Object.freeze([
 ]);
 const WORLD_V0_BOUNDARY_PROTOCOL_MANIFEST_FINGERPRINT = '0x68ce6ebd4448144f';
 const WORLD_V0_CONFORMANCE_CORPUS_ROOT_FINGERPRINT = '0xe727536b60a5e286';
+const BOUNDARY_AGENT_RUNTIME_ARTIFACTS_BY_HEAD = Object.freeze({
+  '6a416951f8d22d0854616f094f23b2d44ab021a2': Object.freeze({
+    protocolManifestFingerprint: '0xc3f1f221d499a992',
+    agentProfileFingerprint: '0xdc1981503eeeb739',
+    agentRootModuleFingerprint: '0xa663b81aa6df6f3e',
+    toolboxModuleFingerprint: '0x4a4c934becaf32ae',
+    agentRootModuleSha256: 'ac56cf729057fe4c5a2f55cad478c1dc5960a37ceaef05f6d5f4bb287764ec98',
+    toolboxModuleSha256: 'cb94a40f2d86e3772d37433ea45984d7d88f2a95269d20cee2dae76bc044f5ce',
+    protocolManifestSha256: '7330714f4e2eae6c6036e5562d55619c461fdf444fb0564b11c1e3b232908a68',
+    agentProfileSha256: 'c74a75c0627eff68caf6a54c367049ea6873c24044f0f498232aa7544499c635',
+    corpusSha256: '04214a52058e785e61b69d58b031887b7e977a65b8eb114b04f868ffef9abf3d',
+    agentRootModuleByteFingerprint: '0x371bf8460c5e9649',
+    toolboxModuleByteFingerprint: '0x8ece9b217aeedb44',
+  }),
+});
 const WORLD_V0_SOURCE_PACKAGE_CHECKSUM_BY_HEAD = Object.freeze({
   a8b594e428d49f93d5dcf5a862e7c28192dd44ef: '0x21cf0eced28585af',
 });
@@ -250,10 +265,19 @@ export async function buildAgentRuntimePack(options = {}) {
 
 async function assertSafePackOutput(out, roots) {
   const resolvedOut = path.resolve(out);
+  if (path.basename(resolvedOut) !== PACK_NAME) {
+    throw new Error('ERR_AGENT_RUNTIME_UNSAFE_OUT:packName');
+  }
+  await assertNoSymlinkedExistingOutputPath(resolvedOut);
   const outputCandidates = await candidatePackOutputPaths(resolvedOut);
   for (const [label, root] of Object.entries(roots)) {
     const resolvedRoot = path.resolve(root);
-    const rootCandidates = new Set([resolvedRoot, await realpath(resolvedRoot)]);
+    const rootCandidates = new Set([resolvedRoot]);
+    try {
+      rootCandidates.add(await realpath(resolvedRoot));
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
     for (const rootCandidate of rootCandidates) {
       for (const outputCandidate of outputCandidates) {
         if (outputCandidate === rootCandidate || isPathInside(rootCandidate, outputCandidate)) {
@@ -265,10 +289,6 @@ async function assertSafePackOutput(out, roots) {
       }
     }
   }
-  if (path.basename(resolvedOut) !== PACK_NAME) {
-    throw new Error('ERR_AGENT_RUNTIME_UNSAFE_OUT:packName');
-  }
-  await assertNoSymlinkedExistingOutputPath(resolvedOut);
 }
 
 async function candidatePackOutputPaths(resolvedOut) {
@@ -280,11 +300,20 @@ async function candidatePackOutputPaths(resolvedOut) {
 }
 
 async function assertNoSymlinkedExistingOutputPath(resolvedOut) {
-  const existing = await nearestExistingPath(resolvedOut);
-  if (!existing) return;
-  if (existing.info.isSymbolicLink()) throw new Error('ERR_AGENT_RUNTIME_UNSAFE_OUT:realpath');
-  if (existing.path === resolvedOut && await realpath(resolvedOut) !== resolvedOut) {
-    throw new Error('ERR_AGENT_RUNTIME_UNSAFE_OUT:realpath');
+  let current = resolvedOut;
+  while (true) {
+    try {
+      const info = await lstat(current);
+      if (info.isSymbolicLink()) throw new Error('ERR_AGENT_RUNTIME_UNSAFE_OUT:realpath');
+      if (current === resolvedOut && await realpath(resolvedOut) !== resolvedOut) {
+        throw new Error('ERR_AGENT_RUNTIME_UNSAFE_OUT:realpath');
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return;
+    current = parent;
   }
 }
 
@@ -810,9 +839,23 @@ async function verifyManifestArtifacts(root, manifest) {
   const carrier = JSON.parse(await readFile(path.join(root, 'world-host/carrier-manifest.json'), 'utf8'));
   const conformanceCorpusFingerprint = await fingerprintDirectory(path.join(root, 'conformance'));
   const worldHostPackageTreeFingerprint = await fingerprintWorldHostPackageTree(root);
+  const boundaryHead = manifest.metadata?.buildDiagnostics?.boundaryHead;
+  const expectedBoundary = expectedBoundaryArtifactByHead(boundaryHead);
 
   assertGitSha(manifest.boundary.packageHash, 'ERR_AGENT_RUNTIME_BOUNDARY_PACKAGE_HASH');
   assertEqual(manifest.boundary.packageHash, manifest.metadata?.buildDiagnostics?.boundaryHead, 'ERR_AGENT_RUNTIME_BOUNDARY_PACKAGE_HASH');
+  assertEqual(manifest.boundary.packageHash, boundaryHead, 'ERR_AGENT_RUNTIME_BOUNDARY_PACKAGE_HASH');
+  assertEqual(manifest.boundary.protocolManifestFingerprint, expectedBoundary.protocolManifestFingerprint, 'ERR_AGENT_RUNTIME_BOUNDARY_PROTOCOL_HEAD');
+  assertEqual(manifest.boundary.agentProfileFingerprint, expectedBoundary.agentProfileFingerprint, 'ERR_AGENT_RUNTIME_BOUNDARY_PROFILE_HEAD');
+  assertEqual(manifest.boundary.agentRootModuleFingerprint, expectedBoundary.agentRootModuleFingerprint, 'ERR_AGENT_RUNTIME_BOUNDARY_ROOT_HEAD');
+  assertEqual(manifest.boundary.toolboxModuleFingerprint, expectedBoundary.toolboxModuleFingerprint, 'ERR_AGENT_RUNTIME_BOUNDARY_TOOLBOX_HEAD');
+  assertEqual(manifest.artifacts?.boundary?.agentRootModule?.byteFingerprint, expectedBoundary.agentRootModuleByteFingerprint, 'ERR_AGENT_RUNTIME_BOUNDARY_ROOT_BYTE_HEAD');
+  assertEqual(manifest.artifacts?.boundary?.toolboxModule?.byteFingerprint, expectedBoundary.toolboxModuleByteFingerprint, 'ERR_AGENT_RUNTIME_BOUNDARY_TOOLBOX_BYTE_HEAD');
+  assertEqual(sha256Hex(await readFile(path.join(root, 'boundary/agent-root.full-module'))), expectedBoundary.agentRootModuleSha256, 'ERR_AGENT_RUNTIME_BOUNDARY_ROOT_BYTES_HEAD');
+  assertEqual(sha256Hex(await readFile(path.join(root, 'boundary/toolbox-provider.full-module'))), expectedBoundary.toolboxModuleSha256, 'ERR_AGENT_RUNTIME_BOUNDARY_TOOLBOX_BYTES_HEAD');
+  assertEqual(sha256Hex(await readFile(path.join(root, 'boundary/boundary-protocol-manifest.bin'))), expectedBoundary.protocolManifestSha256, 'ERR_AGENT_RUNTIME_BOUNDARY_PROTOCOL_BYTES_HEAD');
+  assertEqual(sha256Hex(boundaryProfileBytes), expectedBoundary.agentProfileSha256, 'ERR_AGENT_RUNTIME_BOUNDARY_PROFILE_BYTES_HEAD');
+  assertEqual(sha256Hex(Buffer.from(boundaryCorpus)), expectedBoundary.corpusSha256, 'ERR_AGENT_RUNTIME_BOUNDARY_CORPUS_HEAD');
   assertEqual(manifest.boundary.protocolManifestFingerprint, requireOwnerFingerprint(boundaryProfile.boundary_protocol_manifest_fingerprint, 'boundary profile protocol manifest'), 'ERR_AGENT_RUNTIME_BOUNDARY_PROTOCOL_FINGERPRINT');
   assertEqual(manifest.boundary.protocolManifestFingerprint, boundaryProtocolManifestFileFingerprint(await readFile(path.join(root, 'boundary/boundary-protocol-manifest.bin'))), 'ERR_AGENT_RUNTIME_BOUNDARY_PROTOCOL_MANIFEST_FINGERPRINT');
   assertEqual(manifest.boundary.agentProfileFingerprint, requireOwnerFingerprint(boundaryProfile.profile_fingerprint, 'boundary agent profile'), 'ERR_AGENT_RUNTIME_BOUNDARY_PROFILE_FINGERPRINT');
@@ -871,6 +914,12 @@ async function verifyManifestArtifacts(root, manifest) {
 function expectedWorldArtifactByHead(table, worldHead, code) {
   const expected = table[worldHead];
   if (!expected) throw new Error(code);
+  return expected;
+}
+
+function expectedBoundaryArtifactByHead(boundaryHead) {
+  const expected = BOUNDARY_AGENT_RUNTIME_ARTIFACTS_BY_HEAD[boundaryHead];
+  if (!expected) throw new Error('ERR_AGENT_RUNTIME_BOUNDARY_HEAD');
   return expected;
 }
 
