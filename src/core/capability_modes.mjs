@@ -36,7 +36,18 @@ export async function runCapabilityMode({
     return { mode, submittedToWorld: false, dryRun: await driver.dryRun(context, hostRequest) };
   }
   if (mode === CapabilityExecutionMode.shadow) {
-    return { mode, submittedToWorld: false, shadow: await driver.shadow(context, hostRequest, recordedResolution) };
+    const shadowContext = { ...context, mode: 'shadow', policy: livePolicy };
+    if (context?.allowShadowNetwork === true || context?.allowShadowLiveEffects === true) {
+      assertCapabilityPolicyAllows({
+        manifest,
+        hostRequest,
+        policy: livePolicy,
+        mode: 'live',
+        enforceNetworkTarget: shouldEnforceNetworkTarget(hostRequest),
+      });
+      assertCapabilityPreflightAccepted(driver.preflight(shadowContext, hostRequest));
+    }
+    return { mode, submittedToWorld: false, shadow: await driver.shadow(shadowContext, hostRequest, recordedResolution) };
   }
   if (mode === CapabilityExecutionMode.approval) {
     const proposed = await driver.dryRun(context, hostRequest);

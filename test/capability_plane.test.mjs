@@ -290,6 +290,25 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(JSON.stringify(result.diagnostics).includes('secret'), false);
       assert.equal(decodeResolutionInputBytes(result.resolutionInputBytes).status, 0);
 
+      let directLimitedRequestFetchCalled = false;
+      globalThis.fetch = async () => {
+        directLimitedRequestFetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      await assert.rejects(
+        () => new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }).resolve({
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            maximumRequestBytes: 1,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }, httpRequest()),
+        { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+      );
+      assert.equal(directLimitedRequestFetchCalled, false);
+
       let limitedRequestFetchCalled = false;
       globalThis.fetch = async () => {
         limitedRequestFetchCalled = true;
@@ -606,6 +625,36 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_CAPABILITY_ORIGIN_DENIED' },
     );
     assert.equal(deniedOriginDriver.resolveCalled, false);
+
+    const deniedShadowDriver = policyProbeDriver();
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'shadow',
+        driver: deniedShadowDriver,
+        hostRequest: httpRequest(),
+        context: { allowShadowNetwork: true },
+        recordedResolution: null,
+      }),
+      { code: 'ERR_CAPABILITY_LIVE_DENIED' },
+    );
+    assert.equal(deniedShadowDriver.shadowCalled, false);
+
+    const allowedShadowDriver = policyProbeDriver();
+    const shadow = await runCapabilityMode({
+      mode: 'shadow',
+      driver: allowedShadowDriver,
+      hostRequest: httpRequest(),
+      context: { allowShadowNetwork: true },
+      recordedResolution: null,
+      policy: {
+        allowLiveEffects: true,
+        allowNetworkEffects: true,
+        allowedOrigins: ['https://allowed.example'],
+        allowedMethods: ['POST'],
+      },
+    });
+    assert.equal(allowedShadowDriver.shadowCalled, true);
+    assert.equal(shadow.shadow.liveInvoked, true);
   });
 
   it('validates model capability output as Boundary Agent.Action', async () => {
@@ -777,9 +826,13 @@ function preflightBlockedDriver() {
 
 function policyProbeDriver({ packFingerprint } = {}) {
   let resolveCalled = false;
+  let shadowCalled = false;
   return {
     get resolveCalled() {
       return resolveCalled;
+    },
+    get shadowCalled() {
+      return shadowCalled;
     },
     manifest() {
       return {
@@ -803,7 +856,8 @@ function policyProbeDriver({ packFingerprint } = {}) {
       return { wouldInvoke: true, proposedAction: { driver: 'policy-probe-http' } };
     },
     shadow() {
-      return { liveInvoked: false, schemaAccepted: false };
+      shadowCalled = true;
+      return { liveInvoked: true, schemaAccepted: false };
     },
     async resolve() {
       resolveCalled = true;

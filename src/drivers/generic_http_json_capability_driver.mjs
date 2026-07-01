@@ -70,13 +70,7 @@ export class GenericHttpJsonCapabilityDriver {
     const blockers = [...structural.blockers];
     try {
       this.#assertSecrets();
-      assertCapabilityPolicyAllows({
-        manifest: this.manifest(),
-        hostRequest: this.#policyHostRequest(hostRequest),
-        policy: context?.policy ?? {},
-        mode: 'live',
-        action: context?.action ?? null,
-      });
+      this.#assertPolicyAllows(context, hostRequest);
     } catch (error) {
       blockers.push(error.code ?? 'ERR_HTTP_CAPABILITY_PREFLIGHT_REJECTED');
     }
@@ -107,13 +101,7 @@ export class GenericHttpJsonCapabilityDriver {
 
   async resolve(context, hostRequest) {
     this.#assertSecrets();
-    assertCapabilityPolicyAllows({
-      manifest: this.manifest(),
-      hostRequest: this.#policyHostRequest(hostRequest),
-      policy: context?.policy ?? {},
-      mode: 'live',
-      action: context?.action ?? null,
-    });
+    this.#assertPolicyAllows(context, hostRequest);
     const request = this.#request(hostRequest);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -171,6 +159,27 @@ export class GenericHttpJsonCapabilityDriver {
   #policyHostRequest(hostRequest) {
     const request = this.#request(hostRequest);
     return { ...hostRequest, requestBytes: fromUtf8(stableJson({ url: request.url, method: request.method })) };
+  }
+
+  #assertPolicyAllows(context, hostRequest) {
+    const manifest = this.manifest();
+    const policy = context?.policy ?? {};
+    const action = context?.action ?? null;
+    assertCapabilityPolicyAllows({
+      manifest,
+      hostRequest,
+      policy,
+      mode: 'live',
+      action,
+      enforceNetworkTarget: false,
+    });
+    assertCapabilityPolicyAllows({
+      manifest,
+      hostRequest: this.#policyHostRequest(hostRequest),
+      policy,
+      mode: 'live',
+      action,
+    });
   }
 
   async #headers(hostRequest) {
