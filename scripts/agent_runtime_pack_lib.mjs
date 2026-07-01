@@ -262,18 +262,29 @@ async function assertSafePackOutput(out, roots) {
   if (path.basename(resolvedOut) !== PACK_NAME) {
     throw new Error('ERR_AGENT_RUNTIME_UNSAFE_OUT:packName');
   }
-  const realOut = await realpathIfExists(resolvedOut);
-  if (realOut && realOut !== resolvedOut) {
+  await assertNoSymlinkedExistingOutputPath(resolvedOut);
+}
+
+async function assertNoSymlinkedExistingOutputPath(resolvedOut) {
+  const existing = await nearestExistingPath(resolvedOut);
+  if (!existing) return;
+  if (existing.info.isSymbolicLink()) throw new Error('ERR_AGENT_RUNTIME_UNSAFE_OUT:realpath');
+  if (existing.path === resolvedOut && await realpath(resolvedOut) !== resolvedOut) {
     throw new Error('ERR_AGENT_RUNTIME_UNSAFE_OUT:realpath');
   }
 }
 
-async function realpathIfExists(target) {
-  try {
-    return await realpath(target);
-  } catch (error) {
-    if (error?.code === 'ENOENT') return null;
-    throw error;
+async function nearestExistingPath(target) {
+  let current = target;
+  while (true) {
+    try {
+      return { path: current, info: await lstat(current) };
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      const parent = path.dirname(current);
+      if (parent === current) return null;
+      current = parent;
+    }
   }
 }
 

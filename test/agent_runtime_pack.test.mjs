@@ -706,17 +706,19 @@ describe('Agent Runtime pack', () => {
     try {
       const target = path.join(root, 'outside');
       const link = path.join(root, 'link');
-      const pack = path.join(target, 'agent-runtime-v0.1');
-      const marker = path.join(pack, 'marker.txt');
-      await mkdir(pack, { recursive: true });
+      const pack = path.join(link, 'agent-runtime-v0.1');
+      const escapedPack = path.join(target, 'agent-runtime-v0.1');
+      const marker = path.join(target, 'marker.txt');
+      await mkdir(target, { recursive: true });
       await writeFile(marker, 'keep');
       await symlink(target, link, 'dir');
 
       await assert.rejects(
-        () => buildAgentRuntimePack({ out: path.join(link, 'agent-runtime-v0.1'), worldHostRepo: process.cwd() }),
+        () => buildAgentRuntimePack({ out: pack, worldHostRepo: process.cwd() }),
         /ERR_AGENT_RUNTIME_UNSAFE_OUT:realpath/,
       );
       assert.equal(await readFile(marker, 'utf8'), 'keep');
+      assert.equal(existsSync(escapedPack), false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
