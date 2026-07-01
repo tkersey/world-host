@@ -58,6 +58,455 @@ describe('capability preflight and reference drivers', () => {
     }]);
   });
 
+  it('requires descriptor coverage for application-level actuator requirements', () => {
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [{
+          actuatorRef: 'fixture:model',
+          descriptorFingerprint: 'descriptor:other-model',
+        }],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      drivers: [new FixtureModelDriver({ responses: ['ok'] })],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture'] }),
+    });
+
+    assert.ok(report.blockers.includes('required-actuator-descriptor-uncovered:fixture:model:descriptor:other-model'));
+    assert.equal(report.everyRequiredActuatorCovered, false);
+    assert.equal(report.executableCompatible, false);
+  });
+
+  it('requires declared host authority labels during application preflight', () => {
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [{
+          actuatorRef: 'fixture:model',
+          descriptorFingerprint: 'descriptor:fixture-model',
+        }],
+        requiredHostAuthorityLabels: ['model:fixture-agent'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      drivers: [new FixtureModelDriver({ responses: ['ok'] })],
+      policy: createRunPolicy(),
+    });
+
+    assert.ok(report.blockers.includes('required-authority-uncovered:model:fixture-agent'));
+    assert.equal(report.everyRequiredActuatorCovered, false);
+    assert.equal(report.executableCompatible, false);
+  });
+
+  it('preserves detailed policy blockers for required host authority labels', async () => {
+    const allowedRoot = await mkdtemp(path.join(tmpdir(), 'world-host-authority-allowed-'));
+    const blockedRoot = await mkdtemp(path.join(tmpdir(), 'world-host-authority-blocked-'));
+    try {
+      const report = preflightCapabilities({
+        application: {
+          requiredActuators: [],
+          requiredHostAuthorityLabels: ['file:sandbox'],
+          requiredRuntimeLimits: {},
+        },
+        currentHead: { generation: 0 },
+        drivers: [new SandboxFileDriver({ root: blockedRoot })],
+        policy: createRunPolicy({
+          allowBestEffort: true,
+          allowedAuthorityLabels: ['file:sandbox'],
+          allowedFileRoots: [allowedRoot],
+        }),
+      });
+
+      assert.ok(report.blockers.includes('required-authority-policy-blocked:file:sandbox'));
+      assert.ok(report.blockers.includes(`file-root-denied:${path.resolve(blockedRoot)}`));
+      assert.equal(report.fileNetworkAuthoritiesAllowed, false);
+    } finally {
+      await rm(allowedRoot, { recursive: true, force: true });
+      await rm(blockedRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('requires authority labels on selected actuator and request drivers', () => {
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [{
+          actuatorRef: 'fixture:model',
+          descriptorFingerprint: 'descriptor:fixture-model',
+        }],
+        requiredHostAuthorityLabels: ['model:fixture'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      pendingRequests: [fixtureRequest()],
+      drivers: [
+        fixtureDriverWithAuthority([]),
+        fixtureDriverWithAuthority(['model:fixture'], {
+          driverId: 'dummy-authority',
+          actuatorRef: 'fixture:other',
+        }),
+      ],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture'] }),
+    });
+
+    assert.ok(report.blockers.includes('required-authority-unbound:model:fixture'));
+    assert.deepEqual(report.coveredRequests, [{
+      actuatorRef: 'fixture:model',
+      descriptorFingerprint: 'descriptor:fixture-model',
+      driverId: 'fixture-model-custom',
+    }]);
+    assert.equal(report.everyRequiredActuatorCovered, false);
+  });
+
+  it('prefers authority-bound routes over earlier unlabeled matches', () => {
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [{
+          actuatorRef: 'fixture:model',
+          descriptorFingerprint: 'descriptor:fixture-model',
+        }],
+        requiredHostAuthorityLabels: ['model:fixture'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      pendingRequests: [fixtureRequest()],
+      drivers: [
+        fixtureDriverWithAuthority([], { driverId: 'unlabeled-model' }),
+        fixtureDriverWithAuthority(['model:fixture'], { driverId: 'labeled-model' }),
+      ],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture'] }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.deepEqual(report.coveredRequests, [{
+      actuatorRef: 'fixture:model',
+      descriptorFingerprint: 'descriptor:fixture-model',
+      driverId: 'labeled-model',
+    }]);
+    assert.equal(report.everyRequiredActuatorCovered, true);
+  });
+
+  it('does not prefer unrelated required authority labels for pending routes', () => {
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [
+          {
+            actuatorRef: 'fixture:model',
+            descriptorFingerprint: 'descriptor:fixture-model',
+          },
+          {
+            actuatorRef: 'sandbox:file',
+            descriptorFingerprint: 'descriptor:sandbox-file',
+          },
+        ],
+        requiredHostAuthorityLabels: ['model:fixture', 'file:sandbox'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      pendingRequests: [fixtureRequest()],
+      drivers: [
+        fixtureDriverWithAuthority(['file:sandbox'], { driverId: 'wrong-label-model' }),
+        fixtureDriverWithAuthority(['model:fixture'], { driverId: 'labeled-model' }),
+        fixtureDriverWithAuthority(['file:sandbox'], {
+          driverId: 'file-required',
+          actuatorRef: 'sandbox:file',
+          descriptorFingerprint: 'descriptor:sandbox-file',
+          actuationClasses: ['file'],
+        }),
+      ],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture', 'file:sandbox'] }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.deepEqual(report.coveredRequests, [{
+      actuatorRef: 'fixture:model',
+      descriptorFingerprint: 'descriptor:fixture-model',
+      driverId: 'labeled-model',
+    }]);
+    assert.equal(report.everyRequiredActuatorCovered, true);
+  });
+
+  it('does not let inactive actuator routes satisfy active request authority labels', () => {
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [
+          {
+            actuatorRef: 'fixture:model',
+            descriptorFingerprint: 'descriptor:fixture-model',
+          },
+          {
+            actuatorRef: 'sandbox:file',
+            descriptorFingerprint: 'descriptor:sandbox-file',
+          },
+        ],
+        requiredHostAuthorityLabels: ['model:fixture', 'file:sandbox'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      pendingRequests: [fileRequest('out.txt')],
+      drivers: [
+        fixtureDriverWithAuthority(['model:fixture', 'file:sandbox'], { driverId: 'cross-labeled-model' }),
+        fixtureDriverWithAuthority([], {
+          driverId: 'unlabeled-file',
+          actuatorRef: 'sandbox:file',
+          descriptorFingerprint: 'descriptor:sandbox-file',
+          actuationClasses: ['file'],
+        }),
+      ],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture', 'file:sandbox'] }),
+    });
+
+    assert.ok(report.blockers.includes('required-authority-unbound:file:sandbox'));
+    assert.deepEqual(report.coveredRequests, [{
+      actuatorRef: 'sandbox:file',
+      descriptorFingerprint: 'descriptor:sandbox-file',
+      driverId: 'unlabeled-file',
+    }]);
+    assert.equal(report.everyRequiredActuatorCovered, false);
+  });
+
+  it('binds distinct required authority labels to simultaneous pending routes', () => {
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [
+          {
+            actuatorRef: 'fixture:model',
+            descriptorFingerprint: 'descriptor:fixture-model',
+          },
+          {
+            actuatorRef: 'sandbox:file',
+            descriptorFingerprint: 'descriptor:sandbox-file',
+          },
+        ],
+        requiredHostAuthorityLabels: ['model:fixture', 'file:sandbox'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      pendingRequests: [
+        fixtureRequest(),
+        fileRequest('out.txt'),
+      ],
+      drivers: [
+        fixtureDriverWithAuthority(['model:fixture']),
+        fixtureDriverWithAuthority(['file:sandbox'], {
+          driverId: 'file-required',
+          actuatorRef: 'sandbox:file',
+          descriptorFingerprint: 'descriptor:sandbox-file',
+          actuationClasses: ['file'],
+        }),
+      ],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture', 'file:sandbox'] }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.deepEqual(report.coveredRequests, [
+      {
+        actuatorRef: 'fixture:model',
+        descriptorFingerprint: 'descriptor:fixture-model',
+        driverId: 'fixture-model-custom',
+      },
+      {
+        actuatorRef: 'sandbox:file',
+        descriptorFingerprint: 'descriptor:sandbox-file',
+        driverId: 'file-required',
+      },
+    ]);
+    assert.equal(report.everyRequiredActuatorCovered, true);
+  });
+
+  it('does not bind pending request authority to an unused required actuator route', () => {
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [{
+          actuatorRef: 'fixture:model',
+          descriptorFingerprint: 'descriptor:fixture-model',
+        }],
+        requiredHostAuthorityLabels: ['model:fixture'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      pendingRequests: [fixtureRequest()],
+      drivers: [
+        fixtureDriverWithAuthority(['model:fixture'], {
+          driverId: 'labeled-required-only',
+          actuationClasses: ['fixture:unused'],
+        }),
+        fixtureDriverWithAuthority([], { driverId: 'selected-unlabeled-request' }),
+      ],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture'] }),
+    });
+
+    assert.ok(report.blockers.includes('required-authority-unbound:model:fixture'));
+    assert.deepEqual(report.coveredRequests, [{
+      actuatorRef: 'fixture:model',
+      descriptorFingerprint: 'descriptor:fixture-model',
+      driverId: 'selected-unlabeled-request',
+    }]);
+    assert.equal(report.everyRequiredActuatorCovered, false);
+  });
+
+  it('does not require inactive actuator authorities on unrelated pending request routes', () => {
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [
+          {
+            actuatorRef: 'fixture:model',
+            descriptorFingerprint: 'descriptor:fixture-model',
+          },
+          {
+            actuatorRef: 'sandbox:file',
+            descriptorFingerprint: 'descriptor:sandbox-file',
+          },
+        ],
+        requiredHostAuthorityLabels: ['model:fixture', 'file:sandbox'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      pendingRequests: [fixtureRequest()],
+      drivers: [
+        fixtureDriverWithAuthority(['model:fixture']),
+        fixtureDriverWithAuthority(['file:sandbox'], {
+          driverId: 'file-required',
+          actuatorRef: 'sandbox:file',
+          descriptorFingerprint: 'descriptor:sandbox-file',
+          actuationClasses: ['file'],
+        }),
+      ],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture', 'file:sandbox'] }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.everyRequiredActuatorCovered, true);
+  });
+
+  it('does not require an inactive single authority label on unrelated pending request routes', () => {
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [
+          {
+            actuatorRef: 'fixture:model',
+            descriptorFingerprint: 'descriptor:fixture-model',
+          },
+          {
+            actuatorRef: 'sandbox:file',
+            descriptorFingerprint: 'descriptor:sandbox-file',
+          },
+        ],
+        requiredHostAuthorityLabels: ['model:fixture'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      pendingRequests: [fileRequest('out.txt')],
+      drivers: [
+        fixtureDriverWithAuthority(['model:fixture']),
+        fixtureDriverWithAuthority([], {
+          driverId: 'unlabeled-file',
+          actuatorRef: 'sandbox:file',
+          descriptorFingerprint: 'descriptor:sandbox-file',
+          actuationClasses: ['file'],
+        }),
+      ],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture'] }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.deepEqual(report.coveredRequests, [{
+      actuatorRef: 'sandbox:file',
+      descriptorFingerprint: 'descriptor:sandbox-file',
+      driverId: 'unlabeled-file',
+    }]);
+    assert.equal(report.everyRequiredActuatorCovered, true);
+  });
+
+  it('does not bind one pending request authority to another pending request route', () => {
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [
+          {
+            actuatorRef: 'fixture:model',
+            descriptorFingerprint: 'descriptor:fixture-model',
+          },
+          {
+            actuatorRef: 'sandbox:file',
+            descriptorFingerprint: 'descriptor:sandbox-file',
+          },
+        ],
+        requiredHostAuthorityLabels: ['model:fixture'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      pendingRequests: [
+        fixtureRequest(),
+        fileRequest('out.txt'),
+      ],
+      drivers: [
+        fixtureDriverWithAuthority([], { driverId: 'selected-unlabeled-model' }),
+        fixtureDriverWithAuthority(['model:fixture'], {
+          driverId: 'unrelated-labeled-file',
+          actuatorRef: 'sandbox:file',
+          descriptorFingerprint: 'descriptor:sandbox-file',
+          actuationClasses: ['file'],
+        }),
+      ],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture'] }),
+    });
+
+    assert.ok(report.blockers.includes('required-authority-unbound:model:fixture'));
+    assert.deepEqual(report.coveredRequests, [
+      {
+        actuatorRef: 'fixture:model',
+        descriptorFingerprint: 'descriptor:fixture-model',
+        driverId: 'selected-unlabeled-model',
+      },
+      {
+        actuatorRef: 'sandbox:file',
+        descriptorFingerprint: 'descriptor:sandbox-file',
+        driverId: 'unrelated-labeled-file',
+      },
+    ]);
+    assert.equal(report.everyRequiredActuatorCovered, false);
+  });
+
+  it('requires authority labels on selected actuator drivers before requests are inspected', () => {
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [{
+          actuatorRef: 'fixture:model',
+          descriptorFingerprint: 'descriptor:fixture-model',
+        }],
+        requiredHostAuthorityLabels: ['model:fixture'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      drivers: [
+        fixtureDriverWithAuthority([]),
+        fixtureDriverWithAuthority(['model:fixture'], {
+          driverId: 'dummy-authority',
+          actuatorRef: 'fixture:other',
+        }),
+      ],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture'] }),
+    });
+
+    assert.ok(report.blockers.includes('required-authority-unbound:model:fixture'));
+    assert.equal(report.everyRequiredActuatorCovered, false);
+    assert.equal(report.executableCompatible, false);
+  });
+
+  it('defers authority binding when pending requests are not available yet', () => {
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [],
+        requiredHostAuthorityLabels: ['model:fixture'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      drivers: [fixtureDriverWithAuthority(['model:fixture'])],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture'] }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.everyRequiredActuatorCovered, true);
+  });
+
   it('applies receiver policy to required actuators and sandbox roots', async () => {
     const allowedRoot = await mkdtemp(path.join(tmpdir(), 'world-host-allowed-root-'));
     const blockedRoot = await mkdtemp(path.join(tmpdir(), 'world-host-blocked-root-'));
@@ -444,6 +893,26 @@ function policyDeniedFixtureDriver() {
         recoveryClass: EffectRecoveryClass.pure,
         concurrencyLimit: 1,
         authorityLabels: ['denied:fixture'],
+        diagnostics: {},
+      };
+    },
+  };
+}
+
+function fixtureDriverWithAuthority(authorityLabels, options = {}) {
+  return {
+    manifest() {
+      return {
+        driverId: options.driverId ?? 'fixture-model-custom',
+        supportedActuatorRefs: [options.actuatorRef ?? 'fixture:model'],
+        supportedDescriptorFingerprints: [options.descriptorFingerprint ?? 'descriptor:fixture-model'],
+        supportedActuationClasses: options.actuationClasses ?? ['fixture'],
+        supportedResponseStatuses: ['ok'],
+        maximumRequestBytes: 1024 * 1024,
+        maximumResponseBytes: 1024 * 1024,
+        recoveryClass: EffectRecoveryClass.pure,
+        concurrencyLimit: 1,
+        authorityLabels,
         diagnostics: {},
       };
     },

@@ -2,22 +2,26 @@ import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { createApplicationRecord } from '../src/core/application.mjs';
-import { EffectJournal } from '../src/core/effect_journal.mjs';
+import { EffectJournal, EffectState } from '../src/core/effect_journal.mjs';
 import { exportCarrierRun, forkRunBranch, importCarrierRun } from '../src/core/migration.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from '../src/core/run.mjs';
 import { fromUtf8, stableJson } from '../src/core/store.mjs';
 import { RunController, WorldWorker } from '../src/core/worker.mjs';
 import { BunStoreLock } from '../src/bun/bun_lock.mjs';
-import { redact, runBunCli } from '../src/bun/bun_cli.mjs';
-import { encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
+import { agentWorldHostRequestToEffectRequest, agentWorldRequestDriver, redact, runBunCli } from '../src/bun/bun_cli.mjs';
+import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
+import { encodeCanonicalValueImage, wyhash64 } from '../src/protocol/world_loaded_value_codec.mjs';
 import { summarizeTurnClosureForRunHead } from '../src/protocol/world_universal_appliance_codec.mjs';
 import { DirectoryStore } from '../src/stores/directory_store.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
+import { FixtureAgentModelDriver } from '../src/drivers/fixture_agent_model_driver.mjs';
+import { SandboxFileDriver } from '../src/drivers/sandbox_file_driver.mjs';
+import { refreshAgentRuntimePackChecksums } from '../scripts/agent_runtime_pack_lib.mjs';
 
 describe('migration, branching, and CLI diagnostics', () => {
   it('forks a branch without mutating the source branch head', async () => {
@@ -816,6 +820,1069 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('preserves checked agent pack actuator requirements during CLI install', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-cli-install-'));
+    try {
+      let output = '';
+      const installCode = await runBunCli([
+        'agent',
+        'install',
+        '--pack', path.resolve('agent-runtime-v0.1'),
+        '--store', root,
+        '--app', 'agent-runtime-v0.1',
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      });
+
+      assert.equal(installCode, 0);
+      assert.equal(JSON.parse(output).applicationId, 'agent-runtime-v0.1');
+      const store = new DirectoryStore(root);
+      await store.acquireLock();
+      try {
+        const app = await store.getApplication('agent-runtime-v0.1');
+        assert.deepEqual(app.requiredActuators, [
+          {
+            actuatorRef: 'world:actuator-ref:4f0c7160f25c4c62',
+            descriptorFingerprint: 'world:descriptor:be73177924a6b377',
+          },
+          {
+            actuatorRef: 'world:actuator-ref:d5e4b1b427522cf2',
+            descriptorFingerprint: 'world:descriptor:74afc8c3b2fe4c33',
+          },
+        ]);
+        assert.deepEqual(app.requiredHostAuthorityLabels, ['model:fixture-agent', 'file:sandbox']);
+      } finally {
+        await store.releaseLock();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('runs installed agent pack resumes with seeded scenario payloads', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-cli-run-resume-'));
+    try {
+      await runBunCli([
+        'agent',
+        'install',
+        '--pack', path.resolve('agent-runtime-v0.1'),
+        '--store', root,
+        '--app', 'agent-runtime-v0.1',
+      ], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      });
+      await mkdir(path.join(root, 'sandbox'), { recursive: true });
+      await writeFile(path.join(root, 'sandbox/input.txt'), 'rewrite this file through the agent loop\n');
+      await writeFile(path.join(root, 'sandbox/output.txt'), '');
+
+      await assert.rejects(
+        () => runBunCli([
+          'agent',
+          'run',
+          '--store', root,
+          'agent-runtime-v0.1',
+          '--run', 'agent-cli-missing-sandbox',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_AGENT_RUNTIME_SANDBOX_ROOT_REQUIRED' },
+      );
+
+      let output = '';
+      const runCode = await runBunCli([
+        'agent',
+        'run',
+        '--store', root,
+        '--scenario', 'fixture',
+        '--sandbox-root', path.join(root, 'sandbox'),
+        'agent-runtime-v0.1',
+        '--run', 'agent-cli-run',
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      });
+      const run = JSON.parse(output);
+
+      assert.equal(runCode, 0);
+      assert.equal(run.head.status, 'needs_host');
+      assert.equal(run.advance.effectCount, 0);
+      assert.equal(run.diagnostics.driversInvokedByCli, false);
+      await assert.rejects(
+        () => runBunCli([
+          'agent',
+          'replay',
+          '--store', root,
+          '--run', 'agent-cli-run',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_AGENT_RUNTIME_REPLAY_HEAD_INCOMPLETE' },
+      );
+      output = '';
+      const resumeCode = await runBunCli([
+        'agent',
+        'resume',
+        '--store', root,
+        '--run', 'agent-cli-run',
+        '--scenario', 'fixture',
+        '--sandbox-root', path.join(root, 'sandbox'),
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      });
+      const resumed = JSON.parse(output);
+
+      assert.equal(resumeCode, 0);
+      assert.equal(resumed.head.status, 'completed');
+      assert.equal(resumed.advance.effectCount, 2);
+      assert.equal(resumed.diagnostics.driversInvokedByCli, true);
+      assert.equal(await readFile(path.join(root, 'sandbox/output.txt'), 'utf8'), 'actuate updated the fixture');
+
+      output = '';
+      const replayCode = await runBunCli([
+        'agent',
+        'replay',
+        '--store', root,
+        '--run', 'agent-cli-run',
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      });
+      const replayed = JSON.parse(output);
+
+      assert.equal(replayCode, 0);
+      assert.equal(replayed.command, 'replay');
+      assert.equal(replayed.replay.completed, true);
+      assert.equal(replayed.replay.retainedEffectCount, 2);
+      assert.equal(replayed.replay.freshEffectCount, 0);
+      assert.equal(replayed.diagnostics.driversInvoked, false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects replay heads without committed effect id diagnostics', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-replay-diagnostics-'));
+    try {
+      const { run, head } = await fixtureDirectoryStore(root);
+      const store = new DirectoryStore(root);
+      await store.acquireLock();
+      try {
+        await store.writeHead(run.runId, 'main', createRunHead({
+          ...head,
+          updateDiagnostics: {
+            parentTurnClosureFingerprint: head.updateDiagnostics.parentTurnClosureFingerprint,
+          },
+        }));
+      } finally {
+        await store.releaseLock();
+      }
+
+      await assert.rejects(() => runBunCli([
+        'agent',
+        'replay',
+        '--store', root,
+        '--run', run.runId,
+      ], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      }), { code: 'ERR_AGENT_RUNTIME_REPLAY_EFFECT_IDS_REQUIRED' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects replay heads with duplicate committed effect id diagnostics', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-replay-duplicate-diagnostics-'));
+    try {
+      const { run, head } = await fixtureDirectoryStore(root);
+      const store = new DirectoryStore(root);
+      await store.acquireLock();
+      try {
+        const committedEffectIds = head.updateDiagnostics.committedEffectIds;
+        await store.writeHead(run.runId, 'main', createRunHead({
+          ...head,
+          updateDiagnostics: {
+            ...head.updateDiagnostics,
+            committedEffectIds: [committedEffectIds[0], committedEffectIds[0]],
+          },
+        }));
+      } finally {
+        await store.releaseLock();
+      }
+
+      await assert.rejects(() => runBunCli([
+        'agent',
+        'replay',
+        '--store', root,
+        '--run', run.runId,
+      ], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      }), { code: 'ERR_AGENT_RUNTIME_REPLAY_EFFECT_IDS_DUPLICATE' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns nonzero when replay cannot retain every committed effect', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-replay-incomplete-'));
+    try {
+      const { run, head } = await fixtureDirectoryStore(root, {
+        closureOptions: {
+          appliedHostReplyFingerprints: [0xa01n],
+        },
+      });
+      const store = new DirectoryStore(root);
+      await store.acquireLock();
+      try {
+        await store.writeHead(run.runId, 'main', createRunHead({
+          ...head,
+          updateDiagnostics: {
+            ...head.updateDiagnostics,
+            committedEffectIds: ['world:key:missing'],
+          },
+        }));
+      } finally {
+        await store.releaseLock();
+      }
+
+      let output = '';
+      const replayCode = await runBunCli([
+        'agent',
+        'replay',
+        '--store', root,
+        '--run', run.runId,
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      });
+      const replayed = JSON.parse(output);
+
+      assert.equal(replayCode, 1);
+      assert.equal(replayed.ok, false);
+      assert.deepEqual(replayed.replay.missingEffectIds, ['world:key:missing']);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects replay effects that are not applied by the TurnReceipt', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-replay-receipt-mismatch-'));
+    try {
+      const { run } = await fixtureDirectoryStore(root, {
+        closureOptions: {
+          appliedHostReplyFingerprints: [0xdeadn],
+        },
+      });
+      const store = new DirectoryStore(root);
+      await store.acquireLock();
+      try {
+        const [effect] = await store.listEffectRecords(run.runId);
+        const resolutionInputRef = await store.putBlob(encodeResolutionInputBytes({
+          targetHostRequestFingerprint: 0xa01n,
+          status: 0,
+          responseValueImageBytes: encodeCanonicalValueImage({
+            bytes: fromUtf8('receipt mismatch response'),
+            dynamicSize: true,
+          }),
+          hostClaimBytes: new Uint8Array(),
+          attemptNumber: 1,
+          metadata: new Uint8Array(),
+        }));
+        await store.putEffectRecord({
+          ...effect,
+          resolutionInputRef,
+          diagnostics: {
+            ...effect.diagnostics,
+            worldHostReplyBinding: {
+              requestFingerprint: '0000000000000a01',
+              intentFingerprint: '0000000000000a06',
+              envelopeFingerprint: '0000000000000a07',
+              idempotencyKeyFingerprint: '0000000000000a09',
+            },
+          },
+        });
+      } finally {
+        await store.releaseLock();
+      }
+
+      await assert.rejects(() => runBunCli([
+        'agent',
+        'replay',
+        '--store', root,
+        '--run', run.runId,
+      ], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      }), { code: 'ERR_AGENT_RUNTIME_REPLAY_EFFECT_RECEIPT_MISMATCH' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects replay HostReply binding diagnostics copied from another HostRequest', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-replay-binding-target-'));
+    const copiedBinding = {
+      requestFingerprint: '0000000000000b02',
+      intentFingerprint: '0000000000000b06',
+      envelopeFingerprint: '0000000000000b07',
+      idempotencyKeyFingerprint: '0000000000000b09',
+    };
+    const resolutionInputBytes = encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xa01n,
+      status: 0,
+      responseValueImageBytes: encodeCanonicalValueImage({
+        bytes: fromUtf8('copied binding response'),
+        dynamicSize: true,
+      }),
+      hostClaimBytes: new Uint8Array(),
+      attemptNumber: 1,
+      metadata: new Uint8Array(),
+    });
+    try {
+      const { run } = await fixtureDirectoryStore(root, {
+        closureOptions: {
+          appliedHostReplyFingerprints: [fixtureHostReplyFingerprint(copiedBinding, resolutionInputBytes)],
+        },
+      });
+      const store = new DirectoryStore(root);
+      await store.acquireLock();
+      try {
+        const [effect] = await store.listEffectRecords(run.runId);
+        const resolutionInputRef = await store.putBlob(resolutionInputBytes);
+        await store.putEffectRecord({
+          ...effect,
+          resolutionInputRef,
+          diagnostics: {
+            ...effect.diagnostics,
+            worldHostReplyBinding: copiedBinding,
+          },
+        });
+      } finally {
+        await store.releaseLock();
+      }
+
+      await assert.rejects(() => runBunCli([
+        'agent',
+        'replay',
+        '--store', root,
+        '--run', run.runId,
+      ], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      }), { code: 'ERR_AGENT_RUNTIME_REPLAY_EFFECT_RECEIPT_TARGET_MISMATCH' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects replay when a retained ResolutionInput blob is missing', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-replay-missing-resolution-'));
+    try {
+      const { run } = await fixtureDirectoryStore(root, {
+        closureOptions: {
+          appliedHostReplyFingerprints: [0xa01n],
+        },
+      });
+      const store = new DirectoryStore(root);
+      await store.acquireLock();
+      try {
+        const [effect] = await store.listEffectRecords(run.runId);
+        await store.putEffectRecord({
+          ...effect,
+          resolutionInputRef: {
+            algorithm: 'sha256',
+            checksum: '0'.repeat(64),
+            byteLength: 1,
+          },
+        });
+      } finally {
+        await store.releaseLock();
+      }
+
+      await assert.rejects(() => runBunCli([
+        'agent',
+        'replay',
+        '--store', root,
+        '--run', run.runId,
+      ], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      }), { code: 'ERR_AGENT_RUNTIME_REPLAY_EFFECT_RESOLUTION_MISSING' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects malformed canonical agent runtime payload framing', () => {
+    const malformedPayload = new Uint8Array(encodeCanonicalValueImage({
+      bytes: fromUtf8('agent runtime request'),
+      dynamicSize: true,
+    }));
+    malformedPayload[16] = 2;
+
+    assert.throws(() => agentWorldHostRequestToEffectRequest({
+      requestFingerprint: 0xa17n,
+      idempotencyKeyBytes: fromUtf8('malformed-agent-runtime-payload'),
+      idempotencyKeyFingerprint: 0xa18n,
+      actuatorRefFingerprint: 0xa19n,
+      expectedResponseDescriptorFingerprint: 0xa20n,
+      actuationClass: 2,
+      allowedResponseStatuses: 1,
+      hostRequestBytes: fromUtf8('host-request-envelope'),
+      payloadValueImageBytes: malformedPayload,
+    }), { code: 'ERR_AGENT_RUNTIME_VALUE_IMAGE_MALFORMED' });
+  });
+
+  it('rejects canonical agent runtime payload fingerprint and ref mismatches', () => {
+    const payload = new Uint8Array(encodeCanonicalValueImage({
+      boundaryValueFingerprint: 0xa21n,
+      bytes: fromUtf8('agent runtime request'),
+      dynamicSize: true,
+    }));
+    const tamperedFingerprint = new Uint8Array(payload);
+    tamperedFingerprint[8] ^= 0xff;
+    const baseRequest = {
+      requestFingerprint: 0xa17n,
+      idempotencyKeyBytes: fromUtf8('agent-runtime-payload-fingerprint'),
+      idempotencyKeyFingerprint: 0xa18n,
+      actuatorRefFingerprint: 0xa19n,
+      expectedResponseDescriptorFingerprint: 0xa20n,
+      actuationClass: 2,
+      allowedResponseStatuses: 1,
+      hostRequestBytes: fromUtf8('host-request-envelope'),
+    };
+
+    assert.throws(() => agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      payloadValueImageBytes: tamperedFingerprint,
+      payloadValueRefFingerprint: 0xa21n,
+    }), { code: 'ERR_AGENT_RUNTIME_VALUE_IMAGE_FINGERPRINT' });
+
+    assert.throws(() => agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      payloadValueImageBytes: payload,
+      payloadValueRefFingerprint: 0xa22n,
+    }), { code: 'ERR_AGENT_RUNTIME_VALUE_IMAGE_PAYLOAD_REF' });
+
+    const schemaPayload = new Uint8Array(encodeCanonicalValueImage({
+      codecSchemaDescriptorFingerprint: 0xa23n,
+      bytes: fromUtf8('agent runtime request'),
+      dynamicSize: true,
+    }));
+    assert.throws(() => agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      payloadValueImageBytes: schemaPayload,
+      payloadSchemaRefFingerprint: 0xa24n,
+    }), { code: 'ERR_AGENT_RUNTIME_VALUE_IMAGE_PAYLOAD_SCHEMA_REF' });
+  });
+
+  it('rejects legacy agent runtime payload wrapper mismatches', () => {
+    const payload = encodeLegacyAgentRuntimePayload({
+      commandFingerprint: 0xa04n,
+      bindingFingerprint: 0xa03n,
+      worldPortId: 0,
+      rootArgumentImageBytes: fromUtf8('agent runtime request'),
+    });
+    const baseRequest = {
+      requestFingerprint: 0xa17n,
+      pendingPortFingerprint: 0xa03n,
+      targetRefFingerprint: 0xa04n,
+      frameRequestBytes: encodeAgentRuntimeFrameRequest({
+        commandFingerprint: 0xa04n,
+        bindingFingerprint: 0xa03n,
+        worldPortId: 0,
+      }),
+      worldPortId: 0,
+      idempotencyKeyBytes: fromUtf8('legacy-agent-runtime-payload'),
+      idempotencyKeyFingerprint: 0xa18n,
+      actuatorRefFingerprint: 0xa19n,
+      expectedResponseDescriptorFingerprint: 0xa20n,
+      actuationClass: 2,
+      allowedResponseStatuses: 1,
+      hostRequestBytes: fromUtf8('host-request-envelope'),
+    };
+
+    assert.deepEqual(agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      payloadValueImageBytes: payload,
+    }).requestBytes, fromUtf8('agent runtime request'));
+
+    assert.deepEqual(agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      targetRefFingerprint: 0xb04n,
+      payloadValueImageBytes: payload,
+    }).requestBytes, fromUtf8('agent runtime request'));
+
+    assert.deepEqual(agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      pendingPortFingerprint: 0xb03n,
+      payloadValueImageBytes: payload,
+    }).requestBytes, fromUtf8('agent runtime request'));
+
+    assert.throws(() => agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      commandFingerprint: 0xb04n,
+      bindingFingerprint: 0xa03n,
+      payloadValueImageBytes: payload,
+    }), { code: 'ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_COMMAND_REF' });
+
+    assert.throws(() => agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      commandFingerprint: 0xa04n,
+      bindingFingerprint: 0xb03n,
+      payloadValueImageBytes: payload,
+    }), { code: 'ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_BINDING_REF' });
+
+    assert.throws(() => agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      payloadValueImageBytes: encodeLegacyAgentRuntimePayload({
+        commandFingerprint: 0xb04n,
+        bindingFingerprint: 0xa03n,
+        worldPortId: 0,
+        rootArgumentImageBytes: fromUtf8('agent runtime request'),
+      }),
+    }), { code: 'ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_COMMAND_REF' });
+
+    assert.throws(() => agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      payloadValueImageBytes: encodeLegacyAgentRuntimePayload({
+        commandFingerprint: 0xa04n,
+        bindingFingerprint: 0xb03n,
+        worldPortId: 0,
+        rootArgumentImageBytes: fromUtf8('agent runtime request'),
+      }),
+    }), { code: 'ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_BINDING_REF' });
+
+    assert.throws(() => agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      payloadValueImageBytes: encodeLegacyAgentRuntimePayload({
+        commandFingerprint: 0xa04n,
+        bindingFingerprint: 0xa03n,
+        worldPortId: 1,
+        rootArgumentImageBytes: fromUtf8('agent runtime request'),
+      }),
+    }), { code: 'ERR_AGENT_RUNTIME_PAYLOAD_VALUE_IMAGE_WORLD_PORT' });
+
+    assert.throws(() => agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      frameRequestBytes: baseRequest.frameRequestBytes.slice(0, -8),
+      payloadValueImageBytes: payload,
+    }), { code: 'ERR_AGENT_RUNTIME_FRAME_REQUEST_MALFORMED' });
+
+    assert.throws(() => agentWorldHostRequestToEffectRequest({
+      ...baseRequest,
+      frameRequestBytes: concat([baseRequest.frameRequestBytes, new Uint8Array([0])]),
+      payloadValueImageBytes: payload,
+    }), { code: 'ERR_AGENT_RUNTIME_FRAME_REQUEST_MALFORMED' });
+  });
+
+  it('requires shipped release receipts before agent installs', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-install-receipt-'));
+    const pack = path.join(root, 'agent-runtime-v0.1');
+    try {
+      await cp(path.resolve('agent-runtime-v0.1'), pack, { recursive: true });
+      await rm(path.join(pack, 'manifest/agent-runtime-release-receipt.json'));
+      await refreshAgentRuntimePackChecksums(pack);
+
+      await assert.rejects(
+        () => runBunCli([
+          'agent',
+          'install',
+          '--pack', pack,
+          '--store', path.join(root, 'store'),
+          '--app', 'agent-runtime-v0.1',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        /missing required file: .*agent-runtime-release-receipt\.json/,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('persists release receipts from agent conformance before install', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-conformance-receipt-'));
+    const pack = path.join(root, 'agent-runtime-v0.1');
+    try {
+      await cp(path.resolve('agent-runtime-v0.1'), pack, { recursive: true });
+      const receiptPath = path.join(pack, 'manifest/agent-runtime-release-receipt.json');
+      await rm(receiptPath);
+      await refreshAgentRuntimePackChecksums(pack);
+
+      const conformanceCode = await runBunCli([
+        'agent',
+        'conformance',
+        '--pack', pack,
+      ], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      });
+      assert.equal(conformanceCode, 0);
+      const receipt = JSON.parse(await readFile(receiptPath, 'utf8'));
+      assert.equal(receipt.complete, true);
+
+      const installCode = await runBunCli([
+        'agent',
+        'install',
+        '--pack', pack,
+        '--store', path.join(root, 'store'),
+        '--app', 'agent-runtime-v0.1',
+      ], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      });
+      assert.equal(installCode, 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('imports installed agent exports with receiver-local agent drivers', async () => {
+    const sourceRoot = await mkdtemp(path.join(tmpdir(), 'world-host-agent-import-source-'));
+    const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-agent-import-receiver-'));
+    const noPendingReceiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-agent-import-complete-receiver-'));
+    const highLimitReceiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-agent-import-high-limit-receiver-'));
+    const packagePath = path.join(receiverRoot, 'agent-export.json');
+    try {
+      await runBunCli([
+        'agent',
+        'install',
+        '--pack', path.resolve('agent-runtime-v0.1'),
+        '--store', sourceRoot,
+        '--app', 'agent-runtime-v0.1',
+      ], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      });
+      const runCode = await runBunCli([
+        'agent',
+        'run',
+        '--no-execute',
+        '--store', sourceRoot,
+        'agent-runtime-v0.1',
+        '--run', 'agent-import-source',
+      ], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      });
+      assert.equal(runCode, 0);
+
+      const exportCode = await runBunCli([
+        'agent',
+        'migrate',
+        '--store', sourceRoot,
+        '--run', 'agent-import-source',
+        '--out', packagePath,
+      ], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      });
+      assert.equal(exportCode, 0);
+
+      const packageJson = JSON.parse(await readFile(packagePath, 'utf8'));
+      let noPendingOutput = '';
+      const noPendingImportCode = await runBunCli([
+        'agent',
+        'import',
+        '--store', noPendingReceiverRoot,
+        '--package', packagePath,
+        '--run', 'receiver-agent-import-no-pending',
+      ], {
+        stdout: { write: (text) => { noPendingOutput += text; } },
+        stderr: { write() {} },
+      });
+      const noPendingImported = JSON.parse(noPendingOutput);
+      assert.equal(noPendingImportCode, 0);
+      assert.equal(noPendingImported.runId, 'receiver-agent-import-no-pending');
+      assert.equal(noPendingImported.receiverPolicyApplied, true);
+
+      let genericNoPendingOutput = '';
+      const genericNoPendingImportCode = await runBunCli([
+        'import',
+        '--store', noPendingReceiverRoot,
+        '--package', packagePath,
+        '--run', 'generic-agent-import-no-pending',
+      ], {
+        stdout: { write: (text) => { genericNoPendingOutput += text; } },
+        stderr: { write() {} },
+      });
+      const genericNoPendingImported = JSON.parse(genericNoPendingOutput);
+      assert.equal(genericNoPendingImportCode, 0);
+      assert.equal(genericNoPendingImported.runId, 'generic-agent-import-no-pending');
+      assert.equal(genericNoPendingImported.receiverPolicyApplied, true);
+
+      const completedBytes = fixtureTurnClosureBytes({ status: 2, turnSequenceNumber: 9n, closureFingerprint: 0x919n });
+      const completedSummary = summarizeTurnClosureForRunHead(completedBytes);
+      const completedBlob = blobEntryForBytes(completedBytes);
+      const highLimitCompletedPackagePath = path.join(receiverRoot, 'agent-completed-high-limits-export.json');
+      await writeFile(highLimitCompletedPackagePath, JSON.stringify({
+        ...packageJson,
+        bundle: {
+          ...packageJson.bundle,
+          application: {
+            ...packageJson.bundle.application,
+            requiredRuntimeLimits: {
+              maximumConcurrentEffects: 99,
+              maximumRequestBytes: 99 * 1024 * 1024,
+              maximumResponseBytes: 99 * 1024 * 1024,
+            },
+          },
+          head: {
+            ...packageJson.bundle.head,
+            generation: completedSummary.inspectionDiagnostics.turnSequenceNumber + 1,
+            status: 'completed',
+            turnClosureRef: {
+              algorithm: 'sha256',
+              checksum: completedBlob.checksum,
+              byteLength: completedBlob.byteLength,
+            },
+            turnClosureWorldFingerprint: completedSummary.turnClosureWorldFingerprint,
+            resultingStateFingerprint: completedSummary.resultingStateFingerprint,
+            chronicleCursor: completedSummary.chronicleCursor,
+            archiveMomentFingerprint: completedSummary.archiveMomentFingerprint,
+            archiveSealFingerprint: completedSummary.archiveSealFingerprint,
+          },
+          blobs: [...packageJson.bundle.blobs, completedBlob],
+        },
+      }));
+      let highLimitCompletedOutput = '';
+      const highLimitCompletedImportCode = await runBunCli([
+        'agent',
+        'import',
+        '--store', highLimitReceiverRoot,
+        '--package', highLimitCompletedPackagePath,
+        '--run', 'receiver-agent-import-high-limit-completed',
+      ], {
+        stdout: { write: (text) => { highLimitCompletedOutput += text; } },
+        stderr: { write() {} },
+      });
+      const highLimitCompletedImported = JSON.parse(highLimitCompletedOutput);
+      assert.equal(highLimitCompletedImportCode, 0);
+      assert.equal(highLimitCompletedImported.runId, 'receiver-agent-import-high-limit-completed');
+
+      const pendingClosureBytes = fixtureNeedsHostTurnClosureBytes([agentModelHostRequestBytes()]);
+      const pendingClosureSummary = summarizeTurnClosureForRunHead(pendingClosureBytes);
+      const pendingClosureBlob = blobEntryForBytes(pendingClosureBytes);
+      const pendingPackagePath = path.join(receiverRoot, 'agent-pending-export.json');
+      await writeFile(pendingPackagePath, JSON.stringify({
+        ...packageJson,
+        bundle: {
+          ...packageJson.bundle,
+          head: {
+            ...packageJson.bundle.head,
+            generation: pendingClosureSummary.inspectionDiagnostics.turnSequenceNumber + 1,
+            status: 'needs_host',
+            turnClosureRef: {
+              algorithm: 'sha256',
+              checksum: pendingClosureBlob.checksum,
+              byteLength: pendingClosureBlob.byteLength,
+            },
+            turnClosureWorldFingerprint: pendingClosureSummary.turnClosureWorldFingerprint,
+            resultingStateFingerprint: pendingClosureSummary.resultingStateFingerprint,
+            chronicleCursor: pendingClosureSummary.chronicleCursor,
+            archiveMomentFingerprint: pendingClosureSummary.archiveMomentFingerprint,
+            archiveSealFingerprint: pendingClosureSummary.archiveSealFingerprint,
+          },
+          blobs: [...packageJson.bundle.blobs, pendingClosureBlob],
+        },
+      }));
+
+      await assert.rejects(
+        () => runBunCli([
+          'import',
+          '--store', receiverRoot,
+          '--package', pendingPackagePath,
+          '--run', 'generic-agent-import',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_IMPORT_PREFLIGHT_BLOCKED' },
+      );
+
+      const sandboxRoot = path.join(receiverRoot, 'sandbox');
+      const requestlessNeedsHostBytes = fixtureNeedsHostTurnClosureBytes([]);
+      const requestlessNeedsHostSummary = summarizeTurnClosureForRunHead(requestlessNeedsHostBytes);
+      const requestlessNeedsHostBlob = blobEntryForBytes(requestlessNeedsHostBytes);
+      const requestlessNeedsHostPackagePath = path.join(receiverRoot, 'agent-requestless-needs-host-export.json');
+      await writeFile(requestlessNeedsHostPackagePath, JSON.stringify({
+        ...packageJson,
+        bundle: {
+          ...packageJson.bundle,
+          head: {
+            ...packageJson.bundle.head,
+            generation: requestlessNeedsHostSummary.inspectionDiagnostics.turnSequenceNumber + 1,
+            status: 'needs_host',
+            turnClosureRef: {
+              algorithm: 'sha256',
+              checksum: requestlessNeedsHostBlob.checksum,
+              byteLength: requestlessNeedsHostBlob.byteLength,
+            },
+            turnClosureWorldFingerprint: requestlessNeedsHostSummary.turnClosureWorldFingerprint,
+            resultingStateFingerprint: requestlessNeedsHostSummary.resultingStateFingerprint,
+            chronicleCursor: requestlessNeedsHostSummary.chronicleCursor,
+            archiveMomentFingerprint: requestlessNeedsHostSummary.archiveMomentFingerprint,
+            archiveSealFingerprint: requestlessNeedsHostSummary.archiveSealFingerprint,
+          },
+          blobs: [...packageJson.bundle.blobs, requestlessNeedsHostBlob],
+        },
+      }));
+      await assert.rejects(
+        () => runBunCli([
+          'agent',
+          'import',
+          '--store', receiverRoot,
+          '--package', requestlessNeedsHostPackagePath,
+          '--run', 'receiver-agent-import-requestless-needs-host',
+          '--sandbox-root', sandboxRoot,
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_IMPORT_PREFLIGHT_NEEDS_HOST_REQUESTS_EMPTY' },
+      );
+
+      const yieldedBudgetBytes = fixtureNeedsHostTurnClosureBytes([], 1);
+      const yieldedBudgetSummary = summarizeTurnClosureForRunHead(yieldedBudgetBytes);
+      const yieldedBudgetBlob = blobEntryForBytes(yieldedBudgetBytes);
+      const yieldedBudgetPackagePath = path.join(receiverRoot, 'agent-yielded-budget-export.json');
+      await writeFile(yieldedBudgetPackagePath, JSON.stringify({
+        ...packageJson,
+        bundle: {
+          ...packageJson.bundle,
+          head: {
+            ...packageJson.bundle.head,
+            generation: yieldedBudgetSummary.inspectionDiagnostics.turnSequenceNumber + 1,
+            status: 'yielded_budget',
+            turnClosureRef: {
+              algorithm: 'sha256',
+              checksum: yieldedBudgetBlob.checksum,
+              byteLength: yieldedBudgetBlob.byteLength,
+            },
+            turnClosureWorldFingerprint: yieldedBudgetSummary.turnClosureWorldFingerprint,
+            resultingStateFingerprint: yieldedBudgetSummary.resultingStateFingerprint,
+            chronicleCursor: yieldedBudgetSummary.chronicleCursor,
+            archiveMomentFingerprint: yieldedBudgetSummary.archiveMomentFingerprint,
+            archiveSealFingerprint: yieldedBudgetSummary.archiveSealFingerprint,
+          },
+          blobs: [...packageJson.bundle.blobs, yieldedBudgetBlob],
+        },
+      }));
+      await assert.rejects(
+        () => runBunCli([
+          'agent',
+          'import',
+          '--store', receiverRoot,
+          '--package', yieldedBudgetPackagePath,
+          '--run', 'receiver-agent-import-yielded-budget',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_AGENT_RUNTIME_SANDBOX_ROOT_REQUIRED' },
+      );
+
+      await mkdir(sandboxRoot, { recursive: true });
+      let output = '';
+      const importCode = await runBunCli([
+        'agent',
+        'import',
+        '--store', receiverRoot,
+        '--package', pendingPackagePath,
+        '--run', 'receiver-agent-import',
+        '--sandbox-root', sandboxRoot,
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      });
+      const imported = JSON.parse(output);
+      assert.equal(importCode, 0);
+      assert.equal(imported.runId, 'receiver-agent-import');
+      assert.equal(imported.receiverPolicyApplied, true);
+      assert.equal(imported.diagnostics.workerExecuted, false);
+
+      const receiverStore = new DirectoryStore(receiverRoot);
+      await receiverStore.acquireLock();
+      try {
+        const app = await receiverStore.getApplication('agent-runtime-v0.1');
+        assert.deepEqual(app.requiredActuators, [
+          {
+            actuatorRef: 'world:actuator-ref:4f0c7160f25c4c62',
+            descriptorFingerprint: 'world:descriptor:be73177924a6b377',
+          },
+          {
+            actuatorRef: 'world:actuator-ref:d5e4b1b427522cf2',
+            descriptorFingerprint: 'world:descriptor:74afc8c3b2fe4c33',
+          },
+        ]);
+        assert.deepEqual(app.requiredHostAuthorityLabels, ['model:fixture-agent', 'file:sandbox']);
+      } finally {
+        await receiverStore.releaseLock();
+      }
+    } finally {
+      await rm(sourceRoot, { recursive: true, force: true });
+      await rm(receiverRoot, { recursive: true, force: true });
+      await rm(noPendingReceiverRoot, { recursive: true, force: true });
+      await rm(highLimitReceiverRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rebinds recovered agent runtime model responses to expected World refs', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({
+      store,
+      runId: 'agent-runtime-recover',
+      branchId: 'main',
+      parentTurnClosureFingerprint: 'world:turn-closure:agent-runtime-parent',
+    });
+    const driver = agentWorldRequestDriver(new FixtureAgentModelDriver({
+      scenario: 'skeleton',
+      actuatorRef: 'world:actuator-ref:4f0c7160f25c4c62',
+      descriptorFingerprint: 'world:descriptor:be73177924a6b377',
+    }), 'world:actuation-class:2');
+    const hostRequest = {
+      hostRequestFingerprint: 'world:host-request:0000000000000a17',
+      idempotencyKeyBytes: fromUtf8('agent-runtime-recover-key'),
+      actuatorRef: 'world:actuator-ref:4f0c7160f25c4c62',
+      descriptorFingerprint: 'world:descriptor:be73177924a6b377',
+      actuationClass: 'world:actuation-class:2',
+      responseSchema: { status: 'responded' },
+      requestBytes: fromUtf8(JSON.stringify({
+        schema: 'boundary.Agent.DecisionPrompt.v0',
+        observation: 'goal=invoke',
+      })),
+      expectedResponseValueRefFingerprint: '0x0000000000000abc',
+      expectedResponseSchemaRefFingerprint: '0x0000000000000def',
+      diagnostics: {
+        agentRuntimeExpectedResponseValueRefFingerprint: '0x0000000000000abc',
+        agentRuntimeExpectedResponseSchemaRefFingerprint: '0x0000000000000def',
+      },
+    };
+    const observed = await journal.observe(hostRequest, { manifest: driver.manifest() });
+    await store.putEffectRecord({
+      ...observed,
+      state: EffectState.running,
+      attemptCount: 1,
+      diagnostics: { ...observed.diagnostics, driverId: 'fixture-agent-model' },
+    });
+
+    const recovered = await journal.resolve({}, hostRequest, driver);
+    const resolution = decodeResolutionInputBytes(recovered.resolutionInputBytes);
+    const refs = decodeValueImageResponseRefs(resolution.responseValueImageBytes);
+
+    assert.equal(recovered.record.diagnostics.recovered, true);
+    assert.equal(recovered.record.diagnostics.agentRuntimeResponseBoundToExpectedRefs, true);
+    assert.equal(refs.boundaryValueFingerprint, '0x0000000000000abc');
+    assert.equal(refs.codecSchemaDescriptorFingerprint, '0x0000000000000def');
+  });
+
+  it('translates missing sandbox file reads into agent runtime responses', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-missing-file-'));
+    try {
+      const driver = agentWorldRequestDriver(new SandboxFileDriver({
+        root,
+        actuatorRef: 'world:actuator-ref:d5e4b1b427522cf2',
+        descriptorFingerprint: 'world:descriptor:74afc8c3b2fe4c33',
+      }), 'world:actuation-class:3');
+      const result = await driver.resolve({}, {
+        hostRequestFingerprint: 'world:host-request:0000000000000f17',
+        idempotencyKeyBytes: fromUtf8('agent-runtime-missing-file-key'),
+        idempotencyKeyWorldFingerprint: 'world:idempotency-key:0000000000000f18',
+        actuatorRef: 'world:actuator-ref:d5e4b1b427522cf2',
+        descriptorFingerprint: 'world:descriptor:74afc8c3b2fe4c33',
+        actuationClass: 'world:actuation-class:3',
+        responseSchema: { status: 'responded' },
+        requestBytes: fromUtf8(JSON.stringify({ operation: 'read', path: 'missing.txt' })),
+        expectedResponseValueRefFingerprint: '0x0000000000000f19',
+        expectedResponseSchemaRefFingerprint: '0x0000000000000f20',
+      });
+      const resolution = decodeResolutionInputBytes(result.resolutionInputBytes);
+      const refs = decodeValueImageResponseRefs(resolution.responseValueImageBytes);
+
+      assert.equal(resolution.status, 0);
+      assert.equal(result.diagnostics.agentRuntimeTranslatedResponseStatus, 'not_found');
+      assert.equal(result.diagnostics.agentRuntimeResponseBoundToExpectedRefs, true);
+      assert.equal(refs.boundaryValueFingerprint, '0x0000000000000f19');
+      assert.equal(refs.codecSchemaDescriptorFingerprint, '0x0000000000000f20');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects invalid agent packs during CLI install', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-cli-invalid-install-'));
+    try {
+      const pack = path.join(root, 'agent-runtime-v0.1');
+      await cp(path.resolve('agent-runtime-v0.1'), pack, { recursive: true });
+      await writeFile(path.join(pack, 'world/world_universal_appliance.wasm'), 'tampered');
+      await assert.rejects(
+        () => runBunCli([
+          'agent',
+          'install',
+          '--pack', pack,
+          '--store', root,
+          '--app', 'agent-runtime-v0.1',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        /ERR_CHECKSUM_MISMATCH:world\/world_universal_appliance\.wasm/,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('runs agent apps with option-first positional app names', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-agent-cli-run-position-'));
+    try {
+      const wasmPath = path.join(root, 'world_universal_appliance.wasm');
+      const imagePath = path.join(root, 'agent.world-executable');
+      await writeFile(wasmPath, fromUtf8('wasm:agent-run'));
+      await writeFile(imagePath, fromUtf8('image:agent-run'));
+      await runBunCli([
+        'install',
+        '--store', root,
+        '--name', 'agent-app',
+        '--wasm', wasmPath,
+        '--image', imagePath,
+        '--image-fingerprint', 'world:image:agent-app',
+      ], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      });
+
+      let output = '';
+      const code = await runBunCli([
+        'agent',
+        'run',
+        '--store', root,
+        'agent-app',
+        '--run', 'agent-cli-run',
+        '--no-execute',
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      });
+
+      assert.equal(code, 0);
+      const result = JSON.parse(output);
+      assert.equal(result.run.runId, 'agent-cli-run');
+      assert.equal(result.run.applicationId, 'agent-app');
+      assert.equal(result.run.created, true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('uses relative store paths for lock creation', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-cli-relative-'));
     const previousCwd = process.cwd();
@@ -1324,7 +2391,9 @@ describe('migration, branching, and CLI diagnostics', () => {
       await receiverStore.acquireLock();
       try {
         for (const blob of bundle.blobs) await receiverStore.putBlob(Uint8Array.from(blob.bytes));
-        await receiverStore.createApplication(bundle.application);
+        const legacyApplication = { ...bundle.application };
+        delete legacyApplication.requiredHostAuthorityLabels;
+        await receiverStore.createApplication(legacyApplication);
         await receiverStore.createRun(bundle.run);
         assert.equal((await receiverStore.listEffectRecords(run.runId)).length, 0);
 
@@ -1403,13 +2472,14 @@ describe('migration, branching, and CLI diagnostics', () => {
   });
 
   it('exports, imports, and forks DirectoryStore runs through redacted CLI operations', async () => {
-      const sourceRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-migrate-source-'));
-      const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-migrate-receiver-'));
-      const packagePath = path.join(receiverRoot, 'carrier-export.json');
-      let diagnosticRef = null;
-      let retainedDiagnosticRef = null;
-      let unreferencedRef = null;
-      try {
+    const sourceRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-migrate-source-'));
+    const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-migrate-receiver-'));
+    const blockedReceiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-cli-migrate-terminal-receiver-'));
+    const packagePath = path.join(receiverRoot, 'carrier-export.json');
+    let diagnosticRef = null;
+    let retainedDiagnosticRef = null;
+    let unreferencedRef = null;
+    try {
       const { run, head } = await fixtureDirectoryStore(sourceRoot, { closureOptions: { turnSequenceNumber: 0n } });
       let output = '';
       const forkCode = await runBunCli([
@@ -1519,19 +2589,19 @@ describe('migration, branching, and CLI diagnostics', () => {
           },
         },
       }));
-      await assert.rejects(
-        () => runBunCli([
-          'import',
-          '--json',
-          '--store', receiverRoot,
-          '--package', blockedPackagePath,
-          '--run', 'blocked-run',
-        ], {
-          stdout: { write() {} },
-          stderr: { write() {} },
-        }),
-        { code: 'ERR_IMPORT_PREFLIGHT_BLOCKED' },
-      );
+      let blockedOutput = '';
+      const blockedCode = await runBunCli([
+        'import',
+        '--json',
+        '--store', blockedReceiverRoot,
+        '--package', blockedPackagePath,
+        '--run', 'blocked-run',
+      ], {
+        stdout: { write: (text) => { blockedOutput += text; } },
+        stderr: { write() {} },
+      });
+      assert.equal(blockedCode, 0);
+      assert.equal(JSON.parse(blockedOutput).runId, 'blocked-run');
       const pendingClosureBytes = fixtureNeedsHostTurnClosureBytes();
       const pendingClosureSummary = summarizeTurnClosureForRunHead(pendingClosureBytes);
       const pendingClosureBlob = blobEntryForBytes(pendingClosureBytes);
@@ -1724,6 +2794,7 @@ describe('migration, branching, and CLI diagnostics', () => {
     } finally {
       await rm(sourceRoot, { recursive: true, force: true });
       await rm(receiverRoot, { recursive: true, force: true });
+      await rm(blockedReceiverRoot, { recursive: true, force: true });
     }
   });
 
@@ -1991,6 +3062,8 @@ async function bytesToUtf8(bytes) {
 
 function fixtureTurnClosureBytes(options = {}) {
   const closureStatus = options.status ?? 2;
+  const rootResultBytes = rootResultValueBytes(options.rootResultValueFingerprint ?? 0xb01n);
+  const rootResultRef = rootResultObjectRef(rootResultBytes);
   const turnReceiptBytes = concat([
     u32(1),
     u32(1),
@@ -1999,7 +3072,7 @@ function fixtureTurnClosureBytes(options = {}) {
     u64(options.turnSequenceNumber ?? 1n),
     u64(0x301n),
     optionalU64(null),
-    u64Slice([]),
+    u64Slice(options.appliedHostReplyFingerprints ?? []),
     u64Slice([]),
     optionalU64(null),
     u64(0x501n),
@@ -2039,9 +3112,9 @@ function fixtureTurnClosureBytes(options = {}) {
     optionalU64(0xa00n),
     bytes(Uint8Array.of(1, 2, 3)),
     bytes(new Uint8Array()),
-    optionalU64(0xb01n),
-    bytes(rootResultValueBytes(0xb01n)),
-    optionalU64(null),
+    optionalU64(options.rootResultFingerprint ?? rootResultRef.objectFingerprint),
+    bytes(rootResultBytes),
+    optionalU64(options.rootResultValueRefFingerprint ?? rootResultRef.refFingerprint),
     optionalU64(null),
     bytes(new Uint8Array()),
     u64Slice([]),
@@ -2066,7 +3139,7 @@ function receiptStatusForClosureStatus(status) {
   return status;
 }
 
-function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()]) {
+function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()], status = 0) {
   const turnReceiptBytes = concat([
     u32(1),
     u32(1),
@@ -2084,7 +3157,7 @@ function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()]
     optionalU64(null),
     optionalU64(0x304n),
     optionalU64(null),
-    u8(0),
+    u8(receiptStatusForClosureStatus(status)),
     optionalU64(null),
     u64(0n),
     u64(0n),
@@ -2129,7 +3202,32 @@ function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()]
     u64Slice([]),
     u64Slice([]),
     bytes(new Uint8Array()),
-    u8(0),
+    u8(status),
+  ]);
+}
+
+function encodeLegacyAgentRuntimePayload({ commandFingerprint, bindingFingerprint, worldPortId, rootArgumentImageBytes }) {
+  return concat([
+    bytes(fromUtf8('world.appliance.payload_value_image.v1')),
+    u64(commandFingerprint),
+    u64(bindingFingerprint),
+    u32(worldPortId),
+    bytes(rootArgumentImageBytes),
+  ]);
+}
+
+function encodeAgentRuntimeFrameRequest({ commandFingerprint, bindingFingerprint, worldPortId }) {
+  return concat([
+    bytes(fromUtf8('world.appliance.frame_request.v1')),
+    u64(0xa01n),
+    u64(commandFingerprint),
+    u64(0),
+    u64(0),
+    u32(worldPortId),
+    u64(bindingFingerprint),
+    u64(0xa20n),
+    u64(0xa21n),
+    u64(0xa22n),
   ]);
 }
 
@@ -2171,6 +3269,45 @@ function fixtureHostRequestBytes() {
   ]);
 }
 
+function agentModelHostRequestBytes() {
+  return concat([
+    u32(4),
+    u32(4),
+    u64(0xa17n),
+    u64(0n),
+    u32(0),
+    u64(0xa18n),
+    u64(0xa19n),
+    u32(0),
+    u64(0xa20n),
+    u64(0xa21n),
+    u64(0x4f0c7160f25c4c62n),
+    u8(2),
+    u8(1),
+    u64(0xa22n),
+    u64(0xa23n),
+    u64(0xa24n),
+    u64(0xbe73177924a6b377n),
+    u64(0xa25n),
+    optionalU64(null),
+    bytes(fromUtf8('metadata')),
+    bytes(fromUtf8('frame')),
+    bytes(encodeCanonicalValueImage({
+      bytes: fromUtf8(JSON.stringify({
+        schema: 'boundary.Agent.DecisionPrompt.v0',
+        observation: 'goal=invoke',
+      })),
+      dynamicSize: true,
+    })),
+    optionalU64(null),
+    optionalU64(null),
+    optionalU64(null),
+    optionalU64(null),
+    bytes(fromUtf8('prepared')),
+    bytes(fromUtf8('agent-model-idempotency-key')),
+  ]);
+}
+
 function blobEntryForBytes(value) {
   return {
     checksum: createHash('sha256').update(value).digest('hex'),
@@ -2207,6 +3344,69 @@ function u64Slice(values) {
   return concat([u64(values.length), ...values.map(u64)]);
 }
 
+function fixtureHostReplyFingerprint(binding, resolutionInputBytes) {
+  const request = {
+    requestFingerprint: fingerprintValue(binding.requestFingerprint),
+    intentFingerprint: fingerprintValue(binding.intentFingerprint),
+    envelopeFingerprint: fingerprintValue(binding.envelopeFingerprint),
+    idempotencyKeyFingerprint: fingerprintValue(binding.idempotencyKeyFingerprint),
+  };
+  const resolution = decodeResolutionInputBytes(resolutionInputBytes);
+  const responseFingerprint = resolution.status === 0 ? fixtureValueImageFingerprint(resolution.responseValueImageBytes) : null;
+  const responseKind = resolution.status === 0 ? 1n : 0n;
+  const outcomeFingerprint = nonzero(wyhash64(concat([
+    replyHashBytes(fromUtf8('world.appliance.host_outcome.fingerprint')),
+    u64(1n),
+    u64(1n),
+    u64(request.requestFingerprint),
+    u64(request.intentFingerprint),
+    u64(request.envelopeFingerprint),
+    u64(request.idempotencyKeyFingerprint),
+    u64(resolution.status),
+    replyOptionalU64(responseFingerprint),
+    u64(responseKind),
+    replyHashBytes(resolution.responseValueImageBytes),
+    replyOptionalU64(null),
+    replyHashBytes(resolution.hostClaimBytes),
+    u64(resolution.attemptNumber),
+    replyHashBytes(resolution.metadata),
+  ])));
+  return nonzero(wyhash64(concat([
+    replyHashBytes(fromUtf8('world.appliance.host_reply.fingerprint')),
+    u64(1n),
+    u64(1n),
+    u64(request.requestFingerprint),
+    u64(outcomeFingerprint),
+    replyOptionalU64(null),
+    u64(0n),
+    replyHashBytes(resolution.metadata),
+  ])));
+}
+
+function fingerprintValue(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return BigInt(value);
+  const bare = String(value).includes(':') ? String(value).slice(String(value).lastIndexOf(':') + 1) : String(value).replace(/^0x/i, '');
+  return BigInt(`0x${bare}`);
+}
+
+function fixtureValueImageFingerprint(value) {
+  const view = new DataView(value.buffer, value.byteOffset, value.byteLength);
+  return (BigInt(view.getUint32(12, true)) << 32n) | BigInt(view.getUint32(8, true));
+}
+
+function replyHashBytes(value) {
+  return concat([u64(value.byteLength), value]);
+}
+
+function replyOptionalU64(value) {
+  return value == null ? u64(0n) : concat([u64(1n), u64(value)]);
+}
+
+function nonzero(value) {
+  return value === 0n ? 1n : value;
+}
+
 function byteSlices(values) {
   return concat([u64(values.length), ...values.map(bytes)]);
 }
@@ -2214,6 +3414,25 @@ function byteSlices(values) {
 function rootResultValueBytes(fingerprint) {
   const label = fromUtf8('world.appliance.root_result.value_image');
   return concat([u32(label.byteLength), label, u64(fingerprint)]);
+}
+
+function rootResultObjectRef(payload) {
+  const objectFingerprint = wyhash64(concat([
+    fromUtf8('world.continuity.object.payload'),
+    u64(56n),
+    u64(1n),
+    u64(BigInt(payload.byteLength)),
+    payload,
+  ]));
+  const refFingerprint = wyhash64(concat([
+    fromUtf8('world.continuity.object.ref'),
+    u64(1n),
+    u64(56n),
+    u64(1n),
+    u64(objectFingerprint),
+    u64(BigInt(payload.byteLength)),
+  ]));
+  return { objectFingerprint, refFingerprint };
 }
 
 function concat(chunks) {
@@ -2371,6 +3590,32 @@ function fixtureImportEffect(bundle, overrides = {}) {
     diagnostics: {},
     ...overrides,
   };
+}
+
+function decodeValueImageResponseRefs(bytes) {
+  let offset = 0;
+  const view = (length) => {
+    const result = new DataView(bytes.buffer, bytes.byteOffset + offset, length);
+    offset += length;
+    return result;
+  };
+  const u8 = () => view(1).getUint8(0);
+  const u32 = () => view(4).getUint32(0, true);
+  const u64 = () => view(8).getBigUint64(0, true);
+  const optionalU32 = () => (u8() === 1 ? u32() : null);
+  const optionalU64 = () => (u8() === 1 ? u64() : null);
+  assert.equal(u32(), 1);
+  assert.equal(u32(), 1);
+  u64();
+  optionalU32();
+  return {
+    boundaryValueFingerprint: fingerprintHex(optionalU64()),
+    codecSchemaDescriptorFingerprint: fingerprintHex(optionalU64()),
+  };
+}
+
+function fingerprintHex(value) {
+  return value == null ? null : `0x${value.toString(16).padStart(16, '0')}`;
 }
 
 function fixtureDriver() {

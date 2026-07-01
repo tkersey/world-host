@@ -1,0 +1,34 @@
+{
+  "receiptFormatVersion": 1,
+  "receiptFingerprintVersion": 1,
+  "agentRuntimeManifestFingerprint": "agent-runtime:da407e39faf4ed8cb1f48561e9584fa9",
+  "boundaryModuleFingerprints": [
+    "0xa663b81aa6df6f3e",
+    "0x4a4c934becaf32ae"
+  ],
+  "worldExecutableImageFingerprint": "0x56623af1b7581f29",
+  "universalWasmChecksum": "a79ae458d3cc5145660dadfc678736e75822c8c70558f8139861dc1103e84add",
+  "worldHostCarrierManifestFingerprint": "agent-runtime:132a4d1bd786256457272a8d2dda815c",
+  "conformanceCorpusFingerprint": "agent-runtime:81bbfd675f0fd1a117e76e84abdf292b",
+  "proofReceiptFingerprints": [
+    "agent-runtime:bf1543a5a3baf589d46eff7ddc334e5d",
+    "agent-runtime:aa5e96b305bba9f532ac4e92b6dc89a4",
+    "agent-runtime:d9f3bfc2e8197c9fbbc8b4ba6d55dccd"
+  ],
+  "ownerSkeletonExamplePassed": true,
+  "ownerFixtureExamplePassed": true,
+  "replayProofPassed": true,
+  "retryProofPassed": true,
+  "migrationProofPassed": true,
+  "branchingProofPassed": true,
+  "negativeProofPassed": true,
+  "distributedSkeletonScenarioPassed": true,
+  "distributedFixtureScenarioPassed": true,
+  "distributedSkeletonEffectsMatched": true,
+  "distributedFixtureEffectsMatched": true,
+  "distributedEmptyPayloadsRejected": true,
+  "complete": true,
+  "blockers": [],
+  "warnings": [],
+  "receiptFingerprint": "agent-runtime:77d30dbaacd60cd18ab41d2a7b01410e"
+}

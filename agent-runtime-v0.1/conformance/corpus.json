@@ -1,0 +1,79 @@
+{
+  "corpusFormatVersion": 1,
+  "name": "agent-runtime-v0.1-conformance",
+  "requiredScenarios": [
+    "skeleton",
+    "fixture",
+    "replay",
+    "retry",
+    "migration",
+    "branching",
+    "negative"
+  ],
+  "expected": {
+    "skeletonFinalResult": "final=actuate skeleton complete",
+    "skeletonRootResultFingerprint": "world:root-result:469ea29edd2b9b6a",
+    "fixtureInput": "rewrite this file through the agent loop\n",
+    "fixtureOutput": "actuate updated the fixture",
+    "fixtureFinalResult": "final=fixture updated",
+    "fixtureRootResultFingerprint": "world:root-result:716ad80792c9e8fe",
+    "distributedEffects": {
+      "skeleton": [
+        {
+          "actuatorRef": "world:actuator-ref:4f0c7160f25c4c62",
+          "descriptorFingerprint": "world:descriptor:be73177924a6b377",
+          "state": "closure_committed",
+          "requestBytesChecksum": "sha256:9626a572386090b422bfe03a9aa76b971b8314517a741f86585c8d14b81d9991",
+          "driverId": "fixture-agent-model"
+        },
+        {
+          "actuatorRef": "world:actuator-ref:d5e4b1b427522cf2",
+          "descriptorFingerprint": "world:descriptor:74afc8c3b2fe4c33",
+          "state": "closure_committed",
+          "requestBytesChecksum": "sha256:9626a572386090b422bfe03a9aa76b971b8314517a741f86585c8d14b81d9991",
+          "driverId": "sandbox-file"
+        }
+      ],
+      "fixture": [
+        {
+          "actuatorRef": "world:actuator-ref:d5e4b1b427522cf2",
+          "descriptorFingerprint": "world:descriptor:74afc8c3b2fe4c33",
+          "state": "closure_committed",
+          "requestBytesChecksum": "sha256:2674258ca95c6c333ef995ff823a4c425e5a85d5303887b6317c23c7a84ea1e2",
+          "driverId": "sandbox-file"
+        },
+        {
+          "actuatorRef": "world:actuator-ref:4f0c7160f25c4c62",
+          "descriptorFingerprint": "world:descriptor:be73177924a6b377",
+          "state": "closure_committed",
+          "requestBytesChecksum": "sha256:2674258ca95c6c333ef995ff823a4c425e5a85d5303887b6317c23c7a84ea1e2",
+          "driverId": "fixture-agent-model"
+        }
+      ]
+    }
+  },
+  "proofReceipts": [
+    {
+      "id": "boundary-agent-profile",
+      "subject": "0xdc1981503eeeb739",
+      "generatedBy": "agent-runtime-pack-builder",
+      "proofDerivedFromArtifactFingerprint": true,
+      "fingerprint": "agent-runtime:bf1543a5a3baf589d46eff7ddc334e5d"
+    },
+    {
+      "id": "world-agent-dist",
+      "subject": "0x56623af1b7581f29",
+      "generatedBy": "agent-runtime-pack-builder",
+      "proofDerivedFromArtifactFingerprint": true,
+      "fingerprint": "agent-runtime:aa5e96b305bba9f532ac4e92b6dc89a4"
+    },
+    {
+      "id": "world-host-carrier",
+      "subject": "agent-runtime:132a4d1bd786256457272a8d2dda815c",
+      "generatedBy": "agent-runtime-pack-builder",
+      "proofDerivedFromArtifactFingerprint": true,
+      "fingerprint": "agent-runtime:d9f3bfc2e8197c9fbbc8b4ba6d55dccd"
+    }
+  ],
+  "warnings": []
+}

@@ -20,6 +20,8 @@ This repository contains the Carrier v0 host boundary: immutable blob stores, mu
 
 `bun run proof:agent` runs the Agent Closure host proof. It first validates the sibling World `dist-world-agent-v0` gate, then exercises Carrier-side skeleton, fixture file rewrite, replay, retry, migration, branching, and negative lanes. The agent loop remains Boundary/World-owned; world-host only installs the image, resolves external model/file HostRequests through deterministic drivers, persists `ResolutionInput` bytes, advances retained branch heads, and inspects stored results.
 
+`bun scripts/build-agent-runtime-pack.mjs` creates an `agent-runtime-v0.1/` release-candidate pack with an `AgentRuntime.Manifest`, owner-exported Boundary/World bytes, world-host carrier files, conformance corpus, fixtures, docs, and `checksums.sha256`. `bun scripts/run-agent-runtime-conformance.mjs ./agent-runtime-v0.1` verifies the pack checksums, compiles the distributed universal WASM, runs the carrier skeleton/fixture/replay/retry/migration/branching/negative lanes, and emits Agent Runtime conformance booleans without cloning Boundary or World at conformance time.
+
 `RunController` can advance a branch from real worker output by inspecting World-authored TurnClosure bytes for the next `RunHead` fingerprints. That inspection is host metadata extraction only; Carrier does not validate or author World receipts, capsules, archive moments, chronicle events, or TurnClosures.
 
 If a host dies after advancing `RunHead` but before finalizing effect records, `EffectJournal` can reconcile `submitted` records from the committed head's parent TurnClosure fingerprint. This recovery only marks matching run/branch effects `closure_committed`; it does not rerun drivers or create World evidence.
@@ -52,6 +54,11 @@ bun run test
 bun run proof
 bun run proof:world-real
 bun run proof:agent
+bun run proof:boundaries
+bun scripts/build-agent-runtime-pack.mjs
+bun scripts/check-agent-runtime-pack.mjs ./agent-runtime-v0.1
+bun scripts/run-agent-runtime-conformance.mjs ./agent-runtime-v0.1
+bun scripts/check-agent-runtime-release-receipt.mjs ./agent-runtime-v0.1
 bun bin/world-host.mjs doctor --json
 bun scripts/run-store-conformance.mjs
 bun scripts/run-crash-matrix.mjs

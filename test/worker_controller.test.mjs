@@ -749,6 +749,175 @@ describe('RunController and WorldWorker', () => {
     assert.equal((await store.listEffectRecords(runId)).length, 0);
   });
 
+  it('requires selected needs_host drivers to carry required authority labels', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+      applicationOverrides: {
+        requiredHostAuthorityLabels: ['model:fixture'],
+      },
+    });
+    const selected = fixtureEffectDriver({ authorityLabels: [] });
+    const dummyAuthorityDriver = fixtureEffectDriver({
+      driverId: 'dummy-authority',
+      actuatorRef: 'world:actuator-ref:0000000000000bad',
+      authorityLabels: ['model:fixture'],
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [selected, dummyAuthorityDriver],
+      effectPolicy: {
+        allowedAuthorityLabels: ['model:fixture'],
+      },
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      (error) => {
+        assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+        assert.ok(error.details?.blockers?.includes('required-authority-unbound:model:fixture'));
+        return true;
+      },
+    );
+    assert.equal(selected.invocationCount, 0);
+    assert.equal(dummyAuthorityDriver.invocationCount, 0);
+    assert.equal((await store.listEffectRecords(runId)).length, 0);
+  });
+
+  it('prefers authority-bound needs_host drivers over earlier unlabeled matches', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+      applicationOverrides: {
+        requiredActuators: [{
+          actuatorRef: 'world:actuator-ref:0000000000000a05',
+          descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+        }],
+        requiredHostAuthorityLabels: ['model:fixture'],
+      },
+    });
+    const unlabeled = fixtureEffectDriver({ authorityLabels: [] });
+    const labeled = fixtureEffectDriver({
+      driverId: 'authority-bound-fixture',
+      authorityLabels: ['model:fixture'],
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [unlabeled, labeled],
+      effectPolicy: {
+        allowedAuthorityLabels: ['model:fixture'],
+      },
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(unlabeled.invocationCount, 0);
+    assert.equal(labeled.invocationCount, 1);
+  });
+
+  it('does not prefer unrelated required authority labels for needs_host drivers', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+      applicationOverrides: {
+        requiredActuators: [
+          {
+            actuatorRef: 'world:actuator-ref:0000000000000a05',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+          },
+          {
+            actuatorRef: 'world:actuator-ref:0000000000000bad',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+          },
+        ],
+        requiredHostAuthorityLabels: ['model:fixture', 'file:sandbox'],
+      },
+    });
+    const wrongLabel = fixtureEffectDriver({
+      driverId: 'wrong-label-fixture',
+      authorityLabels: ['file:sandbox'],
+    });
+    const modelAuthority = fixtureEffectDriver({
+      driverId: 'model-authority-fixture',
+      authorityLabels: ['model:fixture'],
+    });
+    const fileAuthority = fixtureEffectDriver({
+      driverId: 'file-authority-fixture',
+      actuatorRef: 'world:actuator-ref:0000000000000bad',
+      authorityLabels: ['file:sandbox'],
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [wrongLabel, modelAuthority, fileAuthority],
+      effectPolicy: {
+        allowedAuthorityLabels: ['model:fixture', 'file:sandbox'],
+      },
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(wrongLabel.invocationCount, 0);
+    assert.equal(modelAuthority.invocationCount, 1);
+    assert.equal(fileAuthority.invocationCount, 0);
+  });
+
+  it('rejects unlabeled active needs_host drivers despite cross-labeled inactive actuators', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({
+        requestFingerprint: 0xa01n,
+        actuatorRefFingerprint: 0xbadn,
+      })]),
+      applicationOverrides: {
+        requiredActuators: [
+          {
+            actuatorRef: 'world:actuator-ref:0000000000000a05',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+          },
+          {
+            actuatorRef: 'world:actuator-ref:0000000000000bad',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+          },
+        ],
+        requiredHostAuthorityLabels: ['model:fixture', 'file:sandbox'],
+      },
+    });
+    const crossLabeledModel = fixtureEffectDriver({
+      driverId: 'cross-labeled-model',
+      authorityLabels: ['model:fixture', 'file:sandbox'],
+    });
+    const unlabeledFile = fixtureEffectDriver({
+      driverId: 'unlabeled-file',
+      actuatorRef: 'world:actuator-ref:0000000000000bad',
+      authorityLabels: [],
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [crossLabeledModel, unlabeledFile],
+      effectPolicy: {
+        allowedAuthorityLabels: ['model:fixture', 'file:sandbox'],
+      },
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      (error) => {
+        assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+        assert.ok(error.details?.blockers?.includes('required-authority-unbound:file:sandbox'));
+        return true;
+      },
+    );
+    assert.equal(crossLabeledModel.invocationCount, 0);
+    assert.equal(unlabeledFile.invocationCount, 0);
+    assert.equal((await store.listEffectRecords(runId)).length, 0);
+  });
+
   it('rejects HTTP requests outside the selected driver origin coverage', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
@@ -1100,6 +1269,31 @@ describe('RunController and WorldWorker', () => {
     );
   });
 
+  it('fails closed when TurnClosure root result diverges from the embedded receipt', async () => {
+    const { store, runId, branchId } = await fixtureStore();
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes({ rootResultFingerprint: 0xbadn })),
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_TURN_CLOSURE_INSPECTION_FAILED' },
+    );
+  });
+
+  it('accepts non-completed diagnostic root results when object refs match', async () => {
+    const { store, runId, branchId } = await fixtureStore();
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes({ status: 3 })),
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.nextHead.status, 'failed');
+  });
+
   it('fails closed when pending HostRequests are not receipt-emitted', () => {
     assert.throws(
       () => summarizeTurnClosureForRunHead(fixtureNeedsHostTurnClosureBytes(
@@ -1107,6 +1301,17 @@ describe('RunController and WorldWorker', () => {
         { emittedHostRequestFingerprints: [0xa01n] },
       )),
       /TurnReceipt emitted HostRequests do not match TurnClosure pending requests/,
+    );
+  });
+
+  it('fails closed on duplicate pending HostRequest fingerprints', () => {
+    const duplicateRequest = fixtureHostRequestBytes({ requestFingerprint: 0xa01n });
+    assert.throws(
+      () => summarizeTurnClosureForRunHead(fixtureNeedsHostTurnClosureBytes(
+        [duplicateRequest, duplicateRequest],
+        { emittedHostRequestFingerprints: [0xa01n, 0xa01n] },
+      )),
+      /duplicate HostRequest fingerprints/,
     );
   });
 
@@ -1221,13 +1426,13 @@ function needsHostHeadSummary() {
   };
 }
 
-function fixtureEffectDriver() {
+function fixtureEffectDriver(options = {}) {
   return {
     invocationCount: 0,
     manifest() {
       return {
-        driverId: 'test.effect.driver',
-        supportedActuatorRefs: ['world:actuator-ref:0000000000000a05'],
+        driverId: options.driverId ?? 'test.effect.driver',
+        supportedActuatorRefs: [options.actuatorRef ?? 'world:actuator-ref:0000000000000a05'],
         supportedDescriptorFingerprints: ['world:descriptor:0000000000000a0b'],
         supportedActuationClasses: ['world:actuation-class:1'],
         supportedResponseStatuses: ['responded'],
@@ -1235,7 +1440,7 @@ function fixtureEffectDriver() {
         maximumResponseBytes: 4096,
         recoveryClass: EffectRecoveryClass.pure,
         concurrencyLimit: 1,
-        authorityLabels: ['test'],
+        authorityLabels: options.authorityLabels ?? ['test'],
       };
     },
     async resolve() {
@@ -1550,6 +1755,8 @@ class ThrowingRestoreWorker extends RestoringWorker {
 
 function fixtureTurnClosureBytes(options = {}) {
   const closureStatus = options.status ?? 2;
+  const rootResultBytes = rootResultValueBytes(options.rootResultValueFingerprint ?? 0xb01n);
+  const rootResultRef = rootResultObjectRef(rootResultBytes);
   const turnReceiptBytes = concat([
     u32(options.receiptFormatVersion ?? 1),
     u32(options.receiptFingerprintVersion ?? 1),
@@ -1599,9 +1806,9 @@ function fixtureTurnClosureBytes(options = {}) {
     optionalU64(0xa00n),
     bytes(Uint8Array.of(1, 2, 3)),
     bytes(new Uint8Array()),
-    optionalU64(0xb01n),
-    bytes(rootResultValueBytes(options.rootResultValueFingerprint ?? 0xb01n)),
-    optionalU64(null),
+    optionalU64(options.rootResultFingerprint ?? rootResultRef.objectFingerprint),
+    bytes(rootResultBytes),
+    optionalU64(options.rootResultValueRefFingerprint ?? rootResultRef.refFingerprint),
     optionalU64(null),
     bytes(new Uint8Array()),
     u64Slice([]),
@@ -1765,6 +1972,25 @@ function rootResultValueBytes(fingerprint) {
   return concat([u32(label.byteLength), label, u64(fingerprint)]);
 }
 
+function rootResultObjectRef(payload) {
+  const objectFingerprint = wyhash64(concat([
+    fromUtf8('world.continuity.object.payload'),
+    u64(56n),
+    u64(1n),
+    u64(BigInt(payload.byteLength)),
+    payload,
+  ]));
+  const refFingerprint = wyhash64(concat([
+    fromUtf8('world.continuity.object.ref'),
+    u64(1n),
+    u64(56n),
+    u64(1n),
+    u64(objectFingerprint),
+    u64(BigInt(payload.byteLength)),
+  ]));
+  return { objectFingerprint, refFingerprint };
+}
+
 function nonzero(value) {
   return value === 0n ? 1n : value;
 }
@@ -1849,6 +2075,8 @@ function fixtureHostRequestBytes(options = {}) {
   const requestOrdinal = options.requestOrdinal ?? 0;
   const idempotencyKey = options.idempotencyKey ?? 'idempotency-key';
   const idempotencyKeyFingerprint = options.idempotencyKeyFingerprint ?? 0xa09n;
+  const actuatorRefFingerprint = options.actuatorRefFingerprint ?? 0xa05n;
+  const actuationClass = options.actuationClass ?? 1;
   const expectedResponseDescriptorFingerprint = options.expectedResponseDescriptorFingerprint ?? 0xa0bn;
   const allowedResponseStatuses = options.allowedResponseStatuses ?? 1;
   return concat([
@@ -1862,8 +2090,8 @@ function fixtureHostRequestBytes(options = {}) {
     u32(0),
     u64(0xa04n),
     u64(0xa05n),
-    u64(0xa05n),
-    u8(1),
+    u64(actuatorRefFingerprint),
+    u8(actuationClass),
     u8(allowedResponseStatuses),
     u64(0xa06n),
     u64(0xa07n),

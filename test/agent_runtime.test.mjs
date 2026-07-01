@@ -59,6 +59,7 @@ describe('Agent Carrier runtime fixtures', () => {
     assert.equal(migration.sourceReceiverPolicyExported, true);
     assert.equal(migration.senderReceiverPolicyDropped, true);
     assert.equal(branching.branchesValid, true);
+    assert.equal(branching.sourceBranchUnchangedByFork, true);
     assert.equal(branching.sourceBranchImplicitlyMerged, false);
     assert.deepEqual(Object.values(negative), Object.values(negative).map(() => true));
   });
