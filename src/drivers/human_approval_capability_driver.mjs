@@ -1,5 +1,6 @@
 import { EffectRecoveryClass } from '../core/actuator.mjs';
 import { DryRunReport, ShadowReport, capabilityHostClaimBytes, defaultCapabilityPreflight } from '../core/capability_driver.mjs';
+import { redactCapabilityDiagnostics } from '../core/capability_policy.mjs';
 import { fail, fromUtf8, stableJson } from '../core/store.mjs';
 import { encodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
 import { encodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
@@ -88,7 +89,7 @@ export class HumanApprovalCapabilityDriver {
 
   #redactedPrompt(hostRequest) {
     try {
-      return JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
+      return redactCapabilityDiagnostics(JSON.parse(new TextDecoder().decode(hostRequest.requestBytes)));
     } catch {
       return { bytes: hostRequest.requestBytes?.byteLength ?? 0 };
     }

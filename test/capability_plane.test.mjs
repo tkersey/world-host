@@ -105,6 +105,10 @@ describe('Capability Plane v0.2 core contracts', () => {
       () => assertCapabilityManifest({ ...manifest, requiredSecrets: [{ name: 'sk-abcdefghijklmnop' }] }),
       { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
     );
+    assert.throws(
+      () => assertCapabilityResolutionBoundary({}),
+      { code: 'ERR_EXPECTED_BYTES' },
+    );
   });
 
   it('denies live, network, file, and best-effort capabilities by default', () => {
@@ -458,6 +462,12 @@ describe('Capability Plane v0.2 core contracts', () => {
 
     const approval = new HumanApprovalCapabilityDriver({ mode: 'noninteractive-allow' });
     assert.equal(approval.preflight({}, httpRequest()).accepted, false);
+    const proposedApproval = approval.dryRun({}, {
+      ...approvalRequest(),
+      requestBytes: fromUtf8(stableJson({ action: 'approve-file-write', password: 'fixture-password', apiKey: 'fixture-key' })),
+    });
+    assert.equal(proposedApproval.proposedAction.approval.password, '[redacted]');
+    assert.equal(proposedApproval.proposedAction.approval.apiKey, '[redacted]');
     const approved = await approval.resolve({}, approvalRequest());
     assert.equal(decodeResolutionInputBytes(approved.resolutionInputBytes).status, 0);
     assert.equal(approved.diagnostics.decision, 'approved');
@@ -510,6 +520,56 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_CAPABILITY_PREFLIGHT_BLOCKED' },
     );
     assert.equal(approvalDriver.resolveCalled, false);
+  });
+
+  it('enforces live mode pack and raw network policy before resolve', async () => {
+    const packFingerprint = 'sha256:'.concat('2'.repeat(64));
+    const deniedPackDriver = policyProbeDriver({ packFingerprint });
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'live',
+        driver: deniedPackDriver,
+        hostRequest: httpRequest(),
+        journalOptions: {
+          store: new MemoryStore(),
+          runId: 'denied-pack-run',
+          branchId: 'main',
+          parentTurnClosureFingerprint: 'world:turn-closure:parent',
+        },
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          deniedCapabilityPacks: [packFingerprint],
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      }),
+      { code: 'ERR_CAPABILITY_PACK_DENIED' },
+    );
+    assert.equal(deniedPackDriver.resolveCalled, false);
+
+    const deniedOriginDriver = policyProbeDriver();
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'live',
+        driver: deniedOriginDriver,
+        hostRequest: httpRequest(),
+        journalOptions: {
+          store: new MemoryStore(),
+          runId: 'denied-origin-run',
+          branchId: 'main',
+          parentTurnClosureFingerprint: 'world:turn-closure:parent',
+        },
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://denied.example'],
+          allowedMethods: ['POST'],
+        },
+      }),
+      { code: 'ERR_CAPABILITY_ORIGIN_DENIED' },
+    );
+    assert.equal(deniedOriginDriver.resolveCalled, false);
   });
 
   it('validates model capability output as Boundary Agent.Action', async () => {
@@ -674,6 +734,45 @@ function preflightBlockedDriver() {
       resolveCalled = true;
       const error = new Error('preflight bypassed');
       error.code = 'ERR_PREFLIGHT_BYPASS_EFFECT';
+      throw error;
+    },
+  };
+}
+
+function policyProbeDriver({ packFingerprint } = {}) {
+  let resolveCalled = false;
+  return {
+    get resolveCalled() {
+      return resolveCalled;
+    },
+    manifest() {
+      return {
+        driverId: 'policy-probe-http',
+        packFingerprint,
+        supportedActuatorRefs: ['http:json'],
+        supportedDescriptorFingerprints: ['descriptor:http-json'],
+        supportedActuationClasses: ['http'],
+        supportedResponseStatuses: ['ok'],
+        maximumRequestBytes: 1024,
+        maximumResponseBytes: 1024,
+        recoveryClass: EffectRecoveryClass.idempotent,
+        concurrencyLimit: 1,
+        authorityLabels: ['network:http'],
+      };
+    },
+    preflight() {
+      return { accepted: true };
+    },
+    dryRun() {
+      return { wouldInvoke: true, proposedAction: { driver: 'policy-probe-http' } };
+    },
+    shadow() {
+      return { liveInvoked: false, schemaAccepted: false };
+    },
+    async resolve() {
+      resolveCalled = true;
+      const error = new Error('policy bypassed');
+      error.code = 'ERR_POLICY_BYPASS_EFFECT';
       throw error;
     },
   };

@@ -1,5 +1,5 @@
 import { assertDriverCanResolve, assertDriverManifest, defineActuatorDriver } from './actuator.mjs';
-import { fail, fromUtf8, stableJson } from './store.mjs';
+import { assertBytes, fail, fromUtf8, stableJson } from './store.mjs';
 import { decodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
 
 const FORBIDDEN_WORLD_EVIDENCE_KEYS = new Set([
@@ -50,7 +50,12 @@ export function defineCapabilityDriver(driver) {
     if (typeof driver?.[method] !== 'function') fail('ERR_CAPABILITY_DRIVER_ABI_INCOMPLETE', `${method} is required`);
   }
   return Object.freeze({
-    manifest: actuator.manifest,
+    manifest() {
+      const raw = driver.manifest();
+      const manifest = assertDriverManifest(raw);
+      if (raw.packFingerprint != null && typeof raw.packFingerprint !== 'string') fail('ERR_INVALID_DRIVER_MANIFEST', 'packFingerprint must be a string');
+      return raw.packFingerprint == null ? manifest : Object.freeze({ ...manifest, packFingerprint: raw.packFingerprint });
+    },
     preflight(context, hostRequest) {
       return assertCapabilityPreflightReport(driver.preflight(context, hostRequest));
     },
@@ -112,7 +117,7 @@ export function assertShadowReport(value) {
 export function assertCapabilityResolutionBoundary(value) {
   if (!value || typeof value !== 'object') fail('ERR_CAPABILITY_RESOLUTION_INVALID');
   assertNoWorldEvidenceKeys(value);
-  if (value.resolutionInputBytes) decodeResolutionInputBytes(value.resolutionInputBytes);
+  decodeResolutionInputBytes(assertBytes(value.resolutionInputBytes, 'resolutionInputBytes'));
   return true;
 }
 

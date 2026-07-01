@@ -47,7 +47,14 @@ export async function runCapabilityMode({
       assertCapabilityResolutionBoundary(resolved);
       return { mode, submittedToWorld: true, approved: true, proposed, ...resolved };
     }
-    assertCapabilityPolicyAllows({ manifest, hostRequest, policy: livePolicy, mode: 'live', action: { approved: true }, enforceNetworkTarget: false });
+    assertCapabilityPolicyAllows({
+      manifest,
+      hostRequest,
+      policy: livePolicy,
+      mode: 'live',
+      action: { approved: true },
+      enforceNetworkTarget: shouldEnforceNetworkTarget(hostRequest),
+    });
     if (!journalOptions) fail('ERR_CAPABILITY_APPROVAL_JOURNAL_REQUIRED', 'approval mode live effects require EffectJournal options');
     const journal = journalOptions instanceof EffectJournal ? journalOptions : new EffectJournal({ ...journalOptions, policy: livePolicy });
     const approvedContext = liveContext(context, livePolicy, { approved: true });
@@ -55,7 +62,13 @@ export async function runCapabilityMode({
     const resolved = await journal.resolve(approvedContext, hostRequest, driver);
     return { mode, submittedToWorld: true, approved: true, proposed, ...resolved };
   }
-  assertCapabilityPolicyAllows({ manifest, hostRequest, policy: livePolicy, mode: 'live', enforceNetworkTarget: false });
+  assertCapabilityPolicyAllows({
+    manifest,
+    hostRequest,
+    policy: livePolicy,
+    mode: 'live',
+    enforceNetworkTarget: shouldEnforceNetworkTarget(hostRequest),
+  });
   if (!journalOptions) fail('ERR_CAPABILITY_LIVE_JOURNAL_REQUIRED', 'live mode requires EffectJournal options');
   const journal = journalOptions instanceof EffectJournal ? journalOptions : new EffectJournal({ ...journalOptions, policy: livePolicy });
   const liveDriverContext = liveContext(context, livePolicy);
@@ -71,6 +84,15 @@ function liveContext(context, policy, action = null) {
 function assertCapabilityPreflightAccepted(report) {
   if (report.accepted !== true) fail('ERR_CAPABILITY_PREFLIGHT_BLOCKED', 'capability preflight blocked', { blockers: report.blockers });
   return true;
+}
+
+function shouldEnforceNetworkTarget(hostRequest) {
+  if (!hostRequest?.requestBytes) return true;
+  try {
+    return JSON.parse(new TextDecoder().decode(hostRequest.requestBytes))?.url !== undefined;
+  } catch {
+    return true;
+  }
 }
 
 function isEffectFreeFixture(manifest) {
