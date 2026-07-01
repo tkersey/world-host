@@ -166,7 +166,7 @@ export function defaultPackPath(cwd = process.cwd()) {
 export async function buildAgentRuntimePack(options = {}) {
   const roots = defaultRoots(options);
   const out = path.resolve(options.out ?? PACK_NAME);
-  assertSafePackOutput(out, roots);
+  await assertSafePackOutput(out, roots);
   const worldDist = path.join(roots.worldRepo, 'zig-out/dist/world-v0.1.0');
   await requireFile(path.join(worldDist, 'world_universal_appliance.wasm'));
   await requireFile(path.join(worldDist, 'world-release-receipt.json'));
@@ -248,7 +248,7 @@ export async function buildAgentRuntimePack(options = {}) {
   return { out, manifest };
 }
 
-function assertSafePackOutput(out, roots) {
+async function assertSafePackOutput(out, roots) {
   const resolvedOut = path.resolve(out);
   for (const [label, root] of Object.entries(roots)) {
     const resolvedRoot = path.resolve(root);
@@ -261,6 +261,19 @@ function assertSafePackOutput(out, roots) {
   }
   if (path.basename(resolvedOut) !== PACK_NAME) {
     throw new Error('ERR_AGENT_RUNTIME_UNSAFE_OUT:packName');
+  }
+  const realOut = await realpathIfExists(resolvedOut);
+  if (realOut && realOut !== resolvedOut) {
+    throw new Error('ERR_AGENT_RUNTIME_UNSAFE_OUT:realpath');
+  }
+}
+
+async function realpathIfExists(target) {
+  try {
+    return await realpath(target);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
   }
 }
 

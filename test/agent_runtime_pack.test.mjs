@@ -701,6 +701,27 @@ describe('Agent Runtime pack', () => {
     }
   });
 
+  it('rejects symlinked build output paths before removal', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agent-runtime-pack-symlink-out-'));
+    try {
+      const target = path.join(root, 'outside');
+      const link = path.join(root, 'link');
+      const pack = path.join(target, 'agent-runtime-v0.1');
+      const marker = path.join(pack, 'marker.txt');
+      await mkdir(pack, { recursive: true });
+      await writeFile(marker, 'keep');
+      await symlink(target, link, 'dir');
+
+      await assert.rejects(
+        () => buildAgentRuntimePack({ out: path.join(link, 'agent-runtime-v0.1'), worldHostRepo: process.cwd() }),
+        /ERR_AGENT_RUNTIME_UNSAFE_OUT:realpath/,
+      );
+      assert.equal(await readFile(marker, 'utf8'), 'keep');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('accepts owner-exported actuator fingerprint refs in the manifest', () => {
     const manifest = buildAgentRuntimeManifest({
       agentRuntimeVersion: 'v0.1',
