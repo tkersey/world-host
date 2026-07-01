@@ -50,11 +50,12 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
   const selectedPendingRequestRoutes = [];
   const hasPendingRequestContext = pendingRequests.length > 0;
   const requiredAuthorityLabels = application?.requiredHostAuthorityLabels ?? [];
+  const requiredActuatorOptions = [];
 
   for (const required of application?.requiredActuators ?? []) {
     const requirement = normalizeRequiredActuator(required);
-    const route = findRequiredActuatorManifest(manifests, requirement, policy, requiredAuthorityLabels);
-    if (!route) {
+    const candidates = findRequiredActuatorManifests(manifests, requirement, policy);
+    if (!candidates.length) {
       const structuralRoute = findRequiredActuatorManifest(manifests, requirement);
       if (structuralRoute) {
         blockers.push(`required-actuator-policy-blocked:${requirement.actuatorRef}`, ...policyBlockers(structuralRoute, null, policy));
@@ -68,12 +69,20 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
       }
       continue;
     }
-    selectedRequiredActuatorRoutes.push({ manifest: route, requirement });
+    requiredActuatorOptions.push({ requirement, candidates });
+  }
+
+  for (const option of requiredActuatorOptions) {
+    const route = selectPreferredAuthorityManifest(
+      option.candidates,
+      preferredAuthorityLabelsForRequirement(option, requiredActuatorOptions, requiredAuthorityLabels),
+    );
+    selectedRequiredActuatorRoutes.push({ manifest: route, requirement: option.requirement });
   }
 
   for (const request of pendingRequests) {
-    const route = findDriverManifestForRequest(manifests, request, policy, requiredAuthorityLabels);
-    if (!route) {
+    const candidates = findDriverManifestsForRequest(manifests, request, policy);
+    if (!candidates.length) {
       const structuralRoute = findDriverManifestForRequest(manifests, request);
       if (structuralRoute) {
         blockers.push(...policyBlockers(structuralRoute, request, policy));
@@ -85,6 +94,11 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
       }
       continue;
     }
+    const requiredOption = requiredActuatorOptions.find(({ requirement }) => requirementMatchesRequest(requirement, request));
+    const preferredAuthorityLabels = requiredOption
+      ? preferredAuthorityLabelsForRequirement(requiredOption, requiredActuatorOptions, requiredAuthorityLabels)
+      : preferredAuthorityLabelsWithoutRequirement(requiredAuthorityLabels);
+    const route = selectPreferredAuthorityManifest(candidates, preferredAuthorityLabels);
     coveredRequests.push({ actuatorRef: request.actuatorRef, descriptorFingerprint: request.descriptorFingerprint, driverId: route.driverId });
     selectedPendingRequestRoutes.push({ manifest: route, request });
   }
@@ -152,7 +166,9 @@ function pendingAuthorityBindingState(label, requiredLabels, selectedRequiredAct
     const requiredRoute = selectedRequiredActuatorRoutes.find(({ requirement }) => requirementMatchesRequest(requirement, request));
     if (!requiredRoute) return true;
     if (requiredRoute.manifest.authorityLabels.includes(label)) return true;
-    return !requiredRoute.manifest.authorityLabels.some((item) => otherLabels.has(item));
+    const labelBoundToAnotherRequirement = selectedRequiredActuatorRoutes.some(({ manifest, requirement }) =>
+      !requirementMatchesRequest(requirement, request) && manifest.authorityLabels.includes(label));
+    return !(labelBoundToAnotherRequirement && requiredRoute.manifest.authorityLabels.some((item) => otherLabels.has(item)));
   });
   if (!activePendingRoutes.length) return 'inactive';
   return activePendingRoutes.every(({ manifest }) => manifest.authorityLabels.includes(label)) ? 'bound' : 'unbound';
@@ -164,6 +180,10 @@ function requirementMatchesRequest(requirement, request) {
 }
 
 function findRequiredActuatorManifest(manifests, requirement, policy = null, preferredAuthorityLabels = []) {
+  return selectPreferredAuthorityManifest(findRequiredActuatorManifests(manifests, requirement, policy), preferredAuthorityLabels);
+}
+
+function findRequiredActuatorManifests(manifests, requirement, policy = null) {
   const required = normalizeRequiredActuator(requirement);
   const matches = [];
   for (const manifest of manifests) {
@@ -177,7 +197,7 @@ function findRequiredActuatorManifest(manifests, requirement, policy = null, pre
     if (policy && policyBlockers(manifest, null, policy).length) continue;
     matches.push(manifest);
   }
-  return selectPreferredAuthorityManifest(matches, preferredAuthorityLabels);
+  return matches;
 }
 
 function policyBlockers(route, request, policy) {
@@ -219,6 +239,10 @@ function driverMatchesExceptResponseStatus(manifest, request) {
 }
 
 export function findDriverManifestForRequest(manifests, request, policy = null, preferredAuthorityLabels = []) {
+  return selectPreferredAuthorityManifest(findDriverManifestsForRequest(manifests, request, policy), preferredAuthorityLabels);
+}
+
+function findDriverManifestsForRequest(manifests, request, policy = null) {
   const matches = [];
   for (const manifest of manifests) {
     try {
@@ -229,17 +253,50 @@ export function findDriverManifestForRequest(manifests, request, policy = null, 
       continue;
     }
   }
-  return selectPreferredAuthorityManifest(matches, preferredAuthorityLabels);
+  return matches;
 }
 
 function selectPreferredAuthorityManifest(manifests, preferredAuthorityLabels) {
   if (!manifests.length) return null;
-  const preferred = manifests.find((manifest) => manifestCarriesPreferredAuthority(manifest, preferredAuthorityLabels));
-  return preferred ?? manifests[0];
+  let selected = manifests[0];
+  let selectedScore = authorityPreferenceScore(selected, preferredAuthorityLabels);
+  for (const manifest of manifests.slice(1)) {
+    const score = authorityPreferenceScore(manifest, preferredAuthorityLabels);
+    if (score > selectedScore) {
+      selected = manifest;
+      selectedScore = score;
+    }
+  }
+  return selected;
 }
 
-function manifestCarriesPreferredAuthority(manifest, preferredAuthorityLabels) {
-  return preferredAuthorityLabels.some((label) => manifest.authorityLabels.includes(label));
+function authorityPreferenceScore(manifest, preferredAuthorityLabels) {
+  return preferredAuthorityLabels.filter((label) => manifest.authorityLabels.includes(label)).length;
+}
+
+function preferredAuthorityLabelsForRequirement(option, allOptions, requiredAuthorityLabels) {
+  const targetLabels = authorityLabelsPresent(option.candidates, requiredAuthorityLabels);
+  const uniqueLabels = requiredAuthorityLabels.filter((label) =>
+    targetLabels.has(label) &&
+    !allOptions.some((candidateOption) =>
+      candidateOption !== option && authorityLabelsPresent(candidateOption.candidates, requiredAuthorityLabels).has(label)));
+  if (uniqueLabels.length) return uniqueLabels;
+  const presentLabels = requiredAuthorityLabels.filter((label) => targetLabels.has(label));
+  return presentLabels.length === 1 ? presentLabels : [];
+}
+
+function preferredAuthorityLabelsWithoutRequirement(requiredAuthorityLabels) {
+  return requiredAuthorityLabels.length === 1 ? requiredAuthorityLabels : [];
+}
+
+function authorityLabelsPresent(manifests, requiredAuthorityLabels) {
+  const present = new Set();
+  for (const manifest of manifests) {
+    for (const label of requiredAuthorityLabels) {
+      if (manifest.authorityLabels.includes(label)) present.add(label);
+    }
+  }
+  return present;
 }
 
 export function assertCapabilityReportAccepted(report) {

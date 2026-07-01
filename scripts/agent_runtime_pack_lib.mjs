@@ -172,6 +172,8 @@ export async function buildAgentRuntimePack(options = {}) {
   await requireFile(path.join(worldDist, 'world-release-receipt.json'));
   await requireFile(path.join(worldDist, 'conformance/v0/world/corpus.json'));
   const host = await worldHostArtifacts(roots.worldHostRepo);
+  const boundary = await boundaryArtifacts(roots.boundaryRepo);
+  const world = await worldArtifacts(roots.worldRepo, worldDist);
 
   await rm(out, { recursive: true, force: true });
   for (const rel of [
@@ -193,8 +195,6 @@ export async function buildAgentRuntimePack(options = {}) {
     await mkdir(path.join(out, rel), { recursive: true });
   }
 
-  const boundary = await boundaryArtifacts(roots.boundaryRepo);
-  const world = await worldArtifacts(roots.worldRepo, worldDist);
   await writeArtifactSet(out, boundary, world, host);
   await copyWorldHostPackage(roots.worldHostRepo, path.join(out, 'world-host'));
   await writeConformanceCorpus(out, boundary, world, host);

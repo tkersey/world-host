@@ -818,6 +818,54 @@ describe('RunController and WorldWorker', () => {
     assert.equal(labeled.invocationCount, 1);
   });
 
+  it('does not prefer unrelated required authority labels for needs_host drivers', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+      applicationOverrides: {
+        requiredActuators: [
+          {
+            actuatorRef: 'world:actuator-ref:0000000000000a05',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+          },
+          {
+            actuatorRef: 'world:actuator-ref:0000000000000bad',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+          },
+        ],
+        requiredHostAuthorityLabels: ['model:fixture', 'file:sandbox'],
+      },
+    });
+    const wrongLabel = fixtureEffectDriver({
+      driverId: 'wrong-label-fixture',
+      authorityLabels: ['file:sandbox'],
+    });
+    const modelAuthority = fixtureEffectDriver({
+      driverId: 'model-authority-fixture',
+      authorityLabels: ['model:fixture'],
+    });
+    const fileAuthority = fixtureEffectDriver({
+      driverId: 'file-authority-fixture',
+      actuatorRef: 'world:actuator-ref:0000000000000bad',
+      authorityLabels: ['file:sandbox'],
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [wrongLabel, modelAuthority, fileAuthority],
+      effectPolicy: {
+        allowedAuthorityLabels: ['model:fixture', 'file:sandbox'],
+      },
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(wrongLabel.invocationCount, 0);
+    assert.equal(modelAuthority.invocationCount, 1);
+    assert.equal(fileAuthority.invocationCount, 0);
+  });
+
   it('rejects HTTP requests outside the selected driver origin coverage', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',

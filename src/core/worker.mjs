@@ -137,7 +137,7 @@ export class RunController {
       this.hostRequestMapper,
       this.effectDrivers,
       policy,
-      application.requiredHostAuthorityLabels ?? [],
+      application,
     );
     if (needsHostEffectPlan?.pending.length > 0) {
       assertCapabilityReportAccepted(preflightCapabilities({
@@ -279,7 +279,7 @@ export class RunController {
       this.hostRequestMapper,
       this.effectDrivers,
       policy,
-      application.requiredHostAuthorityLabels ?? [],
+      application,
     );
     const journal = new EffectJournal({
       store: this.store,
@@ -636,19 +636,25 @@ async function defaultEffectContextFactory(context) {
 
 function selectEffectDriver(drivers, hostRequest, policy = {}, preferredAuthorityLabels = []) {
   let firstMatch = null;
+  let selected = null;
+  let selectedScore = 0;
   for (const driver of drivers) {
     const manifest = driverManifest(driver);
     if (manifest && driverSupportsManifest(manifest, hostRequest, policy)) {
       const selection = { driver, manifest };
       firstMatch ??= selection;
-      if (manifestCarriesPreferredAuthority(manifest, preferredAuthorityLabels)) return selection;
+      const score = authorityPreferenceScore(manifest, preferredAuthorityLabels);
+      if (score > selectedScore) {
+        selected = selection;
+        selectedScore = score;
+      }
     }
   }
-  return firstMatch;
+  return selected ?? firstMatch;
 }
 
-function manifestCarriesPreferredAuthority(manifest, preferredAuthorityLabels) {
-  return preferredAuthorityLabels.some((label) => manifest.authorityLabels.includes(label));
+function authorityPreferenceScore(manifest, preferredAuthorityLabels) {
+  return preferredAuthorityLabels.filter((label) => manifest.authorityLabels.includes(label)).length;
 }
 
 function driverManifest(driver) {
@@ -906,7 +912,7 @@ function assertNextClosureManifestMatchesWorker(worker, inspected) {
   }
 }
 
-function prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, hostRequestMapper, effectDrivers, policy, preferredAuthorityLabels = []) {
+function prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, hostRequestMapper, effectDrivers, policy, application = {}) {
   if (parentHead.status !== 'needs_host') return null;
   let parentSummary;
   try {
@@ -927,7 +933,12 @@ function prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, hostRequestM
       unresolvedHostRequests.push(unresolvedHostRequestDiagnostic(index, { diagnostics: { mapperError: error?.message ?? String(error) } }));
       continue;
     }
-    const selection = selectEffectDriver(effectDrivers, hostRequest, policy, preferredAuthorityLabels);
+    const selection = selectEffectDriver(
+      effectDrivers,
+      hostRequest,
+      policy,
+      preferredAuthorityLabelsForHostRequest(hostRequest, application, effectDrivers, policy),
+    );
     if (selection) pending.push({ index, worldHostRequest, hostRequest, ...selection });
     else unresolvedHostRequests.push(unresolvedHostRequestDiagnostic(index, hostRequest));
   }
@@ -946,6 +957,71 @@ function prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, hostRequestM
     });
   }
   return { parentSummary, pending, unresolvedHostRequests };
+}
+
+function preferredAuthorityLabelsForHostRequest(hostRequest, application, effectDrivers, policy) {
+  const requiredAuthorityLabels = application?.requiredHostAuthorityLabels ?? [];
+  if (!requiredAuthorityLabels.length) return [];
+  const requiredActuatorOptions = (application?.requiredActuators ?? []).map((required) => {
+    const requirement = normalizeRequiredActuator(required);
+    return {
+      requirement,
+      candidates: effectDrivers
+        .map((driver) => driverManifest(driver))
+        .filter((manifest) => manifest && driverSupportsRequiredActuator(manifest, requirement, policy)),
+    };
+  }).filter(({ candidates }) => candidates.length > 0);
+  const requiredOption = requiredActuatorOptions.find(({ requirement }) => requirementMatchesHostRequest(requirement, hostRequest));
+  if (!requiredOption) return requiredAuthorityLabels.length === 1 ? requiredAuthorityLabels : [];
+  return preferredAuthorityLabelsForRequirement(requiredOption, requiredActuatorOptions, requiredAuthorityLabels);
+}
+
+function normalizeRequiredActuator(required) {
+  if (typeof required === 'string') return { actuatorRef: required, descriptorFingerprint: null };
+  return {
+    actuatorRef: required?.actuatorRef,
+    descriptorFingerprint: required?.descriptorFingerprint ?? null,
+  };
+}
+
+function driverSupportsRequiredActuator(manifest, requirement, policy) {
+  if (manifest.supportedActuatorRefs?.includes(requirement.actuatorRef) !== true) return false;
+  if (
+    requirement.descriptorFingerprint &&
+    manifest.supportedDescriptorFingerprints?.includes(requirement.descriptorFingerprint) !== true
+  ) {
+    return false;
+  }
+  if (policy.maximumResponseBytes !== undefined && manifest.maximumResponseBytes > policy.maximumResponseBytes) return false;
+  const allowedAuthorityLabels = policySet(policy.allowedAuthorityLabels);
+  if (allowedAuthorityLabels.size && manifest.authorityLabels.some((label) => !allowedAuthorityLabels.has(label))) return false;
+  return true;
+}
+
+function requirementMatchesHostRequest(requirement, request) {
+  return requirement.actuatorRef === request.actuatorRef &&
+    (!requirement.descriptorFingerprint || requirement.descriptorFingerprint === request.descriptorFingerprint);
+}
+
+function preferredAuthorityLabelsForRequirement(option, allOptions, requiredAuthorityLabels) {
+  const targetLabels = authorityLabelsPresent(option.candidates, requiredAuthorityLabels);
+  const uniqueLabels = requiredAuthorityLabels.filter((label) =>
+    targetLabels.has(label) &&
+    !allOptions.some((candidateOption) =>
+      candidateOption !== option && authorityLabelsPresent(candidateOption.candidates, requiredAuthorityLabels).has(label)));
+  if (uniqueLabels.length) return uniqueLabels;
+  const presentLabels = requiredAuthorityLabels.filter((label) => targetLabels.has(label));
+  return presentLabels.length === 1 ? presentLabels : [];
+}
+
+function authorityLabelsPresent(manifests, requiredAuthorityLabels) {
+  const present = new Set();
+  for (const manifest of manifests) {
+    for (const label of requiredAuthorityLabels) {
+      if (manifest.authorityLabels.includes(label)) present.add(label);
+    }
+  }
+  return present;
 }
 
 function assertHeadGenerationMatchesClosure(head, summary) {

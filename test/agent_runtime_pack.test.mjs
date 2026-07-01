@@ -2,7 +2,7 @@ import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -698,6 +698,38 @@ describe('Agent Runtime pack', () => {
       assert.equal(await readFile(marker, 'utf8'), 'keep');
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves an existing pack when owner exports are missing', async () => {
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'agent-runtime-pack-owner-missing-'));
+    const root = await realpath(tempRoot);
+    try {
+      const pack = path.join(root, 'agent-runtime-v0.1');
+      const worldRoot = path.join(root, 'world');
+      const boundaryRoot = path.join(root, 'boundary');
+      const worldDist = path.join(worldRoot, 'zig-out/dist/world-v0.1.0');
+      const marker = path.join(pack, 'marker.txt');
+      await mkdir(path.join(worldDist, 'conformance/v0/world'), { recursive: true });
+      await mkdir(boundaryRoot, { recursive: true });
+      await mkdir(pack, { recursive: true });
+      await writeFile(path.join(worldDist, 'world_universal_appliance.wasm'), 'wasm');
+      await writeFile(path.join(worldDist, 'world-release-receipt.json'), '{}');
+      await writeFile(path.join(worldDist, 'conformance/v0/world/corpus.json'), '{}');
+      await writeFile(marker, 'keep');
+
+      await assert.rejects(
+        () => buildAgentRuntimePack({
+          out: pack,
+          worldHostRepo: process.cwd(),
+          worldRepo: worldRoot,
+          boundaryRepo: boundaryRoot,
+        }),
+        /ENOENT|missing required file/,
+      );
+      assert.equal(await readFile(marker, 'utf8'), 'keep');
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
     }
   });
 
