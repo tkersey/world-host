@@ -117,10 +117,34 @@ describe('Capability Plane v0.2 core contracts', () => {
       () => assertCapabilityPolicyAllows({
         manifest,
         hostRequest: httpRequest(),
-        policy: { allowLiveEffects: true, allowNetworkEffects: true, allowBestEffort: true },
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowBestEffort: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
         mode: 'live',
       }),
       { code: 'ERR_CAPABILITY_APPROVAL_REQUIRED' },
+    );
+    assert.throws(
+      () => assertCapabilityPolicyAllows({
+        manifest: { ...manifest, recoveryClass: EffectRecoveryClass.idempotent },
+        hostRequest: httpRequest(),
+        policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedMethods: ['POST'] },
+        mode: 'live',
+      }),
+      { code: 'ERR_CAPABILITY_ORIGIN_ALLOWLIST_REQUIRED' },
+    );
+    assert.throws(
+      () => assertCapabilityPolicyAllows({
+        manifest: { ...manifest, recoveryClass: EffectRecoveryClass.idempotent },
+        hostRequest: httpRequest(),
+        policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'] },
+        mode: 'live',
+      }),
+      { code: 'ERR_CAPABILITY_METHOD_ALLOWLIST_REQUIRED' },
     );
     assert.equal(assertCapabilityPolicyAllows({
       manifest: { ...manifest, recoveryClass: EffectRecoveryClass.idempotent },
@@ -230,6 +254,23 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(JSON.stringify(result.diagnostics).includes('secret'), false);
       assert.equal(decodeResolutionInputBytes(result.resolutionInputBytes).status, 0);
 
+      const envelopeDriver = new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        maximumResponseBytes: 4,
+      });
+      assert.equal(envelopeDriver.manifest().maximumResponseBytes > 4, true);
+      globalThis.fetch = async () => new Response('1234', { status: 200 });
+      const envelopeResult = await envelopeDriver.resolve({
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+          maximumResponseBytes: envelopeDriver.manifest().maximumResponseBytes,
+        },
+      }, httpRequest());
+      assert.equal(envelopeResult.resolutionInputBytes.byteLength <= envelopeDriver.manifest().maximumResponseBytes, true);
+
       globalThis.fetch = async () => new Response(new ReadableStream({
         start(controller) {
           controller.enqueue(new Uint8Array(8));
@@ -256,6 +297,13 @@ describe('Capability Plane v0.2 core contracts', () => {
       await assert.rejects(
         () => new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }).resolve({}, httpRequest()),
         { code: 'ERR_CAPABILITY_LIVE_DENIED' },
+      );
+      assert.equal(directFetchCalled, false);
+      await assert.rejects(
+        () => new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }).resolve({
+          policy: { allowLiveEffects: true, allowNetworkEffects: true },
+        }, httpRequest()),
+        { code: 'ERR_CAPABILITY_ORIGIN_ALLOWLIST_REQUIRED' },
       );
       assert.equal(directFetchCalled, false);
 

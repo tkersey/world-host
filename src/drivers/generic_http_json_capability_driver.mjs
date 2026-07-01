@@ -6,6 +6,10 @@ import { assertBytes, fail, fromUtf8, stableJson } from '../core/store.mjs';
 import { encodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
 import { encodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
 
+const DEFAULT_MAXIMUM_RESPONSE_ENVELOPE_BYTES = 1024 * 1024;
+const RESPONSE_ENVELOPE_OVERHEAD_BYTES = 8192;
+const DEFAULT_MAXIMUM_RESPONSE_BODY_BYTES = Math.floor((DEFAULT_MAXIMUM_RESPONSE_ENVELOPE_BYTES - RESPONSE_ENVELOPE_OVERHEAD_BYTES) / 6);
+
 export class GenericHttpJsonCapabilityDriver {
   constructor({
     endpointUrl,
@@ -18,7 +22,7 @@ export class GenericHttpJsonCapabilityDriver {
     timeoutMs = 5000,
     retryPolicy = { attempts: 1 },
     maximumRequestBytes = 64 * 1024,
-    maximumResponseBytes = 1024 * 1024,
+    maximumResponseBytes = DEFAULT_MAXIMUM_RESPONSE_BODY_BYTES,
     idempotencyHeaderName = 'Idempotency-Key',
     allowEndpointFromRequest = false,
     redactionRules = [],
@@ -48,7 +52,7 @@ export class GenericHttpJsonCapabilityDriver {
       supportedActuationClasses: ['http'],
       supportedResponseStatuses: ['ok', 'http_error', 'deferred', 'failed'],
       maximumRequestBytes: this.maximumRequestBytes,
-      maximumResponseBytes: this.maximumResponseBytes,
+      maximumResponseBytes: encodedJsonStringEnvelopeLimit(this.maximumResponseBytes, RESPONSE_ENVELOPE_OVERHEAD_BYTES),
       recoveryClass: EffectRecoveryClass.idempotent,
       concurrencyLimit: 4,
       authorityLabels: ['network:http'],
@@ -265,4 +269,9 @@ function concatChunks(chunks, total) {
     offset += chunk.byteLength;
   }
   return out;
+}
+
+function encodedJsonStringEnvelopeLimit(logicalBytes, overheadBytes) {
+  if (logicalBytes > Math.floor((Number.MAX_SAFE_INTEGER - overheadBytes) / 6)) return Number.MAX_SAFE_INTEGER;
+  return logicalBytes * 6 + overheadBytes;
 }
