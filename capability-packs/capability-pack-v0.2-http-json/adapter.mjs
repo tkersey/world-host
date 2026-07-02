@@ -1413,19 +1413,20 @@ class GenericHttpJsonCapabilityDriver {
     this.#assertSecrets();
     const request = this.#request(hostRequest);
     try {
-      const response = await this.#fetchWithRetry(request, hostRequest);
-      if (response.status >= 300 && response.status < 400) {
-        await discardResponseBody(response, this.maximumResponseBytes);
-        fail("ERR_HTTP_REDIRECT_REJECTED");
-      }
-      if (!response.ok) {
-        await discardResponseBody(response, this.maximumResponseBytes);
-        return this.#resolution(hostRequest, { status: "http_error", statusCode: response.status }, 1, response.headers.get("x-request-id"));
-      }
-      const bytes2 = await readResponseBytes(response, this.maximumResponseBytes);
-      const json = bytes2.byteLength ? JSON.parse(new TextDecoder().decode(bytes2)) : null;
-      const body = extractPath(json, this.responseExtractionPath);
-      return this.#resolution(hostRequest, { status: "ok", statusCode: response.status, body }, 0, response.headers.get("x-request-id"));
+      return await this.#fetchWithRetry(request, hostRequest, async (response) => {
+        if (response.status >= 300 && response.status < 400) {
+          await discardResponseBody(response, this.maximumResponseBytes);
+          fail("ERR_HTTP_REDIRECT_REJECTED");
+        }
+        if (!response.ok) {
+          await discardResponseBody(response, this.maximumResponseBytes);
+          return this.#resolution(hostRequest, { status: "http_error", statusCode: response.status }, 1, response.headers.get("x-request-id"));
+        }
+        const bytes2 = await readResponseBytes(response, this.maximumResponseBytes);
+        const json = bytes2.byteLength ? JSON.parse(new TextDecoder().decode(bytes2)) : null;
+        const body = extractPath(json, this.responseExtractionPath);
+        return this.#resolution(hostRequest, { status: "ok", statusCode: response.status, body }, 0, response.headers.get("x-request-id"));
+      });
     } catch (error) {
       if (error?.name === "AbortError") {
         return this.#resolution(hostRequest, { status: "deferred", reason: "timeout" }, 4, null);
@@ -1499,19 +1500,20 @@ class GenericHttpJsonCapabilityDriver {
     }
     return headers;
   }
-  async#fetchWithRetry(request, hostRequest) {
+  async#fetchWithRetry(request, hostRequest, handleResponse) {
     let lastError = null;
     for (let attempt = 1;attempt <= this.retryPolicy.attempts; attempt += 1) {
       const controller = new AbortController;
       const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
       try {
-        return await fetch(request.url, {
+        const response = await fetch(request.url, {
           method: request.method,
           headers: await this.#headers(hostRequest),
           body: request.body,
           signal: controller.signal,
           redirect: "manual"
         });
+        return await handleResponse(response);
       } catch (error) {
         if (error?.name === "AbortError")
           throw error;

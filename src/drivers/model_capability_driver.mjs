@@ -65,12 +65,15 @@ export class GenericHttpJsonModelDriver {
   }
 
   preflight(context, hostRequest) {
+    const structural = defaultCapabilityPreflight(this.manifest(), hostRequest);
+    const blockers = [...structural.blockers];
     try {
       parseDecisionPrompt(hostRequest.requestBytes);
       assertLiveModelBudgetAllows(context?.policy);
     } catch (error) {
-      return new CapabilityPreflightReport({ accepted: false, blockers: [error.code ?? 'ERR_MODEL_PROMPT_INVALID'] });
+      blockers.push(error.code ?? 'ERR_MODEL_PROMPT_INVALID');
     }
+    if (blockers.length) return new CapabilityPreflightReport({ accepted: false, blockers });
     return this.http.preflight(context, {
       ...hostRequest,
       actuatorRef: 'http:json',

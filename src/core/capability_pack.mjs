@@ -37,7 +37,7 @@ const SEMANTIC_FIELDS = Object.freeze([
 ]);
 const SECRET_PATTERN = /credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key/i;
 const CONFORMANCE_RECEIPT_PATH = 'conformance.json';
-const EXTERNAL_ADAPTER_IMPORT_PATTERN = /(?:\bfrom\s*|\bimport\s*(?:\(\s*)?)['"](?:\.\.\/|\/)/;
+const ADAPTER_IMPORT_PATTERN = /(?:^\s*import\s+(?:[^'"]*from\s*)?['"][^'"]+['"]|^\s*export\s+[^'"]*\s+from\s+['"][^'"]+['"]|\bimport\s*\(\s*['"][^'"]+['"])/m;
 
 export class CapabilityManifest {
   constructor(fields) {
@@ -207,8 +207,8 @@ function assertAdapterArtifactSelfContained(manifest, artifacts) {
   const bytes = artifacts[manifest.adapter.module];
   if (!(bytes instanceof Uint8Array)) return;
   const text = new TextDecoder().decode(bytes);
-  if (EXTERNAL_ADAPTER_IMPORT_PATTERN.test(text)) {
-    fail('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT', `adapter imports outside the pack: ${manifest.adapter.module}`);
+  if (ADAPTER_IMPORT_PATTERN.test(text)) {
+    fail('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT', `adapter imports code outside its checksum-covered entry module: ${manifest.adapter.module}`);
   }
 }
 

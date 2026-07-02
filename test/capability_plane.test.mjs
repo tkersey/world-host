@@ -73,6 +73,26 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': externalAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const localImportAdapter = fromUtf8("import helper from './helper.mjs'; export const CapabilityDriver = helper;");
+    const localImportAdapterChecksum = `sha256:${await sha256Hex(localImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: localImportAdapterChecksum }],
+      }, { 'adapter.mjs': localImportAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const bareImportAdapter = fromUtf8("const helper = await import('helper-package'); export const CapabilityDriver = helper.Driver;");
+    const bareImportAdapterChecksum = `sha256:${await sha256Hex(bareImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: bareImportAdapterChecksum }],
+      }, { 'adapter.mjs': bareImportAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const sidecar = fromUtf8('sidecar bytes');
     const launcherChecksum = `sha256:${await sha256Hex(artifact)}`;
     const sidecarChecksum = `sha256:${await sha256Hex(sidecar)}`;
@@ -620,6 +640,33 @@ describe('Capability Plane v0.2 core contracts', () => {
       });
       assert.equal(retryFetchCount, 2);
       assert.equal(decodeResolutionInputBytes(retried.resolutionInputBytes).status, 0);
+
+      let stalledBodyAborted = false;
+      globalThis.fetch = async (url, options) => new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(fromUtf8('{"status":'));
+          options.signal.addEventListener('abort', () => {
+            stalledBodyAborted = true;
+            controller.error(new DOMException('aborted', 'AbortError'));
+          }, { once: true });
+        },
+      }), {
+        status: 200,
+        headers: { 'x-request-id': 'request-body-timeout' },
+      });
+      const stalledBodyTimeout = await new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        timeoutMs: 5,
+      }).resolve({
+        policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+      }, {
+        ...httpRequest(),
+        hostRequestFingerprint: 'world:host-request:00000000000000aa',
+        idempotencyKeyBytes: fromUtf8('http-key-body-timeout'),
+        idempotencyKeyWorldFingerprint: 'world:key:http-body-timeout',
+      });
+      assert.equal(decodeResolutionInputBytes(stalledBodyTimeout.resolutionInputBytes).status, 4);
+      assert.equal(stalledBodyAborted, true);
 
       let reuseFetchCount = 0;
       globalThis.fetch = async () => {
@@ -1371,11 +1418,28 @@ describe('Capability Plane v0.2 core contracts', () => {
         headers: { 'x-request-id': 'request-2' },
       });
       const driver = new GenericHttpJsonModelDriver({ endpointUrl: 'https://allowed.example/decide' });
-      assert.equal(driver.dryRun({}, modelRequest('goal=invoke', 'model-dry-key')).wouldInvoke, true);
+      assert.equal(driver.dryRun({}, genericHttpModelRequest('goal=invoke', 'model-dry-key')).wouldInvoke, true);
       const signedEndpointDryRun = new GenericHttpJsonModelDriver({
         endpointUrl: 'https://allowed.example/decide?api_key=secret',
-      }).dryRun({}, modelRequest('goal=invoke', 'model-signed-dry-key'));
+      }).dryRun({}, genericHttpModelRequest('goal=invoke', 'model-signed-dry-key'));
       assert.equal(signedEndpointDryRun.proposedAction.endpoint, 'https://allowed.example/decide');
+      const wrongModelRequestPreflight = driver.preflight(
+        {
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            maximumLiveModelCalls: 1,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        },
+        {
+          ...genericHttpModelRequest('goal=invoke', 'model-wrong-actuator-key'),
+          actuatorRef: 'model:other',
+        },
+      );
+      assert.equal(wrongModelRequestPreflight.accepted, false);
+      assert.equal(wrongModelRequestPreflight.blockers.includes('ERR_ACTUATOR_REF_NOT_SUPPORTED'), true);
       const deniedPreflight = driver.preflight(
         {
           policy: {
@@ -1385,7 +1449,7 @@ describe('Capability Plane v0.2 core contracts', () => {
             allowedMethods: ['POST'],
           },
         },
-        modelRequest('goal=invoke', 'model-preflight-key'),
+        genericHttpModelRequest('goal=invoke', 'model-preflight-key'),
       );
       assert.equal(deniedPreflight.accepted, false);
       assert.equal(deniedPreflight.blockers.includes('ERR_CAPABILITY_NETWORK_DENIED'), true);
@@ -1402,7 +1466,7 @@ describe('Capability Plane v0.2 core contracts', () => {
             allowedOrigins: ['https://allowed.example'],
             allowedMethods: ['POST'],
           },
-        }, modelRequest('goal=invoke', 'model-budget-key')),
+        }, genericHttpModelRequest('goal=invoke', 'model-budget-key')),
         { code: 'ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED' },
       );
       assert.equal(budgetFetchCalled, false);
@@ -1418,7 +1482,7 @@ describe('Capability Plane v0.2 core contracts', () => {
           allowedOrigins: ['https://allowed.example'],
           allowedMethods: ['POST'],
         },
-      }, modelRequest('goal=invoke', 'model-http-key'));
+      }, genericHttpModelRequest('goal=invoke', 'model-http-key'));
       const semanticResolution = decodeResolutionInputBytes(result.resolutionInputBytes);
       const semanticHostClaim = JSON.parse(new TextDecoder().decode(semanticResolution.hostClaimBytes));
       const semanticMetadata = JSON.parse(new TextDecoder().decode(semanticResolution.metadata));
@@ -1441,11 +1505,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       const liveModel = await runCapabilityMode({
         mode: 'live',
         driver,
-        hostRequest: {
-          ...modelRequest('goal=invoke', 'model-live-key'),
-          actuatorRef: 'model:decision',
-          descriptorFingerprint: 'descriptor:agent-decision-prompt',
-        },
+        hostRequest: genericHttpModelRequest('goal=invoke', 'model-live-key'),
         journalOptions: {
           store: new MemoryStore(),
           runId: 'model-live-run',
@@ -1475,7 +1535,7 @@ describe('Capability Plane v0.2 core contracts', () => {
             allowedOrigins: ['https://allowed.example'],
             allowedMethods: ['POST'],
           },
-        }, modelRequest('goal=invoke', 'model-http-key-unknown')),
+        }, genericHttpModelRequest('goal=invoke', 'model-http-key-unknown')),
         { code: 'ERR_AGENT_ACTION_TOOL_UNKNOWN' },
       );
 
@@ -1487,7 +1547,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       await assert.rejects(
         () => driver.resolve({
           policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
-        }, { ...modelRequest('goal=invoke', 'model-http-key-bad-prompt'), requestBytes: fromUtf8(stableJson({ schema: 'wrong', observation: 'goal=invoke' })) }),
+        }, { ...genericHttpModelRequest('goal=invoke', 'model-http-key-bad-prompt'), requestBytes: fromUtf8(stableJson({ schema: 'wrong', observation: 'goal=invoke' })) }),
         { code: 'ERR_AGENT_DECISION_PROMPT_SCHEMA' },
       );
       assert.equal(malformedPromptFetchCalled, false);
@@ -1501,7 +1561,7 @@ describe('Capability Plane v0.2 core contracts', () => {
           allowedOrigins: ['https://allowed.example'],
           allowedMethods: ['POST'],
         },
-      }, modelRequest('goal=invoke', 'model-http-key-failed'));
+      }, genericHttpModelRequest('goal=invoke', 'model-http-key-failed'));
       const failedResolution = decodeResolutionInputBytes(failed.resolutionInputBytes);
       const failedMetadata = JSON.parse(new TextDecoder().decode(failedResolution.metadata));
       assert.equal(failedResolution.status, 2);
@@ -1773,6 +1833,14 @@ function modelRequest(observation, key) {
     actuationClass: 'model',
     responseSchema: { status: 'ok' },
     requestBytes: fromUtf8(stableJson({ schema: 'boundary.Agent.DecisionPrompt.v0', observation })),
+  };
+}
+
+function genericHttpModelRequest(observation, key) {
+  return {
+    ...modelRequest(observation, key),
+    actuatorRef: 'model:decision',
+    descriptorFingerprint: 'descriptor:agent-decision-prompt',
   };
 }
 
