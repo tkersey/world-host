@@ -49,6 +49,9 @@ describe('Capability Plane v0.2 core contracts', () => {
     };
     assert.equal((await validateCapabilityPackManifest(withFingerprint, { verifyFingerprint: true })).packFingerprint, packFingerprint);
     assert.equal(await assertCapabilityPackChecksums(withFingerprint, { 'adapter.mjs': artifact, 'README.md': readme }), true);
+    const sidecar = fromUtf8('sidecar bytes');
+    const launcherChecksum = `sha256:${await sha256Hex(artifact)}`;
+    const sidecarChecksum = `sha256:${await sha256Hex(sidecar)}`;
     await assert.rejects(
       () => assertCapabilityPackChecksums({ ...withFingerprint, checksums: withFingerprint.checksums.slice(0, 1) }, { 'adapter.mjs': artifact }),
       { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
@@ -62,6 +65,21 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, {}),
       { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
     );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'bun', checksum: launcherChecksum }],
+      }, { bun: artifact }),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] },
+      docs: [],
+      checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+    }, { 'sidecar.mjs': sidecar }), true);
     assert.throws(
       () => assertCapabilityConformanceReceipt({
         driverId: 'fixture-agent-model',
@@ -200,6 +218,22 @@ describe('Capability Plane v0.2 core contracts', () => {
       policy: { allowLiveEffects: true, allowedOrigins: ['https://other.example'], allowedMethods: ['POST'] },
       mode: 'live',
     }), true);
+    assert.throws(() => assertCapabilityPolicyAllows({
+      manifest: {
+        driverId: 'http',
+        authorityLabels: ['network:http'],
+        recoveryClass: EffectRecoveryClass.idempotent,
+        maximumResponseBytes: 1024,
+      },
+      hostRequest: { ...httpRequest(), requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/decide' })) },
+      policy: {
+        allowLiveEffects: true,
+        allowNetworkEffects: true,
+        allowedOrigins: ['https://allowed.example'],
+        allowedMethods: ['POST'],
+      },
+      mode: 'live',
+    }), { code: 'ERR_CAPABILITY_METHOD_REQUIRED' });
   });
 
   it('keeps secrets receiver-local and redacted', async () => {
@@ -208,7 +242,9 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.equal(env.describe('API_TOKEN').redacted, true);
     assert.equal(env.accessReport('API_TOKEN').valueRedacted, true);
     assert.equal(redactSecrets({ apiKey: 'fixture-token-value' }).apiKey, '[redacted]');
+    assert.equal(redactSecrets({ message: 'sk-abcdefghijklmnop' }).message, '[redacted]');
     assert.equal(redactCapabilityDiagnostics({ diagnostics: { Authorization: 'Bearer fixture-token-value' } }).diagnostics.Authorization, '[redacted]');
+    assert.equal(redactCapabilityDiagnostics({ message: 'sk-abcdefghijklmnop' }).message, '[redacted]');
     assert.throws(() => assertNoSecretValuePersisted({ value: ['sk', 'local-secret'].join('-') }), { code: 'ERR_SECRET_PERSISTED' });
 
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-secret-'));

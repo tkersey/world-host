@@ -2,7 +2,7 @@ import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -753,6 +753,28 @@ describe('migration, branching, and CLI diagnostics', () => {
       () => runBunCli(['effects', '--json', '--store', '.world-carrier'], { stdout: { write() {} }, stderr: { write() {} } }),
       /missing required option: --run/,
     );
+  });
+
+  it('rejects symlinked capability pack artifacts during CLI check-pack', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-symlink-'));
+    const pack = path.join(root, 'capability-pack-v0.2-fixture');
+    try {
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      const outsideAdapter = path.join(root, 'outside-adapter.mjs');
+      await writeFile(outsideAdapter, 'export const outside = true;');
+      await rm(path.join(pack, 'adapter.mjs'));
+      await symlink(outsideAdapter, path.join(pack, 'adapter.mjs'));
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ARTIFACT_UNSAFE' },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('installs DirectoryStore application records from immutable CLI bytes', async () => {

@@ -153,7 +153,7 @@ function assertOriginAndMethodAllowed(hostRequest, policy) {
   if (!policy.allowedOrigins.has(origin)) fail('ERR_CAPABILITY_ORIGIN_DENIED', `origin denied: ${origin}`);
   if (!policy.allowedMethods.size) fail('ERR_CAPABILITY_METHOD_ALLOWLIST_REQUIRED');
   const method = parsed.method === undefined ? null : String(parsed.method).toUpperCase();
-  if (method === null) return;
+  if (method === null) fail('ERR_CAPABILITY_METHOD_REQUIRED');
   if (!policy.allowedMethods.has(method)) fail('ERR_CAPABILITY_METHOD_DENIED', `method denied: ${method}`);
 }
 
@@ -189,7 +189,7 @@ function nonNegativeSafeInteger(value, field) {
 }
 
 function secretLike(value) {
-  return /credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key/i.test(value);
+  return /credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key|sk-[A-Za-z0-9_-]{8,}/i.test(value);
 }
 
 function iterable(value) {

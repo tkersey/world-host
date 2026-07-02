@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { lstat, readFile, realpath, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 
@@ -89,10 +89,10 @@ async function runCapabilityCommand(args, io) {
       assertCapabilityPackChecksums,
       validateCapabilityPackManifest,
     } = await import('../core/capability_pack.mjs');
-    const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+    const manifest = JSON.parse(await readPackFile(pack, 'manifest.json', 'utf8'));
     const checked = await validateCapabilityPackManifest(manifest, { requirePackFingerprint: true, verifyFingerprint: true });
     const artifacts = {};
-    for (const item of checked.checksums) artifacts[item.path] = new Uint8Array(await readFile(path.join(pack, item.path)));
+    for (const item of checked.checksums) artifacts[item.path] = new Uint8Array(await readPackFile(pack, item.path));
     await assertCapabilityPackChecksums(checked, artifacts);
     io.stdout.write(`${JSON.stringify(redact({
       command: 'capability check-pack',
@@ -106,6 +106,22 @@ async function runCapabilityCommand(args, io) {
   }
   io.stdout.write('world-host capability commands: check-pack\n');
   return subcommand === 'help' || subcommand === '--help' || subcommand === '-h' ? 0 : 2;
+}
+
+async function readPackFile(packRoot, relativePath, encoding = null) {
+  const root = await realpath(packRoot).catch(() => fail('ERR_CAPABILITY_PACK_ROOT_INVALID', `pack root is not readable: ${packRoot}`));
+  const target = path.resolve(packRoot, relativePath);
+  const info = await lstat(target).catch(() => fail('ERR_CAPABILITY_PACK_ARTIFACT_MISSING', `artifact missing: ${relativePath}`));
+  if (info.isSymbolicLink()) fail('ERR_CAPABILITY_PACK_ARTIFACT_UNSAFE', `artifact is a symlink: ${relativePath}`);
+  if (!info.isFile()) fail('ERR_CAPABILITY_PACK_ARTIFACT_MISSING', `artifact is not a file: ${relativePath}`);
+  const actual = await realpath(target).catch(() => fail('ERR_CAPABILITY_PACK_ARTIFACT_MISSING', `artifact missing: ${relativePath}`));
+  if (!pathInside(root, actual)) fail('ERR_CAPABILITY_PACK_ARTIFACT_UNSAFE', `artifact escapes pack root: ${relativePath}`);
+  return encoding ? await readFile(actual, encoding) : await readFile(actual);
+}
+
+function pathInside(root, target) {
+  const relative = path.relative(root, target);
+  return relative.length > 0 && !relative.startsWith('..') && !path.isAbsolute(relative);
 }
 
 async function runAgentCommand(args, io, options) {

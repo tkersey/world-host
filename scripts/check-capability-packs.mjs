@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { readdir, readFile } from 'node:fs/promises';
+import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
@@ -18,11 +18,11 @@ if (!names.length) {
 const results = [];
 for (const name of names) {
   const packRoot = path.join(root, name);
-  const manifest = JSON.parse(await readFile(path.join(packRoot, 'manifest.json'), 'utf8'));
+  const manifest = JSON.parse(await readPackFile(packRoot, 'manifest.json', 'utf8'));
   if (!Array.isArray(manifest.checksums) || manifest.checksums.length === 0) throw new Error(`ERR_CAPABILITY_PACK_CHECKSUMS_REQUIRED:${name}`);
   const checked = await validateCapabilityPackManifest(manifest, { requirePackFingerprint: true, verifyFingerprint: true });
   const artifacts = {};
-  for (const item of checked.checksums) artifacts[item.path] = new Uint8Array(await readFile(path.join(packRoot, item.path)));
+  for (const item of checked.checksums) artifacts[item.path] = new Uint8Array(await readPackFile(packRoot, item.path));
   await assertCapabilityPackChecksums(checked, artifacts);
   const receipt = JSON.parse(await readFile(path.join(packRoot, 'conformance.json'), 'utf8'));
   assertCapabilityConformanceReceipt(receipt);
@@ -38,3 +38,19 @@ for (const name of names) {
 }
 
 console.log(JSON.stringify({ capabilityPacks: results, status: 'passed' }, null, 2));
+
+async function readPackFile(packRoot, relativePath, encoding = null) {
+  const rootPath = await realpath(packRoot);
+  const target = path.resolve(packRoot, relativePath);
+  const info = await lstat(target);
+  if (info.isSymbolicLink()) throw new Error(`ERR_CAPABILITY_PACK_ARTIFACT_UNSAFE:${relativePath}`);
+  if (!info.isFile()) throw new Error(`ERR_CAPABILITY_PACK_ARTIFACT_MISSING:${relativePath}`);
+  const actual = await realpath(target);
+  if (!pathInside(rootPath, actual)) throw new Error(`ERR_CAPABILITY_PACK_ARTIFACT_UNSAFE:${relativePath}`);
+  return encoding ? await readFile(actual, encoding) : await readFile(actual);
+}
+
+function pathInside(rootPath, target) {
+  const relative = path.relative(rootPath, target);
+  return relative.length > 0 && !relative.startsWith('..') && !path.isAbsolute(relative);
+}

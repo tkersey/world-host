@@ -1,7 +1,7 @@
 import { EffectJournal } from './effect_journal.mjs';
 import { assertCapabilityPolicyAllows, createCapabilityPolicy } from './capability_policy.mjs';
 import { assertCapabilityResolutionBoundary, defineCapabilityDriver } from './capability_driver.mjs';
-import { fail } from './store.mjs';
+import { fail, fromUtf8, stableJson } from './store.mjs';
 
 export const CapabilityExecutionMode = Object.freeze({
   fixture: 'fixture',
@@ -40,7 +40,7 @@ export async function runCapabilityMode({
     if (context?.allowShadowNetwork === true || context?.allowShadowLiveEffects === true) {
       assertCapabilityPolicyAllows({
         manifest,
-        hostRequest,
+        hostRequest: networkPolicyHostRequest(hostRequest, manifest),
         policy: livePolicy,
         mode: 'live',
         enforceNetworkTarget: shouldEnforceNetworkTarget(hostRequest, manifest),
@@ -61,7 +61,7 @@ export async function runCapabilityMode({
     }
     assertCapabilityPolicyAllows({
       manifest,
-      hostRequest,
+      hostRequest: networkPolicyHostRequest(hostRequest, manifest),
       policy: livePolicy,
       mode: 'live',
       action: { approved: true },
@@ -79,7 +79,7 @@ export async function runCapabilityMode({
   }
   assertCapabilityPolicyAllows({
     manifest,
-    hostRequest,
+    hostRequest: networkPolicyHostRequest(hostRequest, manifest),
     policy: livePolicy,
     mode: 'live',
     enforceNetworkTarget: shouldEnforceNetworkTarget(hostRequest, manifest),
@@ -111,6 +111,19 @@ function shouldEnforceNetworkTarget(hostRequest, manifest) {
     return JSON.parse(new TextDecoder().decode(hostRequest.requestBytes))?.url !== undefined;
   } catch {
     return true;
+  }
+}
+
+function networkPolicyHostRequest(hostRequest, manifest) {
+  if (manifest?.diagnostics?.endpointSource === 'config' || !hostRequest?.requestBytes) return hostRequest;
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
+    if (parsed?.url === undefined || parsed.method !== undefined) return hostRequest;
+    const methods = Array.isArray(manifest?.diagnostics?.methods) ? manifest.diagnostics.methods : [];
+    if (methods.length !== 1) return hostRequest;
+    return { ...hostRequest, requestBytes: fromUtf8(stableJson({ ...parsed, method: methods[0] })) };
+  } catch {
+    return hostRequest;
   }
 }
 

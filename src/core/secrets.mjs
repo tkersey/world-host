@@ -1,6 +1,6 @@
 import { assertBytes, fail, fromUtf8 } from './store.mjs';
 
-const SECRET_PATTERN = /credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key/i;
+const SECRET_PATTERN = /credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key|sk-[A-Za-z0-9_-]{8,}/i;
 
 export class SecretDescriptor {
   constructor({ name, class: secretClass = 'opaque', provider = null, required = true } = {}) {
