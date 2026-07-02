@@ -288,7 +288,7 @@ function adapterHasImportCall(text) {
       const afterLiteral = skipWhitespaceAndComments(text, literal.end);
       if (
         previousSignificant === '[' &&
-        (literal.value === 'eval' || literal.value === 'Function') &&
+        (literal.value === 'eval' || literal.value === 'Function' || literal.value === 'require') &&
         text[afterLiteral] === ']'
       ) {
         const afterBracket = skipWhitespaceAndComments(text, afterLiteral + 1);
@@ -303,7 +303,7 @@ function adapterHasImportCall(text) {
       const afterLiteral = skipWhitespaceAndComments(text, literal.end);
       if (
         previousSignificant === '[' &&
-        (literal.value === null || literal.value === 'eval' || literal.value === 'Function') &&
+        (literal.value === null || literal.value === 'eval' || literal.value === 'Function' || literal.value === 'require') &&
         text[afterLiteral] === ']'
       ) {
         const afterBracket = skipWhitespaceAndComments(text, afterLiteral + 1);
@@ -325,7 +325,7 @@ function adapterHasImportCall(text) {
     const callStart = skipWhitespaceAndComments(text, index);
     if (identifier === 'eval' || identifier === 'Function') return true;
     if (identifier === 'constructor' && previousSignificant === '.' && text[callStart] === '(') return true;
-    if (identifier === 'require' && previousSignificant !== '.') {
+    if (identifier === 'require') {
       if (text[callStart] !== '(') return true;
       const callEnd = skipBalancedParentheses(text, callStart);
       const afterCall = skipWhitespaceAndComments(text, callEnd);
@@ -335,20 +335,16 @@ function adapterHasImportCall(text) {
       }
       return true;
     }
-    if (identifier !== 'import' && identifier !== 'require') {
+    if (identifier !== 'import') {
       previousSignificant = 'identifier';
       continue;
     }
-    if (text[callStart] !== '(' || (identifier === 'require' && previousSignificant === '.')) {
+    if (text[callStart] !== '(') {
       previousSignificant = 'identifier';
       continue;
     }
     const callEnd = skipBalancedParentheses(text, callStart);
     const afterCall = skipWhitespaceAndComments(text, callEnd);
-    if (identifier === 'require' && text[afterCall] === '{') {
-      previousSignificant = 'identifier';
-      continue;
-    }
     return true;
   }
   return false;

@@ -147,11 +147,13 @@ function isHuman(manifest, hostRequest) {
 }
 
 function isLiveModelCall(manifest, hostRequest) {
-  if (hostRequest?.actuationClass !== 'model') return false;
+  const modelCapable = hostRequest?.actuationClass === 'model' ||
+    (manifest?.supportedActuationClasses ?? []).includes('model');
+  if (!modelCapable) return false;
   if (manifest?.driverId === 'fixture-agent-model') return false;
   const labels = manifest?.authorityLabels ?? [];
   const modelLabels = labels.filter((label) => label.startsWith('model:'));
-  if (!modelLabels.length) return false;
+  if (!modelLabels.length) return true;
   return modelLabels.some((label) => !label.startsWith('model:fixture'));
 }
 

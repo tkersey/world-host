@@ -149,6 +149,36 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': requireAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const dottedRequireAdapter = fromUtf8("const fs = globalThis.require('node:fs'); export const CapabilityDriver = fs;");
+    const dottedRequireAdapterChecksum = `sha256:${await sha256Hex(dottedRequireAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: dottedRequireAdapterChecksum }],
+      }, { 'adapter.mjs': dottedRequireAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const moduleRequireAdapter = fromUtf8("const fs = module.require('node:fs'); export const CapabilityDriver = fs;");
+    const moduleRequireAdapterChecksum = `sha256:${await sha256Hex(moduleRequireAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: moduleRequireAdapterChecksum }],
+      }, { 'adapter.mjs': moduleRequireAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const computedRequireAdapter = fromUtf8("const fs = globalThis['require']('node:fs'); export const CapabilityDriver = fs;");
+    const computedRequireAdapterChecksum = `sha256:${await sha256Hex(computedRequireAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: computedRequireAdapterChecksum }],
+      }, { 'adapter.mjs': computedRequireAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const aliasedRequireAdapter = fromUtf8("const r = require; const fs = r('node:fs'); export const CapabilityDriver = fs;");
     const aliasedRequireAdapterChecksum = `sha256:${await sha256Hex(aliasedRequireAdapter)}`;
     await assert.rejects(
@@ -664,6 +694,18 @@ describe('Capability Plane v0.2 core contracts', () => {
         maximumResponseBytes: 1024,
       },
       hostRequest: { ...genericHttpModelRequest('goal=policy', 'model-policy-key') },
+      policy: { allowLiveEffects: true },
+      mode: 'live',
+    }), { code: 'ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED' });
+    assert.throws(() => assertCapabilityPolicyAllows({
+      manifest: {
+        driverId: 'unlabeled-model-http',
+        authorityLabels: [],
+        supportedActuationClasses: ['model'],
+        recoveryClass: EffectRecoveryClass.idempotent,
+        maximumResponseBytes: 1024,
+      },
+      hostRequest: { ...genericHttpModelRequest('goal=policy-unlabeled', 'model-policy-unlabeled-key') },
       policy: { allowLiveEffects: true },
       mode: 'live',
     }), { code: 'ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED' });
@@ -2445,6 +2487,19 @@ describe('Capability Plane v0.2 core contracts', () => {
     );
     assert.equal(defaultDeniedModelShadowDriver.shadowCalled, false);
 
+    const unlabeledDeniedModelShadowDriver = modelShadowProbeDriver({ authorityLabels: [] });
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'shadow',
+        driver: unlabeledDeniedModelShadowDriver,
+        hostRequest: genericHttpModelRequest('goal=shadow-unlabeled-model', 'model-shadow-unlabeled-key'),
+        recordedResolution: null,
+        policy: { allowLiveEffects: true, maximumLiveModelCalls: 1 },
+      }),
+      { code: 'ERR_CAPABILITY_SHADOW_LIVE_EFFECT_DENIED' },
+    );
+    assert.equal(unlabeledDeniedModelShadowDriver.shadowCalled, false);
+
     const budgetDeniedModelShadowDriver = modelShadowProbeDriver();
     await assert.rejects(
       () => runCapabilityMode({
@@ -3021,7 +3076,7 @@ function close(server) {
   });
 }
 
-function modelShadowProbeDriver() {
+function modelShadowProbeDriver({ authorityLabels = ['model:openai'] } = {}) {
   let shadowCalled = false;
   return {
     get shadowCalled() {
@@ -3038,7 +3093,7 @@ function modelShadowProbeDriver() {
         maximumResponseBytes: 1024 * 1024,
         recoveryClass: EffectRecoveryClass.idempotent,
         concurrencyLimit: 1,
-        authorityLabels: ['model:openai'],
+        authorityLabels,
       };
     },
     preflight() {

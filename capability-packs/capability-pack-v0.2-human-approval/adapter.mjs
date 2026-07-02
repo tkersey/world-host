@@ -763,25 +763,25 @@ class BinaryReader {
     this.view = new DataView(this.bytesValue.buffer, this.bytesValue.byteOffset, this.bytesValue.byteLength);
   }
   u8() {
-    this.require(1);
+    this.requireBytes(1);
     const value = this.view.getUint8(this.offset);
     this.offset += 1;
     return value;
   }
   u16() {
-    this.require(2);
+    this.requireBytes(2);
     const value = this.view.getUint16(this.offset, true);
     this.offset += 2;
     return value;
   }
   u32() {
-    this.require(4);
+    this.requireBytes(4);
     const value = this.view.getUint32(this.offset, true);
     this.offset += 4;
     return value;
   }
   u64() {
-    this.require(8);
+    this.requireBytes(8);
     const lo = BigInt(this.view.getUint32(this.offset, true));
     const hi = BigInt(this.view.getUint32(this.offset + 4, true));
     this.offset += 8;
@@ -797,7 +797,7 @@ class BinaryReader {
   }
   bytes() {
     const len = this.u32();
-    this.require(len);
+    this.requireBytes(len);
     const out = this.bytesValue.slice(this.offset, this.offset + len);
     this.offset += len;
     return out;
@@ -905,7 +905,7 @@ class BinaryReader {
   remaining() {
     return this.bytesValue.length - this.offset;
   }
-  require(len) {
+  requireBytes(len) {
     if (len < 0 || this.offset + len > this.bytesValue.length)
       throw new Error("truncated wire bytes");
   }
