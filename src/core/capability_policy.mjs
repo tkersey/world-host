@@ -47,6 +47,7 @@ export class LiveRunPolicy extends CapabilityPolicy {
 
 export function assertCapabilityPolicyAllows({ manifest, hostRequest = null, policy: inputPolicy = {}, mode = 'live', action = null, enforceNetworkTarget = true }) {
   const policy = createCapabilityPolicy(inputPolicy);
+  if (mode === 'live' && policy.auditOnly === true) fail('ERR_CAPABILITY_AUDIT_ONLY_DENIED');
   if (mode === 'live' && policy.allowLiveEffects !== true) fail('ERR_CAPABILITY_LIVE_DENIED');
   if (policy.deniedCapabilityPacks.has(manifest?.packFingerprint) || policy.deniedCapabilityPacks.has(manifest?.driverId)) {
     fail('ERR_CAPABILITY_PACK_DENIED');

@@ -212,6 +212,21 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_CAPABILITY_LIVE_DENIED' },
     );
     assert.throws(
+      () => assertCapabilityPolicyAllows({
+        manifest,
+        hostRequest: httpRequest(),
+        policy: {
+          auditOnly: true,
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+        mode: 'live',
+      }),
+      { code: 'ERR_CAPABILITY_AUDIT_ONLY_DENIED' },
+    );
+    assert.throws(
       () => assertCapabilityPolicyAllows({ manifest, hostRequest: httpRequest(), policy: { allowLiveEffects: true }, mode: 'live' }),
       { code: 'ERR_CAPABILITY_NETWORK_DENIED' },
     );

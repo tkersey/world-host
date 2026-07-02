@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import {
   assertCapabilityConformanceReceipt,
@@ -24,6 +25,7 @@ for (const name of names) {
   const artifacts = {};
   for (const item of checked.checksums) artifacts[item.path] = new Uint8Array(await readPackFile(packRoot, item.path));
   await assertCapabilityPackChecksums(checked, artifacts);
+  await assertAdapterManifestMatchesPack(packRoot, checked, name);
   const receipt = JSON.parse(await readPackFile(packRoot, 'conformance.json', 'utf8'));
   assertCapabilityConformanceReceipt(receipt);
   if (receipt.packFingerprint !== checked.packFingerprint) throw new Error(`ERR_CAPABILITY_CONFORMANCE_PACK_FINGERPRINT:${name}`);
@@ -53,4 +55,39 @@ async function readPackFile(packRoot, relativePath, encoding = null) {
 function pathInside(rootPath, target) {
   const relative = path.relative(rootPath, target);
   return relative.length > 0 && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+async function assertAdapterManifestMatchesPack(packRoot, packManifest, name) {
+  if (packManifest.adapter.kind !== 'in_process') return;
+  const adapterPath = path.join(packRoot, packManifest.adapter.module);
+  const module = await import(pathToFileURL(adapterPath).href);
+  const Driver = module[packManifest.adapter.exportName];
+  if (typeof Driver !== 'function') throw new Error(`ERR_CAPABILITY_PACK_ADAPTER_EXPORT:${name}`);
+  const driver = new Driver(adapterOptions(packManifest.driverId));
+  if (typeof driver.manifest !== 'function') throw new Error(`ERR_CAPABILITY_PACK_ADAPTER_MANIFEST:${name}`);
+  const driverManifest = driver.manifest();
+  for (const field of [
+    'driverId',
+    'supportedActuatorRefs',
+    'supportedDescriptorFingerprints',
+    'supportedActuationClasses',
+    'supportedResponseStatuses',
+    'recoveryClass',
+    'maximumRequestBytes',
+    'maximumResponseBytes',
+    'authorityLabels',
+  ]) {
+    assertSameManifestField(name, field, packManifest[field], driverManifest[field]);
+  }
+}
+
+function adapterOptions(driverId) {
+  if (driverId === 'generic-http-json') return { endpointUrl: 'https://example.invalid/decide' };
+  return {};
+}
+
+function assertSameManifestField(name, field, packValue, driverValue) {
+  if (JSON.stringify(packValue) !== JSON.stringify(driverValue)) {
+    throw new Error(`ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH:${name}:${field}`);
+  }
 }
