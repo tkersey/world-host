@@ -1469,7 +1469,7 @@ class GenericHttpJsonCapabilityDriver {
   }
   #request(hostRequest) {
     const payload = parseJsonBytes(hostRequest.requestBytes);
-    const url = this.allowEndpointFromRequest && payload.url ? payload.url : this.endpointUrl;
+    const url = this.allowEndpointFromRequest && Object.prototype.hasOwnProperty.call(payload, "url") ? payload.url : this.endpointUrl;
     const parsedUrl = parseHttpUrl(url);
     if (!this.origins.has(parsedUrl.origin))
       fail("ERR_HTTP_ORIGIN_REJECTED");
@@ -1527,20 +1527,28 @@ class GenericHttpJsonCapabilityDriver {
       const controller = new AbortController;
       const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
       try {
-        const response = await fetch(request.url, {
-          method: request.method,
-          headers: await this.#headers(hostRequest, secretValues),
-          body: request.body,
-          signal: controller.signal,
-          redirect: "manual"
-        });
+        let response;
+        try {
+          response = await fetch(request.url, {
+            method: request.method,
+            headers: await this.#headers(hostRequest, secretValues),
+            body: request.body,
+            signal: controller.signal,
+            redirect: "manual"
+          });
+        } catch (error) {
+          if (error?.name === "AbortError")
+            throw error;
+          lastError = error;
+          if (attempt >= this.retryPolicy.attempts)
+            throw error;
+          continue;
+        }
         return await handleResponse(response);
       } catch (error) {
         if (error?.name === "AbortError")
           throw error;
-        lastError = error;
-        if (attempt >= this.retryPolicy.attempts)
-          throw error;
+        throw error;
       } finally {
         clearTimeout(timeout);
       }

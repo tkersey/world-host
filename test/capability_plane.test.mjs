@@ -1104,6 +1104,68 @@ describe('Capability Plane v0.2 core contracts', () => {
         { code: 'ERR_HTTP_IDEMPOTENCY_KEY_REQUIRED' },
       );
       assert.equal(observedHeaders, null);
+
+      let packMalformedExplicitUrlFetchCalled = false;
+      globalThis.fetch = async () => {
+        packMalformedExplicitUrlFetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      await assert.rejects(
+        () => new HttpJsonPackCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          allowEndpointFromRequest: true,
+          origins: ['https://allowed.example'],
+        }).resolve({
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }, {
+          ...httpRequest(),
+          requestBytes: fromUtf8(stableJson({ url: '', method: 'POST', body: { prompt: 'pack' } })),
+        }),
+        { code: 'ERR_HTTP_URL_INVALID' },
+      );
+      assert.equal(packMalformedExplicitUrlFetchCalled, false);
+
+      let packPostResponseFailureFetchCount = 0;
+      globalThis.fetch = async () => {
+        packPostResponseFailureFetchCount += 1;
+        return new Response('{not-json', {
+          status: 200,
+          headers: { 'x-request-id': 'pack-post-response-failure' },
+        });
+      };
+      await assert.rejects(
+        () => new HttpJsonPackCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          retryPolicy: { attempts: 2 },
+        }).resolve({
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }, {
+          ...httpRequest(),
+          hostRequestFingerprint: 'world:host-request:00000000000000ae',
+          idempotencyKeyBytes: fromUtf8('http-pack-post-response-failure'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-pack-post-response-failure',
+        }),
+        SyntaxError,
+      );
+      assert.equal(packPostResponseFailureFetchCount, 1);
+      globalThis.fetch = async (url, options) => {
+        observedHeaders = options.headers;
+        return new Response('{"action":{"variant":"final","text":"ok"}}', {
+          status: 200,
+          headers: { 'x-request-id': 'request-1' },
+        });
+      };
+
       const runtimePackFingerprint = 'sha256:'.concat('4'.repeat(64));
       const pinnedPackDriver = defineCapabilityDriver(new HttpJsonPackCapabilityDriver({
         endpointUrl: 'https://allowed.example/decide',
