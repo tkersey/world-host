@@ -219,6 +219,26 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': computedFunctionImportAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const computedEvalExpressionAdapter = fromUtf8('const fs = globalThis["ev"+"al"]("import(\\"node:fs\\")"); export const CapabilityDriver = fs;');
+    const computedEvalExpressionAdapterChecksum = `sha256:${await sha256Hex(computedEvalExpressionAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: computedEvalExpressionAdapterChecksum }],
+      }, { 'adapter.mjs': computedEvalExpressionAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const computedFunctionExpressionAdapter = fromUtf8('const fs = globalThis["Fun"+"ction"]("s", "return import(s)")("node:fs"); export const CapabilityDriver = fs;');
+    const computedFunctionExpressionAdapterChecksum = `sha256:${await sha256Hex(computedFunctionExpressionAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: computedFunctionExpressionAdapterChecksum }],
+      }, { 'adapter.mjs': computedFunctionExpressionAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const optionalComputedFunctionImportAdapter = fromUtf8('const fs = globalThis["Function"]?.("s", "return import(s)")("node:fs"); export const CapabilityDriver = fs;');
     const optionalComputedFunctionImportAdapterChecksum = `sha256:${await sha256Hex(optionalComputedFunctionImportAdapter)}`;
     await assert.rejects(

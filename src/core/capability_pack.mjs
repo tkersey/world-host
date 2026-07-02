@@ -283,6 +283,14 @@ function adapterHasImportCall(text) {
     index = skipWhitespaceAndComments(text, index);
     if (index >= text.length) break;
     const char = text[index];
+    if (char === '[') {
+      const afterBracket = skipBalancedBracket(text, index);
+      const callStart = skipWhitespaceAndComments(text, afterBracket);
+      if (dangerousCallAt(text, callStart) && computedMemberCallForbidden(text, index, afterBracket)) return true;
+      index = afterBracket;
+      previousSignificant = ']';
+      continue;
+    }
     if (char === '\'' || char === '"') {
       const literal = readQuotedString(text, index, char);
       const afterLiteral = skipWhitespaceAndComments(text, literal.end);
@@ -352,6 +360,27 @@ function adapterHasImportCall(text) {
 
 function dangerousCallAt(text, index) {
   return text[index] === '(' || (text[index] === '?' && text[index + 1] === '.' && text[index + 2] === '(');
+}
+
+function computedMemberCallForbidden(text, openBracket, afterBracket) {
+  const closeBracket = afterBracket - 1;
+  const expressionStart = skipWhitespaceAndComments(text, openBracket + 1);
+  const char = text[expressionStart];
+  if (char === '\'' || char === '"') {
+    const literal = readQuotedString(text, expressionStart, char);
+    const expressionEnd = skipWhitespaceAndComments(text, literal.end);
+    return expressionEnd !== closeBracket || dangerousMemberName(literal.value);
+  }
+  if (char === '`') {
+    const literal = readTemplateString(text, expressionStart);
+    const expressionEnd = skipWhitespaceAndComments(text, literal.end);
+    return expressionEnd !== closeBracket || literal.value === null || dangerousMemberName(literal.value);
+  }
+  return true;
+}
+
+function dangerousMemberName(value) {
+  return value === 'eval' || value === 'Function' || value === 'require';
 }
 
 function skipWhitespaceAndComments(text, index) {
@@ -442,6 +471,41 @@ function skipBalancedBrace(text, index) {
     }
     if (char === '{') depth += 1;
     if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return index + 1;
+    }
+    index += 1;
+  }
+  return index;
+}
+
+function skipBalancedBracket(text, index) {
+  let depth = 0;
+  while (index < text.length) {
+    const char = text[index];
+    if (char === '\'' || char === '"') {
+      index = skipQuotedString(text, index, char);
+      continue;
+    }
+    if (char === '`') {
+      index = readTemplateString(text, index).end;
+      continue;
+    }
+    if (char === '(') {
+      index = skipBalancedParentheses(text, index);
+      continue;
+    }
+    if (char === '{') {
+      index = skipBalancedBrace(text, index);
+      continue;
+    }
+    const skipped = skipWhitespaceAndComments(text, index);
+    if (skipped !== index) {
+      index = skipped;
+      continue;
+    }
+    if (char === '[') depth += 1;
+    if (char === ']') {
       depth -= 1;
       if (depth === 0) return index + 1;
     }

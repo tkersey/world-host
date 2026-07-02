@@ -35,7 +35,7 @@ describe('capability preflight and reference drivers', () => {
       currentHead: { generation: 0 },
       pendingRequests: [httpRequest('https://blocked.example/path')],
       drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'] })],
-      policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'], allowedHttpOrigins: ['https://allowed.example'] }),
+      policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'], allowedHttpOrigins: ['https://allowed.example'], allowedHttpMethods: ['GET'] }),
     });
     assert.ok(report.blockers.includes('http-origin-denied:https://blocked.example'));
     assert.ok(report.blockers.includes('http-origin-driver-denied:https://blocked.example'));
@@ -60,6 +60,7 @@ describe('capability preflight and reference drivers', () => {
       policy: createRunPolicy({
         allowedAuthorityLabels: ['network:http'],
         allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
       }),
     });
 
@@ -90,6 +91,7 @@ describe('capability preflight and reference drivers', () => {
       policy: createRunPolicy({
         allowedAuthorityLabels: ['network:http'],
         allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
       }),
     });
 
@@ -115,6 +117,7 @@ describe('capability preflight and reference drivers', () => {
       policy: createRunPolicy({
         allowedAuthorityLabels: ['network:http'],
         allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
       }),
     });
 
@@ -135,6 +138,7 @@ describe('capability preflight and reference drivers', () => {
       policy: createRunPolicy({
         allowedAuthorityLabels: ['network:http'],
         allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
       }),
     });
 
@@ -160,6 +164,7 @@ describe('capability preflight and reference drivers', () => {
       policy: createRunPolicy({
         allowedAuthorityLabels: ['network:http'],
         allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
       }),
     });
 
@@ -703,7 +708,7 @@ describe('capability preflight and reference drivers', () => {
       currentHead: { generation: 0 },
       pendingRequests: [httpRequest('https://allowed.example/path', 'GET', { status: 'streaming' })],
       drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'] })],
-      policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'], allowedHttpOrigins: ['https://allowed.example'] }),
+      policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'], allowedHttpOrigins: ['https://allowed.example'], allowedHttpMethods: ['GET'] }),
     });
     assert.ok(report.blockers.includes('ERR_RESPONSE_STATUS_NOT_SUPPORTED'));
     assert.equal(report.everyPendingRequestCovered, true);
@@ -753,7 +758,7 @@ describe('capability preflight and reference drivers', () => {
       currentHead: { generation: 0 },
       pendingRequests: [httpRequest('https://allowed.example/path')],
       drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'] })],
-      policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'], allowedHttpOrigins: ['https://allowed.example'] }),
+      policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'], allowedHttpOrigins: ['https://allowed.example'], allowedHttpMethods: ['GET'] }),
     });
 
     assert.equal(report.valueSizeLimitsSupported, true);
@@ -774,7 +779,7 @@ describe('capability preflight and reference drivers', () => {
       currentHead: { generation: 0 },
       pendingRequests: [httpRequest('https://allowed.example/path', 'POST')],
       drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'], methods: ['GET'] })],
-      policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'], allowedHttpOrigins: ['https://allowed.example'] }),
+      policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'], allowedHttpOrigins: ['https://allowed.example'], allowedHttpMethods: ['POST'] }),
     });
 
     assert.ok(report.blockers.includes('http-method-driver-denied:POST'));

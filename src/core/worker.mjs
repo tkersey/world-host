@@ -680,8 +680,8 @@ function capabilityPolicyForSelectedEffect(policy = {}, manifest = {}, hostReque
   const model = hostRequest?.actuationClass === 'model' ||
     actuationClasses.includes('model') ||
     authorityLabels.some((label) => label.startsWith('model:'));
-  const manifestMethods = Array.isArray(manifest?.diagnostics?.methods) ? manifest.diagnostics.methods : [];
   const allowedHttpOrigins = policySet(policy.allowedHttpOrigins);
+  const allowedHttpMethods = policyUpperSet(policy.allowedHttpMethods);
   return {
     allowLiveEffects: true,
     allowNetworkEffects: network,
@@ -692,7 +692,7 @@ function capabilityPolicyForSelectedEffect(policy = {}, manifest = {}, hostReque
     maximumRequestBytes: policy.maximumRequestBytes,
     maximumResponseBytes: policy.maximumResponseBytes,
     allowedOrigins: [...allowedHttpOrigins],
-    allowedMethods: manifestMethods,
+    allowedMethods: [...allowedHttpMethods],
     allowedFileRoots: [...policySet(policy.allowedFileRoots)],
     allowedAuthorityLabels: [...policySet(policy.allowedAuthorityLabels)],
   };
@@ -753,6 +753,8 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}) {
       ? new Set(manifest.diagnostics.methods.map((item) => String(item).toUpperCase()))
       : null;
     if (driverMethods && (!method || !driverMethods.has(method))) return false;
+    const allowedHttpMethods = policyUpperSet(policy.allowedHttpMethods);
+    if (allowedHttpMethods.size && (!method || !allowedHttpMethods.has(method))) return false;
   }
   const allowedFileRoots = policySet(policy.allowedFileRoots);
   if (allowedFileRoots.size && driverManifestIsFile(manifest, hostRequest)) {
@@ -777,6 +779,10 @@ function policySet(value) {
   if (value instanceof Set) return value;
   if (Array.isArray(value)) return new Set(value);
   return new Set();
+}
+
+function policyUpperSet(value) {
+  return new Set([...policySet(value)].map((item) => String(item).toUpperCase()));
 }
 
 function requestOriginForManifest(hostRequest, manifest) {

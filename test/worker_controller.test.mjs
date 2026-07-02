@@ -774,6 +774,7 @@ describe('RunController and WorldWorker', () => {
       effectPolicy: {
         allowedAuthorityLabels: new Set(['network:http']),
         allowedHttpOrigins: new Set(['https://receiver.example']),
+        allowedHttpMethods: new Set(['GET']),
       },
       hostRequestMapper: () => ({
         actuatorRef: 'http:json',
@@ -977,6 +978,7 @@ describe('RunController and WorldWorker', () => {
       effectPolicy: {
         allowedAuthorityLabels: new Set(['network:http']),
         allowedHttpOrigins: new Set(['https://blocked.example']),
+        allowedHttpMethods: new Set(['GET']),
       },
       hostRequestMapper: () => ({
         actuatorRef: 'http:json',
@@ -1034,6 +1036,7 @@ describe('RunController and WorldWorker', () => {
       effectPolicy: {
         allowedAuthorityLabels: new Set(['network:http']),
         allowedHttpOrigins: new Set(['https://allowed.example']),
+        allowedHttpMethods: new Set(['POST']),
       },
       hostRequestMapper: () => ({
         actuatorRef: 'http:json',
@@ -1052,6 +1055,53 @@ describe('RunController and WorldWorker', () => {
     assert.equal(result.status, 'advanced');
     assert.equal(getOnly.invocationCount, 0);
     assert.equal(postCapable.invocationCount, 1);
+  });
+
+  it('rejects controller HTTP methods outside receiver allowlists', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCalled = false;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          methods: ['DELETE'],
+        })],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('http-method-denied-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-method-denied',
+          requestBytes: fromUtf8(JSON.stringify({ method: 'DELETE', body: { prompt: 'denied' } })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      await assert.rejects(
+        () => controller.advance(runId, branchId),
+        { code: 'ERR_HOST_REQUEST_DRIVER_UNAVAILABLE' },
+      );
+      assert.equal(fetchCalled, false);
+      assert.equal((await store.listEffectRecords(runId)).length, 0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it('uses configured HTTP driver defaults when request URLs omit methods', async () => {
@@ -1083,6 +1133,7 @@ describe('RunController and WorldWorker', () => {
         effectPolicy: {
           allowedAuthorityLabels: new Set(['network:http']),
           allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
         },
         hostRequestMapper: () => ({
           actuatorRef: 'http:json',
@@ -1140,6 +1191,7 @@ describe('RunController and WorldWorker', () => {
           allowPartialEffectBatch: true,
           allowedAuthorityLabels: new Set(['network:http']),
           allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
         },
         hostRequestMapper: (worldHostRequest) => {
           const blocked = worldHostRequest.requestFingerprint === 0xa02n;
@@ -1200,6 +1252,7 @@ describe('RunController and WorldWorker', () => {
         effectPolicy: {
           allowedAuthorityLabels: new Set(['network:http']),
           allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
         },
         hostRequestMapper: () => ({
           actuatorRef: 'http:json',
@@ -1226,6 +1279,7 @@ describe('RunController and WorldWorker', () => {
         effectPolicy: {
           allowedAuthorityLabels: new Set(['network:http']),
           allowedHttpOrigins: new Set(['https://other.example']),
+          allowedHttpMethods: new Set(['POST']),
         },
         hostRequestMapper: () => ({
           actuatorRef: 'http:json',
@@ -1273,6 +1327,7 @@ describe('RunController and WorldWorker', () => {
         effectPolicy: {
           allowedAuthorityLabels: new Set(['network:http']),
           allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
         },
         hostRequestMapper: () => ({
           actuatorRef: 'http:json',
@@ -1313,6 +1368,7 @@ describe('RunController and WorldWorker', () => {
         effectDrivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
         effectPolicy: {
           allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpMethods: new Set(['POST']),
         },
         hostRequestMapper: () => ({
           actuatorRef: 'http:json',
@@ -1364,6 +1420,7 @@ describe('RunController and WorldWorker', () => {
         effectPolicy: {
           allowedAuthorityLabels: new Set(['network:http']),
           allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
         },
         hostRequestMapper: () => ({
           actuatorRef: 'http:json',

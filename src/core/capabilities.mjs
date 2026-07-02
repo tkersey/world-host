@@ -19,6 +19,7 @@ export function createRunPolicy(input = {}) {
     allowedAuthorityLabels: new Set(input.allowedAuthorityLabels ?? []),
     allowedFileRoots: new Set(input.allowedFileRoots ?? []),
     allowedHttpOrigins: new Set(input.allowedHttpOrigins ?? []),
+    allowedHttpMethods: new Set(iterable(input.allowedHttpMethods).map((item) => String(item).toUpperCase())),
     maximumConcurrentEffects: positiveSafeInteger(input.maximumConcurrentEffects ?? 1, 'maximumConcurrentEffects'),
     maximumRequestBytes: positiveSafeInteger(input.maximumRequestBytes ?? 1024 * 1024, 'maximumRequestBytes'),
     maximumResponseBytes: positiveSafeInteger(input.maximumResponseBytes ?? 1024 * 1024, 'maximumResponseBytes'),
@@ -29,6 +30,13 @@ export function createRunPolicy(input = {}) {
 function positiveSafeInteger(value, field) {
   if (!Number.isSafeInteger(value) || value < 1) fail('ERR_RUN_POLICY_LIMIT_INVALID', `${field} must be a positive safe integer`);
   return value;
+}
+
+function iterable(value) {
+  if (value == null) return [];
+  if (value instanceof Set) return [...value];
+  if (Array.isArray(value)) return value;
+  return [value];
 }
 
 export function createHostCapabilityManifest(input = {}) {
@@ -244,6 +252,9 @@ function policyBlockers(route, request, policy) {
       ? new Set(route.diagnostics.methods.map((item) => String(item).toUpperCase()))
       : null;
     if (driverMethods && (!method || !driverMethods.has(method))) blockers.push(`http-method-driver-denied:${method ?? 'unknown'}`);
+    if (!method) blockers.push('http-method-denied:unknown');
+    else if (!policy.allowedHttpMethods.size) blockers.push('http-method-allowlist-required');
+    else if (!policy.allowedHttpMethods.has(method)) blockers.push(`http-method-denied:${method}`);
   }
   return blockers;
 }
