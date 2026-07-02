@@ -288,7 +288,22 @@ function parseHttpUrl(value) {
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') fail('ERR_HTTP_URL_SCHEME_REJECTED');
   if (parsed.username || parsed.password) fail('ERR_HTTP_URL_CREDENTIALS_FORBIDDEN');
+  assertNoCredentialQuery(parsed);
   return parsed;
+}
+
+function assertNoCredentialQuery(url) {
+  for (const [key, value] of url.searchParams) {
+    if (credentialQueryKey(key) || credentialQueryValue(value)) fail('ERR_HTTP_URL_CREDENTIALS_FORBIDDEN');
+  }
+}
+
+function credentialQueryKey(value) {
+  return /credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key/i.test(value);
+}
+
+function credentialQueryValue(value) {
+  return /\b(?:bearer|basic)\s+\S+/i.test(value) || /sk-[A-Za-z0-9_-]{8,}/.test(value);
 }
 
 function normalizeRetryPolicy(value = {}) {

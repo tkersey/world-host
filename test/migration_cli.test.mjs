@@ -885,6 +885,60 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('rejects capability pack adapters that do not satisfy the runtime ABI during CLI check-pack', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-cli-abi-'));
+    const pack = path.join(root, 'capability-pack-v0.2-fixture');
+    try {
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      const adapterBytes = fromUtf8(`
+        export class CapabilityDriver {
+          manifest() {
+            return {
+              driverId: 'fixture-agent-model',
+              supportedActuatorRefs: ['fixture:agent-model'],
+              supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+              supportedActuationClasses: ['model'],
+              supportedResponseStatuses: ['ok', 'final'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'pure',
+              concurrencyLimit: 1,
+              authorityLabels: ['model:fixture-agent']
+            };
+          }
+          preflight() { return { accepted: true }; }
+          dryRun() { return { wouldInvoke: false }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.checksums = manifest.checksums.map((item) => item.path === 'adapter.mjs'
+        ? { ...item, checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` }
+        : item);
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      const receipt = JSON.parse(await readFile(path.join(pack, 'conformance.json'), 'utf8'));
+      receipt.packFingerprint = manifest.packFingerprint;
+      const receiptBytes = fromUtf8(`${JSON.stringify(receipt, null, 2)}\n`);
+      await writeFile(path.join(pack, 'conformance.json'), receiptBytes);
+      manifest.checksums = manifest.checksums.map((item) => item.path === 'conformance.json'
+        ? { ...item, checksum: `sha256:${createHash('sha256').update(receiptBytes).digest('hex')}` }
+        : item);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_ACTUATOR_DRIVER_RESOLVE_REQUIRED' },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('installs DirectoryStore application records from immutable CLI bytes', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-cli-install-'));
     try {

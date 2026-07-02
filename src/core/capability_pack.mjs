@@ -1,5 +1,6 @@
 import { EffectRecoveryClass, ResponseStatusCode, assertRecoveryClass } from './actuator.mjs';
 import { assertBytes, fail, fromUtf8, stableJson, toHex } from './store.mjs';
+import { carrierManifest } from '../protocol/world_manifest.mjs';
 
 export const world_host_capability_pack_format_version = 1;
 export const world_host_capability_driver_abi_version = 1;
@@ -116,9 +117,9 @@ export function assertCapabilityManifest(input, options = {}) {
     packageVersion: requiredString(input.packageVersion, 'packageVersion'),
     driverId: requiredString(input.driverId, 'driverId'),
     driverAbiVersion,
-    supportedWorldProtocolVersion: requiredString(input.supportedWorldProtocolVersion, 'supportedWorldProtocolVersion'),
-    supportedApplianceAbiVersion: requiredString(input.supportedApplianceAbiVersion, 'supportedApplianceAbiVersion'),
-    supportedTurnClosureVersion: requiredString(input.supportedTurnClosureVersion, 'supportedTurnClosureVersion'),
+    supportedWorldProtocolVersion: exactString(input.supportedWorldProtocolVersion, 'supportedWorldProtocolVersion', carrierManifest.supportedWorldRelease),
+    supportedApplianceAbiVersion: exactString(input.supportedApplianceAbiVersion, 'supportedApplianceAbiVersion', carrierManifest.applianceAbiVersion),
+    supportedTurnClosureVersion: exactString(input.supportedTurnClosureVersion, 'supportedTurnClosureVersion', carrierManifest.turnClosureFormatVersion),
     supportedActuatorRefs: requiredStringList(input.supportedActuatorRefs, 'supportedActuatorRefs'),
     supportedDescriptorFingerprints: requiredStringList(input.supportedDescriptorFingerprints, 'supportedDescriptorFingerprints'),
     supportedActuationClasses: requiredStringList(input.supportedActuationClasses, 'supportedActuationClasses'),
@@ -190,6 +191,7 @@ export async function assertCapabilityPackChecksums(manifestLike, artifacts = {}
   for (const item of manifest.checksums) {
     const bytes = artifacts[item.path];
     if (!(bytes instanceof Uint8Array)) fail('ERR_CAPABILITY_PACK_ARTIFACT_MISSING', `artifact missing: ${item.path}`);
+    assertNoArtifactCredentialMaterial(item.path, bytes);
     const actual = `sha256:${await sha256Hex(bytes)}`;
     if (actual !== item.checksum) fail('ERR_CAPABILITY_PACK_CHECKSUM_MISMATCH', `artifact checksum mismatch: ${item.path}`, { expected: item.checksum, actual });
   }
@@ -219,6 +221,38 @@ function assertAdapterArtifactSelfContained(manifest, artifacts) {
   if (imports.length || adapterHasImportCall(text)) {
     fail('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT', `adapter imports code outside its checksum-covered entry module: ${manifest.adapter.module}`);
   }
+}
+
+function assertNoArtifactCredentialMaterial(artifactPath, bytes) {
+  if (!textArtifactPath(artifactPath)) return;
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return;
+  }
+  if (artifactCredentialText(text)) fail('ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN', `credential-like artifact content forbidden at ${artifactPath}`);
+}
+
+function textArtifactPath(artifactPath) {
+  return /\.(?:c?m?js|json|md|txt)$/i.test(artifactPath);
+}
+
+function artifactCredentialText(text) {
+  if (/sk-[A-Za-z0-9_-]{8,}/.test(text)) return true;
+  const scheme = /\b(?:bearer|basic)\s+([A-Za-z0-9._~+/-]{8,}={0,2})/ig;
+  for (const match of text.matchAll(scheme)) {
+    if (!artifactCredentialSentinel(match[1])) return true;
+  }
+  const assignment = /(?:^|[?&;,\s{])(?:credential|authorization|token|secret|password|(?:api|access|private)[_-]?key)\s*[:=]\s*["']?([A-Za-z0-9._~+/-]{8,}={0,2})/ig;
+  for (const match of text.matchAll(assignment)) {
+    if (!artifactCredentialSentinel(match[1])) return true;
+  }
+  return false;
+}
+
+function artifactCredentialSentinel(value) {
+  return /^(?:redacted|opaque|required|none|null|example(?:[-_].*)?|fixture(?:[-_].*)?|no-(?:credentials?|secrets?|tokens?))$/i.test(value);
 }
 
 function adapterHasImportCall(text) {
@@ -487,6 +521,11 @@ function normalizeMetadataBytes(value) {
 }
 
 function exactInteger(value, field, expected) {
+  if (value !== expected) fail('ERR_CAPABILITY_VERSION_UNSUPPORTED', `${field} must be ${expected}`);
+  return value;
+}
+
+function exactString(value, field, expected) {
   if (value !== expected) fail('ERR_CAPABILITY_VERSION_UNSUPPORTED', `${field} must be ${expected}`);
   return value;
 }

@@ -50,6 +50,18 @@ describe('Capability Plane v0.2 core contracts', () => {
     const withFingerprint = { ...withChecksums, packFingerprint };
     assert.equal((await validateCapabilityPackManifest(withFingerprint, { verifyFingerprint: true })).packFingerprint, packFingerprint);
     assert.equal(await assertCapabilityPackChecksums(withFingerprint, { 'adapter.mjs': artifact, 'README.md': readme }), true);
+    assert.throws(
+      () => assertCapabilityManifest({ ...manifest, supportedWorldProtocolVersion: 'v999.0.0' }),
+      { code: 'ERR_CAPABILITY_VERSION_UNSUPPORTED' },
+    );
+    assert.throws(
+      () => assertCapabilityManifest({ ...manifest, supportedApplianceAbiVersion: 'v999' }),
+      { code: 'ERR_CAPABILITY_VERSION_UNSUPPORTED' },
+    );
+    assert.throws(
+      () => assertCapabilityManifest({ ...manifest, supportedTurnClosureVersion: 'v999' }),
+      { code: 'ERR_CAPABILITY_VERSION_UNSUPPORTED' },
+    );
     const changedArtifact = fromUtf8('changed adapter bytes');
     const changedArtifactChecksum = `sha256:${await sha256Hex(changedArtifact)}`;
     const changedChecksumManifest = {
@@ -142,6 +154,19 @@ describe('Capability Plane v0.2 core contracts', () => {
         checksums: [{ path: 'adapter.mjs', checksum: commentedImportAdapterChecksum }],
       }, { 'adapter.mjs': commentedImportAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const secretReadme = fromUtf8('Authorization: Bearer sk-artifact-secret-value');
+    const secretReadmeChecksum = `sha256:${await sha256Hex(secretReadme)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: ['README.md'],
+        checksums: [
+          { path: 'adapter.mjs', checksum: withChecksums.checksums[0].checksum },
+          { path: 'README.md', checksum: secretReadmeChecksum },
+        ],
+      }, { 'adapter.mjs': artifact, 'README.md': secretReadme }),
+      { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
     );
     const sidecar = fromUtf8('sidecar bytes');
     const launcherChecksum = `sha256:${await sha256Hex(artifact)}`;
@@ -1644,10 +1669,9 @@ describe('Capability Plane v0.2 core contracts', () => {
       });
       const driver = new GenericHttpJsonModelDriver({ endpointUrl: 'https://allowed.example/decide' });
       assert.equal(driver.dryRun({}, genericHttpModelRequest('goal=invoke', 'model-dry-key')).wouldInvoke, true);
-      const signedEndpointDryRun = new GenericHttpJsonModelDriver({
+      assert.throws(() => new GenericHttpJsonModelDriver({
         endpointUrl: 'https://allowed.example/decide?api_key=secret',
-      }).dryRun({}, genericHttpModelRequest('goal=invoke', 'model-signed-dry-key'));
-      assert.equal(signedEndpointDryRun.proposedAction.endpoint, 'https://allowed.example/decide');
+      }), { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' });
       const wrongModelRequestPreflight = driver.preflight(
         {
           policy: {

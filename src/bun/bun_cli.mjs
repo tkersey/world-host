@@ -1,6 +1,7 @@
 import { lstat, readFile, realpath, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { createApplicationRecord } from '../core/application.mjs';
 import { exportCarrierRun, forkRunBranch, importCarrierRun } from '../core/migration.mjs';
@@ -13,6 +14,7 @@ import { encodeCanonicalValueImage, fingerprintValueImage } from '../protocol/wo
 import { inspectTurnOutput, summarizeTurnClosureForRunHead } from '../protocol/world_universal_appliance_codec.mjs';
 import { carrierVersionSummary } from '../protocol/world_manifest.mjs';
 import { EffectJournal, EffectState } from '../core/effect_journal.mjs';
+import { defineCapabilityDriver } from '../core/capability_driver.mjs';
 import { FixtureAgentModelDriver } from '../drivers/fixture_agent_model_driver.mjs';
 import { SandboxFileDriver } from '../drivers/sandbox_file_driver.mjs';
 import { BunWorldWorker } from './bun_worker.mjs';
@@ -95,6 +97,7 @@ async function runCapabilityCommand(args, io) {
     const artifacts = {};
     for (const item of checked.checksums) artifacts[item.path] = new Uint8Array(await readPackFile(pack, item.path));
     await assertCapabilityPackChecksums(checked, artifacts);
+    await assertCapabilityPackAdapterAbi(pack, checked);
     const receipt = assertCapabilityConformanceReceipt(JSON.parse(await readPackFile(pack, 'conformance.json', 'utf8')));
     if (receipt.driverId !== checked.driverId) fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH', 'conformance receipt driverId does not match manifest');
     if (receipt.packFingerprint !== checked.packFingerprint) fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH', 'conformance receipt packFingerprint does not match manifest');
@@ -127,6 +130,42 @@ async function readPackFile(packRoot, relativePath, encoding = null) {
 function pathInside(root, target) {
   const relative = path.relative(root, target);
   return relative.length > 0 && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+async function assertCapabilityPackAdapterAbi(packRoot, packManifest) {
+  if (packManifest.adapter.kind !== 'in_process') return;
+  const adapterPath = path.join(packRoot, packManifest.adapter.module);
+  const module = await import(pathToFileURL(adapterPath).href);
+  const Driver = module[packManifest.adapter.exportName];
+  if (typeof Driver !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_EXPORT');
+  const driver = new Driver(capabilityPackAdapterOptions(packManifest.driverId));
+  const capabilityDriver = defineCapabilityDriver(driver);
+  if (packManifest.canRecover === true && typeof driver.recover !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_RECOVER');
+  const driverManifest = capabilityDriver.manifest();
+  for (const field of [
+    'driverId',
+    'supportedActuatorRefs',
+    'supportedDescriptorFingerprints',
+    'supportedActuationClasses',
+    'supportedResponseStatuses',
+    'recoveryClass',
+    'maximumRequestBytes',
+    'maximumResponseBytes',
+    'authorityLabels',
+  ]) {
+    assertSameCapabilityPackManifestField(field, packManifest[field], driverManifest[field]);
+  }
+}
+
+function capabilityPackAdapterOptions(driverId) {
+  if (driverId === 'generic-http-json') return { endpointUrl: 'https://example.invalid/decide' };
+  return {};
+}
+
+function assertSameCapabilityPackManifestField(field, packValue, driverValue) {
+  if (JSON.stringify(packValue) !== JSON.stringify(driverValue)) {
+    fail('ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH', `adapter manifest field mismatch: ${field}`);
+  }
 }
 
 async function runAgentCommand(args, io, options) {
