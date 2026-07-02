@@ -122,6 +122,26 @@ describe('capability preflight and reference drivers', () => {
     }]);
   });
 
+  it('checks configured HTTP endpoint method coverage against explicit payload methods', () => {
+    const request = {
+      ...httpRequest('https://payload.example/not-target'),
+      requestBytes: fromUtf8(stableJson({ method: 'DELETE', body: { prompt: 'hi' } })),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+      }),
+    });
+
+    assert.ok(report.blockers.includes('http-method-driver-denied:DELETE'));
+    assert.equal(report.fileNetworkAuthoritiesAllowed, false);
+  });
+
   it('requires receiver HTTP origin allowlists for pending HTTP requests', () => {
     const report = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },

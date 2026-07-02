@@ -258,6 +258,29 @@ describe('Capability Plane v0.2 core contracts', () => {
       docs: [],
       checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
     }, { 'sidecar.mjs': sidecar }), true);
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--preload=./helper.mjs', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+      }, { 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
+    const sidecarOptionImport = fromUtf8("import 'node:fs';\nconsole.log('ready');\n");
+    const sidecarOptionImportChecksum = `sha256:${await sha256Hex(sidecarOptionImport)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--preload=./helper.mjs', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: './helper.mjs', checksum: sidecarOptionImportChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, './helper.mjs': sidecarOptionImport }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const sidecarImport = fromUtf8("import './helper.mjs';\nconsole.log('ready');\n");
     const sidecarImportChecksum = `sha256:${await sha256Hex(sidecarImport)}`;
     await assert.rejects(

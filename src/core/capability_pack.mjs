@@ -217,8 +217,10 @@ function assertAdapterArtifactSelfContained(manifest, artifacts) {
 function assertSidecarAdapterArtifactsSelfContained(manifest, artifacts) {
   if (manifest.adapter.kind !== 'sidecar') return;
   for (const item of manifest.adapter.command) {
-    if (!sidecarCommandArtifact(item) || !javascriptArtifactPath(item)) continue;
-    assertJavaScriptAdapterArtifactSelfContained(item, artifacts, 'sidecar adapter');
+    for (const artifactPath of sidecarCommandArtifacts(item)) {
+      if (!javascriptArtifactPath(artifactPath)) continue;
+      assertJavaScriptAdapterArtifactSelfContained(artifactPath, artifacts, 'sidecar adapter');
+    }
   }
 }
 
@@ -422,12 +424,26 @@ function assertReferencedArtifactsCovered(manifest) {
   if (manifest.adapter.kind === 'in_process' && manifest.adapter.module) required.add(manifest.adapter.module);
   if (manifest.adapter.kind === 'sidecar') {
     for (const item of manifest.adapter.command) {
-      if (sidecarCommandArtifact(item)) required.add(item);
+      for (const artifactPath of sidecarCommandArtifacts(item)) required.add(artifactPath);
     }
   }
   for (const path of required) {
     if (!covered.has(path)) fail('ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED', `referenced artifact is not checksum-covered: ${path}`);
   }
+}
+
+function sidecarCommandArtifacts(value) {
+  const optionArtifact = sidecarOptionArtifact(value);
+  if (optionArtifact) return [optionArtifact];
+  return sidecarCommandArtifact(value) ? [value] : [];
+}
+
+function sidecarOptionArtifact(value) {
+  if (!value.startsWith('-')) return null;
+  const separator = value.indexOf('=');
+  if (separator < 0) return null;
+  const candidate = value.slice(separator + 1);
+  return sidecarCommandArtifact(candidate) ? candidate : null;
 }
 
 function sidecarCommandArtifact(value) {
