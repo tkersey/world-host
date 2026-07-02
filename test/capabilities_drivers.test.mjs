@@ -185,6 +185,37 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.fileNetworkAuthoritiesAllowed, false);
   });
 
+  it('requires receiver HTTP method allowlists for pending HTTP requests', () => {
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path', 'GET')],
+      drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'], methods: ['GET'] })],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'], allowedHttpOrigins: ['https://allowed.example'] }),
+    });
+
+    assert.ok(report.blockers.includes('http-method-allowlist-required'));
+    assert.equal(report.fileNetworkAuthoritiesAllowed, false);
+  });
+
+  it('summarizes receiver HTTP method denials as authority failures', () => {
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path', 'DELETE')],
+      drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'], methods: ['DELETE'] })],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.ok(report.blockers.includes('http-method-denied:DELETE'));
+    assert.equal(report.blockers.includes('http-method-driver-denied:DELETE'), false);
+    assert.equal(report.fileNetworkAuthoritiesAllowed, false);
+  });
+
   it('routes preflight through the first policy-allowed matching driver', () => {
     const report = preflightCapabilities({
       application: { requiredActuators: [{ actuatorRef: 'fixture:model' }], requiredRuntimeLimits: {} },

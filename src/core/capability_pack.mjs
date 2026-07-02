@@ -286,7 +286,8 @@ function adapterHasImportCall(text) {
     if (char === '[') {
       const afterBracket = skipBalancedBracket(text, index);
       const callStart = skipWhitespaceAndComments(text, afterBracket);
-      if (dangerousCallAt(text, callStart) && computedMemberCallForbidden(text, index, afterBracket)) return true;
+      const computedMember = computedMemberAccess(text, index, afterBracket);
+      if (computedMember.dangerous || (computedMember.dynamic && dangerousCallAt(text, callStart))) return true;
       index = afterBracket;
       previousSignificant = ']';
       continue;
@@ -362,21 +363,27 @@ function dangerousCallAt(text, index) {
   return text[index] === '(' || (text[index] === '?' && text[index + 1] === '.' && text[index + 2] === '(');
 }
 
-function computedMemberCallForbidden(text, openBracket, afterBracket) {
+function computedMemberAccess(text, openBracket, afterBracket) {
   const closeBracket = afterBracket - 1;
   const expressionStart = skipWhitespaceAndComments(text, openBracket + 1);
   const char = text[expressionStart];
   if (char === '\'' || char === '"') {
     const literal = readQuotedString(text, expressionStart, char);
     const expressionEnd = skipWhitespaceAndComments(text, literal.end);
-    return expressionEnd !== closeBracket || dangerousMemberName(literal.value);
+    return {
+      dangerous: dangerousMemberName(literal.value),
+      dynamic: expressionEnd !== closeBracket,
+    };
   }
   if (char === '`') {
     const literal = readTemplateString(text, expressionStart);
     const expressionEnd = skipWhitespaceAndComments(text, literal.end);
-    return expressionEnd !== closeBracket || literal.value === null || dangerousMemberName(literal.value);
+    return {
+      dangerous: literal.value !== null && dangerousMemberName(literal.value),
+      dynamic: expressionEnd !== closeBracket || literal.value === null,
+    };
   }
-  return true;
+  return { dangerous: false, dynamic: true };
 }
 
 function dangerousMemberName(value) {
@@ -419,8 +426,9 @@ function readQuotedString(text, index, quote) {
   index += 1;
   while (index < text.length) {
     if (text[index] === '\\') {
-      if (index + 1 < text.length) value += text[index + 1];
-      index += 2;
+      const escaped = readStringEscape(text, index);
+      value += escaped.value;
+      index = escaped.end;
       continue;
     }
     if (text[index] === quote) return { value, end: index + 1 };
@@ -436,8 +444,9 @@ function readTemplateString(text, index) {
   index += 1;
   while (index < text.length) {
     if (text[index] === '\\') {
-      if (index + 1 < text.length && staticLiteral) value += text[index + 1];
-      index += 2;
+      const escaped = readStringEscape(text, index);
+      if (staticLiteral) value += escaped.value;
+      index = escaped.end;
       continue;
     }
     if (text[index] === '$' && text[index + 1] === '{') {
@@ -450,6 +459,54 @@ function readTemplateString(text, index) {
     index += 1;
   }
   return { value: staticLiteral ? value : null, end: index };
+}
+
+function readStringEscape(text, index) {
+  if (index + 1 >= text.length) return { value: '', end: index + 1 };
+  const marker = text[index + 1];
+  if (marker === '\r' || marker === '\n') {
+    const end = marker === '\r' && text[index + 2] === '\n' ? index + 3 : index + 2;
+    return { value: '', end };
+  }
+  if (marker === 'u') {
+    if (text[index + 2] === '{') {
+      const close = text.indexOf('}', index + 3);
+      if (close !== -1) {
+        const value = stringEscapeCodePoint(text.slice(index + 3, close));
+        if (value !== null) return { value, end: close + 1 };
+      }
+    } else {
+      const value = stringEscapeCodePoint(text.slice(index + 2, index + 6));
+      if (value !== null) return { value, end: index + 6 };
+    }
+  }
+  if (marker === 'x') {
+    const value = stringEscapeCodePoint(text.slice(index + 2, index + 4));
+    if (value !== null) return { value, end: index + 4 };
+  }
+  return { value: simpleStringEscape(marker), end: index + 2 };
+}
+
+function stringEscapeCodePoint(hex) {
+  if (!/^[0-9a-fA-F]+$/.test(hex)) return null;
+  const codePoint = Number.parseInt(hex, 16);
+  if (!Number.isSafeInteger(codePoint)) return null;
+  try {
+    return String.fromCodePoint(codePoint);
+  } catch {
+    return null;
+  }
+}
+
+function simpleStringEscape(marker) {
+  if (marker === 'b') return '\b';
+  if (marker === 'f') return '\f';
+  if (marker === 'n') return '\n';
+  if (marker === 'r') return '\r';
+  if (marker === 't') return '\t';
+  if (marker === 'v') return '\v';
+  if (marker === '0') return '\0';
+  return marker;
 }
 
 function skipBalancedBrace(text, index) {

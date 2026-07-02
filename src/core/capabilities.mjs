@@ -147,7 +147,7 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
     responseStatusesSupported: !blockers.some((item) => item.includes('RESPONSE_STATUS')),
     valueSizeLimitsSupported: !blockers.some((item) => item.startsWith('runtime-') || item === 'request-limit-exceeds-policy' || item === 'response-limit-exceeds-policy'),
     recoveryClassSufficient: !blockers.includes('ERR_BEST_EFFORT_REQUIRES_OPERATOR_OPT_IN'),
-    fileNetworkAuthoritiesAllowed: !blockers.some((item) => item.startsWith('authority-denied') || item === 'http-origin-allowlist-required' || item.startsWith('http-origin-denied') || item.startsWith('http-origin-driver-denied') || item.startsWith('http-method-driver-denied') || item.startsWith('file-root-denied')),
+    fileNetworkAuthoritiesAllowed: !blockers.some((item) => item.startsWith('authority-denied') || item === 'http-origin-allowlist-required' || item.startsWith('http-origin-denied') || item.startsWith('http-origin-driver-denied') || item === 'http-method-allowlist-required' || item.startsWith('http-method-denied') || item.startsWith('http-method-driver-denied') || item.startsWith('file-root-denied')),
     supervisionPolicyAccepted: !blockers.includes('supervision-policy-rejected'),
     coveredRequests,
     blockers,
