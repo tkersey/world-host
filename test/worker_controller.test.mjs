@@ -1009,6 +1009,57 @@ describe('RunController and WorldWorker', () => {
     assert.equal(postCapable.invocationCount, 1);
   });
 
+  it('uses configured HTTP driver defaults when request URLs omit methods', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    try {
+      globalThis.fetch = async (url, options) => {
+        fetchCount += 1;
+        assert.equal(url, 'https://allowed.example/path');
+        assert.equal(options.method, 'POST');
+        return new Response('{"status":"ok"}', {
+          status: 200,
+          headers: { 'x-request-id': 'controller-http-default-method' },
+        });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://fallback.example/decide',
+          allowEndpointFromRequest: true,
+          origins: ['https://allowed.example', 'https://fallback.example'],
+          methods: ['POST'],
+        })],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('http-default-method-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-default-method',
+          requestBytes: fromUtf8(JSON.stringify({ url: 'https://allowed.example/path', body: { prompt: 'hi' } })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fetchCount, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('passes receiver policy into controller-driven configured HTTP capabilities', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',

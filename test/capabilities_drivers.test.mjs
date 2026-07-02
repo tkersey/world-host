@@ -11,6 +11,7 @@ import { EffectJournal } from '../src/core/effect_journal.mjs';
 import { FixtureModelDriver } from '../src/drivers/fixture_model_driver.mjs';
 import { SandboxFileDriver } from '../src/drivers/sandbox_file_driver.mjs';
 import { HttpJsonDriver } from '../src/drivers/http_json_driver.mjs';
+import { GenericHttpJsonCapabilityDriver } from '../src/drivers/generic_http_json_capability_driver.mjs';
 import { fromUtf8, stableJson } from '../src/core/store.mjs';
 import { decodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
@@ -39,6 +40,36 @@ describe('capability preflight and reference drivers', () => {
     assert.ok(report.blockers.includes('http-origin-denied:https://blocked.example'));
     assert.ok(report.blockers.includes('http-origin-driver-denied:https://blocked.example'));
     assert.equal(report.fileNetworkAuthoritiesAllowed, false);
+  });
+
+  it('uses configured HTTP driver default methods when request URLs omit methods during preflight', () => {
+    const request = {
+      ...httpRequest('https://allowed.example/path'),
+      requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/path', body: { prompt: 'hi' } })),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://fallback.example/decide',
+        allowEndpointFromRequest: true,
+        origins: ['https://allowed.example', 'https://fallback.example'],
+        methods: ['POST'],
+      })],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.everyPendingRequestCovered, true);
+    assert.deepEqual(report.coveredRequests, [{
+      actuatorRef: 'http:json',
+      descriptorFingerprint: 'descriptor:http-json',
+      driverId: 'generic-http-json',
+    }]);
   });
 
   it('routes preflight through the first policy-allowed matching driver', () => {

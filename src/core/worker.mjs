@@ -774,7 +774,7 @@ function requestMethodForManifest(hostRequest, manifest) {
   try {
     const request = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
     if (request.url === undefined && configuredEndpointManifest(manifest)) return String(manifest.diagnostics.defaultMethod ?? 'POST').toUpperCase();
-    return String(request.method ?? 'GET').toUpperCase();
+    return String(request.method ?? manifest?.diagnostics?.defaultMethod ?? 'GET').toUpperCase();
   } catch {
     return null;
   }

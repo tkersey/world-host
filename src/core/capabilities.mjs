@@ -345,7 +345,7 @@ function requestMethodForRoute(request, route) {
     const text = new TextDecoder().decode(request.requestBytes);
     const value = JSON.parse(text);
     if (value.url === undefined && configuredEndpointRoute(route)) return String(route.diagnostics.defaultMethod ?? 'POST').toUpperCase();
-    return String(value.method ?? 'GET').toUpperCase();
+    return String(value.method ?? route?.diagnostics?.defaultMethod ?? 'GET').toUpperCase();
   } catch {
     return null;
   }
