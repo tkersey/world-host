@@ -37,7 +37,7 @@ const SEMANTIC_FIELDS = Object.freeze([
 ]);
 const SECRET_PATTERN = /credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key/i;
 const CONFORMANCE_RECEIPT_PATH = 'conformance.json';
-const ADAPTER_IMPORT_PATTERN = /(?:^|[;\n\r])\s*import\s*(?:['"]|(?:[\w*{][^;]*?\s*from\s*['"]))|(?:^|[;\n\r])\s*export\s*(?:\*|\{|\w)[^;]*?\s*from\s*['"]|\bimport\s*\(/m;
+const ADAPTER_IMPORT_PATTERN = /(?:^|[;\n\r])\s*import\s*(?:['"]|(?:[\w*{][^;]*?\s*from\s*['"]))|(?:^|[;\n\r])\s*export\s*(?:\*|\{|\w)[^;]*?\s*from\s*['"]|\bimport\s*\(|\brequire\s*\(\s*['"]/m;
 
 export class CapabilityManifest {
   constructor(fields) {

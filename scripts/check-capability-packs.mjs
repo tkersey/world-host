@@ -8,6 +8,7 @@ import {
   assertCapabilityPackChecksums,
   validateCapabilityPackManifest,
 } from '../src/core/capability_pack.mjs';
+import { defineCapabilityDriver } from '../src/core/capability_driver.mjs';
 
 const root = path.resolve('capability-packs');
 const names = (await readdir(root).catch(() => [])).filter((name) => name.startsWith('capability-pack-v0.2-')).sort();
@@ -64,8 +65,9 @@ async function assertAdapterManifestMatchesPack(packRoot, packManifest, name) {
   const Driver = module[packManifest.adapter.exportName];
   if (typeof Driver !== 'function') throw new Error(`ERR_CAPABILITY_PACK_ADAPTER_EXPORT:${name}`);
   const driver = new Driver(adapterOptions(packManifest.driverId));
-  if (typeof driver.manifest !== 'function') throw new Error(`ERR_CAPABILITY_PACK_ADAPTER_MANIFEST:${name}`);
-  const driverManifest = driver.manifest();
+  const capabilityDriver = defineCapabilityDriver(driver);
+  if (packManifest.canRecover === true && typeof driver.recover !== 'function') throw new Error(`ERR_CAPABILITY_PACK_ADAPTER_RECOVER:${name}`);
+  const driverManifest = capabilityDriver.manifest();
   for (const field of [
     'driverId',
     'supportedActuatorRefs',

@@ -123,6 +123,16 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': compactStaticImportAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const requireAdapter = fromUtf8("const fs = require('node:fs'); export const CapabilityDriver = fs;");
+    const requireAdapterChecksum = `sha256:${await sha256Hex(requireAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: requireAdapterChecksum }],
+      }, { 'adapter.mjs': requireAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const sidecar = fromUtf8('sidecar bytes');
     const launcherChecksum = `sha256:${await sha256Hex(artifact)}`;
     const sidecarChecksum = `sha256:${await sha256Hex(sidecar)}`;

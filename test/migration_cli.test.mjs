@@ -22,6 +22,7 @@ import { MemoryStore } from '../src/stores/memory_store.mjs';
 import { FixtureAgentModelDriver } from '../src/drivers/fixture_agent_model_driver.mjs';
 import { SandboxFileDriver } from '../src/drivers/sandbox_file_driver.mjs';
 import { refreshAgentRuntimePackChecksums } from '../scripts/agent_runtime_pack_lib.mjs';
+import { capabilityPackFingerprint } from '../src/core/capability_pack.mjs';
 
 describe('migration, branching, and CLI diagnostics', () => {
   it('forks a branch without mutating the source branch head', async () => {
@@ -823,6 +824,62 @@ describe('migration, branching, and CLI diagnostics', () => {
         }),
         { code: 'ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH' },
       );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects capability pack adapters that do not satisfy the runtime ABI during proof', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-abi-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      const adapterBytes = fromUtf8(`
+        export class CapabilityDriver {
+          manifest() {
+            return {
+              driverId: 'fixture-agent-model',
+              supportedActuatorRefs: ['fixture:agent-model'],
+              supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+              supportedActuationClasses: ['model'],
+              supportedResponseStatuses: ['ok', 'final'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'pure',
+              concurrencyLimit: 1,
+              authorityLabels: ['model:fixture-agent']
+            };
+          }
+          preflight() { return { accepted: true }; }
+          dryRun() { return { wouldInvoke: false }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.checksums = manifest.checksums.map((item) => item.path === 'adapter.mjs'
+        ? { ...item, checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` }
+        : item);
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      const receipt = JSON.parse(await readFile(path.join(pack, 'conformance.json'), 'utf8'));
+      receipt.packFingerprint = manifest.packFingerprint;
+      const receiptBytes = fromUtf8(`${JSON.stringify(receipt, null, 2)}\n`);
+      await writeFile(path.join(pack, 'conformance.json'), receiptBytes);
+      manifest.checksums = manifest.checksums.map((item) => item.path === 'conformance.json'
+        ? { ...item, checksum: `sha256:${createHash('sha256').update(receiptBytes).digest('hex')}` }
+        : item);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs')], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_ACTUATOR_DRIVER_RESOLVE_REQUIRED/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
