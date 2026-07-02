@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "packFingerprint": "sha256:3117d719d86e89c51c6a581a4314bd88dc58aea534f8d534c16d13a0b5b6653d",
+  "packFingerprint": "sha256:598cea19b2ff0c01ca9aa48baf8c383ca801331bb3a6e0baf9d0ca257c5caea4",
   "packageName": "world-capability-human-approval",
   "packageVersion": "0.2.0",
   "driverId": "human-approval",
@@ -11,7 +11,7 @@
   "supportedActuatorRefs": ["human:approval"],
   "supportedDescriptorFingerprints": ["descriptor:human-approval"],
   "supportedActuationClasses": ["human"],
-  "supportedResponseStatuses": ["ok", "rejected", "failed"],
+  "supportedResponseStatuses": ["ok", "rejected"],
   "recoveryClass": "transactional",
   "canDryRun": true,
   "canShadow": true,
@@ -35,10 +35,10 @@
     "exportName": "CapabilityDriver"
   },
   "checksums": [
-    { "path": "adapter.mjs", "checksum": "sha256:d98803c39783bf1ffce52df8db7d829bd3f419d2d2d1dbce25226497d9833afc" },
+    { "path": "adapter.mjs", "checksum": "sha256:5d6cca37cf149da2e96e508930b00def2d2df2352a5c49f43ade1f7ea54c40ad" },
     { "path": "README.md", "checksum": "sha256:af5118e5ce83442dde2b9877cdf585f68750a05825a5ae9078a3025af2b48d01" },
     { "path": "non-claims.md", "checksum": "sha256:664cac74c32fcfe79a4197ea67cef17c5f7e07771adf42429dd86a54b84870dd" },
-    { "path": "conformance.json", "checksum": "sha256:d040dfee3f2edd13addae30772b676ca27d6606a1c43b56586592590bf5088b5" }
+    { "path": "conformance.json", "checksum": "sha256:dce1e3f1cd3e81d148b837a4812f1ad3e845946a2323c5eb31be84c4be304fc7" }
   ],
   "docs": ["README.md", "non-claims.md"]
 }

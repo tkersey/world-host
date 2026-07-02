@@ -1139,7 +1139,7 @@ class HumanApprovalCapabilityDriver {
       supportedActuatorRefs: ["human:approval"],
       supportedDescriptorFingerprints: ["descriptor:human-approval"],
       supportedActuationClasses: ["human"],
-      supportedResponseStatuses: ["ok", "rejected", "failed"],
+      supportedResponseStatuses: ["ok", "rejected"],
       maximumRequestBytes: 64 * 1024,
       maximumResponseBytes: 64 * 1024,
       recoveryClass: EffectRecoveryClass.transactional,

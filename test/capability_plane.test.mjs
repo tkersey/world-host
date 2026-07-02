@@ -29,6 +29,8 @@ import {
 } from '../src/drivers/model_capability_driver.mjs';
 import { GenericHttpJsonCapabilityDriver } from '../src/drivers/generic_http_json_capability_driver.mjs';
 import { HumanApprovalCapabilityDriver } from '../src/drivers/human_approval_capability_driver.mjs';
+import { CapabilityDriver as HttpJsonPackCapabilityDriver } from '../capability-packs/capability-pack-v0.2-http-json/adapter.mjs';
+import { CapabilityDriver as HumanApprovalPackCapabilityDriver } from '../capability-packs/capability-pack-v0.2-human-approval/adapter.mjs';
 import { fromUtf8, stableJson, toHex } from '../src/core/store.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
 import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
@@ -721,6 +723,33 @@ describe('Capability Plane v0.2 core contracts', () => {
         secretHeaders: { Authorization: 'API_TOKEN' },
         secretProvider: new EnvSecretProvider({ API_TOKEN: 'Bearer fixture-token-value' }),
       });
+      assert.deepEqual(driver.manifest().supportedResponseStatuses, ['ok', 'http_error', 'deferred']);
+      const packDriver = new HttpJsonPackCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' });
+      assert.deepEqual(packDriver.manifest().supportedResponseStatuses, ['ok', 'http_error', 'deferred']);
+      assert.throws(
+        () => new HttpJsonPackCapabilityDriver({ endpointUrl: 'https://allowed.example/decide?api_key=secret' }),
+        { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
+      );
+      const credentialQueryRequest = {
+        ...httpRequest(),
+        requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/decide?token=Bearer%20fixture-token-value', method: 'POST', body: { prompt: 'hi' } })),
+      };
+      assert.throws(
+        () => new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          allowEndpointFromRequest: true,
+          origins: ['https://allowed.example'],
+        }).dryRun({}, credentialQueryRequest),
+        { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
+      );
+      assert.throws(
+        () => new HttpJsonPackCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          allowEndpointFromRequest: true,
+          origins: ['https://allowed.example'],
+        }).dryRun({}, credentialQueryRequest),
+        { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
+      );
       const result = await driver.resolve({
         policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
       }, httpRequest());
@@ -1451,6 +1480,8 @@ describe('Capability Plane v0.2 core contracts', () => {
     }
 
     const approval = new HumanApprovalCapabilityDriver({ mode: 'noninteractive-allow' });
+    assert.deepEqual(approval.manifest().supportedResponseStatuses, ['ok', 'rejected']);
+    assert.deepEqual(new HumanApprovalPackCapabilityDriver({ mode: 'noninteractive-allow' }).manifest().supportedResponseStatuses, ['ok', 'rejected']);
     assert.equal(approval.preflight({}, httpRequest()).accepted, false);
     const proposedApproval = approval.dryRun({}, {
       ...approvalRequest(),

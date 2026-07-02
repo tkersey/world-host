@@ -1361,7 +1361,7 @@ class GenericHttpJsonCapabilityDriver {
       supportedActuatorRefs: ["http:json"],
       supportedDescriptorFingerprints: ["descriptor:http-json"],
       supportedActuationClasses: ["http"],
-      supportedResponseStatuses: ["ok", "http_error", "deferred", "failed"],
+      supportedResponseStatuses: ["ok", "http_error", "deferred"],
       maximumRequestBytes: encodedJsonStringEnvelopeLimit(this.maximumRequestBytes, REQUEST_ENVELOPE_OVERHEAD_BYTES),
       maximumResponseBytes: encodedJsonStringEnvelopeLimit(this.maximumResponseBytes, RESPONSE_ENVELOPE_OVERHEAD_BYTES),
       recoveryClass: EffectRecoveryClass.idempotent,
@@ -1589,7 +1589,20 @@ function parseHttpUrl(value) {
     fail("ERR_HTTP_URL_SCHEME_REJECTED");
   if (parsed.username || parsed.password)
     fail("ERR_HTTP_URL_CREDENTIALS_FORBIDDEN");
+  assertNoCredentialQuery(parsed);
   return parsed;
+}
+function assertNoCredentialQuery(url) {
+  for (const [key, value] of url.searchParams) {
+    if (credentialQueryKey(key) || credentialQueryValue(value))
+      fail("ERR_HTTP_URL_CREDENTIALS_FORBIDDEN");
+  }
+}
+function credentialQueryKey(value) {
+  return /credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key/i.test(value);
+}
+function credentialQueryValue(value) {
+  return /\b(?:bearer|basic)\s+\S+/i.test(value) || /sk-[A-Za-z0-9_-]{8,}/.test(value);
 }
 function normalizeRetryPolicy(value = {}) {
   const attempts = value?.attempts ?? 1;

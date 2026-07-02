@@ -54,7 +54,7 @@ export class GenericHttpJsonCapabilityDriver {
       supportedActuatorRefs: ['http:json'],
       supportedDescriptorFingerprints: ['descriptor:http-json'],
       supportedActuationClasses: ['http'],
-      supportedResponseStatuses: ['ok', 'http_error', 'deferred', 'failed'],
+      supportedResponseStatuses: ['ok', 'http_error', 'deferred'],
       maximumRequestBytes: encodedJsonStringEnvelopeLimit(this.maximumRequestBytes, REQUEST_ENVELOPE_OVERHEAD_BYTES),
       maximumResponseBytes: encodedJsonStringEnvelopeLimit(this.maximumResponseBytes, RESPONSE_ENVELOPE_OVERHEAD_BYTES),
       recoveryClass: EffectRecoveryClass.idempotent,
