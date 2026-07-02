@@ -215,6 +215,7 @@ export function journaledHostRequest(hostRequest, manifest) {
         url: policyTarget.url,
         method: policyTarget.method,
       },
+      requestRendering: manifest?.diagnostics?.requestRendering ?? null,
     })),
   };
 }

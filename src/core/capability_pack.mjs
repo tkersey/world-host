@@ -308,6 +308,7 @@ function adapterHasImportCall(text) {
     const identifier = text.slice(start, index);
     const callStart = skipWhitespaceAndComments(text, index);
     if ((identifier === 'eval' || identifier === 'Function') && text[callStart] === '(') return true;
+    if (identifier === 'constructor' && previousSignificant === '.' && text[callStart] === '(') return true;
     if (identifier === 'require' && previousSignificant !== '.') {
       if (text[callStart] !== '(') return true;
       const callEnd = skipBalancedParentheses(text, callStart);

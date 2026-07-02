@@ -189,6 +189,16 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': computedFunctionImportAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const constructorFunctionImportAdapter = fromUtf8('const fs = (() => {}).constructor("s", "return import(s)")("node:fs"); export const CapabilityDriver = fs;');
+    const constructorFunctionImportAdapterChecksum = `sha256:${await sha256Hex(constructorFunctionImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: constructorFunctionImportAdapterChecksum }],
+      }, { 'adapter.mjs': constructorFunctionImportAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const evalImportAdapter = fromUtf8('const fs = eval("import(\\\"node:fs\\\")"); export const CapabilityDriver = fs;');
     const evalImportAdapterChecksum = `sha256:${await sha256Hex(evalImportAdapter)}`;
     await assert.rejects(
@@ -1552,6 +1562,67 @@ describe('Capability Plane v0.2 core contracts', () => {
         { code: 'ERR_EFFECT_IDEMPOTENCY_CONFLICT' },
       );
       assert.equal(configuredEndpointReuseFetchCalled, false);
+
+      let requestTemplateIdentityFetchCount = 0;
+      globalThis.fetch = async (url, options) => {
+        requestTemplateIdentityFetchCount += 1;
+        assert.equal(url, 'https://allowed.example/decide');
+        assert.equal(options.body, stableJson({ prompt: 'template-a' }));
+        return new Response('{"action":{"variant":"final","text":"template-a"}}', {
+          status: 200,
+          headers: { 'x-request-id': 'request-template-a' },
+        });
+      };
+      const requestTemplateIdentityRequest = {
+        ...httpRequest(),
+        hostRequestFingerprint: 'world:host-request:00000000000000a7',
+        idempotencyKeyBytes: fromUtf8('http-key-request-template-identity'),
+        idempotencyKeyWorldFingerprint: 'world:key:http-request-template-identity',
+        requestBytes: fromUtf8(stableJson({ body: { prompt: 'hi' } })),
+      };
+      const requestTemplateIdentityJournalOptions = {
+        store: new MemoryStore(),
+        runId: 'request-template-identity-run',
+        branchId: 'main',
+        parentTurnClosureFingerprint: 'world:turn-closure:parent',
+      };
+      await runCapabilityMode({
+        mode: 'live',
+        driver: new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          requestTemplate: { prompt: 'template-a' },
+        }),
+        hostRequest: requestTemplateIdentityRequest,
+        journalOptions: requestTemplateIdentityJournalOptions,
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      });
+      globalThis.fetch = async () => {
+        throw new Error('request template identity conflict should block before fetch');
+      };
+      await assert.rejects(
+        () => runCapabilityMode({
+          mode: 'live',
+          driver: new GenericHttpJsonCapabilityDriver({
+            endpointUrl: 'https://allowed.example/decide',
+            requestTemplate: { prompt: 'template-b' },
+          }),
+          hostRequest: requestTemplateIdentityRequest,
+          journalOptions: requestTemplateIdentityJournalOptions,
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }),
+        { code: 'ERR_EFFECT_IDEMPOTENCY_CONFLICT' },
+      );
+      assert.equal(requestTemplateIdentityFetchCount, 1);
 
       let configuredPayloadUrlFetchUrl = null;
       globalThis.fetch = async (url) => {

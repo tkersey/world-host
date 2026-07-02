@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { EffectRecoveryClass } from '../core/actuator.mjs';
 import { CapabilityPreflightReport, DryRunReport, ShadowReport, capabilityHostClaimBytes, defaultCapabilityPreflight } from '../core/capability_driver.mjs';
 import { assertCapabilityPolicyAllows, createCapabilityPolicy } from '../core/capability_policy.mjs';
@@ -71,6 +73,12 @@ export class GenericHttpJsonCapabilityDriver {
         configuredOrigin: this.endpointOrigin,
         defaultMethod: [...this.methods][0] ?? 'POST',
         secretHeaders: Object.keys(this.secretHeaders),
+        requestRendering: {
+          requestTemplateFingerprint: this.requestTemplate == null ? null : sha256Json(this.requestTemplate),
+          secretHeadersFingerprint: sha256Json(this.secretHeaders),
+          idempotencyHeaderName: this.idempotencyHeaderName,
+          responseExtractionPathFingerprint: this.responseExtractionPath == null ? null : sha256Json(this.responseExtractionPath),
+        },
       },
     };
   }
@@ -289,6 +297,10 @@ export class GenericHttpJsonCapabilityDriver {
 function parseJsonBytes(bytes) {
   assertBytes(bytes, 'requestBytes');
   return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+function sha256Json(value) {
+  return `sha256:${createHash('sha256').update(fromUtf8(stableJson(value))).digest('hex')}`;
 }
 
 function parseHttpUrl(value) {
