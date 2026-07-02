@@ -2059,6 +2059,40 @@ describe('Capability Plane v0.2 core contracts', () => {
       );
       assert.equal(deniedPreflight.accepted, false);
       assert.equal(deniedPreflight.blockers.includes('ERR_CAPABILITY_NETWORK_DENIED'), true);
+      let authorityDeniedFetchCalled = false;
+      globalThis.fetch = async () => {
+        authorityDeniedFetchCalled = true;
+        return new Response('{"action":{"variant":"final","text":"authority bypassed"}}', { status: 200 });
+      };
+      const authorityDeniedPreflight = driver.preflight(
+        {
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            maximumLiveModelCalls: 1,
+            allowedAuthorityLabels: ['network:http'],
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        },
+        genericHttpModelRequest('goal=invoke', 'model-authority-preflight-key'),
+      );
+      assert.equal(authorityDeniedPreflight.accepted, false);
+      assert.equal(authorityDeniedPreflight.blockers.includes('ERR_CAPABILITY_AUTHORITY_DENIED'), true);
+      await assert.rejects(
+        () => driver.resolve({
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            maximumLiveModelCalls: 1,
+            allowedAuthorityLabels: ['network:http'],
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }, genericHttpModelRequest('goal=invoke', 'model-authority-key')),
+        { code: 'ERR_CAPABILITY_AUTHORITY_DENIED' },
+      );
+      assert.equal(authorityDeniedFetchCalled, false);
       let budgetFetchCalled = false;
       globalThis.fetch = async () => {
         budgetFetchCalled = true;

@@ -1,6 +1,6 @@
 import { EffectRecoveryClass } from '../core/actuator.mjs';
 import { CapabilityPreflightReport, DryRunReport, ShadowReport, capabilityHostClaimBytes, defaultCapabilityPreflight } from '../core/capability_driver.mjs';
-import { createCapabilityPolicy } from '../core/capability_policy.mjs';
+import { assertCapabilityPolicyAllows } from '../core/capability_policy.mjs';
 import { fail, fromUtf8, stableJson } from '../core/store.mjs';
 import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
 import { decodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
@@ -67,11 +67,13 @@ export class GenericHttpJsonModelDriver {
   preflight(context, hostRequest) {
     const structural = defaultCapabilityPreflight(this.manifest(), hostRequest);
     const blockers = [...structural.blockers];
-    try {
-      parseDecisionPrompt(hostRequest.requestBytes);
-      assertLiveModelBudgetAllows(context?.policy);
-    } catch (error) {
-      blockers.push(error.code ?? 'ERR_MODEL_PROMPT_INVALID');
+    if (!blockers.length) {
+      try {
+        parseDecisionPrompt(hostRequest.requestBytes);
+        this.#assertPolicyAllows(context, hostRequest);
+      } catch (error) {
+        blockers.push(error.code ?? 'ERR_MODEL_PROMPT_INVALID');
+      }
     }
     if (blockers.length) return new CapabilityPreflightReport({ accepted: false, blockers });
     return this.http.preflight(context, transportHostRequest(hostRequest));
@@ -79,7 +81,7 @@ export class GenericHttpJsonModelDriver {
 
   async resolve(context, hostRequest) {
     parseDecisionPrompt(hostRequest.requestBytes);
-    assertLiveModelBudgetAllows(context?.policy);
+    this.#assertPolicyAllows(context, hostRequest);
     const result = await this.http.resolve(context, transportHostRequest(hostRequest));
     const resolution = decodeResolutionInputBytes(result.resolutionInputBytes);
     if (resolution.status !== 0) {
@@ -98,6 +100,17 @@ export class GenericHttpJsonModelDriver {
       status: 'ok',
       responseValueImageBytes: agentActionValueImage(action),
       action,
+    });
+  }
+
+  #assertPolicyAllows(context, hostRequest) {
+    const manifest = this.manifest();
+    assertCapabilityPolicyAllows({
+      manifest,
+      hostRequest: modelPolicyHostRequest(hostRequest, manifest),
+      policy: context?.policy ?? {},
+      mode: 'live',
+      action: context?.action ?? null,
     });
   }
 
@@ -134,14 +147,21 @@ export class GenericHttpJsonModelDriver {
   }
 }
 
-function assertLiveModelBudgetAllows(inputPolicy = {}) {
-  const policy = createCapabilityPolicy(inputPolicy);
-  if (policy.maximumLiveModelCalls < 1) fail('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED');
-}
-
 function redactedEndpoint(endpointUrl) {
   const endpoint = new URL(endpointUrl);
   return `${endpoint.origin}${endpoint.pathname}`;
+}
+
+function modelPolicyHostRequest(hostRequest, manifest) {
+  const diagnostics = manifest?.diagnostics ?? {};
+  return {
+    ...hostRequest,
+    policyRequestBytes: hostRequest.requestBytes,
+    requestBytes: fromUtf8(stableJson({
+      url: diagnostics.configuredEndpointUrl ?? diagnostics.configuredOrigin,
+      method: diagnostics.defaultMethod ?? 'POST',
+    })),
+  };
 }
 
 function transportHostRequest(hostRequest) {

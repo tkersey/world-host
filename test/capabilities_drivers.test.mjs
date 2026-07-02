@@ -72,6 +72,31 @@ describe('capability preflight and reference drivers', () => {
     }]);
   });
 
+  it('preflights fixed configured HTTP endpoints independently of payload url fields', () => {
+    const request = {
+      ...httpRequest('https://payload.example/not-target'),
+      requestBytes: fromUtf8(stableJson({ url: 'https://payload.example/not-target', body: { prompt: 'hi' } })),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.everyPendingRequestCovered, true);
+    assert.deepEqual(report.coveredRequests, [{
+      actuatorRef: 'http:json',
+      descriptorFingerprint: 'descriptor:http-json',
+      driverId: 'generic-http-json',
+    }]);
+  });
+
   it('routes preflight through the first policy-allowed matching driver', () => {
     const report = preflightCapabilities({
       application: { requiredActuators: [{ actuatorRef: 'fixture:model' }], requiredRuntimeLimits: {} },

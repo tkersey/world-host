@@ -1106,6 +1106,52 @@ describe('RunController and WorldWorker', () => {
     }
   });
 
+  it('routes fixed configured HTTP endpoints even when payloads contain url fields', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    try {
+      globalThis.fetch = async (url, options) => {
+        fetchCount += 1;
+        assert.equal(url, 'https://allowed.example/decide');
+        assert.equal(options.method, 'POST');
+        return new Response('{"status":"ok"}', {
+          status: 200,
+          headers: { 'x-request-id': 'controller-http-fixed-endpoint' },
+        });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('http-fixed-endpoint-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-fixed-endpoint',
+          requestBytes: fromUtf8(JSON.stringify({ url: 'https://payload.example/not-target', body: { prompt: 'hi' } })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fetchCount, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('rejects drivers that exceed receiver byte limits before resolving effects', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
