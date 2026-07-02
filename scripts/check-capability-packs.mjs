@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
-import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
+import { lstat, mkdtemp, readdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 
 import {
@@ -26,7 +27,7 @@ for (const name of names) {
   const artifacts = {};
   for (const item of checked.checksums) artifacts[item.path] = new Uint8Array(await readPackFile(packRoot, item.path));
   await assertCapabilityPackChecksums(checked, artifacts);
-  await assertAdapterManifestMatchesPack(packRoot, checked, name);
+  await assertAdapterManifestMatchesPack(checked, artifacts, name);
   const receipt = JSON.parse(await readPackFile(packRoot, 'conformance.json', 'utf8'));
   assertCapabilityConformanceReceipt(receipt);
   if (receipt.packFingerprint !== checked.packFingerprint) throw new Error(`ERR_CAPABILITY_CONFORMANCE_PACK_FINGERPRINT:${name}`);
@@ -58,10 +59,9 @@ function pathInside(rootPath, target) {
   return relative.length > 0 && !relative.startsWith('..') && !path.isAbsolute(relative);
 }
 
-async function assertAdapterManifestMatchesPack(packRoot, packManifest, name) {
+async function assertAdapterManifestMatchesPack(packManifest, artifacts, name) {
   if (packManifest.adapter.kind !== 'in_process') return;
-  const adapterPath = path.join(packRoot, packManifest.adapter.module);
-  const module = await import(pathToFileURL(adapterPath).href);
+  const module = await import(await adapterImportUrl(packManifest, artifacts));
   const Driver = module[packManifest.adapter.exportName];
   if (typeof Driver !== 'function') throw new Error(`ERR_CAPABILITY_PACK_ADAPTER_EXPORT:${name}`);
   const driver = new Driver(adapterOptions(packManifest.driverId));
@@ -81,6 +81,17 @@ async function assertAdapterManifestMatchesPack(packRoot, packManifest, name) {
   ]) {
     assertSameManifestField(name, field, packManifest[field], driverManifest[field]);
   }
+}
+
+async function adapterImportUrl(packManifest, artifacts) {
+  const checksum = packManifest.checksums.find((item) => item.path === packManifest.adapter.module)?.checksum;
+  if (!checksum) throw new Error(`ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED:${packManifest.adapter.module}`);
+  const bytes = artifacts[packManifest.adapter.module];
+  if (!(bytes instanceof Uint8Array)) throw new Error(`ERR_CAPABILITY_PACK_ARTIFACT_MISSING:${packManifest.adapter.module}`);
+  const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-adapter-imports-'));
+  const target = path.join(root, `${checksum.slice('sha256:'.length)}.mjs`);
+  await writeFile(target, bytes, { flag: 'wx' });
+  return pathToFileURL(target).href;
 }
 
 function adapterOptions(driverId) {

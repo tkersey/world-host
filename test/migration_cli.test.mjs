@@ -890,6 +890,10 @@ describe('migration, branching, and CLI diagnostics', () => {
     const pack = path.join(root, 'capability-pack-v0.2-fixture');
     try {
       await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      assert.equal(await runBunCli(['capability', 'check-pack', '--pack', pack], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      }), 0);
       const adapterBytes = fromUtf8(`
         export class CapabilityDriver {
           manifest() {

@@ -1,6 +1,7 @@
-import { lstat, readFile, realpath, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 
 import { createApplicationRecord } from '../core/application.mjs';
@@ -97,7 +98,7 @@ async function runCapabilityCommand(args, io) {
     const artifacts = {};
     for (const item of checked.checksums) artifacts[item.path] = new Uint8Array(await readPackFile(pack, item.path));
     await assertCapabilityPackChecksums(checked, artifacts);
-    await assertCapabilityPackAdapterAbi(pack, checked);
+    await assertCapabilityPackAdapterAbi(checked, artifacts);
     const receipt = assertCapabilityConformanceReceipt(JSON.parse(await readPackFile(pack, 'conformance.json', 'utf8')));
     if (receipt.driverId !== checked.driverId) fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH', 'conformance receipt driverId does not match manifest');
     if (receipt.packFingerprint !== checked.packFingerprint) fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH', 'conformance receipt packFingerprint does not match manifest');
@@ -132,10 +133,9 @@ function pathInside(root, target) {
   return relative.length > 0 && !relative.startsWith('..') && !path.isAbsolute(relative);
 }
 
-async function assertCapabilityPackAdapterAbi(packRoot, packManifest) {
+async function assertCapabilityPackAdapterAbi(packManifest, artifacts) {
   if (packManifest.adapter.kind !== 'in_process') return;
-  const adapterPath = path.join(packRoot, packManifest.adapter.module);
-  const module = await import(pathToFileURL(adapterPath).href);
+  const module = await import(await capabilityPackAdapterImportUrl(packManifest, artifacts));
   const Driver = module[packManifest.adapter.exportName];
   if (typeof Driver !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_EXPORT');
   const driver = new Driver(capabilityPackAdapterOptions(packManifest.driverId));
@@ -155,6 +155,17 @@ async function assertCapabilityPackAdapterAbi(packRoot, packManifest) {
   ]) {
     assertSameCapabilityPackManifestField(field, packManifest[field], driverManifest[field]);
   }
+}
+
+async function capabilityPackAdapterImportUrl(packManifest, artifacts) {
+  const checksum = packManifest.checksums.find((item) => item.path === packManifest.adapter.module)?.checksum;
+  if (!checksum) fail('ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED', `referenced artifact is not checksum-covered: ${packManifest.adapter.module}`);
+  const bytes = artifacts[packManifest.adapter.module];
+  if (!(bytes instanceof Uint8Array)) fail('ERR_CAPABILITY_PACK_ARTIFACT_MISSING', `artifact missing: ${packManifest.adapter.module}`);
+  const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-adapter-imports-'));
+  const target = path.join(root, `${checksum.slice('sha256:'.length)}.mjs`);
+  await writeFile(target, bytes, { flag: 'wx' });
+  return pathToFileURL(target).href;
 }
 
 function capabilityPackAdapterOptions(driverId) {
