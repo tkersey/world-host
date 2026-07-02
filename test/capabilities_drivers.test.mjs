@@ -97,6 +97,19 @@ describe('capability preflight and reference drivers', () => {
     }]);
   });
 
+  it('requires receiver HTTP origin allowlists for pending HTTP requests', () => {
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path')],
+      drivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'] }),
+    });
+
+    assert.ok(report.blockers.includes('http-origin-allowlist-required'));
+    assert.equal(report.fileNetworkAuthoritiesAllowed, false);
+  });
+
   it('routes preflight through the first policy-allowed matching driver', () => {
     const report = preflightCapabilities({
       application: { requiredActuators: [{ actuatorRef: 'fixture:model' }], requiredRuntimeLimits: {} },

@@ -405,9 +405,18 @@ function assertReferencedArtifactsCovered(manifest) {
 }
 
 function sidecarCommandArtifact(value) {
-  if (value.startsWith('-') || value.includes('=')) return false;
+  if (value.startsWith('-')) return false;
   if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)) return false;
-  return value.startsWith('./') || value.includes('/') || /\.(?:c?m?js|sh|bash|zsh|py|rb|pl|wasm|bin|exe)$/i.test(value);
+  if (sidecarEnvAssignment(value) && !sidecarArtifactPath(value)) return false;
+  return value.startsWith('./') || value.includes('/') || sidecarArtifactPath(value);
+}
+
+function sidecarEnvAssignment(value) {
+  return /^[A-Za-z_][A-Za-z0-9_]*=/.test(value);
+}
+
+function sidecarArtifactPath(value) {
+  return /\.(?:c?m?js|sh|bash|zsh|py|rb|pl|wasm|bin|exe)$/i.test(value);
 }
 
 function normalizeAdapter(adapter) {

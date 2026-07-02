@@ -1106,6 +1106,51 @@ describe('RunController and WorldWorker', () => {
     }
   });
 
+  it('requires receiver HTTP origins before configured HTTP capabilities resolve', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCalled = false;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['network:http']),
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('http-origin-required-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-origin-required',
+          requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'hi' } })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      await assert.rejects(
+        () => controller.advance(runId, branchId),
+        (error) => {
+          assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+          assert.ok(error.details?.blockers?.includes('http-origin-allowlist-required'));
+          return true;
+        },
+      );
+      assert.equal(fetchCalled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('routes fixed configured HTTP endpoints even when payloads contain url fields', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',

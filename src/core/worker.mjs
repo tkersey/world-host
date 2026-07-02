@@ -660,7 +660,6 @@ function capabilityPolicyForSelectedEffect(policy = {}, manifest = {}, hostReque
   const model = hostRequest?.actuationClass === 'model' ||
     actuationClasses.includes('model') ||
     authorityLabels.some((label) => label.startsWith('model:'));
-  const manifestOrigins = Array.isArray(manifest?.diagnostics?.origins) ? manifest.diagnostics.origins : [];
   const manifestMethods = Array.isArray(manifest?.diagnostics?.methods) ? manifest.diagnostics.methods : [];
   const allowedHttpOrigins = policySet(policy.allowedHttpOrigins);
   return {
@@ -672,7 +671,7 @@ function capabilityPolicyForSelectedEffect(policy = {}, manifest = {}, hostReque
     maximumLiveModelCalls: model ? 1 : 0,
     maximumRequestBytes: policy.maximumRequestBytes,
     maximumResponseBytes: policy.maximumResponseBytes,
-    allowedOrigins: allowedHttpOrigins.size ? [...allowedHttpOrigins] : manifestOrigins,
+    allowedOrigins: [...allowedHttpOrigins],
     allowedMethods: manifestMethods,
     allowedFileRoots: [...policySet(policy.allowedFileRoots)],
     allowedAuthorityLabels: [...policySet(policy.allowedAuthorityLabels)],

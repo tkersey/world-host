@@ -227,6 +227,15 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { bun: artifact }),
       { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
     );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', 'adapter=prod.mjs'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
     assert.equal(await assertCapabilityPackChecksums({
       ...manifest,
       adapter: { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] },
@@ -1780,6 +1789,21 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_CAPABILITY_LIVE_DENIED' },
     );
     assert.equal(directPromptCalled, false);
+    let targetPromptCalled = false;
+    const targetDeniedApproval = new HumanApprovalCapabilityDriver({
+      mode: 'interactive-terminal',
+      prompt: async () => {
+        targetPromptCalled = true;
+        return true;
+      },
+    });
+    await assert.rejects(
+      () => targetDeniedApproval.resolve({
+        policy: { allowLiveEffects: true, allowHumanEffects: true },
+      }, { ...approvalRequest(), hostRequestFingerprint: undefined }),
+      { code: 'ERR_HOST_REQUEST_FINGERPRINT_REQUIRED' },
+    );
+    assert.equal(targetPromptCalled, false);
     await interactiveApproval.resolve({
       policy: { allowLiveEffects: true, allowHumanEffects: true },
     }, {
