@@ -431,6 +431,30 @@ describe('RunController and WorldWorker', () => {
     assert.equal(effects[0].state, EffectState.resolved);
   });
 
+  it('honors selected driver preflight before resolving controller effects', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(),
+    });
+    const driver = preflightBlockedControllerDriver();
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [driver],
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      (error) => {
+        assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+        assert.ok(error.details?.blockers?.includes('controller-preflight-blocker'));
+        return true;
+      },
+    );
+    assert.equal(driver.resolveCalled, false);
+    assert.equal((await store.listEffectRecords(runId)).length, 0);
+  });
+
   it('batches host requests with bounded concurrency and canonical resolution order', async () => {
     const requests = [
       fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'idempotency-key:1', idempotencyKeyFingerprint: 0xa09n }),
@@ -1060,6 +1084,80 @@ describe('RunController and WorldWorker', () => {
     }
   });
 
+  it('includes configured HTTP endpoints in controller effect identity', async () => {
+    const pendingClosure = fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]);
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: pendingClosure,
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    try {
+      globalThis.fetch = async (url, options) => {
+        fetchCount += 1;
+        assert.equal(url, 'https://allowed.example/decide');
+        assert.equal(options.method, 'POST');
+        return new Response('{"status":"ok"}', {
+          status: 200,
+          headers: { 'x-request-id': 'controller-http-identity' },
+        });
+      };
+      const firstController = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('http-configured-identity-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-configured-identity',
+          requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'hi' } })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const first = await firstController.advance(runId, branchId);
+      assert.equal(first.status, 'advanced');
+      await resetHeadToNeedsHost(store, runId, branchId, pendingClosure);
+      globalThis.fetch = async () => {
+        throw new Error('configured endpoint identity conflict should block before fetch');
+      };
+      const secondController = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://other.example/decide' })],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://other.example']),
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('http-configured-identity-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-configured-identity',
+          requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'hi' } })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      await assert.rejects(
+        () => secondController.advance(runId, branchId),
+        { code: 'ERR_EFFECT_IDEMPOTENCY_CONFLICT' },
+      );
+      assert.equal(fetchCount, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('passes receiver policy into controller-driven configured HTTP capabilities', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
@@ -1641,6 +1739,25 @@ async function fixtureStore(options = {}) {
   return { store, runId: run.runId, branchId: branch.branchId, head };
 }
 
+async function resetHeadToNeedsHost(store, runId, branchId, closureBytes) {
+  const current = await store.readHead(runId, branchId);
+  const closureRef = await store.putBlob(closureBytes);
+  const closureSummary = summarizeTurnClosureForRunHead(closureBytes);
+  const nextHead = createRunHead({
+    generation: closureSummary.inspectionDiagnostics.turnSequenceNumber + 1,
+    turnClosureRef: closureRef,
+    turnClosureWorldFingerprint: closureSummary.turnClosureWorldFingerprint,
+    resultingStateFingerprint: closureSummary.resultingStateFingerprint,
+    chronicleCursor: closureSummary.chronicleCursor,
+    archiveMomentFingerprint: closureSummary.archiveMomentFingerprint ?? current.archiveMomentFingerprint,
+    archiveSealFingerprint: closureSummary.archiveSealFingerprint ?? current.archiveSealFingerprint,
+    status: 'needs_host',
+  });
+  const cas = await store.compareAndSwapHead(runId, branchId, current.generation, nextHead);
+  assert.equal(cas.ok, true);
+  return cas.current;
+}
+
 function hasBlobRef(refs, expected) {
   return (refs ?? []).some((ref) => ref.checksum === expected.checksum && ref.byteLength === expected.byteLength);
 }
@@ -1686,6 +1803,24 @@ function fixtureEffectDriver(options = {}) {
           metadata: fromUtf8('metadata'),
         }),
       };
+    },
+  };
+}
+
+function preflightBlockedControllerDriver() {
+  const inner = fixtureEffectDriver({ driverId: 'preflight-blocked-controller-driver' });
+  return {
+    get resolveCalled() {
+      return inner.invocationCount > 0;
+    },
+    manifest() {
+      return inner.manifest();
+    },
+    preflight() {
+      return { accepted: false, blockers: ['controller-preflight-blocker'] };
+    },
+    async resolve(context, hostRequest) {
+      return await inner.resolve(context, hostRequest);
     },
   };
 }

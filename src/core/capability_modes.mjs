@@ -128,8 +128,9 @@ function isLiveModelCall(manifest, hostRequest) {
   if (hostRequest?.actuationClass !== 'model') return false;
   if (manifest?.driverId === 'fixture-agent-model') return false;
   const labels = manifest?.authorityLabels ?? [];
-  if (labels.some((label) => label.startsWith('model:fixture'))) return false;
-  return labels.some((label) => label.startsWith('model:'));
+  const modelLabels = labels.filter((label) => label.startsWith('model:'));
+  if (!modelLabels.length) return false;
+  return modelLabels.some((label) => !label.startsWith('model:fixture'));
 }
 
 function assertManifestCoversHostRequest(manifest, hostRequest) {
@@ -137,7 +138,7 @@ function assertManifestCoversHostRequest(manifest, hostRequest) {
   return true;
 }
 
-function assertCapabilityPreflightAccepted(report) {
+export function assertCapabilityPreflightAccepted(report) {
   if (report.accepted !== true) fail('ERR_CAPABILITY_PREFLIGHT_BLOCKED', 'capability preflight blocked', { blockers: report.blockers });
   return true;
 }
@@ -178,7 +179,9 @@ function networkPolicyHostRequest(hostRequest, manifest) {
 function configuredNetworkPolicyHostRequest(hostRequest, manifest, parsed = {}) {
   const origins = Array.isArray(manifest?.diagnostics?.origins) ? manifest.diagnostics.origins : [];
   const methods = Array.isArray(manifest?.diagnostics?.methods) ? manifest.diagnostics.methods : [];
-  const url = manifest?.diagnostics?.configuredEndpointUrl ?? manifest?.diagnostics?.configuredOrigin ?? (origins.length === 1 ? origins[0] : null);
+  const endpointSource = manifest?.diagnostics?.endpointSource;
+  const requestUrl = endpointSource === 'request-or-config' && parsed?.url !== undefined ? parsed.url : null;
+  const url = requestUrl ?? manifest?.diagnostics?.configuredEndpointUrl ?? manifest?.diagnostics?.configuredOrigin ?? (origins.length === 1 ? origins[0] : null);
   const method = parsed.method ?? manifest?.diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : null);
   if (!url || !method) return hostRequest;
   return {
@@ -188,7 +191,7 @@ function configuredNetworkPolicyHostRequest(hostRequest, manifest, parsed = {}) 
   };
 }
 
-function journaledHostRequest(hostRequest, manifest) {
+export function journaledHostRequest(hostRequest, manifest) {
   const endpointSource = manifest?.diagnostics?.endpointSource;
   if (endpointSource !== 'config' && endpointSource !== 'request-or-config') return hostRequest;
   let parsed = {};
@@ -199,7 +202,7 @@ function journaledHostRequest(hostRequest, manifest) {
       return hostRequest;
     }
   }
-  if (endpointSource === 'request-or-config' && parsed?.url !== undefined) return hostRequest;
+  if (endpointSource === 'request-or-config' && parsed?.url !== undefined && parsed.method !== undefined) return hostRequest;
   const configured = configuredNetworkPolicyHostRequest(hostRequest, manifest, parsed);
   if (configured === hostRequest) return hostRequest;
   const policyTarget = JSON.parse(new TextDecoder().decode(configured.requestBytes));

@@ -1,6 +1,7 @@
 import { EffectJournal } from './effect_journal.mjs';
 import { assertDurableRecoveryAllowed } from './actuator.mjs';
 import { assertCapabilityReportAccepted, createRunPolicy, preflightCapabilities } from './capabilities.mjs';
+import { assertCapabilityPreflightAccepted, journaledHostRequest } from './capability_modes.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from './run.mjs';
 import { assertBytes, fail, fromUtf8, toHex } from './store.mjs';
 import { decodeApplianceManifest, decodeResolutionInputBytes, encodeRestoreTurnInput, resolutionResponded } from '../protocol/world_appliance_wire_codec.mjs';
@@ -329,22 +330,31 @@ export class RunController {
     const pendingPositions = new Map(pending.map((item, index) => [item, index]));
     const groups = groupPendingEffects(pending);
     await runGroupedBounded(groups, policy, async (item) => {
+      const context = await this.effectContextFactory({
+        run,
+        branchId,
+        application,
+        parentHead,
+        parentClosureBytes,
+        worker,
+        options,
+        policy,
+        driverManifest: item.manifest,
+        hostRequest: item.hostRequest,
+        worldHostRequest: item.worldHostRequest,
+      });
+      const journalHostRequest = journaledHostRequest(item.hostRequest, item.manifest);
       const resolved = await journal.resolve(
-        await this.effectContextFactory({
-          run,
-          branchId,
-          application,
-          parentHead,
-          parentClosureBytes,
-          worker,
-          options,
-          policy,
-          driverManifest: item.manifest,
-          hostRequest: item.hostRequest,
-          worldHostRequest: item.worldHostRequest,
-        }),
-        item.hostRequest,
+        context,
+        journalHostRequest,
         item.driver,
+        typeof item.driver?.preflight === 'function'
+          ? {
+              beforeInvoke: async (preflightContext, preflightHostRequest) => {
+                assertCapabilityPreflightAccepted(await item.driver.preflight(preflightContext, preflightHostRequest));
+              },
+            }
+          : {},
       );
       effects[pendingPositions.get(item)] = { ...resolved, worldHostRequest: item.worldHostRequest };
     });

@@ -150,8 +150,9 @@ function isLiveModelCall(manifest, hostRequest) {
   if (hostRequest?.actuationClass !== 'model') return false;
   if (manifest?.driverId === 'fixture-agent-model') return false;
   const labels = manifest?.authorityLabels ?? [];
-  if (labels.some((label) => label.startsWith('model:fixture'))) return false;
-  return labels.some((label) => label.startsWith('model:'));
+  const modelLabels = labels.filter((label) => label.startsWith('model:'));
+  if (!modelLabels.length) return false;
+  return modelLabels.some((label) => !label.startsWith('model:fixture'));
 }
 
 function assertOriginAndMethodAllowed(hostRequest, policy) {

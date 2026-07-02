@@ -531,6 +531,17 @@ describe('Capability Plane v0.2 core contracts', () => {
     }), true);
     assert.throws(() => assertCapabilityPolicyAllows({
       manifest: {
+        driverId: 'mixed-model-labels',
+        authorityLabels: ['model:fixture', 'model:http-json'],
+        recoveryClass: EffectRecoveryClass.idempotent,
+        maximumResponseBytes: 1024,
+      },
+      hostRequest: { ...genericHttpModelRequest('goal=policy-mixed-labels', 'model-policy-mixed-key') },
+      policy: { allowLiveEffects: true },
+      mode: 'live',
+    }), { code: 'ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED' });
+    assert.throws(() => assertCapabilityPolicyAllows({
+      manifest: {
         driverId: 'deterministic-model-http',
         authorityLabels: ['model:http-json'],
         diagnostics: { deterministic: true },
@@ -1590,6 +1601,71 @@ describe('Capability Plane v0.2 core contracts', () => {
         },
       });
       assert.equal(defaultMethod, 'POST');
+
+      let defaultMethodIdentityFetchCount = 0;
+      globalThis.fetch = async (url, options) => {
+        defaultMethodIdentityFetchCount += 1;
+        assert.equal(url, 'https://allowed.example/decide');
+        assert.equal(options.method, 'POST');
+        return new Response('{"action":{"variant":"final","text":"default-method-identity"}}', {
+          status: 200,
+          headers: { 'x-request-id': 'request-default-method-identity' },
+        });
+      };
+      const defaultMethodIdentityRequest = {
+        ...httpRequest(),
+        hostRequestFingerprint: 'world:host-request:00000000000000a6',
+        idempotencyKeyBytes: fromUtf8('http-key-default-method-identity'),
+        idempotencyKeyWorldFingerprint: 'world:key:http-default-method-identity',
+        requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/decide', body: { prompt: 'hi' } })),
+      };
+      const defaultMethodIdentityJournalOptions = {
+        store: new MemoryStore(),
+        runId: 'default-method-identity-run',
+        branchId: 'main',
+        parentTurnClosureFingerprint: 'world:turn-closure:parent',
+      };
+      await runCapabilityMode({
+        mode: 'live',
+        driver: new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://fallback.example/decide',
+          allowEndpointFromRequest: true,
+          origins: ['https://allowed.example', 'https://fallback.example'],
+          methods: ['POST'],
+        }),
+        hostRequest: defaultMethodIdentityRequest,
+        journalOptions: defaultMethodIdentityJournalOptions,
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST', 'PUT'],
+        },
+      });
+      globalThis.fetch = async () => {
+        throw new Error('defaulted method identity conflict should block before fetch');
+      };
+      await assert.rejects(
+        () => runCapabilityMode({
+          mode: 'live',
+          driver: new GenericHttpJsonCapabilityDriver({
+            endpointUrl: 'https://fallback.example/decide',
+            allowEndpointFromRequest: true,
+            origins: ['https://allowed.example', 'https://fallback.example'],
+            methods: ['PUT'],
+          }),
+          hostRequest: defaultMethodIdentityRequest,
+          journalOptions: defaultMethodIdentityJournalOptions,
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST', 'PUT'],
+          },
+        }),
+        { code: 'ERR_EFFECT_IDEMPOTENCY_CONFLICT' },
+      );
+      assert.equal(defaultMethodIdentityFetchCount, 1);
 
       let shadowFetchCalled = false;
       globalThis.fetch = async () => {
