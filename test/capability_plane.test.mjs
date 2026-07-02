@@ -179,6 +179,16 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': functionImportAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const computedFunctionImportAdapter = fromUtf8('const fs = globalThis["Function"]("s", "return import(s)")("node:fs"); export const CapabilityDriver = fs;');
+    const computedFunctionImportAdapterChecksum = `sha256:${await sha256Hex(computedFunctionImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: computedFunctionImportAdapterChecksum }],
+      }, { 'adapter.mjs': computedFunctionImportAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const evalImportAdapter = fromUtf8('const fs = eval("import(\\\"node:fs\\\")"); export const CapabilityDriver = fs;');
     const evalImportAdapterChecksum = `sha256:${await sha256Hex(evalImportAdapter)}`;
     await assert.rejects(
@@ -1333,6 +1343,31 @@ describe('Capability Plane v0.2 core contracts', () => {
       );
       assert.equal(nonHttpFetchCalled, false);
 
+      let malformedExplicitUrlFetchCalled = false;
+      globalThis.fetch = async () => {
+        malformedExplicitUrlFetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      await assert.rejects(
+        () => new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          allowEndpointFromRequest: true,
+          origins: ['https://allowed.example'],
+        }).resolve({
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }, {
+          ...httpRequest(),
+          requestBytes: fromUtf8(stableJson({ url: '', method: 'POST', body: { prompt: 'hi' } })),
+        }),
+        { code: 'ERR_HTTP_URL_INVALID' },
+      );
+      assert.equal(malformedExplicitUrlFetchCalled, false);
+
       let limitedRequestFetchCalled = false;
       globalThis.fetch = async () => {
         limitedRequestFetchCalled = true;
@@ -1631,7 +1666,7 @@ describe('Capability Plane v0.2 core contracts', () => {
           endpointUrl: 'https://fallback.example/decide',
           allowEndpointFromRequest: true,
           origins: ['https://allowed.example', 'https://fallback.example'],
-          methods: ['POST'],
+          methods: ['POST', 'PUT'],
         }),
         hostRequest: defaultMethodIdentityRequest,
         journalOptions: defaultMethodIdentityJournalOptions,

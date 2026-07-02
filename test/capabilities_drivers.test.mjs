@@ -72,6 +72,31 @@ describe('capability preflight and reference drivers', () => {
     }]);
   });
 
+  it('uses default HTTP methods for multi-method request URLs during preflight', () => {
+    const request = {
+      ...httpRequest('https://allowed.example/path'),
+      requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/path', body: { prompt: 'hi' } })),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://fallback.example/decide',
+        allowEndpointFromRequest: true,
+        origins: ['https://allowed.example', 'https://fallback.example'],
+        methods: ['POST', 'PUT'],
+      })],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.everyPendingRequestCovered, true);
+  });
+
   it('preflights fixed configured HTTP endpoints independently of payload url fields', () => {
     const request = {
       ...httpRequest('https://payload.example/not-target'),

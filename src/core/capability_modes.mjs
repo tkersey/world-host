@@ -169,8 +169,9 @@ function networkPolicyHostRequest(hostRequest, manifest) {
     }
     if (parsed?.url === undefined || parsed.method !== undefined) return hostRequest;
     const methods = Array.isArray(manifest?.diagnostics?.methods) ? manifest.diagnostics.methods : [];
-    if (methods.length !== 1) return hostRequest;
-    return { ...hostRequest, requestBytes: fromUtf8(stableJson({ ...parsed, method: methods[0] })) };
+    const method = manifest?.diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : null);
+    if (!method) return hostRequest;
+    return { ...hostRequest, requestBytes: fromUtf8(stableJson({ ...parsed, method })) };
   } catch {
     return hostRequest;
   }

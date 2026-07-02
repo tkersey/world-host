@@ -161,7 +161,7 @@ export class GenericHttpJsonCapabilityDriver {
 
   #request(hostRequest) {
     const payload = parseJsonBytes(hostRequest.requestBytes);
-    const url = this.allowEndpointFromRequest && payload.url ? payload.url : this.endpointUrl;
+    const url = this.allowEndpointFromRequest && Object.prototype.hasOwnProperty.call(payload, 'url') ? payload.url : this.endpointUrl;
     const parsedUrl = parseHttpUrl(url);
     if (!this.origins.has(parsedUrl.origin)) fail('ERR_HTTP_ORIGIN_REJECTED');
     const method = String(payload.method ?? [...this.methods][0] ?? 'POST').toUpperCase();

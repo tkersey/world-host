@@ -281,7 +281,17 @@ function adapterHasImportCall(text) {
     if (index >= text.length) break;
     const char = text[index];
     if (char === '\'' || char === '"') {
-      index = skipQuotedString(text, index, char);
+      const literal = readQuotedString(text, index, char);
+      const afterLiteral = skipWhitespaceAndComments(text, literal.end);
+      if (
+        previousSignificant === '[' &&
+        (literal.value === 'eval' || literal.value === 'Function') &&
+        text[afterLiteral] === ']'
+      ) {
+        const afterBracket = skipWhitespaceAndComments(text, afterLiteral + 1);
+        if (text[afterBracket] === '(') return true;
+      }
+      index = literal.end;
       previousSignificant = 'literal';
       continue;
     }
@@ -354,6 +364,22 @@ function skipQuotedString(text, index, quote) {
     index += 1;
   }
   return index;
+}
+
+function readQuotedString(text, index, quote) {
+  let value = '';
+  index += 1;
+  while (index < text.length) {
+    if (text[index] === '\\') {
+      if (index + 1 < text.length) value += text[index + 1];
+      index += 2;
+      continue;
+    }
+    if (text[index] === quote) return { value, end: index + 1 };
+    value += text[index];
+    index += 1;
+  }
+  return { value, end: index };
 }
 
 function skipBalancedParentheses(text, index) {
