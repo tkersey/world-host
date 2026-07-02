@@ -77,7 +77,7 @@ export function assertCapabilityPolicyAllows({ manifest, hostRequest = null, pol
       assertNetworkAllowlistsPresent(policy);
     }
   }
-  assertFileRootAllowed(manifest, policy);
+  assertFileRootAllowed(manifest, hostRequest, policy);
   const approved = action?.approved === true;
   if (action?.destructive === true && policy.requireApprovalForDestructiveEffects && !approved) fail('ERR_CAPABILITY_APPROVAL_REQUIRED');
   if (isNetwork(manifest, hostRequest) && policy.requireApprovalForNetworkEffects && !approved) fail('ERR_CAPABILITY_APPROVAL_REQUIRED');
@@ -129,15 +129,21 @@ export function redactCapabilityDiagnostics(value) {
 }
 
 function isNetwork(manifest, hostRequest) {
-  return hostRequest?.actuationClass === 'http' || (manifest?.authorityLabels ?? []).some((label) => label.startsWith('network:'));
+  return hostRequest?.actuationClass === 'http' ||
+    (manifest?.supportedActuationClasses ?? []).includes('http') ||
+    (manifest?.authorityLabels ?? []).some((label) => label.startsWith('network:'));
 }
 
 function isFile(manifest, hostRequest) {
-  return hostRequest?.actuationClass === 'file' || (manifest?.authorityLabels ?? []).some((label) => label.startsWith('file:'));
+  return hostRequest?.actuationClass === 'file' ||
+    (manifest?.supportedActuationClasses ?? []).includes('file') ||
+    (manifest?.authorityLabels ?? []).some((label) => label.startsWith('file:'));
 }
 
 function isHuman(manifest, hostRequest) {
-  return hostRequest?.actuationClass === 'human' || (manifest?.authorityLabels ?? []).some((label) => label.startsWith('human:'));
+  return hostRequest?.actuationClass === 'human' ||
+    (manifest?.supportedActuationClasses ?? []).includes('human') ||
+    (manifest?.authorityLabels ?? []).some((label) => label.startsWith('human:'));
 }
 
 function isLiveModelCall(manifest, hostRequest) {
@@ -174,10 +180,10 @@ function assertNetworkAllowlistsPresent(policy) {
   if (!policy.allowedMethods.size) fail('ERR_CAPABILITY_METHOD_ALLOWLIST_REQUIRED');
 }
 
-function assertFileRootAllowed(manifest, policy) {
+function assertFileRootAllowed(manifest, hostRequest, policy) {
   if (!policy.allowedFileRoots.size) return;
   const root = manifest?.diagnostics?.root ?? manifest?.policyRequirements?.root;
-  if ((manifest?.authorityLabels ?? []).some((label) => label.startsWith('file:')) && (!root || !policy.allowedFileRoots.has(root))) {
+  if (isFile(manifest, hostRequest) && (!root || !policy.allowedFileRoots.has(root))) {
     fail('ERR_CAPABILITY_FILE_ROOT_DENIED', `file root denied: ${root ?? 'unknown'}`);
   }
 }

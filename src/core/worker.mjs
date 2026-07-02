@@ -697,7 +697,7 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}) {
     if (driverMethods && (!method || !driverMethods.has(method))) return false;
   }
   const allowedFileRoots = policySet(policy.allowedFileRoots);
-  if (allowedFileRoots.size && manifest.authorityLabels.includes('file:sandbox')) {
+  if (allowedFileRoots.size && driverManifestIsFile(manifest, hostRequest)) {
     const root = manifest.diagnostics?.root;
     if (!root || !allowedFileRoots.has(root)) return false;
   }
@@ -707,6 +707,12 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}) {
     return false;
   }
   return true;
+}
+
+function driverManifestIsFile(manifest, hostRequest) {
+  return hostRequest?.actuationClass === 'file' ||
+    (manifest.supportedActuationClasses ?? []).includes('file') ||
+    (manifest.authorityLabels ?? []).some((label) => label.startsWith('file:'));
 }
 
 function policySet(value) {

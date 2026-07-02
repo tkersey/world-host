@@ -42,7 +42,10 @@ export async function runCapabilityMode({
   if (mode === CapabilityExecutionMode.shadow) {
     assertManifestCoversHostRequest(manifest, hostRequest);
     const shadowContext = { ...context, mode: 'shadow', policy: livePolicy };
-    if (context?.allowShadowNetwork === true || context?.allowShadowLiveEffects === true) {
+    if (shadowRequiresLivePolicy(manifest, hostRequest)) {
+      if (context?.allowShadowNetwork !== true && context?.allowShadowLiveEffects !== true) {
+        fail('ERR_CAPABILITY_SHADOW_LIVE_EFFECT_DENIED', 'shadow mode live-capable drivers require explicit shadow live policy');
+      }
       assertCapabilityPolicyAllows({
         manifest,
         hostRequest: networkPolicyHostRequest(hostRequest, manifest),
@@ -109,6 +112,13 @@ function liveContext(context, policy, action = null) {
 
 function submittedResolutionToWorld(resolved) {
   return resolved?.resolutionInputBytes instanceof Uint8Array;
+}
+
+function shadowRequiresLivePolicy(manifest, hostRequest) {
+  const labels = manifest?.authorityLabels ?? [];
+  return ['http', 'file', 'human'].includes(hostRequest?.actuationClass) ||
+    (manifest?.supportedActuationClasses ?? []).some((item) => ['http', 'file', 'human'].includes(item)) ||
+    labels.some((label) => label.startsWith('network:') || label.startsWith('file:') || label.startsWith('human:'));
 }
 
 function assertManifestCoversHostRequest(manifest, hostRequest) {

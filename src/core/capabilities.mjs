@@ -228,7 +228,7 @@ function policyBlockers(route, request, policy) {
   if (request && policy.maximumRequestBytes !== undefined && request.requestBytes?.byteLength > policy.maximumRequestBytes) blockers.push('request-limit-exceeds-policy');
   if (policy.maximumResponseBytes !== undefined && route.maximumResponseBytes > policy.maximumResponseBytes) blockers.push('response-limit-exceeds-policy');
   const allowedFileRoots = policy.allowedFileRoots ?? new Set();
-  if (allowedFileRoots.size && route.authorityLabels.includes('file:sandbox')) {
+  if (allowedFileRoots.size && isFileRoute(route, request)) {
     const root = route.diagnostics?.root;
     if (!root || !allowedFileRoots.has(root)) blockers.push(`file-root-denied:${root ?? 'unknown'}`);
   }
@@ -244,6 +244,12 @@ function policyBlockers(route, request, policy) {
     if (driverMethods && (!method || !driverMethods.has(method))) blockers.push(`http-method-driver-denied:${method ?? 'unknown'}`);
   }
   return blockers;
+}
+
+function isFileRoute(route, request) {
+  return request?.actuationClass === 'file' ||
+    (route.supportedActuationClasses ?? []).includes('file') ||
+    (route.authorityLabels ?? []).some((label) => label.startsWith('file:'));
 }
 
 function driverMatchesExceptResponseStatus(manifest, request) {

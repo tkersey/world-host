@@ -133,6 +133,16 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': requireAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const commentedImportAdapter = fromUtf8("const fs = await import/* adapter bypass */('node:fs'); export const CapabilityDriver = fs;");
+    const commentedImportAdapterChecksum = `sha256:${await sha256Hex(commentedImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: commentedImportAdapterChecksum }],
+      }, { 'adapter.mjs': commentedImportAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const sidecar = fromUtf8('sidecar bytes');
     const launcherChecksum = `sha256:${await sha256Hex(artifact)}`;
     const sidecarChecksum = `sha256:${await sha256Hex(sidecar)}`;
@@ -291,6 +301,33 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.throws(
       () => assertCapabilityPolicyAllows({ manifest, hostRequest: httpRequest(), policy: { allowLiveEffects: true }, mode: 'live' }),
       { code: 'ERR_CAPABILITY_NETWORK_DENIED' },
+    );
+    assert.throws(
+      () => assertCapabilityPolicyAllows({
+        manifest: {
+          driverId: 'mislabelled-file',
+          supportedActuationClasses: ['file'],
+          authorityLabels: [],
+          recoveryClass: EffectRecoveryClass.bestEffort,
+          maximumResponseBytes: 1024,
+          diagnostics: { root: '/blocked' },
+        },
+        hostRequest: {
+          actuatorRef: 'sandbox:file',
+          descriptorFingerprint: 'descriptor:sandbox-file',
+          actuationClass: 'file',
+          responseSchema: { status: 'ok' },
+          requestBytes: fromUtf8(stableJson({ path: 'out.txt', operation: 'write', content: 'blocked' })),
+        },
+        policy: {
+          allowLiveEffects: true,
+          allowFileEffects: true,
+          allowBestEffort: true,
+          allowedFileRoots: ['/allowed'],
+        },
+        mode: 'live',
+      }),
+      { code: 'ERR_CAPABILITY_FILE_ROOT_DENIED' },
     );
     assert.throws(
       () => assertCapabilityPolicyAllows({
@@ -1538,6 +1575,24 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_CAPABILITY_NETWORK_TARGET_REQUIRED' },
     );
     assert.equal(unknownNetworkTargetDriver.resolveCalled, false);
+
+    const defaultDeniedShadowDriver = policyProbeDriver();
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'shadow',
+        driver: defaultDeniedShadowDriver,
+        hostRequest: httpRequest(),
+        recordedResolution: null,
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      }),
+      { code: 'ERR_CAPABILITY_SHADOW_LIVE_EFFECT_DENIED' },
+    );
+    assert.equal(defaultDeniedShadowDriver.shadowCalled, false);
 
     const deniedShadowDriver = policyProbeDriver();
     await assert.rejects(

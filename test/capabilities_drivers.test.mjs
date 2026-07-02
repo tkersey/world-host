@@ -533,6 +533,25 @@ describe('capability preflight and reference drivers', () => {
       });
       assert.ok(fileReport.blockers.includes(`file-root-denied:${path.resolve(blockedRoot)}`));
       assert.equal(fileReport.fileNetworkAuthoritiesAllowed, false);
+
+      const mislabelledFileReport = preflightCapabilities({
+        application: { requiredActuators: [], requiredRuntimeLimits: {} },
+        currentHead: { generation: 0 },
+        pendingRequests: [fileRequest('out.txt', { operation: 'write', content: 'blocked' })],
+        drivers: [fixtureDriverWithAuthority([], {
+          driverId: 'mislabelled-file',
+          actuatorRef: 'sandbox:file',
+          descriptorFingerprint: 'descriptor:sandbox-file',
+          actuationClasses: ['file'],
+          diagnostics: { root: path.resolve(blockedRoot) },
+        })],
+        policy: createRunPolicy({
+          allowBestEffort: true,
+          allowedFileRoots: [allowedRoot],
+        }),
+      });
+      assert.ok(mislabelledFileReport.blockers.includes(`file-root-denied:${path.resolve(blockedRoot)}`));
+      assert.equal(mislabelledFileReport.fileNetworkAuthoritiesAllowed, false);
     } finally {
       await rm(allowedRoot, { recursive: true, force: true });
       await rm(blockedRoot, { recursive: true, force: true });
@@ -913,7 +932,7 @@ function fixtureDriverWithAuthority(authorityLabels, options = {}) {
         recoveryClass: EffectRecoveryClass.pure,
         concurrencyLimit: 1,
         authorityLabels,
-        diagnostics: {},
+        diagnostics: options.diagnostics ?? {},
       };
     },
   };

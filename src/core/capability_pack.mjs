@@ -37,7 +37,7 @@ const SEMANTIC_FIELDS = Object.freeze([
 ]);
 const SECRET_PATTERN = /credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key/i;
 const CONFORMANCE_RECEIPT_PATH = 'conformance.json';
-const ADAPTER_IMPORT_PATTERN = /(?:^|[;\n\r])\s*import\s*(?:['"]|(?:[\w*{][^;]*?\s*from\s*['"]))|(?:^|[;\n\r])\s*export\s*(?:\*|\{|\w)[^;]*?\s*from\s*['"]|\bimport\s*\(|\brequire\s*\(\s*['"]/m;
+const ADAPTER_IMPORT_SCANNER = globalThis.Bun?.Transpiler ? new globalThis.Bun.Transpiler({ loader: 'js' }) : null;
 
 export class CapabilityManifest {
   constructor(fields) {
@@ -209,9 +209,118 @@ function assertAdapterArtifactSelfContained(manifest, artifacts) {
   const bytes = artifacts[manifest.adapter.module];
   if (!(bytes instanceof Uint8Array)) return;
   const text = new TextDecoder().decode(bytes);
-  if (ADAPTER_IMPORT_PATTERN.test(text)) {
+  if (!ADAPTER_IMPORT_SCANNER) fail('ERR_CAPABILITY_PACK_ADAPTER_IMPORT_SCAN_UNAVAILABLE', 'adapter import scanning requires Bun.Transpiler');
+  let imports;
+  try {
+    imports = ADAPTER_IMPORT_SCANNER.scanImports(text);
+  } catch {
+    return;
+  }
+  if (imports.length || adapterHasImportCall(text)) {
     fail('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT', `adapter imports code outside its checksum-covered entry module: ${manifest.adapter.module}`);
   }
+}
+
+function adapterHasImportCall(text) {
+  let previousSignificant = null;
+  for (let index = 0; index < text.length;) {
+    index = skipWhitespaceAndComments(text, index);
+    if (index >= text.length) break;
+    const char = text[index];
+    if (char === '\'' || char === '"') {
+      index = skipQuotedString(text, index, char);
+      previousSignificant = 'literal';
+      continue;
+    }
+    if (!identifierStart(char)) {
+      previousSignificant = char;
+      index += 1;
+      continue;
+    }
+    const start = index;
+    index += 1;
+    while (index < text.length && identifierPart(text[index])) index += 1;
+    const identifier = text.slice(start, index);
+    if (identifier !== 'import' && identifier !== 'require') {
+      previousSignificant = 'identifier';
+      continue;
+    }
+    const callStart = skipWhitespaceAndComments(text, index);
+    if (text[callStart] !== '(' || (identifier === 'require' && previousSignificant === '.')) {
+      previousSignificant = 'identifier';
+      continue;
+    }
+    const callEnd = skipBalancedParentheses(text, callStart);
+    const afterCall = skipWhitespaceAndComments(text, callEnd);
+    if (identifier === 'require' && text[afterCall] === '{') {
+      previousSignificant = 'identifier';
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+function skipWhitespaceAndComments(text, index) {
+  for (;;) {
+    while (index < text.length && /\s/.test(text[index])) index += 1;
+    if (text[index] === '/' && text[index + 1] === '/') {
+      index += 2;
+      while (index < text.length && text[index] !== '\n' && text[index] !== '\r') index += 1;
+      continue;
+    }
+    if (text[index] === '/' && text[index + 1] === '*') {
+      index += 2;
+      while (index < text.length && !(text[index] === '*' && text[index + 1] === '/')) index += 1;
+      index = Math.min(index + 2, text.length);
+      continue;
+    }
+    return index;
+  }
+}
+
+function skipQuotedString(text, index, quote) {
+  index += 1;
+  while (index < text.length) {
+    if (text[index] === '\\') {
+      index += 2;
+      continue;
+    }
+    if (text[index] === quote) return index + 1;
+    index += 1;
+  }
+  return index;
+}
+
+function skipBalancedParentheses(text, index) {
+  let depth = 0;
+  while (index < text.length) {
+    const char = text[index];
+    if (char === '\'' || char === '"') {
+      index = skipQuotedString(text, index, char);
+      continue;
+    }
+    const skipped = skipWhitespaceAndComments(text, index);
+    if (skipped !== index) {
+      index = skipped;
+      continue;
+    }
+    if (char === '(') depth += 1;
+    if (char === ')') {
+      depth -= 1;
+      if (depth === 0) return index + 1;
+    }
+    index += 1;
+  }
+  return index;
+}
+
+function identifierStart(char) {
+  return /[A-Za-z_$]/.test(char);
+}
+
+function identifierPart(char) {
+  return /[A-Za-z0-9_$]/.test(char);
 }
 
 function assertReferencedArtifactsCovered(manifest) {

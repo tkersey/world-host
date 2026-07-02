@@ -1032,6 +1032,47 @@ describe('RunController and WorldWorker', () => {
     assert.equal((await store.listEffectRecords(runId)).length, 0);
   });
 
+  it('rejects file-capable drivers outside receiver root policy before resolving effects', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const driver = fixtureEffectDriver({
+      driverId: 'mislabelled.file.driver',
+      actuatorRef: 'sandbox:file',
+      descriptorFingerprint: 'descriptor:sandbox-file',
+      actuationClasses: ['file'],
+      responseStatuses: ['ok'],
+      authorityLabels: [],
+      diagnostics: { root: '/blocked' },
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [driver],
+      effectPolicy: {
+        allowedFileRoots: new Set(['/allowed']),
+      },
+      hostRequestMapper: () => ({
+        actuatorRef: 'sandbox:file',
+        descriptorFingerprint: 'descriptor:sandbox-file',
+        actuationClass: 'file',
+        responseSchema: { status: 'ok' },
+        idempotencyKeyBytes: fromUtf8('file-idempotency-key'),
+        idempotencyKeyWorldFingerprint: 'world:key:file',
+        requestBytes: fromUtf8(JSON.stringify({ path: 'out.txt', operation: 'write', content: 'blocked' })),
+        hostRequestFingerprint: 'world:host-request:0000000000000a01',
+      }),
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_HOST_REQUEST_DRIVER_UNAVAILABLE' },
+    );
+    assert.equal(driver.invocationCount, 0);
+    assert.equal((await store.listEffectRecords(runId)).length, 0);
+  });
+
   it('fails closed on needs_host heads when no effect drivers are configured', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
@@ -1433,14 +1474,15 @@ function fixtureEffectDriver(options = {}) {
       return {
         driverId: options.driverId ?? 'test.effect.driver',
         supportedActuatorRefs: [options.actuatorRef ?? 'world:actuator-ref:0000000000000a05'],
-        supportedDescriptorFingerprints: ['world:descriptor:0000000000000a0b'],
-        supportedActuationClasses: ['world:actuation-class:1'],
-        supportedResponseStatuses: ['responded'],
+        supportedDescriptorFingerprints: [options.descriptorFingerprint ?? 'world:descriptor:0000000000000a0b'],
+        supportedActuationClasses: options.actuationClasses ?? ['world:actuation-class:1'],
+        supportedResponseStatuses: options.responseStatuses ?? ['responded'],
         maximumRequestBytes: 4096,
         maximumResponseBytes: 4096,
         recoveryClass: EffectRecoveryClass.pure,
         concurrencyLimit: 1,
         authorityLabels: options.authorityLabels ?? ['test'],
+        diagnostics: options.diagnostics ?? {},
       };
     },
     async resolve() {
