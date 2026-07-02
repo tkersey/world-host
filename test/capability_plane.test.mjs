@@ -93,6 +93,16 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': bareImportAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const computedImportAdapter = fromUtf8("const specifier = './helper.mjs'; const helper = await import(specifier); export const CapabilityDriver = helper.Driver;");
+    const computedImportAdapterChecksum = `sha256:${await sha256Hex(computedImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: computedImportAdapterChecksum }],
+      }, { 'adapter.mjs': computedImportAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const sidecar = fromUtf8('sidecar bytes');
     const launcherChecksum = `sha256:${await sha256Hex(artifact)}`;
     const sidecarChecksum = `sha256:${await sha256Hex(sidecar)}`;
