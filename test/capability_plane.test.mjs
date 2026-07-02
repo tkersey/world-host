@@ -30,7 +30,7 @@ import { GenericHttpJsonCapabilityDriver } from '../src/drivers/generic_http_jso
 import { HumanApprovalCapabilityDriver } from '../src/drivers/human_approval_capability_driver.mjs';
 import { fromUtf8, stableJson, toHex } from '../src/core/store.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
-import { decodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
+import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
 
 describe('Capability Plane v0.2 core contracts', () => {
   it('validates CapabilityPack semantic identity, checksums, and authority boundaries', async () => {
@@ -280,6 +280,10 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
     );
     await assert.rejects(
+      () => runCapabilityMode({ mode: 'fixture', driver: wrongTargetFixtureDriver(), hostRequest: request }),
+      { code: 'ERR_EFFECT_RESOLUTION_TARGET_MISMATCH' },
+    );
+    await assert.rejects(
       () => runCapabilityMode({
         mode: 'fixture',
         driver,
@@ -338,6 +342,15 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_CAPABILITY_FIXTURE_LIVE_EFFECT_DENIED' },
     );
     assert.equal(approvalShortcutLiveEffectResolveCalled, false);
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'approval',
+        driver: wrongTargetFixtureDriver(),
+        hostRequest: request,
+        approval: () => ({ approved: true }),
+      }),
+      { code: 'ERR_EFFECT_RESOLUTION_TARGET_MISMATCH' },
+    );
 
     const store = new MemoryStore();
     const live = await runCapabilityMode({
@@ -1233,6 +1246,27 @@ function deterministicLiveEffectDriver(onResolve, { authorityLabels = ['network:
       const error = new Error('fixture live effect should not resolve');
       error.code = 'ERR_FIXTURE_LIVE_EFFECT_RESOLVED';
       throw error;
+    },
+  };
+}
+
+function wrongTargetFixtureDriver() {
+  const delegate = new FixtureAgentModelCapabilityDriver();
+  return {
+    manifest: () => delegate.manifest(),
+    preflight: () => ({ accepted: true }),
+    dryRun: delegate.dryRun.bind(delegate),
+    shadow: delegate.shadow.bind(delegate),
+    async resolve() {
+      return {
+        resolutionInputBytes: encodeResolutionInputBytes({
+          targetHostRequestFingerprint: 0x9999n,
+          status: 0,
+          responseValueImageBytes: fromUtf8('wrong-target'),
+          hostClaimBytes: fromUtf8('{}'),
+          attemptNumber: 1,
+        }),
+      };
     },
   };
 }

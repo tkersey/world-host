@@ -644,7 +644,7 @@ function assertManifestResponseWithinPolicy(manifest, policy) {
   }
 }
 
-function assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, policy) {
+export function assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, policy) {
   const resolution = decodeResolutionInputBytes(resolutionInputBytes);
   const expectedTarget = hostRequestTargetFingerprint(hostRequest);
   if (resolution.targetHostRequestFingerprint !== expectedTarget) {

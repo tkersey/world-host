@@ -1,4 +1,4 @@
-import { EffectJournal } from './effect_journal.mjs';
+import { EffectJournal, assertResolutionAccepted } from './effect_journal.mjs';
 import { assertCapabilityPolicyAllows, createCapabilityPolicy } from './capability_policy.mjs';
 import { assertCapabilityResolutionBoundary, defineCapabilityDriver } from './capability_driver.mjs';
 import { fail, fromUtf8, stableJson } from './store.mjs';
@@ -30,6 +30,7 @@ export async function runCapabilityMode({
     assertCapabilityPreflightAccepted(driver.preflight(context, hostRequest));
     const resolved = await driver.resolve(context, hostRequest);
     assertCapabilityResolutionBoundary(resolved);
+    assertResolutionAccepted(resolved.resolutionInputBytes, hostRequest, manifest, livePolicy);
     return { mode, submittedToWorld: true, ...resolved };
   }
   if (mode === CapabilityExecutionMode.dryRun) {
@@ -58,6 +59,7 @@ export async function runCapabilityMode({
       assertCapabilityPreflightAccepted(driver.preflight(context, hostRequest));
       const resolved = await driver.resolve(context, hostRequest);
       assertCapabilityResolutionBoundary(resolved);
+      assertResolutionAccepted(resolved.resolutionInputBytes, hostRequest, manifest, livePolicy);
       return { mode, submittedToWorld: true, approved: true, proposed, ...resolved };
     }
     assertCapabilityPolicyAllows({
