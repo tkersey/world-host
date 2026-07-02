@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "packFingerprint": "sha256:27cf5b3d2ddd6897dc40a01fce44f5e6833a6e6bc51efbec2d9b885d97eb64f3",
+  "packFingerprint": "sha256:2c5e69eede59d87cefc83c35a93e4227b9125aebd7a4c32f49dc4cde3022a6d6",
   "packageName": "world-capability-human-approval",
   "packageVersion": "0.2.0",
   "driverId": "human-approval",
@@ -8,10 +8,19 @@
   "supportedWorldProtocolVersion": "v0.1.0",
   "supportedApplianceAbiVersion": "v4",
   "supportedTurnClosureVersion": "v1",
-  "supportedActuatorRefs": ["human:approval"],
-  "supportedDescriptorFingerprints": ["descriptor:human-approval"],
-  "supportedActuationClasses": ["human"],
-  "supportedResponseStatuses": ["ok", "rejected"],
+  "supportedActuatorRefs": [
+    "human:approval"
+  ],
+  "supportedDescriptorFingerprints": [
+    "descriptor:human-approval"
+  ],
+  "supportedActuationClasses": [
+    "human"
+  ],
+  "supportedResponseStatuses": [
+    "ok",
+    "rejected"
+  ],
   "recoveryClass": "transactional",
   "canDryRun": true,
   "canShadow": true,
@@ -20,7 +29,9 @@
   "propagatesWorldIdempotencyKey": true,
   "requiresApproval": true,
   "requiredSecrets": [],
-  "authorityLabels": ["human:approval"],
+  "authorityLabels": [
+    "human:approval"
+  ],
   "policyRequirements": {
     "allowLiveEffects": true,
     "allowHumanEffects": true
@@ -35,10 +46,25 @@
     "exportName": "CapabilityDriver"
   },
   "checksums": [
-    { "path": "adapter.mjs", "checksum": "sha256:2359610c7a5a83cd8e0bf102f7729382674d73e4c2a6819a2607a76eef93812d" },
-    { "path": "README.md", "checksum": "sha256:af5118e5ce83442dde2b9877cdf585f68750a05825a5ae9078a3025af2b48d01" },
-    { "path": "non-claims.md", "checksum": "sha256:664cac74c32fcfe79a4197ea67cef17c5f7e07771adf42429dd86a54b84870dd" },
-    { "path": "conformance.json", "checksum": "sha256:462693923843fcd0836b3639bd567b61f3ab768c5c9a2ff997f5feadd699dfba" }
+    {
+      "path": "adapter.mjs",
+      "checksum": "sha256:629cf2e38fdc1262886cb298842899ef4eb33839df045bf72250448d1f6e8d76"
+    },
+    {
+      "path": "README.md",
+      "checksum": "sha256:af5118e5ce83442dde2b9877cdf585f68750a05825a5ae9078a3025af2b48d01"
+    },
+    {
+      "path": "non-claims.md",
+      "checksum": "sha256:664cac74c32fcfe79a4197ea67cef17c5f7e07771adf42429dd86a54b84870dd"
+    },
+    {
+      "path": "conformance.json",
+      "checksum": "sha256:080009b13f71dc9f04883197e5c5a8455f296925693a8f88c50d38e69adeeaf9"
+    }
   ],
-  "docs": ["README.md", "non-claims.md"]
+  "docs": [
+    "README.md",
+    "non-claims.md"
+  ]
 }

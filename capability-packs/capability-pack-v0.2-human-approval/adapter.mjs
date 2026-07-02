@@ -1151,7 +1151,16 @@ class HumanApprovalCapabilityDriver {
     };
   }
   preflight(context, hostRequest) {
-    return defaultCapabilityPreflight(this.manifest(), hostRequest);
+    const structural = defaultCapabilityPreflight(this.manifest(), hostRequest);
+    const blockers = [...structural.blockers];
+    if (!blockers.length) {
+      try {
+        assertHumanPolicyAllows(context, this.manifest(), hostRequest);
+      } catch (error) {
+        blockers.push(error.code ?? "ERR_HUMAN_APPROVAL_PREFLIGHT_REJECTED");
+      }
+    }
+    return new CapabilityPreflightReport({ accepted: blockers.length === 0, blockers });
   }
   dryRun(context, hostRequest) {
     return new DryRunReport({
@@ -1174,6 +1183,8 @@ class HumanApprovalCapabilityDriver {
     return { approved, record: this.#record(approved ? "approved" : "denied") };
   }
   async resolve(context, hostRequest) {
+    assertHumanPolicyAllows(context, this.manifest(), hostRequest);
+    resolutionTarget(hostRequest);
     const decision = await this.approve({ proposed: this.#redactedPrompt(hostRequest) });
     return this.#resolution(hostRequest, decision.approved ? "approved" : "rejected", decision.record);
   }
@@ -1213,6 +1224,26 @@ class HumanApprovalCapabilityDriver {
       return { bytes: hostRequest.requestBytes?.byteLength ?? 0 };
     }
   }
+}
+function assertHumanPolicyAllows(context, manifest, hostRequest) {
+  const policy = context?.policy ?? {};
+  if (policy.allowLiveEffects !== true)
+    fail("ERR_CAPABILITY_LIVE_DENIED");
+  if (policy.allowHumanEffects !== true)
+    fail("ERR_CAPABILITY_HUMAN_DENIED");
+  const allowedAuthorityLabels = policySet(policy.allowedAuthorityLabels);
+  const deniedAuthorityLabels = (manifest?.authorityLabels ?? []).filter((label) => allowedAuthorityLabels.size && !allowedAuthorityLabels.has(label));
+  if (deniedAuthorityLabels.length)
+    fail("ERR_CAPABILITY_AUTHORITY_DENIED", "authority label denied", { labels: deniedAuthorityLabels });
+}
+function policySet(value) {
+  if (value instanceof Set)
+    return value;
+  if (Array.isArray(value))
+    return new Set(value);
+  if (value == null)
+    return new Set;
+  return new Set([value]);
 }
 function resolutionTarget(hostRequest = {}) {
   const value = hostRequest.hostRequestFingerprint;

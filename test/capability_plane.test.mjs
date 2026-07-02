@@ -909,6 +909,21 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.deepEqual(driver.manifest().supportedResponseStatuses, ['ok', 'http_error', 'deferred']);
       const packDriver = new HttpJsonPackCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' });
       assert.deepEqual(packDriver.manifest().supportedResponseStatuses, ['ok', 'http_error', 'deferred']);
+      observedHeaders = null;
+      await assert.rejects(
+        () => packDriver.resolve({
+          policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+        }, { ...httpRequest(), hostRequestFingerprint: undefined }),
+        { code: 'ERR_HOST_REQUEST_FINGERPRINT_REQUIRED' },
+      );
+      assert.equal(observedHeaders, null);
+      await assert.rejects(
+        () => packDriver.resolve({
+          policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+        }, { ...httpRequest(), idempotencyKeyWorldFingerprint: undefined }),
+        { code: 'ERR_HTTP_IDEMPOTENCY_KEY_REQUIRED' },
+      );
+      assert.equal(observedHeaders, null);
       const runtimePackFingerprint = 'sha256:'.concat('4'.repeat(64));
       const pinnedPackDriver = defineCapabilityDriver(new HttpJsonPackCapabilityDriver({
         endpointUrl: 'https://allowed.example/decide',
@@ -1760,7 +1775,16 @@ describe('Capability Plane v0.2 core contracts', () => {
 
     const approval = new HumanApprovalCapabilityDriver({ mode: 'noninteractive-allow' });
     assert.deepEqual(approval.manifest().supportedResponseStatuses, ['ok', 'rejected']);
-    assert.deepEqual(new HumanApprovalPackCapabilityDriver({ mode: 'noninteractive-allow' }).manifest().supportedResponseStatuses, ['ok', 'rejected']);
+    const packApproval = new HumanApprovalPackCapabilityDriver({ mode: 'noninteractive-allow' });
+    assert.deepEqual(packApproval.manifest().supportedResponseStatuses, ['ok', 'rejected']);
+    assert.equal(packApproval.preflight({}, approvalRequest()).accepted, false);
+    await assert.rejects(
+      () => packApproval.resolve({}, approvalRequest()),
+      { code: 'ERR_CAPABILITY_LIVE_DENIED' },
+    );
+    assert.equal(decodeResolutionInputBytes((await packApproval.resolve({
+      policy: { allowLiveEffects: true, allowHumanEffects: true },
+    }, approvalRequest())).resolutionInputBytes).status, 0);
     assert.equal(approval.preflight({}, httpRequest()).accepted, false);
     const proposedApproval = approval.dryRun({}, {
       ...approvalRequest(),

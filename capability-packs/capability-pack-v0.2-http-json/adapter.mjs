@@ -1415,6 +1415,7 @@ class GenericHttpJsonCapabilityDriver {
   }
   async resolve(context, hostRequest) {
     this.#assertPolicyAllows(context, hostRequest);
+    assertResolvableHttpHostRequest(hostRequest);
     this.#assertSecrets();
     const secretValues = await this.#secretValues();
     const request = this.#request(hostRequest);
@@ -1689,6 +1690,11 @@ function resolutionTarget(hostRequest = {}) {
   if (!match)
     fail("ERR_HOST_REQUEST_FINGERPRINT_REQUIRED");
   return BigInt(`0x${match[1]}`);
+}
+function assertResolvableHttpHostRequest(hostRequest = {}) {
+  resolutionTarget(hostRequest);
+  if (typeof hostRequest.idempotencyKeyWorldFingerprint !== "string" || hostRequest.idempotencyKeyWorldFingerprint.length === 0)
+    fail("ERR_HTTP_IDEMPOTENCY_KEY_REQUIRED");
 }
 async function readResponseBytes(response, maximumResponseBytes) {
   const contentLength = response.headers.get("content-length");
