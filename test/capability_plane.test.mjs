@@ -548,6 +548,10 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_CAPABILITY_HOST_PATH_FORBIDDEN' },
     );
     assert.throws(
+      () => assertCapabilityManifest({ ...manifest, adapter: { kind: 'in_process', module: 'adapter.mjs' } }),
+      { code: 'ERR_CAPABILITY_MANIFEST_INVALID' },
+    );
+    assert.throws(
       () => assertCapabilityManifest({ ...manifest, adapter: { kind: 'sidecar', command: ['/tmp/provider'] } }),
       { code: 'ERR_CAPABILITY_HOST_PATH_FORBIDDEN' },
     );
@@ -1291,6 +1295,14 @@ describe('Capability Plane v0.2 core contracts', () => {
         { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
       );
       assert.throws(
+        () => new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/token=secret-value/decide' }),
+        { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
+      );
+      assert.throws(
+        () => new HttpJsonPackCapabilityDriver({ endpointUrl: 'https://allowed.example/api_key:secret-value/decide' }),
+        { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
+      );
+      assert.throws(
         () => new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide#token=secret-fragment-value' }),
         { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
       );
@@ -1312,6 +1324,18 @@ describe('Capability Plane v0.2 core contracts', () => {
           allowEndpointFromRequest: true,
           origins: ['https://allowed.example'],
         }).dryRun({}, credentialQueryRequest),
+        { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
+      );
+      const credentialPathRequest = {
+        ...httpRequest(),
+        requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/token=secret-value/decide', method: 'POST', body: { prompt: 'hi' } })),
+      };
+      assert.throws(
+        () => new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          allowEndpointFromRequest: true,
+          origins: ['https://allowed.example'],
+        }).dryRun({}, credentialPathRequest),
         { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
       );
       const result = await driver.resolve({

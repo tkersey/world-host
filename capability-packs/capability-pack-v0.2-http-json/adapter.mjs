@@ -1618,7 +1618,7 @@ function parseHttpUrl(value) {
 function assertNoCredentialPathOrFragment(url) {
   const pathname = decodeUrlComponent(url.pathname);
   const hash = decodeUrlComponent(url.hash);
-  if (credentialQueryValue(pathname) || credentialQueryValue(hash) || credentialAssignmentText(hash)) {
+  if (credentialQueryValue(pathname) || credentialQueryValue(hash) || credentialAssignmentText(pathname) || credentialAssignmentText(hash)) {
     fail("ERR_HTTP_URL_CREDENTIALS_FORBIDDEN");
   }
   const pathSegments = pathname.split("/").filter(Boolean);
@@ -1641,7 +1641,7 @@ function credentialQueryValue(value) {
   return /\b(?:bearer|basic)\s+\S+/i.test(value) || /sk-[A-Za-z0-9_-]{8,}/.test(value);
 }
 function credentialAssignmentText(value) {
-  return /(?:^|[#?&;,\s{])(?:credential|authorization|token|secret|password|(?:api|access|private)[_-]?key)\s*[:=]\s*["']?[A-Za-z0-9._~+/-]{8,}={0,2}/i.test(value);
+  return /(?:^|[\/#?&;,\s{])(?:credential|authorization|token|secret|password|(?:api|access|private)[_-]?key)\s*[:=]\s*["']?[A-Za-z0-9._~+/-]{8,}={0,2}/i.test(value);
 }
 function credentialPathKey(value) {
   return /^(?:credentials?|authorization|bearer|tokens?|secrets?|password|(?:api|access|private)[_-]?keys?)$/i.test(value);

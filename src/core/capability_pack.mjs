@@ -690,7 +690,7 @@ function normalizeAdapter(adapter) {
     return Object.freeze({
       kind,
       module,
-      exportName: adapter.exportName == null ? null : requiredString(adapter.exportName, 'adapter.exportName'),
+      exportName: requiredString(adapter.exportName, 'adapter.exportName'),
     });
   }
   if (!Array.isArray(adapter.command) || adapter.command.length === 0) {
