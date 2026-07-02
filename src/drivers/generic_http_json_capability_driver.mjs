@@ -29,6 +29,7 @@ export class GenericHttpJsonCapabilityDriver {
     redactionRules = [],
   } = {}) {
     if (!endpointUrl) fail('ERR_HTTP_CAPABILITY_ENDPOINT_REQUIRED');
+    assertNoReservedSecretHeaders(secretHeaders, idempotencyHeaderName);
     const parsedEndpointUrl = parseHttpUrl(endpointUrl);
     this.endpointUrl = endpointUrl;
     this.endpointOrigin = parsedEndpointUrl.origin;
@@ -200,6 +201,7 @@ export class GenericHttpJsonCapabilityDriver {
       'Content-Type': 'application/json',
       [this.idempotencyHeaderName]: hostRequest.idempotencyKeyWorldFingerprint,
     };
+    assertNoReservedSecretHeaders(this.secretHeaders, this.idempotencyHeaderName);
     for (const [header, secretName] of Object.entries(this.secretHeaders)) {
       headers[header] = await this.#secret(secretName);
     }
@@ -253,6 +255,17 @@ function parseHttpUrl(value) {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') fail('ERR_HTTP_URL_SCHEME_REJECTED');
   if (parsed.username || parsed.password) fail('ERR_HTTP_URL_CREDENTIALS_FORBIDDEN');
   return parsed;
+}
+
+function assertNoReservedSecretHeaders(secretHeaders, idempotencyHeaderName) {
+  const reserved = normalizedHeaderName(idempotencyHeaderName);
+  for (const header of Object.keys(secretHeaders ?? {})) {
+    if (normalizedHeaderName(header) === reserved) fail('ERR_HTTP_SECRET_HEADER_RESERVED', `${idempotencyHeaderName} is reserved for World idempotency`);
+  }
+}
+
+function normalizedHeaderName(value) {
+  return String(value).trim().toLowerCase();
 }
 
 function assertRenderedRequestWithinPolicy(request, inputPolicy) {

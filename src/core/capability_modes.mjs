@@ -78,7 +78,7 @@ export async function runCapabilityMode({
         assertCapabilityPreflightAccepted(driver.preflight(preflightContext, preflightHostRequest));
       },
     });
-    return { ...resolved, mode, submittedToWorld: true, approved: true, proposed };
+    return { ...resolved, mode, submittedToWorld: submittedResolutionToWorld(resolved), approved: true, proposed };
   }
   assertCapabilityPolicyAllows({
     manifest,
@@ -95,11 +95,15 @@ export async function runCapabilityMode({
       assertCapabilityPreflightAccepted(driver.preflight(preflightContext, preflightHostRequest));
     },
   });
-  return { ...resolved, mode, submittedToWorld: true };
+  return { ...resolved, mode, submittedToWorld: submittedResolutionToWorld(resolved) };
 }
 
 function liveContext(context, policy, action = null) {
   return { ...context, mode: 'live', policy, action };
+}
+
+function submittedResolutionToWorld(resolved) {
+  return resolved?.resolutionInputBytes instanceof Uint8Array;
 }
 
 function assertCapabilityPreflightAccepted(report) {

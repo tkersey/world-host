@@ -1,4 +1,4 @@
-import { lstatSync, realpathSync } from 'node:fs';
+import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -21,8 +21,7 @@ export class FileSecretProvider extends SecretProvider {
 
   has(name) {
     try {
-      this.#safePathSync(name);
-      return true;
+      return normalizeFileSecretValue(readFileSync(this.#safePathSync(name), 'utf8')).length > 0;
     } catch {
       return false;
     }
@@ -30,9 +29,9 @@ export class FileSecretProvider extends SecretProvider {
 
   async get(name, purpose = 'capability') {
     const file = await this.#safePath(name);
-    const value = await readFile(file, 'utf8');
+    const value = normalizeFileSecretValue(await readFile(file, 'utf8'));
     if (!value.length) fail('ERR_SECRET_MISSING', `empty secret: ${name}`, { name, purpose });
-    return value.replace(/\n$/, '');
+    return value;
   }
 
   async accessReport(name, purpose = 'capability') {
@@ -68,6 +67,10 @@ export class FileSecretProvider extends SecretProvider {
     if (!pathInside(root, actual)) fail('ERR_SECRET_FILE_PATH_INVALID');
     return actual;
   }
+}
+
+function normalizeFileSecretValue(value) {
+  return value.replace(/\r?\n$/, '');
 }
 
 function pathInside(root, target) {

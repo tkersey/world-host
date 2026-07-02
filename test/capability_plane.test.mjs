@@ -5,6 +5,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { EffectRecoveryClass } from '../src/core/actuator.mjs';
+import { EffectJournal, EffectState } from '../src/core/effect_journal.mjs';
 import {
   assertCapabilityManifest,
   assertCapabilityConformanceReceipt,
@@ -305,6 +306,25 @@ describe('Capability Plane v0.2 core contracts', () => {
       const linkedProvider = new FileSecretProvider({ root, mapping: { LINKED: 'linked-secret' } });
       assert.equal(linkedProvider.has('LINKED'), false);
       await assert.rejects(() => linkedProvider.get('LINKED'), { code: 'ERR_SECRET_FILE_PATH_INVALID' });
+      await writeFile(path.join(root, 'empty-token'), '\n');
+      const emptyProvider = new FileSecretProvider({ root, mapping: { EMPTY: 'empty-token' } });
+      assert.equal(emptyProvider.has('EMPTY'), false);
+      assert.equal((await emptyProvider.accessReport('EMPTY')).available, false);
+      await assert.rejects(() => emptyProvider.get('EMPTY'), { code: 'ERR_SECRET_MISSING' });
+      const emptySecretPreflight = new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        secretHeaders: { Authorization: 'EMPTY' },
+        secretProvider: emptyProvider,
+      }).preflight({
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      }, httpRequest());
+      assert.equal(emptySecretPreflight.accepted, false);
+      assert.equal(emptySecretPreflight.blockers.includes('ERR_SECRET_MISSING'), true);
     } finally {
       await rm(secretBase, { recursive: true, force: true });
     }
@@ -420,6 +440,33 @@ describe('Capability Plane v0.2 core contracts', () => {
     });
     assert.equal(live.record.state, 'resolved');
     assert.equal(decodeResolutionInputBytes(live.resolutionInputBytes).status, 0);
+
+    const parkedStore = new MemoryStore();
+    const parkedJournal = new EffectJournal({
+      store: parkedStore,
+      runId: 'parked-run',
+      branchId: 'main',
+      parentTurnClosureFingerprint: 'world:turn-closure:parent',
+      policy: { allowBestEffort: true },
+    });
+    const parkedRequest = {
+      ...modelRequest('goal=parked', 'model-parked-key'),
+      hostRequestFingerprint: 'world:host-request:00000000000000a8',
+    };
+    const observed = await parkedJournal.observe(parkedRequest, { recoveryClass: EffectRecoveryClass.bestEffort });
+    await parkedStore.putEffectRecord({ ...observed, state: EffectState.running, attemptCount: 1 });
+    const parkedDriver = bestEffortModelDriver();
+    const parked = await runCapabilityMode({
+      mode: 'live',
+      driver: parkedDriver,
+      hostRequest: parkedRequest,
+      journalOptions: parkedJournal,
+      policy: { allowLiveEffects: true, allowBestEffort: true, requireApprovalForBestEffort: false },
+    });
+    assert.equal(parked.operatorInterventionRequired, true);
+    assert.equal(parked.submittedToWorld, false);
+    assert.equal(parked.resolutionInputBytes, null);
+    assert.equal(parkedDriver.resolveCalled, false);
   });
 
   it('supports generic HTTP JSON and human approval reference capabilities', async () => {
@@ -567,6 +614,13 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.throws(
         () => new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://user:pass@allowed.example/decide' }),
         { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
+      );
+      assert.throws(
+        () => new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          secretHeaders: { 'idempotency-key': 'API_TOKEN' },
+        }),
+        { code: 'ERR_HTTP_SECRET_HEADER_RESERVED' },
       );
       let credentialUrlFetchCalled = false;
       globalThis.fetch = async () => {
@@ -1440,6 +1494,44 @@ function hostFieldOverrideFixtureDriver() {
         approved: false,
         proposed: { wouldInvoke: true },
       };
+    },
+  };
+}
+
+function bestEffortModelDriver() {
+  let resolveCalled = false;
+  return {
+    get resolveCalled() {
+      return resolveCalled;
+    },
+    manifest() {
+      return {
+        driverId: 'best-effort-model',
+        supportedActuatorRefs: ['fixture:agent-model'],
+        supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+        supportedActuationClasses: ['model'],
+        supportedResponseStatuses: ['ok'],
+        maximumRequestBytes: 1024,
+        maximumResponseBytes: 1024,
+        recoveryClass: EffectRecoveryClass.bestEffort,
+        concurrencyLimit: 1,
+        authorityLabels: ['model:fixture-agent'],
+      };
+    },
+    preflight() {
+      return { accepted: true };
+    },
+    dryRun() {
+      return { wouldInvoke: false, proposedAction: { driver: 'best-effort-model' } };
+    },
+    shadow() {
+      return { liveInvoked: false, schemaAccepted: false };
+    },
+    async resolve() {
+      resolveCalled = true;
+      const error = new Error('parked best-effort effect should not resolve');
+      error.code = 'ERR_PARKED_BEST_EFFORT_RESOLVED';
+      throw error;
     },
   };
 }
