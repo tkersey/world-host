@@ -229,9 +229,22 @@ export class EffectJournal {
     await assertRecoveredRequestWithinLimits(recordWithRequestBytes, manifest, this.policy);
     assertManifestResponseWithinPolicy(manifest, this.policy);
     if (typeof driver.recover === 'function' || canSafelyReResolve(record.driverRecoveryClass)) {
-      const recovered = normalizeDriverResolution(typeof driver.recover === 'function'
+      const recoveryResult = typeof driver.recover === 'function'
         ? await driver.recover(context, recordWithRequestBytes)
-        : await driver.resolve(context, recordWithRequestBytes));
+        : await driver.resolve(context, recordWithRequestBytes);
+      if (recoveryResult?.operatorInterventionRequired === true) {
+        const intervention = await this.#put({
+          ...record,
+          state: EffectState.operatorInterventionRequired,
+          diagnostics: {
+            ...record.diagnostics,
+            ...recoveryResult.diagnostics,
+            recoveryRequired: recoveryResult.recoveryRequired ?? 'operator_required',
+          },
+        });
+        return { record: intervention, resolutionInputBytes: null, reused: false, operatorInterventionRequired: true };
+      }
+      const recovered = normalizeDriverResolution(recoveryResult);
       try {
         assertResolutionAccepted(recovered.resolutionInputBytes, record, manifest, this.policy);
         assertDriverCarriedBytesAccepted(recovered, manifest, this.policy);

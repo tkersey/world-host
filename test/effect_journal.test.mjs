@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { EffectRecoveryClass } from '../src/core/actuator.mjs';
 import { EffectJournal, EffectState, prepareHostRequest } from '../src/core/effect_journal.mjs';
 import { fromUtf8 } from '../src/core/store.mjs';
+import { HumanApprovalCapabilityDriver } from '../src/drivers/human_approval_capability_driver.mjs';
 import { HttpJsonDriver } from '../src/drivers/http_json_driver.mjs';
 import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
 import { DirectoryStore } from '../src/stores/directory_store.mjs';
@@ -643,6 +644,27 @@ describe('EffectJournal', () => {
     assert.equal(driver.recoverCalls, 1);
   });
 
+  it('parks human approval recovery for operator intervention without a rejected resolution', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = new HumanApprovalCapabilityDriver({ mode: 'interactive-terminal' });
+    const observed = await journal.observe(humanApprovalRequest(), { manifest: driver.manifest() });
+    const running = await store.putEffectRecord({
+      ...observed,
+      state: EffectState.running,
+      attemptCount: 1,
+      diagnostics: { recoveryRequired: 'transactional_resolve_failed' },
+    });
+
+    const recovered = await journal.recover({}, running, driver);
+
+    assert.equal(recovered.operatorInterventionRequired, true);
+    assert.equal(recovered.resolutionInputBytes, null);
+    assert.equal(recovered.record.state, EffectState.operatorInterventionRequired);
+    assert.equal(recovered.record.diagnostics.decision, 'operator_required');
+    assert.equal(recovered.record.resolutionInputRef, undefined);
+  });
+
   it('keeps pure driver failures recomputable before requiring operator recovery', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
@@ -1134,6 +1156,20 @@ function httpHostRequest(overrides = {}) {
     idempotencyKeyWorldFingerprint: 'world:key:http',
     requestBytes: fromUtf8(JSON.stringify({ url: 'https://allowed.example/path' })),
     hostRequestFingerprint: 'world:host-request:00000000000000a1',
+    ...overrides,
+  };
+}
+
+function humanApprovalRequest(overrides = {}) {
+  return {
+    actuatorRef: 'human:approval',
+    descriptorFingerprint: 'descriptor:human-approval',
+    actuationClass: 'human',
+    responseSchema: { status: 'ok' },
+    idempotencyKeyBytes: fromUtf8('complete-human-approval-idempotency-key'),
+    idempotencyKeyWorldFingerprint: 'world:key:human-approval',
+    requestBytes: fromUtf8(JSON.stringify({ action: 'approve' })),
+    hostRequestFingerprint: 'world:host-request:00000000000000a4',
     ...overrides,
   };
 }

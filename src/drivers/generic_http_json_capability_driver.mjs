@@ -241,6 +241,7 @@ function parseHttpUrl(value) {
     fail('ERR_HTTP_URL_INVALID');
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') fail('ERR_HTTP_URL_SCHEME_REJECTED');
+  if (parsed.username || parsed.password) fail('ERR_HTTP_URL_CREDENTIALS_FORBIDDEN');
   return parsed;
 }
 

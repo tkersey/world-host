@@ -57,7 +57,10 @@ export class HumanApprovalCapabilityDriver {
   }
 
   async recover(context, effectRecord) {
-    return this.#resolution(effectRecord, 'operator_required', this.#record('operator_required'));
+    return {
+      operatorInterventionRequired: true,
+      diagnostics: { decision: 'operator_required' },
+    };
   }
 
   #resolution(hostRequest, decision, record) {

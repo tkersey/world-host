@@ -384,6 +384,35 @@ describe('Capability Plane v0.2 core contracts', () => {
         () => new GenericHttpJsonCapabilityDriver({ endpointUrl: 'file:///tmp/world-host-capability.json' }),
         { code: 'ERR_HTTP_URL_SCHEME_REJECTED' },
       );
+      assert.throws(
+        () => new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://user:pass@allowed.example/decide' }),
+        { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
+      );
+      let credentialUrlFetchCalled = false;
+      globalThis.fetch = async () => {
+        credentialUrlFetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      await assert.rejects(
+        () => new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          allowEndpointFromRequest: true,
+          origins: ['https://allowed.example'],
+        }).resolve({
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }, {
+          ...httpRequest(),
+          requestBytes: fromUtf8(stableJson({ url: 'https://user:pass@allowed.example/decide', method: 'POST', body: { prompt: 'hi' } })),
+        }),
+        { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
+      );
+      assert.equal(credentialUrlFetchCalled, false);
+
       let nonHttpFetchCalled = false;
       globalThis.fetch = async () => {
         nonHttpFetchCalled = true;
