@@ -33,8 +33,11 @@ const SEMANTIC_FIELDS = Object.freeze([
   'maximumResponseBytes',
   'conformanceCorpusFingerprint',
   'metadataBytes',
+  'adapter',
 ]);
 const SECRET_PATTERN = /credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key/i;
+const CONFORMANCE_RECEIPT_PATH = 'conformance.json';
+const EXTERNAL_ADAPTER_IMPORT_PATTERN = /(?:\bfrom\s*|\bimport\s*(?:\(\s*)?)['"](?:\.\.\/|\/)/;
 
 export class CapabilityManifest {
   constructor(fields) {
@@ -161,6 +164,7 @@ export function capabilityManifestSemanticIdentity(manifestLike) {
   const manifest = assertCapabilityManifest(manifestLike);
   const identity = {};
   for (const key of SEMANTIC_FIELDS) identity[key] = manifest[key];
+  identity.artifactChecksums = semanticArtifactChecksums(manifest);
   return identity;
 }
 
@@ -187,7 +191,25 @@ export async function assertCapabilityPackChecksums(manifestLike, artifacts = {}
     const actual = `sha256:${await sha256Hex(bytes)}`;
     if (actual !== item.checksum) fail('ERR_CAPABILITY_PACK_CHECKSUM_MISMATCH', `artifact checksum mismatch: ${item.path}`, { expected: item.checksum, actual });
   }
+  assertAdapterArtifactSelfContained(manifest, artifacts);
   return true;
+}
+
+function semanticArtifactChecksums(manifest) {
+  return manifest.checksums
+    .filter((item) => item.path !== CONFORMANCE_RECEIPT_PATH)
+    .map((item) => ({ path: item.path, checksum: item.checksum }))
+    .sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function assertAdapterArtifactSelfContained(manifest, artifacts) {
+  if (manifest.adapter.kind !== 'in_process' || !manifest.adapter.module) return;
+  const bytes = artifacts[manifest.adapter.module];
+  if (!(bytes instanceof Uint8Array)) return;
+  const text = new TextDecoder().decode(bytes);
+  if (EXTERNAL_ADAPTER_IMPORT_PATTERN.test(text)) {
+    fail('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT', `adapter imports outside the pack: ${manifest.adapter.module}`);
+  }
 }
 
 function assertReferencedArtifactsCovered(manifest) {

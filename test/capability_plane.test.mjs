@@ -36,20 +36,43 @@ import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/p
 describe('Capability Plane v0.2 core contracts', () => {
   it('validates CapabilityPack semantic identity, checksums, and authority boundaries', async () => {
     const manifest = fixtureCapabilityManifest();
-    const packFingerprint = await capabilityPackFingerprint(manifest);
-    assert.match(packFingerprint, /^sha256:[0-9a-f]{64}$/);
     const artifact = fromUtf8('adapter bytes');
     const readme = fromUtf8('readme bytes');
-    const withFingerprint = {
+    const withChecksums = {
       ...manifest,
-      packFingerprint,
       checksums: [
         { path: 'adapter.mjs', checksum: `sha256:${await sha256Hex(artifact)}` },
         { path: 'README.md', checksum: `sha256:${await sha256Hex(readme)}` },
       ],
     };
+    const packFingerprint = await capabilityPackFingerprint(withChecksums);
+    assert.match(packFingerprint, /^sha256:[0-9a-f]{64}$/);
+    const withFingerprint = { ...withChecksums, packFingerprint };
     assert.equal((await validateCapabilityPackManifest(withFingerprint, { verifyFingerprint: true })).packFingerprint, packFingerprint);
     assert.equal(await assertCapabilityPackChecksums(withFingerprint, { 'adapter.mjs': artifact, 'README.md': readme }), true);
+    const changedArtifact = fromUtf8('changed adapter bytes');
+    const changedArtifactChecksum = `sha256:${await sha256Hex(changedArtifact)}`;
+    const changedChecksumManifest = {
+      ...withFingerprint,
+      checksums: withFingerprint.checksums.map((item) => item.path === 'adapter.mjs'
+        ? { ...item, checksum: changedArtifactChecksum }
+        : item),
+    };
+    assert.notEqual(await capabilityPackFingerprint(changedChecksumManifest), packFingerprint);
+    await assert.rejects(
+      () => validateCapabilityPackManifest(changedChecksumManifest, { verifyFingerprint: true }),
+      { code: 'ERR_CAPABILITY_PACK_FINGERPRINT_MISMATCH' },
+    );
+    const externalAdapter = fromUtf8("export { CapabilityDriver } from '../../src/drivers/model_capability_driver.mjs';");
+    const externalAdapterChecksum = `sha256:${await sha256Hex(externalAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: externalAdapterChecksum }],
+      }, { 'adapter.mjs': externalAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const sidecar = fromUtf8('sidecar bytes');
     const launcherChecksum = `sha256:${await sha256Hex(artifact)}`;
     const sidecarChecksum = `sha256:${await sha256Hex(sidecar)}`;
