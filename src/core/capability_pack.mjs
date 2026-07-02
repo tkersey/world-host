@@ -235,7 +235,7 @@ function assertNoArtifactCredentialMaterial(artifactPath, bytes) {
 }
 
 function textArtifactPath(artifactPath) {
-  return /\.(?:c?m?js|json|md|txt)$/i.test(artifactPath);
+  return /\.(?:c?m?js|json|md|txt|ya?ml|toml|ini|conf|cfg|env|sh|bash|zsh|fish|py|rb|pl)$/i.test(artifactPath);
 }
 
 function artifactCredentialText(text) {

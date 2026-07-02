@@ -118,7 +118,16 @@ function shadowRequiresLivePolicy(manifest, hostRequest) {
   const labels = manifest?.authorityLabels ?? [];
   return ['http', 'file', 'human'].includes(hostRequest?.actuationClass) ||
     (manifest?.supportedActuationClasses ?? []).some((item) => ['http', 'file', 'human'].includes(item)) ||
-    labels.some((label) => label.startsWith('network:') || label.startsWith('file:') || label.startsWith('human:'));
+    labels.some((label) => label.startsWith('network:') || label.startsWith('file:') || label.startsWith('human:')) ||
+    isLiveModelCall(manifest, hostRequest);
+}
+
+function isLiveModelCall(manifest, hostRequest) {
+  if (hostRequest?.actuationClass !== 'model') return false;
+  if (manifest?.driverId === 'fixture-agent-model' || manifest?.diagnostics?.deterministic === true) return false;
+  const labels = manifest?.authorityLabels ?? [];
+  if (labels.some((label) => label.startsWith('model:fixture'))) return false;
+  return labels.some((label) => label.startsWith('model:'));
 }
 
 function assertManifestCoversHostRequest(manifest, hostRequest) {

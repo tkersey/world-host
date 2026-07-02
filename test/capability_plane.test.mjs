@@ -227,6 +227,17 @@ describe('Capability Plane v0.2 core contracts', () => {
       docs: [],
       checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
     }, { 'sidecar.mjs': sidecar }), true);
+    const secretSidecar = fromUtf8('API_KEY=supersecret123\n');
+    const secretSidecarChecksum = `sha256:${await sha256Hex(secretSidecar)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['sidecar.sh'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.sh', checksum: secretSidecarChecksum }],
+      }, { 'sidecar.sh': secretSidecar }),
+      { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
+    );
     assert.throws(
       () => assertCapabilityManifest({ ...manifest, extra: 'sk-raw-manifest-secret' }),
       { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
@@ -1705,6 +1716,45 @@ describe('Capability Plane v0.2 core contracts', () => {
     });
     assert.equal(allowedShadowDriver.shadowCalled, true);
     assert.equal(shadow.shadow.liveInvoked, true);
+
+    const defaultDeniedModelShadowDriver = modelShadowProbeDriver();
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'shadow',
+        driver: defaultDeniedModelShadowDriver,
+        hostRequest: genericHttpModelRequest('goal=shadow-model', 'model-shadow-default-key'),
+        recordedResolution: null,
+        policy: { allowLiveEffects: true, maximumLiveModelCalls: 1 },
+      }),
+      { code: 'ERR_CAPABILITY_SHADOW_LIVE_EFFECT_DENIED' },
+    );
+    assert.equal(defaultDeniedModelShadowDriver.shadowCalled, false);
+
+    const budgetDeniedModelShadowDriver = modelShadowProbeDriver();
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'shadow',
+        driver: budgetDeniedModelShadowDriver,
+        hostRequest: genericHttpModelRequest('goal=shadow-model', 'model-shadow-budget-key'),
+        context: { allowShadowLiveEffects: true },
+        recordedResolution: null,
+        policy: { allowLiveEffects: true },
+      }),
+      { code: 'ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED' },
+    );
+    assert.equal(budgetDeniedModelShadowDriver.shadowCalled, false);
+
+    const allowedModelShadowDriver = modelShadowProbeDriver();
+    const modelShadow = await runCapabilityMode({
+      mode: 'shadow',
+      driver: allowedModelShadowDriver,
+      hostRequest: genericHttpModelRequest('goal=shadow-model', 'model-shadow-allowed-key'),
+      context: { allowShadowLiveEffects: true },
+      recordedResolution: null,
+      policy: { allowLiveEffects: true, maximumLiveModelCalls: 1 },
+    });
+    assert.equal(allowedModelShadowDriver.shadowCalled, true);
+    assert.equal(modelShadow.shadow.liveInvoked, true);
   });
 
   it('validates model capability output as Boundary Agent.Action', async () => {
@@ -2116,6 +2166,44 @@ function policyProbeDriver({ packFingerprint } = {}) {
       resolveCalled = true;
       const error = new Error('policy bypassed');
       error.code = 'ERR_POLICY_BYPASS_EFFECT';
+      throw error;
+    },
+  };
+}
+
+function modelShadowProbeDriver() {
+  let shadowCalled = false;
+  return {
+    get shadowCalled() {
+      return shadowCalled;
+    },
+    manifest() {
+      return {
+        driverId: 'policy-probe-model',
+        supportedActuatorRefs: ['model:decision'],
+        supportedDescriptorFingerprints: ['descriptor:agent-decision-prompt'],
+        supportedActuationClasses: ['model'],
+        supportedResponseStatuses: ['ok', 'failed', 'deferred'],
+        maximumRequestBytes: 1024 * 1024,
+        maximumResponseBytes: 1024 * 1024,
+        recoveryClass: EffectRecoveryClass.idempotent,
+        concurrencyLimit: 1,
+        authorityLabels: ['model:openai'],
+      };
+    },
+    preflight() {
+      return { accepted: true };
+    },
+    dryRun() {
+      return { wouldInvoke: true, proposedAction: { driver: 'policy-probe-model' } };
+    },
+    shadow() {
+      shadowCalled = true;
+      return { liveInvoked: true, schemaAccepted: false };
+    },
+    async resolve() {
+      const error = new Error('model probe should not resolve');
+      error.code = 'ERR_MODEL_PROBE_RESOLVED';
       throw error;
     },
   };
