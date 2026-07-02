@@ -26,7 +26,7 @@ export async function runCapabilityMode({
   const manifest = driver.manifest();
   const livePolicy = createCapabilityPolicy(policy);
   if (mode === CapabilityExecutionMode.fixture) {
-    assertFixtureModeAllowed(manifest);
+    assertFixtureModeAllowed(manifest, hostRequest);
     assertCapabilityPreflightAccepted(driver.preflight(context, hostRequest));
     const resolved = await driver.resolve(context, hostRequest);
     assertCapabilityResolutionBoundary(resolved);
@@ -127,15 +127,21 @@ function networkPolicyHostRequest(hostRequest, manifest) {
   }
 }
 
-function assertFixtureModeAllowed(manifest) {
+function assertFixtureModeAllowed(manifest, hostRequest) {
   if (manifest.diagnostics?.deterministic !== true) fail('ERR_CAPABILITY_FIXTURE_REQUIRES_DETERMINISTIC_DRIVER');
+  const liveActuationClasses = new Set(['http', 'file', 'human']);
+  const manifestLiveActuationClasses = (manifest.supportedActuationClasses ?? []).filter((item) => liveActuationClasses.has(item));
+  const requestedLiveActuationClasses = liveActuationClasses.has(hostRequest?.actuationClass) ? [hostRequest.actuationClass] : [];
   const liveAuthorityLabels = (manifest.authorityLabels ?? []).filter((label) => (
     label.startsWith('network:') ||
     label.startsWith('file:') ||
     label.startsWith('human:')
   ));
-  if (liveAuthorityLabels.length) {
-    fail('ERR_CAPABILITY_FIXTURE_LIVE_EFFECT_DENIED', 'fixture mode cannot invoke live-effect authority labels', { labels: liveAuthorityLabels });
+  if (manifestLiveActuationClasses.length || requestedLiveActuationClasses.length || liveAuthorityLabels.length) {
+    fail('ERR_CAPABILITY_FIXTURE_LIVE_EFFECT_DENIED', 'fixture mode cannot invoke live-effect authority', {
+      actuationClasses: [...new Set([...manifestLiveActuationClasses, ...requestedLiveActuationClasses])],
+      labels: liveAuthorityLabels,
+    });
   }
 }
 

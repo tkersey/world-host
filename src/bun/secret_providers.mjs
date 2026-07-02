@@ -1,5 +1,5 @@
-import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { lstatSync, realpathSync } from 'node:fs';
+import { lstat, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
 import { EnvSecretProvider, SecretAccessReport, SecretDescriptor, SecretProvider } from '../core/secrets.mjs';
@@ -21,14 +21,15 @@ export class FileSecretProvider extends SecretProvider {
 
   has(name) {
     try {
-      return existsSync(this.#path(name));
+      this.#safePathSync(name);
+      return true;
     } catch {
       return false;
     }
   }
 
   async get(name, purpose = 'capability') {
-    const file = this.#path(name);
+    const file = await this.#safePath(name);
     const value = await readFile(file, 'utf8');
     if (!value.length) fail('ERR_SECRET_MISSING', `empty secret: ${name}`, { name, purpose });
     return value.replace(/\n$/, '');
@@ -47,6 +48,31 @@ export class FileSecretProvider extends SecretProvider {
     if (file !== this.root && !file.startsWith(`${this.root}${path.sep}`)) fail('ERR_SECRET_FILE_PATH_INVALID');
     return file;
   }
+
+  async #safePath(name) {
+    const file = this.#path(name);
+    const info = await lstat(file).catch(() => fail('ERR_SECRET_MISSING', `missing secret: ${name}`));
+    if (info.isSymbolicLink() || !info.isFile()) fail('ERR_SECRET_FILE_PATH_INVALID');
+    const root = await realpath(this.root).catch(() => fail('ERR_SECRET_FILE_ROOT_INVALID'));
+    const actual = await realpath(file).catch(() => fail('ERR_SECRET_MISSING', `missing secret: ${name}`));
+    if (!pathInside(root, actual)) fail('ERR_SECRET_FILE_PATH_INVALID');
+    return actual;
+  }
+
+  #safePathSync(name) {
+    const file = this.#path(name);
+    const info = lstatSync(file);
+    if (info.isSymbolicLink() || !info.isFile()) fail('ERR_SECRET_FILE_PATH_INVALID');
+    const root = realpathSync(this.root);
+    const actual = realpathSync(file);
+    if (!pathInside(root, actual)) fail('ERR_SECRET_FILE_PATH_INVALID');
+    return actual;
+  }
+}
+
+function pathInside(root, target) {
+  const relative = path.relative(root, target);
+  return relative.length > 0 && !relative.startsWith('..') && !path.isAbsolute(relative);
 }
 
 export class PromptSecretProvider extends SecretProvider {

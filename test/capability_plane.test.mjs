@@ -1,6 +1,6 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -14,7 +14,7 @@ import {
   world_host_capability_driver_abi_version,
   world_host_capability_pack_format_version,
 } from '../src/core/capability_pack.mjs';
-import { assertCapabilityResolutionBoundary } from '../src/core/capability_driver.mjs';
+import { assertCapabilityResolutionBoundary, defineCapabilityDriver } from '../src/core/capability_driver.mjs';
 import { assertCapabilityPolicyAllows, createCapabilityPolicy, redactCapabilityDiagnostics } from '../src/core/capability_policy.mjs';
 import { runCapabilityMode } from '../src/core/capability_modes.mjs';
 import { EnvSecretProvider, assertNoSecretValuePersisted, assertRequiredSecretsAvailable, redactSecrets } from '../src/core/secrets.mjs';
@@ -247,8 +247,10 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.equal(redactCapabilityDiagnostics({ message: 'sk-abcdefghijklmnop' }).message, '[redacted]');
     assert.throws(() => assertNoSecretValuePersisted({ value: ['sk', 'local-secret'].join('-') }), { code: 'ERR_SECRET_PERSISTED' });
 
-    const root = await mkdtemp(path.join(tmpdir(), 'world-host-secret-'));
+    const secretBase = await mkdtemp(path.join(tmpdir(), 'world-host-secret-'));
+    const root = path.join(secretBase, 'root');
     try {
+      await mkdir(root);
       await writeFile(path.join(root, 'api-token'), 'fixture-file-value\n');
       const fileProvider = new FileSecretProvider({ root, mapping: { API_TOKEN: 'api-token' } });
       assert.equal(fileProvider.has('API_TOKEN'), true);
@@ -257,8 +259,14 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal((await fileProvider.accessReport('API_TOKEN')).valueRedacted, true);
       assert.throws(() => assertRequiredSecretsAvailable(fileProvider, ['MISSING']), { code: 'ERR_SECRET_MISSING' });
       await assert.rejects(() => new FileSecretProvider({ root, mapping: { BAD: '../secret' } }).get('BAD'), { code: 'ERR_SECRET_FILE_PATH_INVALID' });
+      const outsideSecret = path.join(secretBase, 'outside-secret');
+      await writeFile(outsideSecret, 'outside-secret-value');
+      await symlink(outsideSecret, path.join(root, 'linked-secret'));
+      const linkedProvider = new FileSecretProvider({ root, mapping: { LINKED: 'linked-secret' } });
+      assert.equal(linkedProvider.has('LINKED'), false);
+      await assert.rejects(() => linkedProvider.get('LINKED'), { code: 'ERR_SECRET_FILE_PATH_INVALID' });
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(secretBase, { recursive: true, force: true });
     }
   });
 
@@ -291,6 +299,18 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_CAPABILITY_FIXTURE_LIVE_EFFECT_DENIED' },
     );
     assert.equal(fixtureLiveEffectResolveCalled, false);
+    let fixtureUnlabeledLiveEffectResolveCalled = false;
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'fixture',
+        driver: deterministicLiveEffectDriver(() => {
+          fixtureUnlabeledLiveEffectResolveCalled = true;
+        }, { authorityLabels: [] }),
+        hostRequest: httpRequest(),
+      }),
+      { code: 'ERR_CAPABILITY_FIXTURE_LIVE_EFFECT_DENIED' },
+    );
+    assert.equal(fixtureUnlabeledLiveEffectResolveCalled, false);
 
     const approved = await runCapabilityMode({
       mode: 'approval',
@@ -841,6 +861,8 @@ describe('Capability Plane v0.2 core contracts', () => {
     });
     assert.equal(proposedApproval.proposedAction.approval.password, '[redacted]');
     assert.equal(proposedApproval.proposedAction.approval.apiKey, '[redacted]');
+    const operatorRecovery = await defineCapabilityDriver(approval).recover({}, {});
+    assert.equal(operatorRecovery.operatorInterventionRequired, true);
     const approved = await approval.resolve({}, approvalRequest());
     assert.equal(decodeResolutionInputBytes(approved.resolutionInputBytes).status, 0);
     assert.equal(approved.diagnostics.decision, 'approved');
@@ -1143,7 +1165,7 @@ function preflightBlockedDriver() {
   };
 }
 
-function deterministicLiveEffectDriver(onResolve) {
+function deterministicLiveEffectDriver(onResolve, { authorityLabels = ['network:http'] } = {}) {
   return {
     manifest() {
       return {
@@ -1156,7 +1178,7 @@ function deterministicLiveEffectDriver(onResolve) {
         maximumResponseBytes: 1024,
         recoveryClass: EffectRecoveryClass.idempotent,
         concurrencyLimit: 1,
-        authorityLabels: ['network:http'],
+        authorityLabels,
         diagnostics: { deterministic: true },
       };
     },

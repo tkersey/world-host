@@ -67,6 +67,10 @@ export function defineCapabilityDriver(driver) {
     recover: typeof actuator.recover === 'function'
       ? async (context, effectRecord) => {
           const result = await actuator.recover(context, effectRecord);
+          if (result?.operatorInterventionRequired === true) {
+            assertNoWorldEvidenceKeys(result);
+            return result;
+          }
           assertCapabilityResolutionBoundary(result);
           return result;
         }
