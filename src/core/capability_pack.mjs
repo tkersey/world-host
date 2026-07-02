@@ -323,7 +323,7 @@ function adapterHasImportCall(text) {
     while (index < text.length && identifierPart(text[index])) index += 1;
     const identifier = text.slice(start, index);
     const callStart = skipWhitespaceAndComments(text, index);
-    if ((identifier === 'eval' || identifier === 'Function') && dangerousCallAt(text, callStart)) return true;
+    if (identifier === 'eval' || identifier === 'Function') return true;
     if (identifier === 'constructor' && previousSignificant === '.' && text[callStart] === '(') return true;
     if (identifier === 'require' && previousSignificant !== '.') {
       if (text[callStart] !== '(') return true;

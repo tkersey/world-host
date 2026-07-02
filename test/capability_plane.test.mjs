@@ -239,6 +239,26 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': evalImportAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const aliasedEvalImportAdapter = fromUtf8('const e = eval; const fs = e("import(\\\"node:fs\\\")"); export const CapabilityDriver = fs;');
+    const aliasedEvalImportAdapterChecksum = `sha256:${await sha256Hex(aliasedEvalImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: aliasedEvalImportAdapterChecksum }],
+      }, { 'adapter.mjs': aliasedEvalImportAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const aliasedFunctionImportAdapter = fromUtf8('const F = Function; const fs = F("s", "return import(s)")("node:fs"); export const CapabilityDriver = fs;');
+    const aliasedFunctionImportAdapterChecksum = `sha256:${await sha256Hex(aliasedFunctionImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: aliasedFunctionImportAdapterChecksum }],
+      }, { 'adapter.mjs': aliasedFunctionImportAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const secretReadme = fromUtf8('Authorization: Bearer sk-artifact-secret-value');
     const secretReadmeChecksum = `sha256:${await sha256Hex(secretReadme)}`;
     await assert.rejects(
