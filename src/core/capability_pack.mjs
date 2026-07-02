@@ -282,7 +282,10 @@ function assertNoCredentialMaterial(value, path = []) {
     const descriptorLabel = path[0] === 'requiredSecrets' && ['name', 'class', 'purpose'].includes(path.at(-1));
     const allowedSentinel = ['opaque', 'required', 'redacted'].includes(value);
     const credentialLike = SECRET_PATTERN.test(path.join('.')) || SECRET_PATTERN.test(value);
-    if (!descriptorLabel && credentialLike && value.length > 0 && !allowedSentinel) {
+    if (
+      (descriptorLabel && concreteSecretValue(value)) ||
+      (!descriptorLabel && credentialLike && value.length > 0 && !allowedSentinel)
+    ) {
       fail('ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN', `credential-like value forbidden at ${path.join('.')}`);
     }
     if (/sk-[A-Za-z0-9_-]{8,}/.test(value)) fail('ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN', `secret-looking value forbidden at ${path.join('.')}`);
@@ -295,6 +298,13 @@ function assertNoCredentialMaterial(value, path = []) {
   if (typeof value === 'object') {
     for (const [key, child] of Object.entries(value)) assertNoCredentialMaterial(child, [...path, key]);
   }
+}
+
+function concreteSecretValue(value) {
+  return (
+    /\b(?:bearer|basic)\s+\S+/i.test(value) ||
+    /(?:^|[?&;,\s{])(?:credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key)\s*[:=]\s*\S+/i.test(value)
+  );
 }
 
 function assertNoOperationLabelAuthority(manifest) {

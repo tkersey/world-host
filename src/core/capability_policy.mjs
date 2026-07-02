@@ -144,12 +144,15 @@ function assertOriginAndMethodAllowed(hostRequest, policy) {
   if (!hostRequest?.requestBytes) fail('ERR_CAPABILITY_NETWORK_TARGET_REQUIRED');
   const parsed = parseJsonRequest(hostRequest);
   if (!parsed?.url) fail('ERR_CAPABILITY_NETWORK_TARGET_REQUIRED');
-  let origin;
+  let url;
   try {
-    origin = new URL(parsed.url).origin;
+    url = new URL(parsed.url);
   } catch {
     fail('ERR_CAPABILITY_NETWORK_TARGET_REQUIRED');
   }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') fail('ERR_CAPABILITY_NETWORK_TARGET_REQUIRED', 'network target must be http(s)');
+  if (url.username || url.password) fail('ERR_CAPABILITY_NETWORK_TARGET_REQUIRED', 'network target must not include credentials');
+  const origin = url.origin;
   if (!policy.allowedOrigins.size) fail('ERR_CAPABILITY_ORIGIN_ALLOWLIST_REQUIRED');
   if (!policy.allowedOrigins.has(origin)) fail('ERR_CAPABILITY_ORIGIN_DENIED', `origin denied: ${origin}`);
   if (!policy.allowedMethods.size) fail('ERR_CAPABILITY_METHOD_ALLOWLIST_REQUIRED');

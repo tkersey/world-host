@@ -124,6 +124,18 @@ describe('Capability Plane v0.2 core contracts', () => {
       }),
     );
     assert.throws(
+      () => assertCapabilityManifest({ ...manifest, requiredSecrets: [{ name: 'Bearer persisted-token-value' }] }),
+      { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
+    );
+    assert.throws(
+      () => assertCapabilityManifest({ ...manifest, requiredSecrets: [{ name: 'API_TOKEN', class: 'password=persisted-token-value' }] }),
+      { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
+    );
+    assert.throws(
+      () => assertCapabilityManifest({ ...manifest, requiredSecrets: [{ name: 'API_TOKEN', purpose: 'token=persisted-token-value' }] }),
+      { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
+    );
+    assert.throws(
       () => assertCapabilityManifest({ ...manifest, requiredSecrets: [{ name: 'sk-abcdefghijklmnop' }] }),
       { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
     );
@@ -234,6 +246,34 @@ describe('Capability Plane v0.2 core contracts', () => {
       },
       mode: 'live',
     }), { code: 'ERR_CAPABILITY_METHOD_REQUIRED' });
+    assert.throws(() => assertCapabilityPolicyAllows({
+      manifest: { ...manifest, recoveryClass: EffectRecoveryClass.idempotent },
+      hostRequest: {
+        ...httpRequest(),
+        requestBytes: fromUtf8(stableJson({ url: 'https://user:pass@allowed.example/decide', method: 'POST' })),
+      },
+      policy: {
+        allowLiveEffects: true,
+        allowNetworkEffects: true,
+        allowedOrigins: ['https://allowed.example'],
+        allowedMethods: ['POST'],
+      },
+      mode: 'live',
+    }), { code: 'ERR_CAPABILITY_NETWORK_TARGET_REQUIRED' });
+    assert.throws(() => assertCapabilityPolicyAllows({
+      manifest: { ...manifest, recoveryClass: EffectRecoveryClass.idempotent },
+      hostRequest: {
+        ...httpRequest(),
+        requestBytes: fromUtf8(stableJson({ url: 'file:///tmp/world-host-capability.json', method: 'POST' })),
+      },
+      policy: {
+        allowLiveEffects: true,
+        allowNetworkEffects: true,
+        allowedOrigins: ['null'],
+        allowedMethods: ['POST'],
+      },
+      mode: 'live',
+    }), { code: 'ERR_CAPABILITY_NETWORK_TARGET_REQUIRED' });
   });
 
   it('keeps secrets receiver-local and redacted', async () => {
