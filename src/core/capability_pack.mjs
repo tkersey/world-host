@@ -260,6 +260,7 @@ function javascriptArtifactPath(artifactPath) {
 }
 
 function artifactCredentialText(text) {
+  if (/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/i.test(text)) return true;
   if (/sk-[A-Za-z0-9_-]{8,}/.test(text)) return true;
   const scheme = /\b(?:bearer|basic)\s+([A-Za-z0-9._~+/-]{8,}={0,2})/ig;
   for (const match of text.matchAll(scheme)) {
@@ -291,10 +292,25 @@ function adapterHasImportCall(text) {
         text[afterLiteral] === ']'
       ) {
         const afterBracket = skipWhitespaceAndComments(text, afterLiteral + 1);
-        if (text[afterBracket] === '(') return true;
+        if (dangerousCallAt(text, afterBracket)) return true;
       }
       index = literal.end;
       previousSignificant = 'literal';
+      continue;
+    }
+    if (char === '`') {
+      const literal = readTemplateString(text, index);
+      const afterLiteral = skipWhitespaceAndComments(text, literal.end);
+      if (
+        previousSignificant === '[' &&
+        (literal.value === null || literal.value === 'eval' || literal.value === 'Function') &&
+        text[afterLiteral] === ']'
+      ) {
+        const afterBracket = skipWhitespaceAndComments(text, afterLiteral + 1);
+        if (dangerousCallAt(text, afterBracket)) return true;
+      }
+      index = literal.end;
+      previousSignificant = 'template';
       continue;
     }
     if (!identifierStart(char)) {
@@ -307,7 +323,7 @@ function adapterHasImportCall(text) {
     while (index < text.length && identifierPart(text[index])) index += 1;
     const identifier = text.slice(start, index);
     const callStart = skipWhitespaceAndComments(text, index);
-    if ((identifier === 'eval' || identifier === 'Function') && text[callStart] === '(') return true;
+    if ((identifier === 'eval' || identifier === 'Function') && dangerousCallAt(text, callStart)) return true;
     if (identifier === 'constructor' && previousSignificant === '.' && text[callStart] === '(') return true;
     if (identifier === 'require' && previousSignificant !== '.') {
       if (text[callStart] !== '(') return true;
@@ -336,6 +352,10 @@ function adapterHasImportCall(text) {
     return true;
   }
   return false;
+}
+
+function dangerousCallAt(text, index) {
+  return text[index] === '(' || (text[index] === '?' && text[index + 1] === '.' && text[index + 2] === '(');
 }
 
 function skipWhitespaceAndComments(text, index) {
@@ -385,12 +405,65 @@ function readQuotedString(text, index, quote) {
   return { value, end: index };
 }
 
+function readTemplateString(text, index) {
+  let value = '';
+  let staticLiteral = true;
+  index += 1;
+  while (index < text.length) {
+    if (text[index] === '\\') {
+      if (index + 1 < text.length && staticLiteral) value += text[index + 1];
+      index += 2;
+      continue;
+    }
+    if (text[index] === '$' && text[index + 1] === '{') {
+      staticLiteral = false;
+      index = skipBalancedBrace(text, index + 1);
+      continue;
+    }
+    if (text[index] === '`') return { value: staticLiteral ? value : null, end: index + 1 };
+    if (staticLiteral) value += text[index];
+    index += 1;
+  }
+  return { value: staticLiteral ? value : null, end: index };
+}
+
+function skipBalancedBrace(text, index) {
+  let depth = 0;
+  while (index < text.length) {
+    const char = text[index];
+    if (char === '\'' || char === '"') {
+      index = skipQuotedString(text, index, char);
+      continue;
+    }
+    if (char === '`') {
+      index = readTemplateString(text, index).end;
+      continue;
+    }
+    const skipped = skipWhitespaceAndComments(text, index);
+    if (skipped !== index) {
+      index = skipped;
+      continue;
+    }
+    if (char === '{') depth += 1;
+    if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return index + 1;
+    }
+    index += 1;
+  }
+  return index;
+}
+
 function skipBalancedParentheses(text, index) {
   let depth = 0;
   while (index < text.length) {
     const char = text[index];
     if (char === '\'' || char === '"') {
       index = skipQuotedString(text, index, char);
+      continue;
+    }
+    if (char === '`') {
+      index = readTemplateString(text, index).end;
       continue;
     }
     const skipped = skipWhitespaceAndComments(text, index);
@@ -459,7 +532,7 @@ function sidecarEnvAssignment(value) {
 }
 
 function sidecarArtifactPath(value) {
-  return /\.(?:c?m?js|sh|bash|zsh|py|rb|pl|wasm|bin|exe)$/i.test(value);
+  return /\.(?:c?m?js|json|md|txt|ya?ml|toml|ini|conf|cfg|env|sh|bash|zsh|fish|py|rb|pl|wasm|bin|exe)$/i.test(value);
 }
 
 function normalizeAdapter(adapter) {

@@ -1603,8 +1603,22 @@ function parseHttpUrl(value) {
     fail("ERR_HTTP_URL_SCHEME_REJECTED");
   if (parsed.username || parsed.password)
     fail("ERR_HTTP_URL_CREDENTIALS_FORBIDDEN");
+  assertNoCredentialPathOrFragment(parsed);
   assertNoCredentialQuery(parsed);
   return parsed;
+}
+function assertNoCredentialPathOrFragment(url) {
+  const pathname = decodeUrlComponent(url.pathname);
+  const hash = decodeUrlComponent(url.hash);
+  if (credentialQueryValue(pathname) || credentialQueryValue(hash) || credentialAssignmentText(hash)) {
+    fail("ERR_HTTP_URL_CREDENTIALS_FORBIDDEN");
+  }
+  const pathSegments = pathname.split("/").filter(Boolean);
+  for (let index = 0; index < pathSegments.length - 1; index += 1) {
+    if (credentialPathKey(pathSegments[index]) && !credentialUrlSentinel(pathSegments[index + 1])) {
+      fail("ERR_HTTP_URL_CREDENTIALS_FORBIDDEN");
+    }
+  }
 }
 function assertNoCredentialQuery(url) {
   for (const [key, value] of url.searchParams) {
@@ -1617,6 +1631,22 @@ function credentialQueryKey(value) {
 }
 function credentialQueryValue(value) {
   return /\b(?:bearer|basic)\s+\S+/i.test(value) || /sk-[A-Za-z0-9_-]{8,}/.test(value);
+}
+function credentialAssignmentText(value) {
+  return /(?:^|[#?&;,\s{])(?:credential|authorization|token|secret|password|(?:api|access|private)[_-]?key)\s*[:=]\s*["']?[A-Za-z0-9._~+/-]{8,}={0,2}/i.test(value);
+}
+function credentialPathKey(value) {
+  return /^(?:credentials?|authorization|bearer|tokens?|secrets?|password|(?:api|access|private)[_-]?keys?)$/i.test(value);
+}
+function credentialUrlSentinel(value) {
+  return /^(?:redacted|opaque|required|none|null|example(?:[-_].*)?|fixture(?:[-_].*)?|no-(?:credentials?|secrets?|tokens?))$/i.test(value);
+}
+function decodeUrlComponent(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 function normalizeRetryPolicy(value = {}) {
   const attempts = value?.attempts ?? 1;

@@ -189,6 +189,36 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': computedFunctionImportAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const optionalComputedFunctionImportAdapter = fromUtf8('const fs = globalThis["Function"]?.("s", "return import(s)")("node:fs"); export const CapabilityDriver = fs;');
+    const optionalComputedFunctionImportAdapterChecksum = `sha256:${await sha256Hex(optionalComputedFunctionImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: optionalComputedFunctionImportAdapterChecksum }],
+      }, { 'adapter.mjs': optionalComputedFunctionImportAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const optionalEvalImportAdapter = fromUtf8('const fs = eval?.("import(\\\"node:fs\\\")"); export const CapabilityDriver = fs;');
+    const optionalEvalImportAdapterChecksum = `sha256:${await sha256Hex(optionalEvalImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: optionalEvalImportAdapterChecksum }],
+      }, { 'adapter.mjs': optionalEvalImportAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const templateFunctionImportAdapter = fromUtf8('const fs = globalThis[`Function`]("s", "return import(s)")("node:fs"); export const CapabilityDriver = fs;');
+    const templateFunctionImportAdapterChecksum = `sha256:${await sha256Hex(templateFunctionImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: templateFunctionImportAdapterChecksum }],
+      }, { 'adapter.mjs': templateFunctionImportAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const constructorFunctionImportAdapter = fromUtf8('const fs = (() => {}).constructor("s", "return import(s)")("node:fs"); export const CapabilityDriver = fs;');
     const constructorFunctionImportAdapterChecksum = `sha256:${await sha256Hex(constructorFunctionImportAdapter)}`;
     await assert.rejects(
@@ -220,6 +250,19 @@ describe('Capability Plane v0.2 core contracts', () => {
           { path: 'README.md', checksum: secretReadmeChecksum },
         ],
       }, { 'adapter.mjs': artifact, 'README.md': secretReadme }),
+      { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
+    );
+    const privateKeyReadme = fromUtf8('-----BEGIN PRIVATE KEY-----\nredacted\n-----END PRIVATE KEY-----\n');
+    const privateKeyReadmeChecksum = `sha256:${await sha256Hex(privateKeyReadme)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: ['README.md'],
+        checksums: [
+          { path: 'adapter.mjs', checksum: withChecksums.checksums[0].checksum },
+          { path: 'README.md', checksum: privateKeyReadmeChecksum },
+        ],
+      }, { 'adapter.mjs': artifact, 'README.md': privateKeyReadme }),
       { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
     );
     const sidecar = fromUtf8('sidecar bytes');
@@ -268,6 +311,15 @@ describe('Capability Plane v0.2 core contracts', () => {
       docs: [],
       checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
     }, { 'sidecar.mjs': sidecar }), true);
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--config=config.json', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+      }, { 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
@@ -1027,6 +1079,14 @@ describe('Capability Plane v0.2 core contracts', () => {
         () => new HttpJsonPackCapabilityDriver({ endpointUrl: 'https://allowed.example/decide?api_key=secret' }),
         { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
       );
+      assert.throws(
+        () => new HttpJsonPackCapabilityDriver({ endpointUrl: 'https://allowed.example/sk-configured-secret123456/decide' }),
+        { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
+      );
+      assert.throws(
+        () => new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide#token=secret-fragment-value' }),
+        { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
+      );
       const credentialQueryRequest = {
         ...httpRequest(),
         requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/decide?token=Bearer%20fixture-token-value', method: 'POST', body: { prompt: 'hi' } })),
@@ -1358,6 +1418,25 @@ describe('Capability Plane v0.2 core contracts', () => {
         }, {
           ...httpRequest(),
           requestBytes: fromUtf8(stableJson({ url: 'https://user:pass@allowed.example/decide', method: 'POST', body: { prompt: 'hi' } })),
+        }),
+        { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
+      );
+      assert.equal(credentialUrlFetchCalled, false);
+      await assert.rejects(
+        () => new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          allowEndpointFromRequest: true,
+          origins: ['https://allowed.example'],
+        }).resolve({
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }, {
+          ...httpRequest(),
+          requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/token/request-secret-value123456', method: 'POST', body: { prompt: 'hi' } })),
         }),
         { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
       );
