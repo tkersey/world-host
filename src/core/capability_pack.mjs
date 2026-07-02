@@ -198,6 +198,7 @@ export async function assertCapabilityPackChecksums(manifestLike, artifacts = {}
     if (actual !== item.checksum) fail('ERR_CAPABILITY_PACK_CHECKSUM_MISMATCH', `artifact checksum mismatch: ${item.path}`, { expected: item.checksum, actual });
   }
   assertAdapterArtifactSelfContained(manifest, artifacts);
+  assertSidecarAdapterArtifactsSelfContained(manifest, artifacts);
   return true;
 }
 
@@ -210,7 +211,19 @@ function semanticArtifactChecksums(manifest) {
 
 function assertAdapterArtifactSelfContained(manifest, artifacts) {
   if (manifest.adapter.kind !== 'in_process' || !manifest.adapter.module) return;
-  const bytes = artifacts[manifest.adapter.module];
+  assertJavaScriptAdapterArtifactSelfContained(manifest.adapter.module, artifacts, 'adapter');
+}
+
+function assertSidecarAdapterArtifactsSelfContained(manifest, artifacts) {
+  if (manifest.adapter.kind !== 'sidecar') return;
+  for (const item of manifest.adapter.command) {
+    if (!sidecarCommandArtifact(item) || !javascriptArtifactPath(item)) continue;
+    assertJavaScriptAdapterArtifactSelfContained(item, artifacts, 'sidecar adapter');
+  }
+}
+
+function assertJavaScriptAdapterArtifactSelfContained(artifactPath, artifacts, label) {
+  const bytes = artifacts[artifactPath];
   if (!(bytes instanceof Uint8Array)) return;
   const text = new TextDecoder().decode(bytes);
   if (!ADAPTER_IMPORT_SCANNER) fail('ERR_CAPABILITY_PACK_ADAPTER_IMPORT_SCAN_UNAVAILABLE', 'adapter import scanning requires Bun.Transpiler');
@@ -221,7 +234,7 @@ function assertAdapterArtifactSelfContained(manifest, artifacts) {
     return;
   }
   if (imports.length || adapterHasImportCall(text)) {
-    fail('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT', `adapter imports code outside its checksum-covered entry module: ${manifest.adapter.module}`);
+    fail('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT', `${label} imports code outside its checksum-covered entry module: ${artifactPath}`);
   }
 }
 
@@ -238,6 +251,10 @@ function assertNoArtifactCredentialMaterial(artifactPath, bytes) {
 
 function textArtifactPath(artifactPath) {
   return /\.(?:c?m?js|json|md|txt|ya?ml|toml|ini|conf|cfg|env|sh|bash|zsh|fish|py|rb|pl)$/i.test(artifactPath);
+}
+
+function javascriptArtifactPath(artifactPath) {
+  return /\.c?m?js$/i.test(artifactPath);
 }
 
 function artifactCredentialText(text) {

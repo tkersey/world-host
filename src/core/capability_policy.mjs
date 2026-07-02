@@ -148,7 +148,7 @@ function isHuman(manifest, hostRequest) {
 
 function isLiveModelCall(manifest, hostRequest) {
   if (hostRequest?.actuationClass !== 'model') return false;
-  if (manifest?.driverId === 'fixture-agent-model' || manifest?.diagnostics?.deterministic === true) return false;
+  if (manifest?.driverId === 'fixture-agent-model') return false;
   const labels = manifest?.authorityLabels ?? [];
   if (labels.some((label) => label.startsWith('model:fixture'))) return false;
   return labels.some((label) => label.startsWith('model:'));

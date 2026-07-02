@@ -239,6 +239,17 @@ describe('Capability Plane v0.2 core contracts', () => {
       docs: [],
       checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
     }, { 'sidecar.mjs': sidecar }), true);
+    const sidecarImport = fromUtf8("import './helper.mjs';\nconsole.log('ready');\n");
+    const sidecarImportChecksum = `sha256:${await sha256Hex(sidecarImport)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarImportChecksum }],
+      }, { 'sidecar.mjs': sidecarImport }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const secretSidecar = fromUtf8('API_KEY=supersecret123\n');
     const secretSidecarChecksum = `sha256:${await sha256Hex(secretSidecar)}`;
     await assert.rejects(
@@ -511,6 +522,18 @@ describe('Capability Plane v0.2 core contracts', () => {
     }), true);
     assert.throws(() => assertCapabilityPolicyAllows({
       manifest: {
+        driverId: 'deterministic-model-http',
+        authorityLabels: ['model:http-json'],
+        diagnostics: { deterministic: true },
+        recoveryClass: EffectRecoveryClass.idempotent,
+        maximumResponseBytes: 1024,
+      },
+      hostRequest: { ...genericHttpModelRequest('goal=policy', 'model-policy-key') },
+      policy: { allowLiveEffects: true },
+      mode: 'live',
+    }), { code: 'ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED' });
+    assert.throws(() => assertCapabilityPolicyAllows({
+      manifest: {
         driverId: 'http',
         authorityLabels: ['network:http'],
         recoveryClass: EffectRecoveryClass.idempotent,
@@ -632,11 +655,12 @@ describe('Capability Plane v0.2 core contracts', () => {
 
   it('derives live smoke idempotency headers from the configured key', async () => {
     let idempotencyHeader = null;
+    let smokeStatus = 200;
     const server = createServer((request, response) => {
       idempotencyHeader = request.headers['idempotency-key'];
       request.resume();
-      response.writeHead(200, { 'content-type': 'application/json' });
-      response.end('{}');
+      response.writeHead(smokeStatus, { 'content-type': 'application/json' });
+      response.end(smokeStatus === 200 ? '{}' : 'failed');
     });
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-live-smoke-'));
     try {
@@ -662,6 +686,20 @@ describe('Capability Plane v0.2 core contracts', () => {
         idempotencyHeader,
         `world:key:live-smoke:${createHash('sha256').update(fromUtf8(idempotencyKey)).digest('hex')}`,
       );
+      smokeStatus = 500;
+      const failingResult = await runBunProcess([
+        process.execPath,
+        'scripts/run-live-capability-smoke.mjs',
+        '--config',
+        config,
+        '--secret-provider',
+        'env',
+        '--allow-origin',
+        `http://127.0.0.1:${port}`,
+        '--live',
+      ], { env: { ...process.env, WORLD_HOST_LIVE_SMOKE: '1' } });
+      assert.notEqual(failingResult.code, 0);
+      assert.match(failingResult.stderr, /ERR_LIVE_SMOKE_HTTP_ERROR_RESOLUTION/);
     } finally {
       server.closeAllConnections?.();
       await close(server);
@@ -743,6 +781,18 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_CAPABILITY_FIXTURE_LIVE_EFFECT_DENIED' },
     );
     assert.equal(fixtureUnlabeledLiveEffectResolveCalled, false);
+    let fixtureModelLiveEffectResolveCalled = false;
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'fixture',
+        driver: deterministicModelLiveEffectDriver(() => {
+          fixtureModelLiveEffectResolveCalled = true;
+        }),
+        hostRequest: genericHttpModelRequest('goal=fixture-model-live', 'model-fixture-live-key'),
+      }),
+      { code: 'ERR_CAPABILITY_FIXTURE_LIVE_EFFECT_DENIED' },
+    );
+    assert.equal(fixtureModelLiveEffectResolveCalled, false);
 
     const approved = await runCapabilityMode({
       mode: 'approval',
@@ -800,6 +850,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       policy: { allowLiveEffects: true },
     });
     assert.equal(live.record.state, 'resolved');
+    assert.equal(live.submittedToWorld, false);
     assert.equal(decodeResolutionInputBytes(live.resolutionInputBytes).status, 0);
 
     const parkedStore = new MemoryStore();
@@ -1057,6 +1108,30 @@ describe('Capability Plane v0.2 core contracts', () => {
       });
       assert.equal(retryFetchCount, 2);
       assert.equal(decodeResolutionInputBytes(retried.resolutionInputBytes).status, 0);
+
+      let postResponseFailureFetchCount = 0;
+      globalThis.fetch = async () => {
+        postResponseFailureFetchCount += 1;
+        return new Response('{not-json', {
+          status: 200,
+          headers: { 'x-request-id': 'request-post-response-failure' },
+        });
+      };
+      await assert.rejects(
+        () => new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          retryPolicy: { attempts: 2 },
+        }).resolve({
+          policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+        }, {
+          ...httpRequest(),
+          hostRequestFingerprint: 'world:host-request:00000000000000ad',
+          idempotencyKeyBytes: fromUtf8('http-key-post-response-failure'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-post-response-failure',
+        }),
+        SyntaxError,
+      );
+      assert.equal(postResponseFailureFetchCount, 1);
 
       let stalledBodyAborted = false;
       globalThis.fetch = async (url, options) => new Response(new ReadableStream({
@@ -1360,6 +1435,30 @@ describe('Capability Plane v0.2 core contracts', () => {
         }),
         { code: 'ERR_CAPABILITY_ORIGIN_DENIED' },
       );
+      let configuredEndpointReuseFetchCalled = false;
+      globalThis.fetch = async () => {
+        configuredEndpointReuseFetchCalled = true;
+        return new Response('{"action":{"variant":"final","text":"other"}}', {
+          status: 200,
+          headers: { 'x-request-id': 'request-configured-other' },
+        });
+      };
+      await assert.rejects(
+        () => runCapabilityMode({
+          mode: 'live',
+          driver: new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://other.example/decide' }),
+          hostRequest: configuredEndpointRequest,
+          journalOptions: configuredEndpointJournalOptions,
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            allowedOrigins: ['https://other.example'],
+            allowedMethods: ['POST'],
+          },
+        }),
+        { code: 'ERR_EFFECT_IDEMPOTENCY_CONFLICT' },
+      );
+      assert.equal(configuredEndpointReuseFetchCalled, false);
 
       let configuredPayloadUrlFetchUrl = null;
       globalThis.fetch = async (url) => {
@@ -1530,6 +1629,20 @@ describe('Capability Plane v0.2 core contracts', () => {
         return new Response('{"action":{"variant":"final","text":"ok"}}', { status: 200 });
       };
       await assert.rejects(
+        () => new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }).resolve({
+          policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+        }, { ...httpRequest(), hostRequestFingerprint: undefined }),
+        { code: 'ERR_HOST_REQUEST_FINGERPRINT_REQUIRED' },
+      );
+      assert.equal(directFetchCalled, false);
+      await assert.rejects(
+        () => new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }).resolve({
+          policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+        }, { ...httpRequest(), idempotencyKeyWorldFingerprint: undefined }),
+        { code: 'ERR_HTTP_IDEMPOTENCY_KEY_REQUIRED' },
+      );
+      assert.equal(directFetchCalled, false);
+      await assert.rejects(
         () => new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }).resolve({}, httpRequest()),
         { code: 'ERR_CAPABILITY_LIVE_DENIED' },
       );
@@ -1613,6 +1726,7 @@ describe('Capability Plane v0.2 core contracts', () => {
         approval: () => ({ approved: true }),
       });
       assert.equal(decodeResolutionInputBytes(approvedNetwork.resolutionInputBytes).status, 0);
+      assert.equal(approvedNetwork.submittedToWorld, false);
 
       let promptedHeader = null;
       const promptProvider = new PromptSecretProvider({
@@ -1653,7 +1767,22 @@ describe('Capability Plane v0.2 core contracts', () => {
         return true;
       },
     });
-    await interactiveApproval.resolve({}, {
+    let directPromptCalled = false;
+    const directDeniedApproval = new HumanApprovalCapabilityDriver({
+      mode: 'interactive-terminal',
+      prompt: async () => {
+        directPromptCalled = true;
+        return true;
+      },
+    });
+    await assert.rejects(
+      () => directDeniedApproval.resolve({}, approvalRequest()),
+      { code: 'ERR_CAPABILITY_LIVE_DENIED' },
+    );
+    assert.equal(directPromptCalled, false);
+    await interactiveApproval.resolve({
+      policy: { allowLiveEffects: true, allowHumanEffects: true },
+    }, {
       ...approvalRequest(),
       requestBytes: fromUtf8(stableJson({ action: 'approve-file-write', password: 'fixture-password', apiKey: 'fixture-key' })),
     });
@@ -1662,7 +1791,9 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.equal(JSON.stringify(promptedProposal).includes('fixture-password'), false);
     const operatorRecovery = await defineCapabilityDriver(approval).recover({}, {});
     assert.equal(operatorRecovery.operatorInterventionRequired, true);
-    const approved = await approval.resolve({}, approvalRequest());
+    const approved = await approval.resolve({
+      policy: { allowLiveEffects: true, allowHumanEffects: true },
+    }, approvalRequest());
     assert.equal(decodeResolutionInputBytes(approved.resolutionInputBytes).status, 0);
     assert.equal(approved.diagnostics.decision, 'approved');
   });
@@ -2163,6 +2294,41 @@ function deterministicLiveEffectDriver(onResolve, { authorityLabels = ['network:
       onResolve();
       const error = new Error('fixture live effect should not resolve');
       error.code = 'ERR_FIXTURE_LIVE_EFFECT_RESOLVED';
+      throw error;
+    },
+  };
+}
+
+function deterministicModelLiveEffectDriver(onResolve) {
+  return {
+    manifest() {
+      return {
+        driverId: 'fixture-agent-model',
+        supportedActuatorRefs: ['model:decision'],
+        supportedDescriptorFingerprints: ['descriptor:agent-decision-prompt'],
+        supportedActuationClasses: ['model'],
+        supportedResponseStatuses: ['ok'],
+        maximumRequestBytes: 1024 * 1024,
+        maximumResponseBytes: 1024 * 1024,
+        recoveryClass: EffectRecoveryClass.idempotent,
+        concurrencyLimit: 1,
+        authorityLabels: ['model:http-json'],
+        diagnostics: { deterministic: true },
+      };
+    },
+    preflight() {
+      return { accepted: true };
+    },
+    dryRun() {
+      return { wouldInvoke: true, proposedAction: { driver: 'deterministic-model-live-effect' } };
+    },
+    shadow() {
+      return { liveInvoked: true, schemaAccepted: false };
+    },
+    async resolve() {
+      onResolve();
+      const error = new Error('fixture live model effect should not resolve');
+      error.code = 'ERR_FIXTURE_MODEL_LIVE_EFFECT_RESOLVED';
       throw error;
     },
   };

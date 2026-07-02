@@ -13,6 +13,7 @@ import { wyhash64 } from '../src/protocol/world_loaded_value_codec.mjs';
 import { summarizeTurnClosureForRunHead } from '../src/protocol/world_universal_appliance_codec.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
 import { BunWorldWorker } from '../src/bun/bun_worker.mjs';
+import { GenericHttpJsonCapabilityDriver } from '../src/drivers/generic_http_json_capability_driver.mjs';
 
 describe('RunController and WorldWorker', () => {
   it('advances a branch only after persisting the next closure blob', async () => {
@@ -1006,6 +1007,52 @@ describe('RunController and WorldWorker', () => {
     assert.equal(result.status, 'advanced');
     assert.equal(getOnly.invocationCount, 0);
     assert.equal(postCapable.invocationCount, 1);
+  });
+
+  it('passes receiver policy into controller-driven configured HTTP capabilities', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    try {
+      globalThis.fetch = async (url, options) => {
+        fetchCount += 1;
+        assert.equal(url, 'https://allowed.example/decide');
+        assert.equal(options.method, 'POST');
+        return new Response('{"status":"ok"}', {
+          status: 200,
+          headers: { 'x-request-id': 'controller-http' },
+        });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('http-idempotency-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:http',
+          requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'hi' } })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fetchCount, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it('rejects drivers that exceed receiver byte limits before resolving effects', async () => {

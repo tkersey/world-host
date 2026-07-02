@@ -95,6 +95,7 @@ export class EffectJournal {
       responseSchema: hostRequest.responseSchema,
       requestBytesRef,
       requestBytesChecksum: prepared.requestBytesChecksum,
+      requestIdentityChecksum: prepared.requestIdentityChecksum,
       state: EffectState.observed,
       attemptCount: 0,
       driverRecoveryClass: recoveryClass,
@@ -323,7 +324,7 @@ export class EffectJournal {
 
   async #reuseOrConflict(existing, prepared) {
     assertEffectRecord(existing);
-    if (existing.requestBytesChecksum !== prepared.requestBytesChecksum) {
+    if (effectIdentityChecksum(existing) !== prepared.requestIdentityChecksum) {
       fail('ERR_EFFECT_IDEMPOTENCY_CONFLICT', 'same full idempotency key used with different request bytes', {
         runId: this.runId,
         idempotencyKeyWorldFingerprint: existing.idempotencyKeyWorldFingerprint,
@@ -359,7 +360,7 @@ export class EffectJournal {
     for (const record of await this.list()) {
       assertEffectRecord(record);
       if (stableJson(record.idempotencyKey) !== idempotencyKeyJson) continue;
-      if (record.requestBytesChecksum !== prepared.requestBytesChecksum) {
+      if (effectIdentityChecksum(record) !== prepared.requestIdentityChecksum) {
         fail('ERR_EFFECT_IDEMPOTENCY_CONFLICT', 'same full idempotency key used with different request bytes', {
           runId: this.runId,
           idempotencyKeyWorldFingerprint: record.idempotencyKeyWorldFingerprint,
@@ -524,6 +525,7 @@ export function createEffectRecord(record) {
     actuationClass: record.actuationClass,
     responseSchema: record.responseSchema,
     requestBytesChecksum: record.requestBytesChecksum,
+    requestIdentityChecksum: record.requestIdentityChecksum,
     state: record.state ?? EffectState.observed,
     attemptCount: record.attemptCount ?? 0,
     driverRecoveryClass: record.driverRecoveryClass,
@@ -554,6 +556,9 @@ export function assertEffectRecord(record) {
     fail('ERR_INVALID_EFFECT_RECORD', 'complete idempotency key bytes are required');
   }
   if (typeof record.actuationClass !== 'string' || record.actuationClass.length === 0) fail('ERR_INVALID_EFFECT_RECORD', 'actuationClass is required');
+  if (record.requestIdentityChecksum !== undefined && (typeof record.requestIdentityChecksum !== 'string' || record.requestIdentityChecksum.length === 0)) {
+    fail('ERR_INVALID_EFFECT_RECORD', 'requestIdentityChecksum must be string');
+  }
   if (!EFFECT_STATES.has(record.state)) fail('ERR_INVALID_EFFECT_STATE');
   if (!Number.isSafeInteger(record.attemptCount) || record.attemptCount < 0) fail('ERR_INVALID_EFFECT_RECORD', 'attemptCount must be non-negative');
   assertRecoveryClass(record.driverRecoveryClass);
@@ -582,14 +587,18 @@ export async function prepareHostRequest(hostRequest) {
   if (!hostRequest || typeof hostRequest !== 'object') fail('ERR_INVALID_HOST_REQUEST');
   const idempotencyKeyBytes = assertBytes(hostRequest.idempotencyKeyBytes, 'idempotencyKeyBytes');
   const requestBytes = assertBytes(hostRequest.requestBytes ?? fromUtf8(stableJson(hostRequest.request ?? {})), 'requestBytes');
+  const effectIdentityBytes = hostRequest.effectIdentityBytes === undefined
+    ? requestBytes
+    : assertBytes(hostRequest.effectIdentityBytes, 'effectIdentityBytes');
   if (hostRequest.shortIdempotencyKeyHash) fail('ERR_SHORT_IDEMPOTENCY_KEY_FORBIDDEN');
   const requestBytesChecksum = `sha256:${await sha256Hex(requestBytes)}`;
+  const requestIdentityChecksum = `sha256:${await sha256Hex(effectIdentityBytes)}`;
   const generatedHostRequestHash = await sha256Hex(fromUtf8(stableJson({
     actuatorRef: hostRequest.actuatorRef,
     descriptorFingerprint: hostRequest.descriptorFingerprint,
     actuationClass: hostRequest.actuationClass,
     responseSchema: hostRequest.responseSchema ?? null,
-    requestBytesChecksum,
+    requestBytesChecksum: requestIdentityChecksum,
   })));
   const hostRequestFingerprint = hostRequest.hostRequestFingerprint ?? `world:host-request:${generatedHostRequestHash.slice(0, 16)}`;
   hostRequestTargetFingerprint({ hostRequestFingerprint });
@@ -601,8 +610,13 @@ export async function prepareHostRequest(hostRequest) {
     idempotencyKeyWorldFingerprint: hostRequest.idempotencyKeyWorldFingerprint ?? `sha256:${await sha256Hex(idempotencyKeyBytes)}`,
     requestBytes,
     requestBytesChecksum,
+    requestIdentityChecksum,
     hostRequestFingerprint,
   };
+}
+
+function effectIdentityChecksum(record) {
+  return record.requestIdentityChecksum ?? record.requestBytesChecksum;
 }
 
 function normalizePreparedHostRequest(hostRequest, prepared) {

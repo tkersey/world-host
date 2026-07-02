@@ -233,11 +233,11 @@ function policyBlockers(route, request, policy) {
     if (!root || !allowedFileRoots.has(root)) blockers.push(`file-root-denied:${root ?? 'unknown'}`);
   }
   if (request && (request.actuationClass === 'http' || route.authorityLabels.includes('network:http'))) {
-    const origin = requestOrigin(request);
+    const origin = requestOriginForRoute(request, route);
     const driverOrigins = Array.isArray(route.diagnostics?.origins) ? new Set(route.diagnostics.origins) : null;
     if (driverOrigins && (!origin || !driverOrigins.has(origin))) blockers.push(`http-origin-driver-denied:${origin ?? 'unknown'}`);
     if (!origin || policy.allowedHttpOrigins.size && !policy.allowedHttpOrigins.has(origin)) blockers.push(`http-origin-denied:${origin ?? 'unknown'}`);
-    const method = requestMethod(request);
+    const method = requestMethodForRoute(request, route);
     const driverMethods = Array.isArray(route.diagnostics?.methods)
       ? new Set(route.diagnostics.methods.map((item) => String(item).toUpperCase()))
       : null;
@@ -329,22 +329,28 @@ export function assertCapabilityReportAccepted(report) {
 
 export { EffectRecoveryClass };
 
-function requestOrigin(request) {
+function requestOriginForRoute(request, route) {
   try {
     const text = new TextDecoder().decode(request.requestBytes);
     const value = JSON.parse(text);
+    if (value.url === undefined && configuredEndpointRoute(route)) return route.diagnostics.configuredOrigin;
     return new URL(value.url).origin;
   } catch {
     return null;
   }
 }
 
-function requestMethod(request) {
+function requestMethodForRoute(request, route) {
   try {
     const text = new TextDecoder().decode(request.requestBytes);
     const value = JSON.parse(text);
+    if (value.url === undefined && configuredEndpointRoute(route)) return String(route.diagnostics.defaultMethod ?? 'POST').toUpperCase();
     return String(value.method ?? 'GET').toUpperCase();
   } catch {
     return null;
   }
+}
+
+function configuredEndpointRoute(route) {
+  return route?.diagnostics?.endpointSource === 'config' || route?.diagnostics?.endpointSource === 'request-or-config';
 }

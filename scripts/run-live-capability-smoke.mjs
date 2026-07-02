@@ -6,6 +6,7 @@ import { GenericHttpJsonCapabilityDriver } from '../src/drivers/generic_http_jso
 import { EnvSecretProvider } from '../src/core/secrets.mjs';
 import { redactCapabilityDiagnostics } from '../src/core/capability_policy.mjs';
 import { fromUtf8, stableJson } from '../src/core/store.mjs';
+import { decodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
 
 if (process.env.WORLD_HOST_LIVE_SMOKE !== '1') {
   console.log(JSON.stringify({ skipped: true, reason: 'WORLD_HOST_LIVE_SMOKE not set to 1' }, null, 2));
@@ -74,6 +75,8 @@ function valueAfter(name) {
 }
 
 function summarizeLiveResult(result) {
+  const resolution = decodeResolutionInputBytes(result.resolutionInputBytes);
+  if (resolution.status !== 0) throw new Error('ERR_LIVE_SMOKE_HTTP_ERROR_RESOLUTION');
   return {
     diagnostics: result.diagnostics ?? {},
     driverTransactionRef: result.driverTransactionRef ?? null,

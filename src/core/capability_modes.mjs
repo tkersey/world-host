@@ -1,4 +1,4 @@
-import { EffectJournal, assertResolutionAccepted } from './effect_journal.mjs';
+import { EffectJournal, EffectState, assertResolutionAccepted } from './effect_journal.mjs';
 import { assertDriverCanResolve } from './actuator.mjs';
 import { assertCapabilityPolicyAllows, createCapabilityPolicy } from './capability_policy.mjs';
 import { assertCapabilityResolutionBoundary, defineCapabilityDriver } from './capability_driver.mjs';
@@ -81,7 +81,8 @@ export async function runCapabilityMode({
     if (!journalOptions) fail('ERR_CAPABILITY_APPROVAL_JOURNAL_REQUIRED', 'approval mode live effects require EffectJournal options');
     const journal = journalOptions instanceof EffectJournal ? journalOptions : new EffectJournal({ ...journalOptions, policy: livePolicy });
     const approvedContext = liveContext(context, livePolicy, { approved: true });
-    const resolved = await journal.resolve(approvedContext, hostRequest, driver, {
+    const journalHostRequest = journaledHostRequest(hostRequest, manifest);
+    const resolved = await journal.resolve(approvedContext, journalHostRequest, driver, {
       beforeInvoke: async (preflightContext, preflightHostRequest) => {
         assertCapabilityPreflightAccepted(await driver.preflight(preflightContext, preflightHostRequest));
       },
@@ -98,7 +99,8 @@ export async function runCapabilityMode({
   if (!journalOptions) fail('ERR_CAPABILITY_LIVE_JOURNAL_REQUIRED', 'live mode requires EffectJournal options');
   const journal = journalOptions instanceof EffectJournal ? journalOptions : new EffectJournal({ ...journalOptions, policy: livePolicy });
   const liveDriverContext = liveContext(context, livePolicy);
-  const resolved = await journal.resolve(liveDriverContext, hostRequest, driver, {
+  const journalHostRequest = journaledHostRequest(hostRequest, manifest);
+  const resolved = await journal.resolve(liveDriverContext, journalHostRequest, driver, {
     beforeInvoke: async (preflightContext, preflightHostRequest) => {
       assertCapabilityPreflightAccepted(await driver.preflight(preflightContext, preflightHostRequest));
     },
@@ -111,7 +113,7 @@ function liveContext(context, policy, action = null) {
 }
 
 function submittedResolutionToWorld(resolved) {
-  return resolved?.resolutionInputBytes instanceof Uint8Array;
+  return resolved?.record?.state === EffectState.submitted || resolved?.record?.state === EffectState.closureCommitted;
 }
 
 function shadowRequiresLivePolicy(manifest, hostRequest) {
@@ -124,7 +126,7 @@ function shadowRequiresLivePolicy(manifest, hostRequest) {
 
 function isLiveModelCall(manifest, hostRequest) {
   if (hostRequest?.actuationClass !== 'model') return false;
-  if (manifest?.driverId === 'fixture-agent-model' || manifest?.diagnostics?.deterministic === true) return false;
+  if (manifest?.driverId === 'fixture-agent-model') return false;
   const labels = manifest?.authorityLabels ?? [];
   if (labels.some((label) => label.startsWith('model:fixture'))) return false;
   return labels.some((label) => label.startsWith('model:'));
@@ -176,13 +178,40 @@ function networkPolicyHostRequest(hostRequest, manifest) {
 function configuredNetworkPolicyHostRequest(hostRequest, manifest, parsed = {}) {
   const origins = Array.isArray(manifest?.diagnostics?.origins) ? manifest.diagnostics.origins : [];
   const methods = Array.isArray(manifest?.diagnostics?.methods) ? manifest.diagnostics.methods : [];
-  const url = manifest?.diagnostics?.configuredOrigin ?? (origins.length === 1 ? origins[0] : null);
+  const url = manifest?.diagnostics?.configuredEndpointUrl ?? manifest?.diagnostics?.configuredOrigin ?? (origins.length === 1 ? origins[0] : null);
   const method = parsed.method ?? manifest?.diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : null);
   if (!url || !method) return hostRequest;
   return {
     ...hostRequest,
     policyRequestBytes: hostRequest?.requestBytes,
     requestBytes: fromUtf8(stableJson({ url, method })),
+  };
+}
+
+function journaledHostRequest(hostRequest, manifest) {
+  const endpointSource = manifest?.diagnostics?.endpointSource;
+  if (endpointSource !== 'config' && endpointSource !== 'request-or-config') return hostRequest;
+  let parsed = {};
+  if (hostRequest?.requestBytes) {
+    try {
+      parsed = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
+    } catch {
+      return hostRequest;
+    }
+  }
+  if (endpointSource === 'request-or-config' && parsed?.url !== undefined) return hostRequest;
+  const configured = configuredNetworkPolicyHostRequest(hostRequest, manifest, parsed);
+  if (configured === hostRequest) return hostRequest;
+  const policyTarget = JSON.parse(new TextDecoder().decode(configured.requestBytes));
+  return {
+    ...hostRequest,
+    effectIdentityBytes: fromUtf8(stableJson({
+      request: parsed,
+      configuredEndpoint: {
+        url: policyTarget.url,
+        method: policyTarget.method,
+      },
+    })),
   };
 }
 
@@ -194,7 +223,8 @@ function assertFixtureModeAllowed(manifest, hostRequest) {
   const liveAuthorityLabels = (manifest.authorityLabels ?? []).filter((label) => (
     label.startsWith('network:') ||
     label.startsWith('file:') ||
-    label.startsWith('human:')
+    label.startsWith('human:') ||
+    (label.startsWith('model:') && !label.startsWith('model:fixture'))
   ));
   if (manifestLiveActuationClasses.length || requestedLiveActuationClasses.length || liveAuthorityLabels.length) {
     fail('ERR_CAPABILITY_FIXTURE_LIVE_EFFECT_DENIED', 'fixture mode cannot invoke live-effect authority', {

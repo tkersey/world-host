@@ -1,6 +1,6 @@
 import { EffectRecoveryClass } from '../core/actuator.mjs';
 import { DryRunReport, ShadowReport, capabilityHostClaimBytes, defaultCapabilityPreflight } from '../core/capability_driver.mjs';
-import { redactCapabilityDiagnostics } from '../core/capability_policy.mjs';
+import { assertCapabilityPolicyAllows, redactCapabilityDiagnostics } from '../core/capability_policy.mjs';
 import { fail, fromUtf8, stableJson } from '../core/store.mjs';
 import { encodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
 import { encodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
@@ -30,7 +30,16 @@ export class HumanApprovalCapabilityDriver {
   }
 
   preflight(context, hostRequest) {
-    return defaultCapabilityPreflight(this.manifest(), hostRequest);
+    const structural = defaultCapabilityPreflight(this.manifest(), hostRequest);
+    const blockers = [...structural.blockers];
+    if (!blockers.length) {
+      try {
+        assertHumanPolicyAllows(context, this.manifest(), hostRequest);
+      } catch (error) {
+        blockers.push(error.code ?? 'ERR_HUMAN_APPROVAL_PREFLIGHT_REJECTED');
+      }
+    }
+    return { accepted: blockers.length === 0, blockers };
   }
 
   dryRun(context, hostRequest) {
@@ -54,6 +63,7 @@ export class HumanApprovalCapabilityDriver {
   }
 
   async resolve(context, hostRequest) {
+    assertHumanPolicyAllows(context, this.manifest(), hostRequest);
     const decision = await this.approve({ proposed: this.#redactedPrompt(hostRequest) });
     return this.#resolution(hostRequest, decision.approved ? 'approved' : 'rejected', decision.record);
   }
@@ -99,6 +109,15 @@ export class HumanApprovalCapabilityDriver {
       return { bytes: hostRequest.requestBytes?.byteLength ?? 0 };
     }
   }
+}
+
+function assertHumanPolicyAllows(context, manifest, hostRequest) {
+  assertCapabilityPolicyAllows({
+    manifest,
+    hostRequest,
+    policy: context?.policy ?? {},
+    mode: 'live',
+  });
 }
 
 function resolutionTarget(hostRequest = {}) {

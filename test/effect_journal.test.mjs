@@ -979,6 +979,7 @@ describe('EffectJournal', () => {
       ...main.record,
       branchId: 'shadow',
       requestBytesChecksum: 'sha256:shadow-conflict',
+      requestIdentityChecksum: 'sha256:shadow-conflict',
       diagnostics: { conflictFixture: true },
     });
 

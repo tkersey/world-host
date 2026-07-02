@@ -338,6 +338,8 @@ export class RunController {
           parentClosureBytes,
           worker,
           options,
+          policy,
+          driverManifest: item.manifest,
           hostRequest: item.hostRequest,
           worldHostRequest: item.worldHostRequest,
         }),
@@ -637,7 +639,44 @@ async function defaultTurnInputFactory({ parentHead }) {
 }
 
 async function defaultEffectContextFactory(context) {
-  return context;
+  return {
+    ...context,
+    policy: capabilityPolicyForSelectedEffect(context.policy, context.driverManifest, context.hostRequest),
+  };
+}
+
+function capabilityPolicyForSelectedEffect(policy = {}, manifest = {}, hostRequest = {}) {
+  const authorityLabels = manifest?.authorityLabels ?? [];
+  const actuationClasses = manifest?.supportedActuationClasses ?? [];
+  const network = hostRequest?.actuationClass === 'http' ||
+    actuationClasses.includes('http') ||
+    authorityLabels.some((label) => label.startsWith('network:'));
+  const file = hostRequest?.actuationClass === 'file' ||
+    actuationClasses.includes('file') ||
+    authorityLabels.some((label) => label.startsWith('file:'));
+  const human = hostRequest?.actuationClass === 'human' ||
+    actuationClasses.includes('human') ||
+    authorityLabels.some((label) => label.startsWith('human:'));
+  const model = hostRequest?.actuationClass === 'model' ||
+    actuationClasses.includes('model') ||
+    authorityLabels.some((label) => label.startsWith('model:'));
+  const manifestOrigins = Array.isArray(manifest?.diagnostics?.origins) ? manifest.diagnostics.origins : [];
+  const manifestMethods = Array.isArray(manifest?.diagnostics?.methods) ? manifest.diagnostics.methods : [];
+  const allowedHttpOrigins = policySet(policy.allowedHttpOrigins);
+  return {
+    allowLiveEffects: true,
+    allowNetworkEffects: network,
+    allowFileEffects: file,
+    allowHumanEffects: human,
+    allowBestEffort: policy.allowBestEffort === true,
+    maximumLiveModelCalls: model ? 1 : 0,
+    maximumRequestBytes: policy.maximumRequestBytes,
+    maximumResponseBytes: policy.maximumResponseBytes,
+    allowedOrigins: allowedHttpOrigins.size ? [...allowedHttpOrigins] : manifestOrigins,
+    allowedMethods: manifestMethods,
+    allowedFileRoots: [...policySet(policy.allowedFileRoots)],
+    allowedAuthorityLabels: [...policySet(policy.allowedAuthorityLabels)],
+  };
 }
 
 function selectEffectDriver(drivers, hostRequest, policy = {}, preferredAuthorityLabels = []) {
@@ -686,11 +725,11 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}) {
   if (allowedAuthorityLabels.size && manifest.authorityLabels.some((label) => !allowedAuthorityLabels.has(label))) return false;
   const allowedHttpOrigins = policySet(policy.allowedHttpOrigins);
   if (hostRequest.actuationClass === 'http' || manifest.authorityLabels.includes('network:http')) {
-    const origin = requestOrigin(hostRequest);
+    const origin = requestOriginForManifest(hostRequest, manifest);
     const driverOrigins = Array.isArray(manifest.diagnostics?.origins) ? new Set(manifest.diagnostics.origins) : null;
     if (driverOrigins && (!origin || !driverOrigins.has(origin))) return false;
     if (allowedHttpOrigins.size && (!origin || !allowedHttpOrigins.has(origin))) return false;
-    const method = requestMethod(hostRequest);
+    const method = requestMethodForManifest(hostRequest, manifest);
     const driverMethods = Array.isArray(manifest.diagnostics?.methods)
       ? new Set(manifest.diagnostics.methods.map((item) => String(item).toUpperCase()))
       : null;
@@ -721,22 +760,28 @@ function policySet(value) {
   return new Set();
 }
 
-function requestOrigin(hostRequest) {
+function requestOriginForManifest(hostRequest, manifest) {
   try {
     const request = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
+    if (request.url === undefined && configuredEndpointManifest(manifest)) return manifest.diagnostics.configuredOrigin;
     return new URL(request.url).origin;
   } catch {
     return null;
   }
 }
 
-function requestMethod(hostRequest) {
+function requestMethodForManifest(hostRequest, manifest) {
   try {
     const request = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
+    if (request.url === undefined && configuredEndpointManifest(manifest)) return String(manifest.diagnostics.defaultMethod ?? 'POST').toUpperCase();
     return String(request.method ?? 'GET').toUpperCase();
   } catch {
     return null;
   }
+}
+
+function configuredEndpointManifest(manifest) {
+  return manifest?.diagnostics?.endpointSource === 'config' || manifest?.diagnostics?.endpointSource === 'request-or-config';
 }
 
 function unresolvedHostRequestDiagnostic(index, hostRequest) {
