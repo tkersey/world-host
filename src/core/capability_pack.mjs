@@ -275,11 +275,12 @@ function adapterHasImportCall(text) {
     index += 1;
     while (index < text.length && identifierPart(text[index])) index += 1;
     const identifier = text.slice(start, index);
+    const callStart = skipWhitespaceAndComments(text, index);
+    if ((identifier === 'eval' || identifier === 'Function') && text[callStart] === '(') return true;
     if (identifier !== 'import' && identifier !== 'require') {
       previousSignificant = 'identifier';
       continue;
     }
-    const callStart = skipWhitespaceAndComments(text, index);
     if (text[callStart] !== '(' || (identifier === 'require' && previousSignificant === '.')) {
       previousSignificant = 'identifier';
       continue;
@@ -375,7 +376,9 @@ function assertReferencedArtifactsCovered(manifest) {
 }
 
 function sidecarCommandArtifact(value) {
-  return value.startsWith('.') || value.includes('/') || /\.[A-Za-z0-9]+$/.test(value);
+  if (value.startsWith('-') || value.includes('=')) return false;
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)) return false;
+  return value.startsWith('./') || value.includes('/') || /\.(?:c?m?js|sh|bash|zsh|py|rb|pl|wasm|bin|exe)$/i.test(value);
 }
 
 function normalizeAdapter(adapter) {

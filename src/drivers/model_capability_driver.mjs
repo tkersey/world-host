@@ -74,23 +74,13 @@ export class GenericHttpJsonModelDriver {
       blockers.push(error.code ?? 'ERR_MODEL_PROMPT_INVALID');
     }
     if (blockers.length) return new CapabilityPreflightReport({ accepted: false, blockers });
-    return this.http.preflight(context, {
-      ...hostRequest,
-      actuatorRef: 'http:json',
-      descriptorFingerprint: 'descriptor:http-json',
-      actuationClass: 'http',
-    });
+    return this.http.preflight(context, transportHostRequest(hostRequest));
   }
 
   async resolve(context, hostRequest) {
     parseDecisionPrompt(hostRequest.requestBytes);
     assertLiveModelBudgetAllows(context?.policy);
-    const result = await this.http.resolve(context, {
-      ...hostRequest,
-      actuatorRef: 'http:json',
-      descriptorFingerprint: 'descriptor:http-json',
-      actuationClass: 'http',
-    });
+    const result = await this.http.resolve(context, transportHostRequest(hostRequest));
     const resolution = decodeResolutionInputBytes(result.resolutionInputBytes);
     if (resolution.status !== 0) {
       return modelResolutionFromTransport(result, resolution, { status: resolution.status === 4 ? 'deferred' : 'failed' });
@@ -144,6 +134,21 @@ function assertLiveModelBudgetAllows(inputPolicy = {}) {
 function redactedEndpoint(endpointUrl) {
   const endpoint = new URL(endpointUrl);
   return `${endpoint.origin}${endpoint.pathname}`;
+}
+
+function transportHostRequest(hostRequest) {
+  return {
+    ...hostRequest,
+    actuatorRef: 'http:json',
+    descriptorFingerprint: 'descriptor:http-json',
+    actuationClass: 'http',
+    responseSchema: transportResponseSchema(hostRequest.responseSchema),
+  };
+}
+
+function transportResponseSchema(responseSchema) {
+  if (!responseSchema || responseSchema.status !== 'failed') return responseSchema;
+  return { ...responseSchema, status: 'http_error' };
 }
 
 export function decodeAgentActionFromResolutionInput(resolutionInputBytes, options = {}) {

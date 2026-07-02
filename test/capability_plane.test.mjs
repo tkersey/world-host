@@ -157,6 +157,26 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': commentedImportAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const functionImportAdapter = fromUtf8('const fs = Function("s", "return import(s)")("node:fs"); export const CapabilityDriver = fs;');
+    const functionImportAdapterChecksum = `sha256:${await sha256Hex(functionImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: functionImportAdapterChecksum }],
+      }, { 'adapter.mjs': functionImportAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const evalImportAdapter = fromUtf8('const fs = eval("import(\\\"node:fs\\\")"); export const CapabilityDriver = fs;');
+    const evalImportAdapterChecksum = `sha256:${await sha256Hex(evalImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: evalImportAdapterChecksum }],
+      }, { 'adapter.mjs': evalImportAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const secretReadme = fromUtf8('Authorization: Bearer sk-artifact-secret-value');
     const secretReadmeChecksum = `sha256:${await sha256Hex(secretReadme)}`;
     await assert.rejects(
@@ -198,6 +218,12 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.equal(await assertCapabilityPackChecksums({
       ...manifest,
       adapter: { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] },
+      docs: [],
+      checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+    }, { 'sidecar.mjs': sidecar }), true);
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'sidecar', command: ['bun', '--endpoint=https://api.example/v1', 'sidecar.mjs', '--model=gpt-4.1'] },
       docs: [],
       checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
     }, { 'sidecar.mjs': sidecar }), true);
@@ -1849,6 +1875,32 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(failedMetadata.driver, 'generic-http-json-model');
       assert.equal(failedMetadata.status, 'failed');
       assert.equal(failedMetadata.transportStatus, 'http_error');
+
+      let failedLiveFetchCount = 0;
+      globalThis.fetch = async () => {
+        failedLiveFetchCount += 1;
+        return new Response('transport failed', { status: 500 });
+      };
+      const failedLive = await runCapabilityMode({
+        mode: 'live',
+        driver,
+        hostRequest: { ...genericHttpModelRequest('goal=invoke', 'model-live-failed-key'), responseSchema: { status: 'failed' } },
+        journalOptions: {
+          store: new MemoryStore(),
+          runId: 'model-live-failed-run',
+          branchId: 'main',
+          parentTurnClosureFingerprint: 'world:turn-closure:parent',
+        },
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          maximumLiveModelCalls: 1,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      });
+      assert.equal(decodeResolutionInputBytes(failedLive.resolutionInputBytes).status, 2);
+      assert.equal(failedLiveFetchCount, 1);
     } finally {
       globalThis.fetch = originalFetch;
     }
