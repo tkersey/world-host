@@ -57,8 +57,8 @@ export function defineCapabilityDriver(driver) {
       if (raw.packFingerprint != null && typeof raw.packFingerprint !== 'string') fail('ERR_INVALID_DRIVER_MANIFEST', 'packFingerprint must be a string');
       return raw.packFingerprint == null ? manifest : Object.freeze({ ...manifest, packFingerprint: raw.packFingerprint });
     },
-    preflight(context, hostRequest) {
-      return assertCapabilityPreflightReport(driver.preflight(context, hostRequest));
+    async preflight(context, hostRequest) {
+      return assertCapabilityPreflightReport(await driver.preflight(context, hostRequest));
     },
     async resolve(context, hostRequest) {
       const result = await actuator.resolve(context, hostRequest);
@@ -76,11 +76,11 @@ export function defineCapabilityDriver(driver) {
           return result;
         }
       : undefined,
-    dryRun(context, hostRequest) {
-      return assertDryRunReport(driver.dryRun(context, hostRequest));
+    async dryRun(context, hostRequest) {
+      return assertDryRunReport(await driver.dryRun(context, hostRequest));
     },
-    shadow(context, hostRequest, recordedResolution) {
-      return assertShadowReport(driver.shadow(context, hostRequest, recordedResolution));
+    async shadow(context, hostRequest, recordedResolution) {
+      return assertShadowReport(await driver.shadow(context, hostRequest, recordedResolution));
     },
     cancel: typeof actuator.cancel === 'function' ? actuator.cancel : undefined,
     query: typeof actuator.query === 'function' ? actuator.query : undefined,

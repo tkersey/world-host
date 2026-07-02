@@ -37,7 +37,7 @@ const SEMANTIC_FIELDS = Object.freeze([
 ]);
 const SECRET_PATTERN = /credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key/i;
 const CONFORMANCE_RECEIPT_PATH = 'conformance.json';
-const ADAPTER_IMPORT_PATTERN = /(?:^\s*import\s+(?:[^'"]*from\s*)?['"][^'"]+['"]|^\s*export\s+[^'"]*\s+from\s+['"][^'"]+['"]|\bimport\s*\()/m;
+const ADAPTER_IMPORT_PATTERN = /(?:^|[;\n\r])\s*import\s*(?:['"]|(?:[\w*{][^;]*?\s*from\s*['"]))|(?:^|[;\n\r])\s*export\s*(?:\*|\{|\w)[^;]*?\s*from\s*['"]|\bimport\s*\(/m;
 
 export class CapabilityManifest {
   constructor(fields) {
@@ -303,7 +303,7 @@ function assertConformanceVector(value) {
 function assertNoCredentialMaterial(value, path = []) {
   if (value == null) return;
   if (typeof value === 'string') {
-    const descriptorLabel = path[0] === 'requiredSecrets' && ['name', 'class', 'purpose'].includes(path.at(-1));
+    const descriptorLabel = path[0] === 'requiredSecrets' && (path.length === 2 || ['name', 'class', 'purpose'].includes(path.at(-1)));
     const allowedSentinel = ['opaque', 'required', 'redacted'].includes(value);
     const credentialLike = SECRET_PATTERN.test(path.join('.')) || SECRET_PATTERN.test(value);
     if (

@@ -103,6 +103,26 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': computedImportAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const prefixedStaticImportAdapter = fromUtf8(";import fs from 'node:fs'; export const CapabilityDriver = fs;");
+    const prefixedStaticImportAdapterChecksum = `sha256:${await sha256Hex(prefixedStaticImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: prefixedStaticImportAdapterChecksum }],
+      }, { 'adapter.mjs': prefixedStaticImportAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const compactStaticImportAdapter = fromUtf8("import{readFile}from 'node:fs/promises'; export const CapabilityDriver = readFile;");
+    const compactStaticImportAdapterChecksum = `sha256:${await sha256Hex(compactStaticImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: compactStaticImportAdapterChecksum }],
+      }, { 'adapter.mjs': compactStaticImportAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const sidecar = fromUtf8('sidecar bytes');
     const launcherChecksum = `sha256:${await sha256Hex(artifact)}`;
     const sidecarChecksum = `sha256:${await sha256Hex(sidecar)}`;
@@ -138,6 +158,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       () => assertCapabilityManifest({ ...manifest, extra: 'sk-raw-manifest-secret' }),
       { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
     );
+    assert.equal(assertCapabilityManifest({ ...manifest, requiredSecrets: ['API_TOKEN'] }).requiredSecrets[0].name, 'API_TOKEN');
     assert.throws(
       () => assertCapabilityManifest({
         ...manifest,
@@ -374,6 +395,28 @@ describe('Capability Plane v0.2 core contracts', () => {
       },
       mode: 'live',
     }), { code: 'ERR_CAPABILITY_NETWORK_TARGET_REQUIRED' });
+  });
+
+  it('awaits asynchronous capability driver reports', async () => {
+    const driver = defineCapabilityDriver({
+      manifest: () => new FixtureAgentModelCapabilityDriver().manifest(),
+      async preflight() {
+        return { accepted: true, blockers: ['should-not-survive'] };
+      },
+      async dryRun() {
+        return { wouldInvoke: true, proposedAction: { async: true } };
+      },
+      async shadow() {
+        return { liveInvoked: true, schemaAccepted: true };
+      },
+      async resolve() {
+        throw new Error('not used');
+      },
+    });
+
+    assert.equal((await driver.preflight({}, modelRequest('goal=async'))).accepted, true);
+    assert.equal((await driver.dryRun({}, modelRequest('goal=async'))).wouldInvoke, true);
+    assert.equal((await driver.shadow({}, modelRequest('goal=async'), null)).schemaAccepted, true);
   });
 
   it('keeps secrets receiver-local and redacted', async () => {

@@ -29,7 +29,7 @@ export async function runCapabilityMode({
   if (mode === CapabilityExecutionMode.fixture) {
     assertManifestCoversHostRequest(manifest, hostRequest);
     assertFixtureModeAllowed(manifest, hostRequest);
-    assertCapabilityPreflightAccepted(driver.preflight(context, hostRequest));
+    assertCapabilityPreflightAccepted(await driver.preflight(context, hostRequest));
     const resolved = await driver.resolve(context, hostRequest);
     assertCapabilityResolutionBoundary(resolved);
     assertResolutionAccepted(resolved.resolutionInputBytes, hostRequest, manifest, livePolicy);
@@ -50,7 +50,7 @@ export async function runCapabilityMode({
         mode: 'live',
         enforceNetworkTarget: shouldEnforceNetworkTarget(hostRequest, manifest),
       });
-      assertCapabilityPreflightAccepted(driver.preflight(shadowContext, hostRequest));
+      assertCapabilityPreflightAccepted(await driver.preflight(shadowContext, hostRequest));
     }
     return { mode, submittedToWorld: false, shadow: await driver.shadow(shadowContext, hostRequest, recordedResolution) };
   }
@@ -61,7 +61,7 @@ export async function runCapabilityMode({
     if (decision.approved !== true) return { mode, submittedToWorld: false, approved: false, proposed };
     if (isEffectFreeFixture(manifest) && !journalOptions) {
       assertFixtureModeAllowed(manifest, hostRequest);
-      assertCapabilityPreflightAccepted(driver.preflight(context, hostRequest));
+      assertCapabilityPreflightAccepted(await driver.preflight(context, hostRequest));
       const resolved = await driver.resolve(context, hostRequest);
       assertCapabilityResolutionBoundary(resolved);
       assertResolutionAccepted(resolved.resolutionInputBytes, hostRequest, manifest, livePolicy);
@@ -79,8 +79,8 @@ export async function runCapabilityMode({
     const journal = journalOptions instanceof EffectJournal ? journalOptions : new EffectJournal({ ...journalOptions, policy: livePolicy });
     const approvedContext = liveContext(context, livePolicy, { approved: true });
     const resolved = await journal.resolve(approvedContext, hostRequest, driver, {
-      beforeInvoke: (preflightContext, preflightHostRequest) => {
-        assertCapabilityPreflightAccepted(driver.preflight(preflightContext, preflightHostRequest));
+      beforeInvoke: async (preflightContext, preflightHostRequest) => {
+        assertCapabilityPreflightAccepted(await driver.preflight(preflightContext, preflightHostRequest));
       },
     });
     return { ...resolved, mode, submittedToWorld: submittedResolutionToWorld(resolved), approved: true, proposed };
@@ -96,8 +96,8 @@ export async function runCapabilityMode({
   const journal = journalOptions instanceof EffectJournal ? journalOptions : new EffectJournal({ ...journalOptions, policy: livePolicy });
   const liveDriverContext = liveContext(context, livePolicy);
   const resolved = await journal.resolve(liveDriverContext, hostRequest, driver, {
-    beforeInvoke: (preflightContext, preflightHostRequest) => {
-      assertCapabilityPreflightAccepted(driver.preflight(preflightContext, preflightHostRequest));
+    beforeInvoke: async (preflightContext, preflightHostRequest) => {
+      assertCapabilityPreflightAccepted(await driver.preflight(preflightContext, preflightHostRequest));
     },
   });
   return { ...resolved, mode, submittedToWorld: submittedResolutionToWorld(resolved) };
