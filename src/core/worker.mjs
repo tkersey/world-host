@@ -1,6 +1,7 @@
 import { EffectJournal } from './effect_journal.mjs';
 import { assertDurableRecoveryAllowed } from './actuator.mjs';
 import { assertCapabilityReportAccepted, createRunPolicy, preflightCapabilities } from './capabilities.mjs';
+import { defineCapabilityDriver } from './capability_driver.mjs';
 import { assertCapabilityPreflightAccepted, journaledHostRequest } from './capability_modes.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from './run.mjs';
 import { assertBytes, fail, fromUtf8, toHex } from './store.mjs';
@@ -344,14 +345,15 @@ export class RunController {
         worldHostRequest: item.worldHostRequest,
       });
       const journalHostRequest = journaledHostRequest(item.hostRequest, item.manifest);
+      const driver = controllerResolveDriver(item.driver);
       const resolved = await journal.resolve(
         context,
         journalHostRequest,
-        item.driver,
-        typeof item.driver?.preflight === 'function'
+        driver,
+        typeof driver?.preflight === 'function'
           ? {
               beforeInvoke: async (preflightContext, preflightHostRequest) => {
-                assertCapabilityPreflightAccepted(await item.driver.preflight(preflightContext, preflightHostRequest));
+                assertCapabilityPreflightAccepted(await driver.preflight(preflightContext, preflightHostRequest));
               },
             }
           : {},
@@ -360,6 +362,14 @@ export class RunController {
     });
     return effects;
   }
+}
+
+function controllerResolveDriver(driver) {
+  return exposesCapabilityAbi(driver) ? defineCapabilityDriver(driver) : driver;
+}
+
+function exposesCapabilityAbi(driver) {
+  return typeof driver?.preflight === 'function' && typeof driver?.dryRun === 'function' && typeof driver?.shadow === 'function';
 }
 
 async function recordBranchHeadProvenance(store, runId, branchId, parentHead, nextHead) {

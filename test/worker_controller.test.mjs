@@ -455,6 +455,27 @@ describe('RunController and WorldWorker', () => {
     assert.equal((await store.listEffectRecords(runId)).length, 0);
   });
 
+  it('wraps controller capability drivers before resolving effects', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(),
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [forbiddenEvidenceCapabilityDriver()],
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
+    const effects = await store.listEffectRecords(runId);
+    assert.equal(effects.length, 1);
+    assert.equal(effects[0].state, EffectState.running);
+    assert.equal(effects[0].diagnostics.turnClosureBytes, undefined);
+  });
+
   it('batches host requests with bounded concurrency and canonical resolution order', async () => {
     const requests = [
       fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'idempotency-key:1', idempotencyKeyFingerprint: 0xa09n }),
@@ -1891,6 +1912,30 @@ function preflightBlockedControllerDriver() {
     },
     async resolve(context, hostRequest) {
       return await inner.resolve(context, hostRequest);
+    },
+  };
+}
+
+function forbiddenEvidenceCapabilityDriver() {
+  const inner = fixtureEffectDriver({ driverId: 'forbidden-evidence-capability-driver' });
+  return {
+    manifest() {
+      return inner.manifest();
+    },
+    preflight() {
+      return { accepted: true };
+    },
+    dryRun() {
+      return { wouldInvoke: true, proposedAction: { driver: 'forbidden-evidence-capability-driver' } };
+    },
+    shadow() {
+      return { liveInvoked: false, schemaAccepted: false };
+    },
+    async resolve(context, hostRequest) {
+      return {
+        ...await inner.resolve(context, hostRequest),
+        diagnostics: { turnClosureBytes: fixtureTurnClosureBytes() },
+      };
     },
   };
 }
