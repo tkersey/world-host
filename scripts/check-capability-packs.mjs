@@ -24,7 +24,7 @@ for (const name of names) {
   const artifacts = {};
   for (const item of checked.checksums) artifacts[item.path] = new Uint8Array(await readPackFile(packRoot, item.path));
   await assertCapabilityPackChecksums(checked, artifacts);
-  const receipt = JSON.parse(await readFile(path.join(packRoot, 'conformance.json'), 'utf8'));
+  const receipt = JSON.parse(await readPackFile(packRoot, 'conformance.json', 'utf8'));
   assertCapabilityConformanceReceipt(receipt);
   if (receipt.packFingerprint !== checked.packFingerprint) throw new Error(`ERR_CAPABILITY_CONFORMANCE_PACK_FINGERPRINT:${name}`);
   if (receipt.driverId !== checked.driverId) throw new Error(`ERR_CAPABILITY_CONFORMANCE_DRIVER:${name}`);

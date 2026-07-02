@@ -31,7 +31,7 @@ export async function runCapabilityMode({
     const resolved = await driver.resolve(context, hostRequest);
     assertCapabilityResolutionBoundary(resolved);
     assertResolutionAccepted(resolved.resolutionInputBytes, hostRequest, manifest, livePolicy);
-    return { mode, submittedToWorld: true, ...resolved };
+    return { ...resolved, mode, submittedToWorld: true };
   }
   if (mode === CapabilityExecutionMode.dryRun) {
     return { mode, submittedToWorld: false, dryRun: await driver.dryRun(context, hostRequest) };
@@ -60,7 +60,7 @@ export async function runCapabilityMode({
       const resolved = await driver.resolve(context, hostRequest);
       assertCapabilityResolutionBoundary(resolved);
       assertResolutionAccepted(resolved.resolutionInputBytes, hostRequest, manifest, livePolicy);
-      return { mode, submittedToWorld: true, approved: true, proposed, ...resolved };
+      return { ...resolved, mode, submittedToWorld: true, approved: true, proposed };
     }
     assertCapabilityPolicyAllows({
       manifest,
@@ -78,7 +78,7 @@ export async function runCapabilityMode({
         assertCapabilityPreflightAccepted(driver.preflight(preflightContext, preflightHostRequest));
       },
     });
-    return { mode, submittedToWorld: true, approved: true, proposed, ...resolved };
+    return { ...resolved, mode, submittedToWorld: true, approved: true, proposed };
   }
   assertCapabilityPolicyAllows({
     manifest,
@@ -95,7 +95,7 @@ export async function runCapabilityMode({
       assertCapabilityPreflightAccepted(driver.preflight(preflightContext, preflightHostRequest));
     },
   });
-  return { mode, submittedToWorld: true, ...resolved };
+  return { ...resolved, mode, submittedToWorld: true };
 }
 
 function liveContext(context, policy, action = null) {

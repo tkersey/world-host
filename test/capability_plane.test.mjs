@@ -275,6 +275,9 @@ describe('Capability Plane v0.2 core contracts', () => {
     const request = modelRequest('goal=invoke', 'model-key');
     const fixture = await runCapabilityMode({ mode: 'fixture', driver, hostRequest: request });
     assert.equal(decodeResolutionInputBytes(fixture.resolutionInputBytes).status, 0);
+    const fixtureWithDriverOverrides = await runCapabilityMode({ mode: 'fixture', driver: hostFieldOverrideFixtureDriver(), hostRequest: request });
+    assert.equal(fixtureWithDriverOverrides.mode, 'fixture');
+    assert.equal(fixtureWithDriverOverrides.submittedToWorld, true);
     assert.throws(
       () => assertCapabilityResolutionBoundary({ ...fixture, turnReceiptBytes: fromUtf8('receipt') }),
       { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
@@ -329,6 +332,16 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.equal(approved.approved, true);
     assert.equal(approved.proposed.wouldInvoke, false);
     assertCapabilityResolutionBoundary(approved);
+    const approvedWithDriverOverrides = await runCapabilityMode({
+      mode: 'approval',
+      driver: hostFieldOverrideFixtureDriver(),
+      hostRequest: request,
+      approval: () => ({ approved: true }),
+    });
+    assert.equal(approvedWithDriverOverrides.mode, 'approval');
+    assert.equal(approvedWithDriverOverrides.submittedToWorld, true);
+    assert.equal(approvedWithDriverOverrides.approved, true);
+    assert.equal(approvedWithDriverOverrides.proposed.wouldInvoke, false);
     let approvalShortcutLiveEffectResolveCalled = false;
     await assert.rejects(
       () => runCapabilityMode({
@@ -392,6 +405,47 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(JSON.stringify(result.diagnostics).includes('secret'), false);
       assert.equal(decodeResolutionInputBytes(result.resolutionInputBytes).status, 0);
       assert.equal(driver.dryRun({}, httpRequest()).wouldInvoke, true);
+
+      let observedBody = undefined;
+      globalThis.fetch = async (url, options) => {
+        observedBody = options.body;
+        return new Response('{"status":"ok"}', {
+          status: 200,
+          headers: { 'x-request-id': 'request-null-body' },
+        });
+      };
+      await new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }).resolve({
+        policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+      }, {
+        ...httpRequest(),
+        hostRequestFingerprint: 'world:host-request:00000000000000a6',
+        idempotencyKeyBytes: fromUtf8('http-key-null-body'),
+        idempotencyKeyWorldFingerprint: 'world:key:http-null-body',
+        requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/decide', method: 'POST', body: null })),
+      });
+      assert.equal(observedBody, 'null');
+
+      let errorBodyPulled = false;
+      globalThis.fetch = async () => new Response(new ReadableStream({
+        pull(controller) {
+          errorBodyPulled = true;
+          controller.enqueue(fromUtf8('http-error-body'));
+          controller.close();
+        },
+      }), {
+        status: 500,
+        headers: { 'x-request-id': 'request-http-error' },
+      });
+      const httpError = await new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }).resolve({
+        policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+      }, {
+        ...httpRequest(),
+        hostRequestFingerprint: 'world:host-request:00000000000000a7',
+        idempotencyKeyBytes: fromUtf8('http-key-error-body'),
+        idempotencyKeyWorldFingerprint: 'world:key:http-error-body',
+      });
+      assert.equal(decodeResolutionInputBytes(httpError.resolutionInputBytes).status, 1);
+      assert.equal(errorBodyPulled, true);
 
       let reuseFetchCount = 0;
       globalThis.fetch = async () => {
@@ -1326,6 +1380,25 @@ function wrongTargetFixtureDriver() {
           hostClaimBytes: fromUtf8('{}'),
           attemptNumber: 1,
         }),
+      };
+    },
+  };
+}
+
+function hostFieldOverrideFixtureDriver() {
+  const delegate = new FixtureAgentModelCapabilityDriver();
+  return {
+    manifest: () => delegate.manifest(),
+    preflight: () => ({ accepted: true }),
+    dryRun: delegate.dryRun.bind(delegate),
+    shadow: delegate.shadow.bind(delegate),
+    async resolve(context, hostRequest) {
+      return {
+        ...await delegate.resolve(context, hostRequest),
+        mode: 'driver-mode',
+        submittedToWorld: false,
+        approved: false,
+        proposed: { wouldInvoke: true },
       };
     },
   };

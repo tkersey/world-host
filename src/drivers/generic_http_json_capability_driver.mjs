@@ -118,8 +118,14 @@ export class GenericHttpJsonCapabilityDriver {
         signal: controller.signal,
         redirect: 'manual',
       });
-      if (response.status >= 300 && response.status < 400) fail('ERR_HTTP_REDIRECT_REJECTED');
-      if (!response.ok) return this.#resolution(hostRequest, { status: 'http_error', statusCode: response.status }, 1, response.headers.get('x-request-id'));
+      if (response.status >= 300 && response.status < 400) {
+        await discardResponseBody(response, this.maximumResponseBytes);
+        fail('ERR_HTTP_REDIRECT_REJECTED');
+      }
+      if (!response.ok) {
+        await discardResponseBody(response, this.maximumResponseBytes);
+        return this.#resolution(hostRequest, { status: 'http_error', statusCode: response.status }, 1, response.headers.get('x-request-id'));
+      }
       const bytes = await readResponseBytes(response, this.maximumResponseBytes);
       const json = bytes.byteLength ? JSON.parse(new TextDecoder().decode(bytes)) : null;
       const body = extractPath(json, this.responseExtractionPath);
@@ -154,7 +160,7 @@ export class GenericHttpJsonCapabilityDriver {
     if (!this.origins.has(parsedUrl.origin)) fail('ERR_HTTP_ORIGIN_REJECTED');
     const method = String(payload.method ?? [...this.methods][0] ?? 'POST').toUpperCase();
     if (!this.methods.has(method)) fail('ERR_HTTP_METHOD_REJECTED');
-    const bodyValue = this.requestTemplate ?? payload.body ?? payload;
+    const bodyValue = this.requestTemplate ?? (Object.prototype.hasOwnProperty.call(payload, 'body') ? payload.body : payload);
     const body = method === 'GET' ? undefined : stableJson(bodyValue);
     const bodyBytes = body ? fromUtf8(body).byteLength : 0;
     if (bodyBytes > this.maximumRequestBytes) fail('ERR_HTTP_REQUEST_TOO_LARGE');
@@ -291,6 +297,26 @@ async function readResponseBytes(response, maximumResponseBytes) {
     throw error;
   }
   return concatChunks(chunks, total);
+}
+
+async function discardResponseBody(response, maximumResponseBytes) {
+  if (!response.body) return;
+  const reader = response.body.getReader();
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+      total += chunk.byteLength;
+      if (total > maximumResponseBytes) {
+        await reader.cancel().catch(() => {});
+        break;
+      }
+    }
+  } catch {
+    await reader.cancel().catch(() => {});
+  }
 }
 
 function concatChunks(chunks, total) {

@@ -777,6 +777,30 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('rejects symlinked capability pack conformance receipts during proof script', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-proof-symlink-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      const outsideReceipt = path.join(root, 'outside-conformance.json');
+      await writeFile(outsideReceipt, await readFile(path.join(pack, 'conformance.json')));
+      await rm(path.join(pack, 'conformance.json'));
+      await symlink(outsideReceipt, path.join(pack, 'conformance.json'));
+
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs')], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ARTIFACT_UNSAFE:conformance\.json/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('rejects stale capability conformance receipts during CLI check-pack', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-conformance-'));
     const pack = path.join(root, 'capability-pack-v0.2-fixture');
