@@ -1227,14 +1227,29 @@ class HumanApprovalCapabilityDriver {
 }
 function assertHumanPolicyAllows(context, manifest, hostRequest) {
   const policy = context?.policy ?? {};
+  if (policy.auditOnly === true)
+    fail("ERR_CAPABILITY_AUDIT_ONLY_DENIED");
   if (policy.allowLiveEffects !== true)
     fail("ERR_CAPABILITY_LIVE_DENIED");
+  const deniedCapabilityPacks = policySet(policy.deniedCapabilityPacks);
+  if (deniedCapabilityPacks.has(manifest?.packFingerprint) || deniedCapabilityPacks.has(manifest?.driverId))
+    fail("ERR_CAPABILITY_PACK_DENIED");
+  const allowedCapabilityPacks = policySet(policy.allowedCapabilityPacks);
+  if (allowedCapabilityPacks.size && !allowedCapabilityPacks.has(manifest?.packFingerprint) && !allowedCapabilityPacks.has(manifest?.driverId))
+    fail("ERR_CAPABILITY_PACK_NOT_ALLOWED");
   if (policy.allowHumanEffects !== true)
     fail("ERR_CAPABILITY_HUMAN_DENIED");
   const allowedAuthorityLabels = policySet(policy.allowedAuthorityLabels);
   const deniedAuthorityLabels = (manifest?.authorityLabels ?? []).filter((label) => allowedAuthorityLabels.size && !allowedAuthorityLabels.has(label));
   if (deniedAuthorityLabels.length)
     fail("ERR_CAPABILITY_AUTHORITY_DENIED", "authority label denied", { labels: deniedAuthorityLabels });
+  const maximumRequestBytes = positivePolicyLimit(policy.maximumRequestBytes ?? policy.maximumPromptBytes ?? 1024 * 1024, "maximumRequestBytes");
+  const maximumResponseBytes = positivePolicyLimit(policy.maximumResponseBytes ?? 1024 * 1024, "maximumResponseBytes");
+  const policyRequestBytes = hostRequest?.policyRequestBytes ?? hostRequest?.requestBytes;
+  if (policyRequestBytes?.byteLength > maximumRequestBytes)
+    fail("ERR_CAPABILITY_PROMPT_TOO_LARGE");
+  if (manifest?.maximumResponseBytes > maximumResponseBytes)
+    fail("ERR_CAPABILITY_RESPONSE_LIMIT_EXCEEDS_POLICY");
 }
 function policySet(value) {
   if (value instanceof Set)
@@ -1244,6 +1259,11 @@ function policySet(value) {
   if (value == null)
     return new Set;
   return new Set([value]);
+}
+function positivePolicyLimit(value, field) {
+  if (!Number.isSafeInteger(value) || value < 1)
+    fail("ERR_CAPABILITY_POLICY_LIMIT_INVALID", `${field} must be positive`);
+  return value;
 }
 function resolutionTarget(hostRequest = {}) {
   const value = hostRequest.hostRequestFingerprint;

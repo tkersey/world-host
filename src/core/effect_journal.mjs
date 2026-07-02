@@ -457,6 +457,7 @@ export class EffectJournal {
 export function journaledHostRequest(hostRequest, manifest) {
   const endpointSource = manifest?.diagnostics?.endpointSource;
   if (endpointSource !== 'config' && endpointSource !== 'request-or-config') return hostRequest;
+  const requestRendering = manifest?.diagnostics?.requestRendering ?? null;
   let parsed = {};
   if (hostRequest?.requestBytes) {
     try {
@@ -465,15 +466,24 @@ export function journaledHostRequest(hostRequest, manifest) {
       return hostRequest;
     }
   }
-  if (endpointSource === 'request-or-config' && parsed?.url !== undefined && parsed.method !== undefined) return hostRequest;
+  if (endpointSource === 'request-or-config' && parsed?.url !== undefined && parsed.method !== undefined) {
+    return requestRendering === null ? hostRequest : {
+      ...hostRequest,
+      effectIdentityBytes: fromUtf8(stableJson({
+        request: parsed,
+        configuredEndpoint: null,
+        requestRendering,
+      })),
+    };
+  }
   const configuredEndpoint = configuredEffectIdentityTarget(manifest, parsed);
-  if (!configuredEndpoint) return hostRequest;
+  if (!configuredEndpoint && requestRendering === null) return hostRequest;
   return {
     ...hostRequest,
     effectIdentityBytes: fromUtf8(stableJson({
       request: parsed,
       configuredEndpoint,
-      requestRendering: manifest?.diagnostics?.requestRendering ?? null,
+      requestRendering,
     })),
   };
 }

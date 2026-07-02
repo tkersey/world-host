@@ -963,6 +963,18 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.deepEqual(driver.manifest().supportedResponseStatuses, ['ok', 'http_error', 'deferred']);
       const packDriver = new HttpJsonPackCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' });
       assert.deepEqual(packDriver.manifest().supportedResponseStatuses, ['ok', 'http_error', 'deferred']);
+      const renderingPackDriver = new HttpJsonPackCapabilityDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        secretHeaders: { Authorization: 'API_TOKEN' },
+        requestTemplate: { prompt: 'pack' },
+        responseExtractionPath: 'action',
+        idempotencyHeaderName: 'X-Idempotency-Key',
+      });
+      assert.equal(renderingPackDriver.manifest().diagnostics.configuredEndpointUrl, 'https://allowed.example/decide');
+      assert.match(renderingPackDriver.manifest().diagnostics.requestRendering.requestTemplateFingerprint, /^sha256:[0-9a-f]{64}$/);
+      assert.match(renderingPackDriver.manifest().diagnostics.requestRendering.secretHeadersFingerprint, /^sha256:[0-9a-f]{64}$/);
+      assert.equal(renderingPackDriver.manifest().diagnostics.requestRendering.idempotencyHeaderName, 'X-Idempotency-Key');
+      assert.match(renderingPackDriver.manifest().diagnostics.requestRendering.responseExtractionPathFingerprint, /^sha256:[0-9a-f]{64}$/);
       observedHeaders = null;
       await assert.rejects(
         () => packDriver.resolve({
@@ -1796,6 +1808,72 @@ describe('Capability Plane v0.2 core contracts', () => {
       );
       assert.equal(defaultMethodIdentityFetchCount, 1);
 
+      let explicitRenderingFetchCount = 0;
+      globalThis.fetch = async (url, options) => {
+        explicitRenderingFetchCount += 1;
+        assert.equal(url, 'https://allowed.example/decide');
+        assert.equal(options.method, 'POST');
+        assert.equal(options.body, '{"prompt":"first"}');
+        return new Response('{"action":{"variant":"final","text":"explicit-rendering"}}', {
+          status: 200,
+          headers: { 'x-request-id': 'request-explicit-rendering' },
+        });
+      };
+      const explicitRenderingRequest = {
+        ...httpRequest(),
+        hostRequestFingerprint: 'world:host-request:00000000000000a7',
+        idempotencyKeyBytes: fromUtf8('http-key-explicit-rendering'),
+        idempotencyKeyWorldFingerprint: 'world:key:http-explicit-rendering',
+        requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/decide', method: 'POST', body: { prompt: 'hi' } })),
+      };
+      const explicitRenderingJournalOptions = {
+        store: new MemoryStore(),
+        runId: 'explicit-rendering-run',
+        branchId: 'main',
+        parentTurnClosureFingerprint: 'world:turn-closure:parent',
+      };
+      await runCapabilityMode({
+        mode: 'live',
+        driver: new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://fallback.example/decide',
+          allowEndpointFromRequest: true,
+          origins: ['https://allowed.example', 'https://fallback.example'],
+          requestTemplate: { prompt: 'first' },
+        }),
+        hostRequest: explicitRenderingRequest,
+        journalOptions: explicitRenderingJournalOptions,
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      });
+      globalThis.fetch = async () => {
+        throw new Error('request rendering identity conflict should block before fetch');
+      };
+      await assert.rejects(
+        () => runCapabilityMode({
+          mode: 'live',
+          driver: new GenericHttpJsonCapabilityDriver({
+            endpointUrl: 'https://fallback.example/decide',
+            allowEndpointFromRequest: true,
+            origins: ['https://allowed.example', 'https://fallback.example'],
+            requestTemplate: { prompt: 'second' },
+          }),
+          hostRequest: explicitRenderingRequest,
+          journalOptions: explicitRenderingJournalOptions,
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }),
+        { code: 'ERR_EFFECT_IDEMPOTENCY_CONFLICT' },
+      );
+      assert.equal(explicitRenderingFetchCount, 1);
+
       let shadowFetchCalled = false;
       globalThis.fetch = async () => {
         shadowFetchCalled = true;
@@ -1983,6 +2061,41 @@ describe('Capability Plane v0.2 core contracts', () => {
     const packApproval = new HumanApprovalPackCapabilityDriver({ mode: 'noninteractive-allow' });
     assert.deepEqual(packApproval.manifest().supportedResponseStatuses, ['ok', 'rejected']);
     assert.equal(packApproval.preflight({}, approvalRequest()).accepted, false);
+    const pinnedApprovalPackFingerprint = 'sha256:'.concat('6'.repeat(64));
+    const pinnedPackApproval = new HumanApprovalPackCapabilityDriver({
+      mode: 'noninteractive-allow',
+      packFingerprint: pinnedApprovalPackFingerprint,
+    });
+    await assert.rejects(
+      () => pinnedPackApproval.resolve({
+        policy: {
+          allowLiveEffects: true,
+          allowHumanEffects: true,
+          deniedCapabilityPacks: [pinnedApprovalPackFingerprint],
+        },
+      }, approvalRequest()),
+      { code: 'ERR_CAPABILITY_PACK_DENIED' },
+    );
+    await assert.rejects(
+      () => pinnedPackApproval.resolve({
+        policy: {
+          allowLiveEffects: true,
+          allowHumanEffects: true,
+          allowedCapabilityPacks: ['sha256:'.concat('7'.repeat(64))],
+        },
+      }, approvalRequest()),
+      { code: 'ERR_CAPABILITY_PACK_NOT_ALLOWED' },
+    );
+    await assert.rejects(
+      () => packApproval.resolve({
+        policy: {
+          allowLiveEffects: true,
+          allowHumanEffects: true,
+          maximumResponseBytes: 1,
+        },
+      }, approvalRequest()),
+      { code: 'ERR_CAPABILITY_RESPONSE_LIMIT_EXCEEDS_POLICY' },
+    );
     await assert.rejects(
       () => packApproval.resolve({}, approvalRequest()),
       { code: 'ERR_CAPABILITY_LIVE_DENIED' },

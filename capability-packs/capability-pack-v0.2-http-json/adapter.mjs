@@ -1374,9 +1374,16 @@ class GenericHttpJsonCapabilityDriver {
         origins: [...this.origins],
         methods: [...this.methods],
         endpointSource: this.allowEndpointFromRequest ? "request-or-config" : "config",
+        configuredEndpointUrl: this.endpointUrl,
         configuredOrigin: this.endpointOrigin,
         defaultMethod: [...this.methods][0] ?? "POST",
-        secretHeaders: Object.keys(this.secretHeaders)
+        secretHeaders: Object.keys(this.secretHeaders),
+        requestRendering: {
+          requestTemplateFingerprint: this.requestTemplate == null ? null : sha256Json(this.requestTemplate),
+          secretHeadersFingerprint: sha256Json(this.secretHeaders),
+          idempotencyHeaderName: this.idempotencyHeaderName,
+          responseExtractionPathFingerprint: this.responseExtractionPath == null ? null : sha256Json(this.responseExtractionPath)
+        }
       }
     };
   }
@@ -1581,6 +1588,9 @@ class GenericHttpJsonCapabilityDriver {
 function parseJsonBytes(bytes2) {
   assertBytes(bytes2, "requestBytes");
   return JSON.parse(new TextDecoder().decode(bytes2));
+}
+function sha256Json(value) {
+  return `sha256:${new Bun.CryptoHasher("sha256").update(fromUtf8(stableJson(value))).digest("hex")}`;
 }
 function parseHttpUrl(value) {
   let parsed;
