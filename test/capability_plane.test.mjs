@@ -135,6 +135,37 @@ describe('Capability Plane v0.2 core contracts', () => {
       checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
     }, { 'sidecar.mjs': sidecar }), true);
     assert.throws(
+      () => assertCapabilityManifest({ ...manifest, extra: 'sk-raw-manifest-secret' }),
+      { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
+    );
+    assert.throws(
+      () => assertCapabilityManifest({
+        ...manifest,
+        requiredSecrets: [{ name: 'API_TOKEN', class: 'opaque', required: true, default: 'sk-secret-default' }],
+      }),
+      { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
+    );
+    const passedReceipt = {
+      driverId: 'fixture-agent-model',
+      packFingerprint: 'sha256:'.concat('1'.repeat(64)),
+      corpusFingerprint: 'sha256:'.concat('2'.repeat(64)),
+      vectors: [{ name: 'passed-vector', status: 'passed' }],
+    };
+    assert.throws(
+      () => assertCapabilityConformanceReceipt({
+        ...passedReceipt,
+        vectors: [{ name: 'passed-vector', status: 'passed', apiKey: 'sk-vector-secret' }],
+      }),
+      { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
+    );
+    assert.throws(
+      () => assertCapabilityConformanceReceipt({
+        ...passedReceipt,
+        nonClaims: ['token=secret-value'],
+      }),
+      { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
+    );
+    assert.throws(
       () => assertCapabilityConformanceReceipt({
         driverId: 'fixture-agent-model',
         packFingerprint: 'sha256:'.concat('1'.repeat(64)),
@@ -599,6 +630,25 @@ describe('Capability Plane v0.2 core contracts', () => {
           hostRequestFingerprint: 'world:host-request:00000000000000ab',
           idempotencyKeyBytes: fromUtf8('http-key-secret-echo'),
           idempotencyKeyWorldFingerprint: 'world:key:http-secret-echo',
+        }),
+        { code: 'ERR_SECRET_PERSISTED' },
+      );
+      globalThis.fetch = async () => new Response('{"action":{"variant":"final","text":"ok"}}', {
+        status: 200,
+        headers: { 'x-request-id': 'Bearer fixture-token-value' },
+      });
+      await assert.rejects(
+        () => new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          secretHeaders: { Authorization: 'API_TOKEN' },
+          secretProvider: new EnvSecretProvider({ API_TOKEN: 'Bearer fixture-token-value' }),
+        }).resolve({
+          policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+        }, {
+          ...httpRequest(),
+          hostRequestFingerprint: 'world:host-request:00000000000000ac',
+          idempotencyKeyBytes: fromUtf8('http-key-secret-transaction-ref'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-secret-transaction-ref',
         }),
         { code: 'ERR_SECRET_PERSISTED' },
       );

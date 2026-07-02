@@ -14,6 +14,12 @@ export const CapabilitySidecarCommand = Object.freeze({
 
 const COMMANDS = new Set(Object.values(CapabilitySidecarCommand));
 const DEFAULT_SIDECAR_PATH = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin';
+const BYTES_SENTINEL_KEY = '__world_host_sidecar_type';
+const BYTES_SENTINEL_VALUE = 'bytes';
+const OBJECT_SENTINEL_VALUE = 'object';
+const BYTES_SENTINEL_PAYLOAD = 'base64';
+const OBJECT_SENTINEL_PAYLOAD = 'value';
+const LEGACY_BYTES_KEY = '__bytes';
 
 export class CapabilitySidecar {
   constructor({ command, timeoutMs = 5000, maximumFrameBytes = 1024 * 1024, env = {} } = {}) {
@@ -195,17 +201,62 @@ function sidecarPath() {
 }
 
 function encodeBytes(value) {
-  if (value instanceof Uint8Array) return { __bytes: Buffer.from(value).toString('base64') };
+  if (value instanceof Uint8Array) {
+    return {
+      [BYTES_SENTINEL_KEY]: BYTES_SENTINEL_VALUE,
+      [BYTES_SENTINEL_PAYLOAD]: Buffer.from(value).toString('base64'),
+    };
+  }
   if (Array.isArray(value)) return value.map(encodeBytes);
   if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, encodeBytes(child)]));
+  const encoded = Object.fromEntries(Object.entries(value).map(([key, child]) => [key, encodeBytes(child)]));
+  if (reservedSidecarObject(value)) {
+    return {
+      [BYTES_SENTINEL_KEY]: OBJECT_SENTINEL_VALUE,
+      [OBJECT_SENTINEL_PAYLOAD]: encoded,
+    };
+  }
+  return encoded;
 }
 
 function decodeBytes(value) {
-  if (value && typeof value === 'object' && typeof value.__bytes === 'string') return Uint8Array.from(Buffer.from(value.__bytes, 'base64'));
+  if (newBytesSentinel(value)) return Uint8Array.from(Buffer.from(value[BYTES_SENTINEL_PAYLOAD], 'base64'));
+  if (legacyBytesSentinel(value)) return Uint8Array.from(Buffer.from(value[LEGACY_BYTES_KEY], 'base64'));
+  if (escapedObjectSentinel(value)) return decodeEscapedObject(value[OBJECT_SENTINEL_PAYLOAD]);
   if (Array.isArray(value)) return value.map(decodeBytes);
   if (!value || typeof value !== 'object') return value;
   return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, decodeBytes(child)]));
+}
+
+function reservedSidecarObject(value) {
+  return Object.hasOwn(value, LEGACY_BYTES_KEY) || Object.hasOwn(value, BYTES_SENTINEL_KEY);
+}
+
+function newBytesSentinel(value) {
+  return exactObjectKeys(value, [BYTES_SENTINEL_KEY, BYTES_SENTINEL_PAYLOAD])
+    && value[BYTES_SENTINEL_KEY] === BYTES_SENTINEL_VALUE
+    && typeof value[BYTES_SENTINEL_PAYLOAD] === 'string';
+}
+
+function legacyBytesSentinel(value) {
+  return exactObjectKeys(value, [LEGACY_BYTES_KEY]) && typeof value[LEGACY_BYTES_KEY] === 'string';
+}
+
+function escapedObjectSentinel(value) {
+  return exactObjectKeys(value, [BYTES_SENTINEL_KEY, OBJECT_SENTINEL_PAYLOAD])
+    && value[BYTES_SENTINEL_KEY] === OBJECT_SENTINEL_VALUE;
+}
+
+function decodeEscapedObject(value) {
+  if (Array.isArray(value)) return value.map(decodeBytes);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, decodeBytes(child)]));
+}
+
+function exactObjectKeys(value, keys) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const actual = Object.keys(value);
+  return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
 }
 
 function concat(left, right) {

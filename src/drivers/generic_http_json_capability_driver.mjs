@@ -120,14 +120,18 @@ export class GenericHttpJsonCapabilityDriver {
         }
         if (!response.ok) {
           await discardResponseBody(response, this.maximumResponseBytes);
-          return this.#resolution(hostRequest, { status: 'http_error', statusCode: response.status }, 1, response.headers.get('x-request-id'));
+          const transactionRef = response.headers.get('x-request-id');
+          assertNoKnownSecretEcho(transactionRef, secretValues);
+          return this.#resolution(hostRequest, { status: 'http_error', statusCode: response.status }, 1, transactionRef);
         }
         const bytes = await readResponseBytes(response, this.maximumResponseBytes);
         const json = bytes.byteLength ? JSON.parse(new TextDecoder().decode(bytes)) : null;
         const body = extractPath(json, this.responseExtractionPath);
         const payload = { status: 'ok', statusCode: response.status, body };
         assertNoKnownSecretEcho(payload, secretValues);
-        return this.#resolution(hostRequest, payload, 0, response.headers.get('x-request-id'));
+        const transactionRef = response.headers.get('x-request-id');
+        assertNoKnownSecretEcho(transactionRef, secretValues);
+        return this.#resolution(hostRequest, payload, 0, transactionRef);
       });
     } catch (error) {
       if (error?.name === 'AbortError') {

@@ -1,5 +1,6 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
@@ -16,6 +17,23 @@ describe('Capability sidecar transport', () => {
     const decoded = decodeSidecarFrame(frame);
     assert.equal(decoded.command, 'resolve');
     assert.deepEqual([...decoded.payload.bytes], [...fromUtf8('hello')]);
+    const reservedObjectFrame = encodeSidecarFrame({
+      command: CapabilitySidecarCommand.resolve,
+      payload: {
+        tagged: { __bytes: 'abc', other: 1 },
+        exactLegacyShape: { __bytes: 'plain-user-object' },
+        namespaced: { __world_host_sidecar_type: 'bytes', base64: 'plain-user-object' },
+      },
+    });
+    const reservedObjectDecoded = decodeSidecarFrame(reservedObjectFrame);
+    assert.deepEqual(reservedObjectDecoded.payload.tagged, { __bytes: 'abc', other: 1 });
+    assert.deepEqual(reservedObjectDecoded.payload.exactLegacyShape, { __bytes: 'plain-user-object' });
+    assert.deepEqual(reservedObjectDecoded.payload.namespaced, { __world_host_sidecar_type: 'bytes', base64: 'plain-user-object' });
+    const legacyBytes = decodeSidecarFrame(fromUtf8(`${JSON.stringify({
+      command: CapabilitySidecarCommand.resolve,
+      payload: { bytes: { __bytes: Buffer.from('legacy').toString('base64') } },
+    })}\n`));
+    assert.deepEqual([...legacyBytes.payload.bytes], [...fromUtf8('legacy')]);
     assert.throws(
       () => decodeSidecarFrame(fromUtf8('x'.repeat(32)), 8),
       { code: 'ERR_CAPABILITY_SIDECAR_FRAME_TOO_LARGE' },

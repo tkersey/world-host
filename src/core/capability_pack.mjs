@@ -86,6 +86,7 @@ export class CapabilityDescriptor {
 
 export class CapabilityConformanceReceipt {
   constructor(fields) {
+    assertNoConformanceCredentialMaterial(fields);
     requiredString(fields?.driverId, 'driverId');
     requiredString(fields?.packFingerprint, 'packFingerprint');
     requiredString(fields?.corpusFingerprint, 'corpusFingerprint');
@@ -105,6 +106,7 @@ export class CapabilityConformanceReceipt {
 
 export function assertCapabilityManifest(input, options = {}) {
   if (!input || typeof input !== 'object') fail('ERR_CAPABILITY_MANIFEST_INVALID');
+  assertNoCredentialMaterial(input);
   const formatVersion = exactInteger(input.formatVersion, 'formatVersion', world_host_capability_pack_format_version);
   const driverAbiVersion = exactInteger(input.driverAbiVersion, 'driverAbiVersion', world_host_capability_driver_abi_version);
   const manifest = new CapabilityManifest({
@@ -319,6 +321,25 @@ function assertNoCredentialMaterial(value, path = []) {
   }
   if (typeof value === 'object') {
     for (const [key, child] of Object.entries(value)) assertNoCredentialMaterial(child, [...path, key]);
+  }
+}
+
+function assertNoConformanceCredentialMaterial(value, path = []) {
+  if (value == null) return;
+  if (typeof value === 'string') {
+    const credentialPath = SECRET_PATTERN.test(path.join('.'));
+    const allowedSentinel = /^(?:opaque|required|redacted|no-(?:credentials?|secrets?|tokens?))$/i.test(value);
+    if ((credentialPath && value.length > 0 && !allowedSentinel) || concreteSecretValue(value) || /sk-[A-Za-z0-9_-]{8,}/.test(value)) {
+      fail('ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN', `credential-like value forbidden at ${path.join('.')}`);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertNoConformanceCredentialMaterial(item, [...path, String(index)]));
+    return;
+  }
+  if (typeof value === 'object') {
+    for (const [key, child] of Object.entries(value)) assertNoConformanceCredentialMaterial(child, [...path, key]);
   }
 }
 
