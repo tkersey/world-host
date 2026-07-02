@@ -1413,9 +1413,10 @@ class GenericHttpJsonCapabilityDriver {
   async resolve(context, hostRequest) {
     this.#assertPolicyAllows(context, hostRequest);
     this.#assertSecrets();
+    const secretValues = await this.#secretValues();
     const request = this.#request(hostRequest);
     try {
-      return await this.#fetchWithRetry(request, hostRequest, async (response) => {
+      return await this.#fetchWithRetry(request, hostRequest, secretValues, async (response) => {
         if (response.status >= 300 && response.status < 400) {
           await discardResponseBody(response, this.maximumResponseBytes);
           fail("ERR_HTTP_REDIRECT_REJECTED");
@@ -1427,7 +1428,9 @@ class GenericHttpJsonCapabilityDriver {
         const bytes2 = await readResponseBytes(response, this.maximumResponseBytes);
         const json = bytes2.byteLength ? JSON.parse(new TextDecoder().decode(bytes2)) : null;
         const body = extractPath(json, this.responseExtractionPath);
-        return this.#resolution(hostRequest, { status: "ok", statusCode: response.status, body }, 0, response.headers.get("x-request-id"));
+        const payload = { status: "ok", statusCode: response.status, body };
+        assertNoKnownSecretEcho(payload, secretValues);
+        return this.#resolution(hostRequest, payload, 0, response.headers.get("x-request-id"));
       });
     } catch (error) {
       if (error?.name === "AbortError") {
@@ -1490,19 +1493,20 @@ class GenericHttpJsonCapabilityDriver {
       action
     });
   }
-  async#headers(hostRequest) {
+  async#headers(hostRequest, secretValues = null) {
     const headers = {
       Accept: "application/json",
       "Content-Type": "application/json",
       [this.idempotencyHeaderName]: hostRequest.idempotencyKeyWorldFingerprint
     };
     assertNoReservedSecretHeaders(this.secretHeaders, this.idempotencyHeaderName);
+    const values = secretValues ?? await this.#secretValues();
     for (const [header, secretName] of Object.entries(this.secretHeaders)) {
-      headers[header] = await this.#secret(secretName);
+      headers[header] = values.get(secretName);
     }
     return headers;
   }
-  async#fetchWithRetry(request, hostRequest, handleResponse) {
+  async#fetchWithRetry(request, hostRequest, secretValues, handleResponse) {
     let lastError = null;
     for (let attempt = 1;attempt <= this.retryPolicy.attempts; attempt += 1) {
       const controller = new AbortController;
@@ -1510,7 +1514,7 @@ class GenericHttpJsonCapabilityDriver {
       try {
         const response = await fetch(request.url, {
           method: request.method,
-          headers: await this.#headers(hostRequest),
+          headers: await this.#headers(hostRequest, secretValues),
           body: request.body,
           signal: controller.signal,
           redirect: "manual"
@@ -1535,6 +1539,13 @@ class GenericHttpJsonCapabilityDriver {
     if (typeof value !== "string" || value.length === 0)
       fail("ERR_SECRET_MISSING");
     return value;
+  }
+  async#secretValues() {
+    const values = new Map;
+    for (const secretName of new Set(Object.values(this.secretHeaders))) {
+      values.set(secretName, await this.#secret(secretName));
+    }
+    return values;
   }
   #assertSecrets() {
     if (!Object.keys(this.secretHeaders).length)
@@ -1591,6 +1602,49 @@ function assertNoReservedSecretHeaders(secretHeaders, idempotencyHeaderName) {
 }
 function normalizedHeaderName(value) {
   return String(value).trim().toLowerCase();
+}
+function assertNoKnownSecretEcho(value, secretValues) {
+  const candidates = secretEchoCandidates(secretValues);
+  if (!candidates.length)
+    return;
+  visitPayloadStrings(value, (text) => {
+    for (const candidate of candidates) {
+      if (text.includes(candidate))
+        fail("ERR_SECRET_PERSISTED", "HTTP response echoed a local secret");
+    }
+  });
+}
+function secretEchoCandidates(secretValues) {
+  const candidates = new Set;
+  for (const value of secretValues.values()) {
+    if (typeof value !== "string")
+      continue;
+    const trimmed = value.trim();
+    if (!trimmed)
+      continue;
+    candidates.add(trimmed);
+    const scheme = trimmed.match(/^(?:Bearer|Basic)\s+(.+)$/i);
+    if (scheme?.[1]?.trim())
+      candidates.add(scheme[1].trim());
+  }
+  return [...candidates];
+}
+function visitPayloadStrings(value, visit) {
+  if (typeof value === "string") {
+    visit(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value)
+      visitPayloadStrings(item, visit);
+    return;
+  }
+  if (!value || typeof value !== "object")
+    return;
+  for (const [key, child] of Object.entries(value)) {
+    visit(key);
+    visitPayloadStrings(child, visit);
+  }
 }
 function assertRenderedRequestWithinPolicy(request, inputPolicy) {
   const policy = createCapabilityPolicy(inputPolicy);

@@ -583,6 +583,26 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(decodeResolutionInputBytes(result.resolutionInputBytes).status, 0);
       assert.equal(driver.dryRun({}, httpRequest()).wouldInvoke, true);
 
+      globalThis.fetch = async () => new Response('{"action":{"variant":"final","text":"Bearer fixture-token-value"}}', {
+        status: 200,
+        headers: { 'x-request-id': 'request-secret-echo' },
+      });
+      await assert.rejects(
+        () => new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          secretHeaders: { Authorization: 'API_TOKEN' },
+          secretProvider: new EnvSecretProvider({ API_TOKEN: 'Bearer fixture-token-value' }),
+        }).resolve({
+          policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+        }, {
+          ...httpRequest(),
+          hostRequestFingerprint: 'world:host-request:00000000000000ab',
+          idempotencyKeyBytes: fromUtf8('http-key-secret-echo'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-secret-echo',
+        }),
+        { code: 'ERR_SECRET_PERSISTED' },
+      );
+
       let secretHasCalls = 0;
       let secretGetCalls = 0;
       const untouchedSecretProvider = {
