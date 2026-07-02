@@ -1,5 +1,6 @@
 import { EffectRecoveryClass } from '../core/actuator.mjs';
 import { CapabilityPreflightReport, DryRunReport, ShadowReport, capabilityHostClaimBytes, defaultCapabilityPreflight } from '../core/capability_driver.mjs';
+import { createCapabilityPolicy } from '../core/capability_policy.mjs';
 import { fail, fromUtf8, stableJson } from '../core/store.mjs';
 import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
 import { decodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
@@ -66,6 +67,7 @@ export class GenericHttpJsonModelDriver {
   preflight(context, hostRequest) {
     try {
       parseDecisionPrompt(hostRequest.requestBytes);
+      assertLiveModelBudgetAllows(context?.policy);
     } catch (error) {
       return new CapabilityPreflightReport({ accepted: false, blockers: [error.code ?? 'ERR_MODEL_PROMPT_INVALID'] });
     }
@@ -79,6 +81,7 @@ export class GenericHttpJsonModelDriver {
 
   async resolve(context, hostRequest) {
     parseDecisionPrompt(hostRequest.requestBytes);
+    assertLiveModelBudgetAllows(context?.policy);
     const result = await this.http.resolve(context, {
       ...hostRequest,
       actuatorRef: 'http:json',
@@ -128,6 +131,11 @@ export class GenericHttpJsonModelDriver {
       schemaAccepted: Boolean(recordedResolution),
     });
   }
+}
+
+function assertLiveModelBudgetAllows(inputPolicy = {}) {
+  const policy = createCapabilityPolicy(inputPolicy);
+  if (policy.maximumLiveModelCalls < 1) fail('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED');
 }
 
 function redactedEndpoint(endpointUrl) {

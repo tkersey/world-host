@@ -575,6 +575,29 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(decodeResolutionInputBytes(httpError.resolutionInputBytes).status, 1);
       assert.equal(errorBodyPulled, true);
 
+      let retryFetchCount = 0;
+      globalThis.fetch = async () => {
+        retryFetchCount += 1;
+        if (retryFetchCount === 1) throw new TypeError('transient network failure');
+        return new Response('{"status":"ok"}', {
+          status: 200,
+          headers: { 'x-request-id': 'request-retry' },
+        });
+      };
+      const retried = await new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        retryPolicy: { attempts: 2 },
+      }).resolve({
+        policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+      }, {
+        ...httpRequest(),
+        hostRequestFingerprint: 'world:host-request:00000000000000a9',
+        idempotencyKeyBytes: fromUtf8('http-key-retry'),
+        idempotencyKeyWorldFingerprint: 'world:key:http-retry',
+      });
+      assert.equal(retryFetchCount, 2);
+      assert.equal(decodeResolutionInputBytes(retried.resolutionInputBytes).status, 0);
+
       let reuseFetchCount = 0;
       globalThis.fetch = async () => {
         reuseFetchCount += 1;
@@ -1331,13 +1354,47 @@ describe('Capability Plane v0.2 core contracts', () => {
       }).dryRun({}, modelRequest('goal=invoke', 'model-signed-dry-key'));
       assert.equal(signedEndpointDryRun.proposedAction.endpoint, 'https://allowed.example/decide');
       const deniedPreflight = driver.preflight(
-        { policy: { allowLiveEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] } },
+        {
+          policy: {
+            allowLiveEffects: true,
+            maximumLiveModelCalls: 1,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        },
         modelRequest('goal=invoke', 'model-preflight-key'),
       );
       assert.equal(deniedPreflight.accepted, false);
       assert.equal(deniedPreflight.blockers.includes('ERR_CAPABILITY_NETWORK_DENIED'), true);
+      let budgetFetchCalled = false;
+      globalThis.fetch = async () => {
+        budgetFetchCalled = true;
+        return new Response('{"action":{"variant":"final","text":"budget bypassed"}}', { status: 200 });
+      };
+      await assert.rejects(
+        () => driver.resolve({
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }, modelRequest('goal=invoke', 'model-budget-key')),
+        { code: 'ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED' },
+      );
+      assert.equal(budgetFetchCalled, false);
+      globalThis.fetch = async () => new Response('{"action":{"variant":"tool","toolId":"actuate","payload":""}}', {
+        status: 200,
+        headers: { 'x-request-id': 'request-2' },
+      });
       const result = await driver.resolve({
-        policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          maximumLiveModelCalls: 1,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
       }, modelRequest('goal=invoke', 'model-http-key'));
       const semanticResolution = decodeResolutionInputBytes(result.resolutionInputBytes);
       const semanticHostClaim = JSON.parse(new TextDecoder().decode(semanticResolution.hostClaimBytes));
@@ -1375,6 +1432,7 @@ describe('Capability Plane v0.2 core contracts', () => {
         policy: {
           allowLiveEffects: true,
           allowNetworkEffects: true,
+          maximumLiveModelCalls: 1,
           allowedOrigins: ['https://allowed.example'],
           allowedMethods: ['POST'],
         },
@@ -1387,7 +1445,13 @@ describe('Capability Plane v0.2 core contracts', () => {
       globalThis.fetch = async () => new Response('{"action":{"variant":"tool","toolId":"unknown_tool","payload":""}}', { status: 200 });
       await assert.rejects(
         () => driver.resolve({
-          policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            maximumLiveModelCalls: 1,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
         }, modelRequest('goal=invoke', 'model-http-key-unknown')),
         { code: 'ERR_AGENT_ACTION_TOOL_UNKNOWN' },
       );
@@ -1407,7 +1471,13 @@ describe('Capability Plane v0.2 core contracts', () => {
 
       globalThis.fetch = async () => new Response('transport failed', { status: 500 });
       const failed = await driver.resolve({
-        policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          maximumLiveModelCalls: 1,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
       }, modelRequest('goal=invoke', 'model-http-key-failed'));
       const failedResolution = decodeResolutionInputBytes(failed.resolutionInputBytes);
       const failedMetadata = JSON.parse(new TextDecoder().decode(failedResolution.metadata));

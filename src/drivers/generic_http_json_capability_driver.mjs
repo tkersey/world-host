@@ -40,7 +40,7 @@ export class GenericHttpJsonCapabilityDriver {
     this.requestTemplate = requestTemplate;
     this.responseExtractionPath = responseExtractionPath;
     this.timeoutMs = timeoutMs;
-    this.retryPolicy = retryPolicy;
+    this.retryPolicy = normalizeRetryPolicy(retryPolicy);
     this.maximumRequestBytes = maximumRequestBytes;
     this.maximumResponseBytes = maximumResponseBytes;
     this.idempotencyHeaderName = idempotencyHeaderName;
@@ -111,16 +111,8 @@ export class GenericHttpJsonCapabilityDriver {
     this.#assertPolicyAllows(context, hostRequest);
     this.#assertSecrets();
     const request = this.#request(hostRequest);
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await fetch(request.url, {
-        method: request.method,
-        headers: await this.#headers(hostRequest),
-        body: request.body,
-        signal: controller.signal,
-        redirect: 'manual',
-      });
+      const response = await this.#fetchWithRetry(request, hostRequest);
       if (response.status >= 300 && response.status < 400) {
         await discardResponseBody(response, this.maximumResponseBytes);
         fail('ERR_HTTP_REDIRECT_REJECTED');
@@ -138,8 +130,6 @@ export class GenericHttpJsonCapabilityDriver {
         return this.#resolution(hostRequest, { status: 'deferred', reason: 'timeout' }, 4, null);
       }
       throw error;
-    } finally {
-      clearTimeout(timeout);
     }
   }
 
@@ -210,6 +200,30 @@ export class GenericHttpJsonCapabilityDriver {
     return headers;
   }
 
+  async #fetchWithRetry(request, hostRequest) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= this.retryPolicy.attempts; attempt += 1) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+      try {
+        return await fetch(request.url, {
+          method: request.method,
+          headers: await this.#headers(hostRequest),
+          body: request.body,
+          signal: controller.signal,
+          redirect: 'manual',
+        });
+      } catch (error) {
+        if (error?.name === 'AbortError') throw error;
+        lastError = error;
+        if (attempt >= this.retryPolicy.attempts) throw error;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+    throw lastError;
+  }
+
   async #secret(name) {
     if (!this.secretProvider) fail('ERR_SECRET_PROVIDER_REQUIRED');
     const value = await this.secretProvider.get(name, `http-header:${name}`);
@@ -257,6 +271,12 @@ function parseHttpUrl(value) {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') fail('ERR_HTTP_URL_SCHEME_REJECTED');
   if (parsed.username || parsed.password) fail('ERR_HTTP_URL_CREDENTIALS_FORBIDDEN');
   return parsed;
+}
+
+function normalizeRetryPolicy(value = {}) {
+  const attempts = value?.attempts ?? 1;
+  if (!Number.isSafeInteger(attempts) || attempts < 1) fail('ERR_HTTP_RETRY_POLICY_INVALID');
+  return Object.freeze({ attempts });
 }
 
 function assertNoReservedSecretHeaders(secretHeaders, idempotencyHeaderName) {

@@ -16,8 +16,6 @@ export class CapabilityPolicy {
     this.requireApprovalForNetworkEffects = input.requireApprovalForNetworkEffects === true;
     this.requireApprovalForBestEffort = input.requireApprovalForBestEffort !== false;
     this.maximumLiveModelCalls = nonNegativeSafeInteger(input.maximumLiveModelCalls ?? 0, 'maximumLiveModelCalls');
-    this.maximumToolCalls = nonNegativeSafeInteger(input.maximumToolCalls ?? 0, 'maximumToolCalls');
-    this.maximumRunTurns = nonNegativeSafeInteger(input.maximumRunTurns ?? 0, 'maximumRunTurns');
     this.maximumRequestBytes = positiveSafeInteger(input.maximumRequestBytes ?? input.maximumPromptBytes ?? 1024 * 1024, 'maximumRequestBytes');
     this.maximumPromptBytes = positiveSafeInteger(input.maximumPromptBytes ?? this.maximumRequestBytes, 'maximumPromptBytes');
     this.maximumResponseBytes = positiveSafeInteger(input.maximumResponseBytes ?? 1024 * 1024, 'maximumResponseBytes');
@@ -66,6 +64,7 @@ export function assertCapabilityPolicyAllows({ manifest, hostRequest = null, pol
   if (isNetwork(manifest, hostRequest) && policy.allowNetworkEffects !== true) fail('ERR_CAPABILITY_NETWORK_DENIED');
   if (isFile(manifest, hostRequest) && policy.allowFileEffects !== true) fail('ERR_CAPABILITY_FILE_DENIED');
   if (isHuman(manifest, hostRequest) && policy.allowHumanEffects !== true) fail('ERR_CAPABILITY_HUMAN_DENIED');
+  if (mode === 'live' && isLiveModelCall(manifest, hostRequest) && policy.maximumLiveModelCalls < 1) fail('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED');
   if (manifest?.recoveryClass === EffectRecoveryClass.bestEffort && policy.allowBestEffort !== true) fail('ERR_BEST_EFFORT_REQUIRES_OPERATOR_OPT_IN');
   const policyRequestBytes = hostRequest?.policyRequestBytes ?? hostRequest?.requestBytes;
   if (policyRequestBytes?.byteLength > policy.maximumRequestBytes) fail('ERR_CAPABILITY_PROMPT_TOO_LARGE');
@@ -138,6 +137,14 @@ function isFile(manifest, hostRequest) {
 
 function isHuman(manifest, hostRequest) {
   return hostRequest?.actuationClass === 'human' || (manifest?.authorityLabels ?? []).some((label) => label.startsWith('human:'));
+}
+
+function isLiveModelCall(manifest, hostRequest) {
+  if (hostRequest?.actuationClass !== 'model') return false;
+  if (manifest?.driverId === 'fixture-agent-model' || manifest?.diagnostics?.deterministic === true) return false;
+  const labels = manifest?.authorityLabels ?? [];
+  if (labels.some((label) => label.startsWith('model:fixture'))) return false;
+  return labels.some((label) => label.startsWith('model:'));
 }
 
 function assertOriginAndMethodAllowed(hostRequest, policy) {
