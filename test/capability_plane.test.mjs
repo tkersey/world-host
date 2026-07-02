@@ -2132,18 +2132,51 @@ describe('Capability Plane v0.2 core contracts', () => {
       );
 
       globalThis.fetch = async () => new Response('{"action":{"variant":"tool","toolId":"unknown_tool","payload":""}}', { status: 200 });
-      await assert.rejects(
-        () => driver.resolve({
-          policy: {
-            allowLiveEffects: true,
-            allowNetworkEffects: true,
-            maximumLiveModelCalls: 1,
-            allowedOrigins: ['https://allowed.example'],
-            allowedMethods: ['POST'],
-          },
-        }, genericHttpModelRequest('goal=invoke', 'model-http-key-unknown')),
-        { code: 'ERR_AGENT_ACTION_TOOL_UNKNOWN' },
-      );
+      const unknownAction = await driver.resolve({
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          maximumLiveModelCalls: 1,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      }, { ...genericHttpModelRequest('goal=invoke', 'model-http-key-unknown'), responseSchema: { status: 'failed' } });
+      const unknownActionResolution = decodeResolutionInputBytes(unknownAction.resolutionInputBytes);
+      const unknownActionMetadata = JSON.parse(new TextDecoder().decode(unknownActionResolution.metadata));
+      assert.equal(unknownActionResolution.status, 2);
+      assert.equal(unknownActionMetadata.status, 'failed');
+      assert.equal(unknownActionMetadata.failureCode, 'ERR_AGENT_ACTION_TOOL_UNKNOWN');
+      assert.equal(unknownAction.diagnostics.failureCode, 'ERR_AGENT_ACTION_TOOL_UNKNOWN');
+
+      let invalidLiveFetchCount = 0;
+      globalThis.fetch = async () => {
+        invalidLiveFetchCount += 1;
+        return new Response('{"action":{"variant":"tool","toolId":"unknown_tool","payload":""}}', {
+          status: 200,
+          headers: { 'x-request-id': 'request-invalid-model-action' },
+        });
+      };
+      const invalidLiveModel = await runCapabilityMode({
+        mode: 'live',
+        driver,
+        hostRequest: { ...genericHttpModelRequest('goal=invoke', 'model-live-invalid-key'), responseSchema: { status: 'failed' } },
+        journalOptions: {
+          store: new MemoryStore(),
+          runId: 'model-live-invalid-run',
+          branchId: 'main',
+          parentTurnClosureFingerprint: 'world:turn-closure:parent',
+        },
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          maximumLiveModelCalls: 1,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      });
+      assert.equal(decodeResolutionInputBytes(invalidLiveModel.resolutionInputBytes).status, 2);
+      assert.equal(invalidLiveModel.record.state, 'resolved');
+      assert.equal(invalidLiveFetchCount, 1);
 
       let malformedPromptFetchCalled = false;
       globalThis.fetch = async () => {

@@ -85,7 +85,15 @@ export class GenericHttpJsonModelDriver {
     if (resolution.status !== 0) {
       return modelResolutionFromTransport(result, resolution, { status: resolution.status === 4 ? 'deferred' : 'failed' });
     }
-    const action = decodeAgentActionFromValueImage(resolution.responseValueImageBytes, { allowedToolIds: this.allowedToolIds });
+    let action;
+    try {
+      action = decodeAgentActionFromValueImage(resolution.responseValueImageBytes, { allowedToolIds: this.allowedToolIds });
+    } catch (error) {
+      return modelResolutionFromTransport(result, resolution, {
+        status: 'failed',
+        failureCode: error.code ?? 'ERR_AGENT_ACTION_MALFORMED',
+      });
+    }
     return modelResolutionFromTransport(result, resolution, {
       status: 'ok',
       responseValueImageBytes: agentActionValueImage(action),
@@ -190,7 +198,7 @@ export function validateAgentAction(action, { allowedToolIds = DEFAULT_ALLOWED_T
   fail('ERR_AGENT_ACTION_MALFORMED');
 }
 
-function modelResolutionFromTransport(result, resolution, { status, responseValueImageBytes = new Uint8Array(), action = null }) {
+function modelResolutionFromTransport(result, resolution, { status, responseValueImageBytes = new Uint8Array(), action = null, failureCode = null }) {
   const hostClaimBytes = capabilityHostClaimBytes({
     driver: 'generic-http-json-model',
     transportDriver: 'generic-http-json',
@@ -198,6 +206,7 @@ function modelResolutionFromTransport(result, resolution, { status, responseValu
     transportStatus: result.diagnostics?.status ?? null,
     outputSchema: 'boundary.Agent.Action.v0',
     actionVariant: action?.variant ?? null,
+    failureCode,
   });
   return {
     ...result,
@@ -215,6 +224,7 @@ function modelResolutionFromTransport(result, resolution, { status, responseValu
         outputSchema: 'boundary.Agent.Action.v0',
         actionVariant: action?.variant ?? null,
         toolId: action?.variant === 'tool' ? action.toolId : null,
+        failureCode,
       })),
     }),
     diagnostics: {
@@ -224,6 +234,7 @@ function modelResolutionFromTransport(result, resolution, { status, responseValu
       outputSchema: 'boundary.Agent.Action.v0',
       actionVariant: action?.variant ?? null,
       toolId: action?.variant === 'tool' ? action.toolId : null,
+      failureCode,
     },
   };
 }
