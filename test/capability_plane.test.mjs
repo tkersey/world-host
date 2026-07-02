@@ -275,6 +275,10 @@ describe('Capability Plane v0.2 core contracts', () => {
     const request = modelRequest('goal=invoke', 'model-key');
     const fixture = await runCapabilityMode({ mode: 'fixture', driver, hostRequest: request });
     assert.equal(decodeResolutionInputBytes(fixture.resolutionInputBytes).status, 0);
+    assert.throws(
+      () => assertCapabilityResolutionBoundary({ ...fixture, turnReceiptBytes: fromUtf8('receipt') }),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
     await assert.rejects(
       () => runCapabilityMode({
         mode: 'fixture',
@@ -321,6 +325,19 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.equal(approved.approved, true);
     assert.equal(approved.proposed.wouldInvoke, false);
     assertCapabilityResolutionBoundary(approved);
+    let approvalShortcutLiveEffectResolveCalled = false;
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'approval',
+        driver: deterministicLiveEffectDriver(() => {
+          approvalShortcutLiveEffectResolveCalled = true;
+        }, { authorityLabels: [], driverId: 'fixture-agent-model' }),
+        hostRequest: httpRequest(),
+        approval: () => ({ approved: true }),
+      }),
+      { code: 'ERR_CAPABILITY_FIXTURE_LIVE_EFFECT_DENIED' },
+    );
+    assert.equal(approvalShortcutLiveEffectResolveCalled, false);
 
     const store = new MemoryStore();
     const live = await runCapabilityMode({
@@ -1032,6 +1049,10 @@ describe('Capability Plane v0.2 core contracts', () => {
       });
       const driver = new GenericHttpJsonModelDriver({ endpointUrl: 'https://allowed.example/decide' });
       assert.equal(driver.dryRun({}, modelRequest('goal=invoke', 'model-dry-key')).wouldInvoke, true);
+      const signedEndpointDryRun = new GenericHttpJsonModelDriver({
+        endpointUrl: 'https://allowed.example/decide?api_key=secret',
+      }).dryRun({}, modelRequest('goal=invoke', 'model-signed-dry-key'));
+      assert.equal(signedEndpointDryRun.proposedAction.endpoint, 'https://allowed.example/decide');
       const deniedPreflight = driver.preflight(
         { policy: { allowLiveEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] } },
         modelRequest('goal=invoke', 'model-preflight-key'),
@@ -1181,11 +1202,11 @@ function preflightBlockedDriver() {
   };
 }
 
-function deterministicLiveEffectDriver(onResolve, { authorityLabels = ['network:http'] } = {}) {
+function deterministicLiveEffectDriver(onResolve, { authorityLabels = ['network:http'], driverId = 'deterministic-live-effect' } = {}) {
   return {
     manifest() {
       return {
-        driverId: 'deterministic-live-effect',
+        driverId,
         supportedActuatorRefs: ['http:json'],
         supportedDescriptorFingerprints: ['descriptor:http-json'],
         supportedActuationClasses: ['http'],

@@ -118,7 +118,7 @@ export class GenericHttpJsonModelDriver {
     const prompt = parseDecisionPrompt(hostRequest.requestBytes);
     return new DryRunReport({
       wouldInvoke: true,
-      proposedAction: { endpoint: this.http.endpointUrl, observationBytes: prompt.observation.length },
+      proposedAction: { endpoint: redactedEndpoint(this.http.endpointUrl), observationBytes: prompt.observation.length },
     });
   }
 
@@ -128,6 +128,11 @@ export class GenericHttpJsonModelDriver {
       schemaAccepted: Boolean(recordedResolution),
     });
   }
+}
+
+function redactedEndpoint(endpointUrl) {
+  const endpoint = new URL(endpointUrl);
+  return `${endpoint.origin}${endpoint.pathname}`;
 }
 
 export function decodeAgentActionFromResolutionInput(resolutionInputBytes, options = {}) {

@@ -54,6 +54,7 @@ export async function runCapabilityMode({
     const decision = await approvalDecision(approval, { manifest, hostRequest, proposed });
     if (decision.approved !== true) return { mode, submittedToWorld: false, approved: false, proposed };
     if (isEffectFreeFixture(manifest) && !journalOptions) {
+      assertFixtureModeAllowed(manifest, hostRequest);
       assertCapabilityPreflightAccepted(driver.preflight(context, hostRequest));
       const resolved = await driver.resolve(context, hostRequest);
       assertCapabilityResolutionBoundary(resolved);

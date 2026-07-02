@@ -5,6 +5,7 @@ import { decodeResolutionInputBytes } from '../protocol/world_appliance_wire_cod
 const FORBIDDEN_WORLD_EVIDENCE_KEYS = new Set([
   'boundaryModuleBytes',
   'worldReceiptBytes',
+  'turnReceiptBytes',
   'turnClosureBytes',
   'capsuleBytes',
   'chronicleEventBytes',
