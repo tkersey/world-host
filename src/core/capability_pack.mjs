@@ -232,8 +232,8 @@ function assertJavaScriptAdapterArtifactSelfContained(artifactPath, artifacts, l
   let imports;
   try {
     imports = ADAPTER_IMPORT_SCANNER.scanImports(text);
-  } catch {
-    return;
+  } catch (error) {
+    fail('ERR_CAPABILITY_PACK_ADAPTER_IMPORT_SCAN_FAILED', `adapter import scan failed for ${artifactPath}`, { error: String(error?.message ?? error) });
   }
   if (imports.length || adapterHasImportCall(text)) {
     fail('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT', `${label} imports code outside its checksum-covered entry module: ${artifactPath}`);
@@ -297,7 +297,7 @@ function adapterHasImportCall(text) {
       const afterLiteral = skipWhitespaceAndComments(text, literal.end);
       if (
         previousSignificant === '[' &&
-        (literal.value === 'eval' || literal.value === 'Function' || literal.value === 'require') &&
+        dangerousMemberName(literal.value) &&
         text[afterLiteral] === ']'
       ) {
         const afterBracket = skipWhitespaceAndComments(text, afterLiteral + 1);
@@ -312,7 +312,7 @@ function adapterHasImportCall(text) {
       const afterLiteral = skipWhitespaceAndComments(text, literal.end);
       if (
         previousSignificant === '[' &&
-        (literal.value === null || literal.value === 'eval' || literal.value === 'Function' || literal.value === 'require') &&
+        (literal.value === null || dangerousMemberName(literal.value)) &&
         text[afterLiteral] === ']'
       ) {
         const afterBracket = skipWhitespaceAndComments(text, afterLiteral + 1);
@@ -365,29 +365,45 @@ function dangerousCallAt(text, index) {
 
 function computedMemberAccess(text, openBracket, afterBracket) {
   const closeBracket = afterBracket - 1;
-  const expressionStart = skipWhitespaceAndComments(text, openBracket + 1);
-  const char = text[expressionStart];
-  if (char === '\'' || char === '"') {
-    const literal = readQuotedString(text, expressionStart, char);
-    const expressionEnd = skipWhitespaceAndComments(text, literal.end);
-    return {
-      dangerous: dangerousMemberName(literal.value),
-      dynamic: expressionEnd !== closeBracket,
-    };
-  }
-  if (char === '`') {
-    const literal = readTemplateString(text, expressionStart);
-    const expressionEnd = skipWhitespaceAndComments(text, literal.end);
-    return {
-      dangerous: literal.value !== null && dangerousMemberName(literal.value),
-      dynamic: expressionEnd !== closeBracket || literal.value === null,
-    };
-  }
-  return { dangerous: false, dynamic: true };
+  const name = readComputedMemberName(text, openBracket + 1, closeBracket);
+  if (name.static) return { dangerous: dangerousMemberName(name.value), dynamic: false };
+  return { dangerous: computedGlobalReceiver(text, openBracket), dynamic: true };
 }
 
 function dangerousMemberName(value) {
-  return value === 'eval' || value === 'Function' || value === 'require';
+  return value === 'eval' || value === 'Function' || value === 'require' || value === 'constructor';
+}
+
+function readComputedMemberName(text, index, closeBracket) {
+  let value = '';
+  for (;;) {
+    index = skipWhitespaceAndComments(text, index);
+    const char = text[index];
+    let literal;
+    if (char === '\'' || char === '"') {
+      literal = readQuotedString(text, index, char);
+    } else if (char === '`') {
+      literal = readTemplateString(text, index);
+      if (literal.value === null) return { static: false, value: null };
+    } else {
+      return { static: false, value: null };
+    }
+    value += literal.value;
+    index = skipWhitespaceAndComments(text, literal.end);
+    if (index === closeBracket) return { static: true, value };
+    if (text[index] !== '+') return { static: false, value: null };
+    index += 1;
+  }
+}
+
+function computedGlobalReceiver(text, openBracket) {
+  let index = skipWhitespaceAndCommentsBackward(text, openBracket - 1);
+  if (text[index] === '.' && text[index - 1] === '?') index = skipWhitespaceAndCommentsBackward(text, index - 2);
+  if (index < 0 || !identifierPart(text[index])) return false;
+  const end = index + 1;
+  while (index >= 0 && identifierPart(text[index])) index -= 1;
+  const identifier = text.slice(index + 1, end);
+  return identifier === 'globalThis' || identifier === 'global' || identifier === 'window' || identifier === 'self';
 }
 
 function skipWhitespaceAndComments(text, index) {
@@ -402,6 +418,19 @@ function skipWhitespaceAndComments(text, index) {
       index += 2;
       while (index < text.length && !(text[index] === '*' && text[index + 1] === '/')) index += 1;
       index = Math.min(index + 2, text.length);
+      continue;
+    }
+    return index;
+  }
+}
+
+function skipWhitespaceAndCommentsBackward(text, index) {
+  for (;;) {
+    while (index >= 0 && /\s/.test(text[index])) index -= 1;
+    if (text[index] === '/' && text[index - 1] === '*') {
+      index -= 2;
+      while (index >= 1 && !(text[index - 1] === '/' && text[index] === '*')) index -= 1;
+      index -= 2;
       continue;
     }
     return index;

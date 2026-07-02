@@ -1530,7 +1530,7 @@ class GenericHttpJsonCapabilityDriver {
       wouldInvoke: true,
       proposedAction: {
         method: request.method,
-        url: `${new URL(request.url).origin}${new URL(request.url).pathname}`,
+        url: new URL(request.url).href,
         bodyBytes: request.bodyBytes
       },
       diagnostics: { driverId: "generic-http-json" }

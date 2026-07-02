@@ -39,7 +39,7 @@ import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/p
 describe('Capability Plane v0.2 core contracts', () => {
   it('validates CapabilityPack semantic identity, checksums, and authority boundaries', async () => {
     const manifest = fixtureCapabilityManifest();
-    const artifact = fromUtf8('adapter bytes');
+    const artifact = fromUtf8('export const adapter = true;');
     const readme = fromUtf8('readme bytes');
     const withChecksums = {
       ...manifest,
@@ -258,6 +258,16 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': computedEvalExpressionAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const aliasedComputedEvalExpressionAdapter = fromUtf8('const e = globalThis["ev"+"al"]; const fs = e("import(\\"node:fs\\")"); export const CapabilityDriver = fs;');
+    const aliasedComputedEvalExpressionAdapterChecksum = `sha256:${await sha256Hex(aliasedComputedEvalExpressionAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: aliasedComputedEvalExpressionAdapterChecksum }],
+      }, { 'adapter.mjs': aliasedComputedEvalExpressionAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const computedFunctionExpressionAdapter = fromUtf8('const fs = globalThis["Fun"+"ction"]("s", "return import(s)")("node:fs"); export const CapabilityDriver = fs;');
     const computedFunctionExpressionAdapterChecksum = `sha256:${await sha256Hex(computedFunctionExpressionAdapter)}`;
     await assert.rejects(
@@ -308,6 +318,16 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': constructorFunctionImportAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const computedConstructorFunctionImportAdapter = fromUtf8('const fs = []["filter"]["constructor"]("s", "return import(s)")("node:fs"); export const CapabilityDriver = fs;');
+    const computedConstructorFunctionImportAdapterChecksum = `sha256:${await sha256Hex(computedConstructorFunctionImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: computedConstructorFunctionImportAdapterChecksum }],
+      }, { 'adapter.mjs': computedConstructorFunctionImportAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const evalImportAdapter = fromUtf8('const fs = eval("import(\\\"node:fs\\\")"); export const CapabilityDriver = fs;');
     const evalImportAdapterChecksum = `sha256:${await sha256Hex(evalImportAdapter)}`;
     await assert.rejects(
@@ -338,6 +358,16 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': aliasedFunctionImportAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const malformedAdapter = fromUtf8('if (');
+    const malformedAdapterChecksum = `sha256:${await sha256Hex(malformedAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: malformedAdapterChecksum }],
+      }, { 'adapter.mjs': malformedAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_IMPORT_SCAN_FAILED' },
+    );
     const secretReadme = fromUtf8('Authorization: Bearer sk-artifact-secret-value');
     const secretReadmeChecksum = `sha256:${await sha256Hex(secretReadme)}`;
     await assert.rejects(
@@ -364,7 +394,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': artifact, 'README.md': privateKeyReadme }),
       { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
     );
-    const sidecar = fromUtf8('sidecar bytes');
+    const sidecar = fromUtf8('export const sidecar = true;');
     const launcherChecksum = `sha256:${await sha256Hex(artifact)}`;
     const sidecarChecksum = `sha256:${await sha256Hex(sidecar)}`;
     await assert.rejects(
@@ -1291,6 +1321,18 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(JSON.stringify(result.diagnostics).includes('secret'), false);
       assert.equal(decodeResolutionInputBytes(result.resolutionInputBytes).status, 0);
       assert.equal(driver.dryRun({}, httpRequest()).wouldInvoke, true);
+      const queryDryRunRequest = {
+        ...httpRequest(),
+        requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/decide?mode=delete', method: 'POST', body: { prompt: 'hi' } })),
+      };
+      assert.equal(new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        allowEndpointFromRequest: true,
+        origins: ['https://allowed.example'],
+      }).dryRun({}, queryDryRunRequest).proposedAction.url, 'https://allowed.example/decide?mode=delete');
+      assert.equal(new HttpJsonPackCapabilityDriver({
+        endpointUrl: 'https://allowed.example/decide?mode=delete',
+      }).dryRun({}, httpRequest()).proposedAction.url, 'https://allowed.example/decide?mode=delete');
 
       globalThis.fetch = async () => new Response('{"action":{"variant":"final","text":"Bearer fixture-token-value"}}', {
         status: 200,
