@@ -1,4 +1,4 @@
-import { EffectJournal, EffectState, assertResolutionAccepted } from './effect_journal.mjs';
+import { EffectJournal, EffectState, assertResolutionAccepted, journaledHostRequest } from './effect_journal.mjs';
 import { assertDriverCanResolve } from './actuator.mjs';
 import { assertCapabilityPolicyAllows, createCapabilityPolicy } from './capability_policy.mjs';
 import { assertCapabilityResolutionBoundary, defineCapabilityDriver } from './capability_driver.mjs';
@@ -11,6 +11,8 @@ export const CapabilityExecutionMode = Object.freeze({
   approval: 'approval',
   live: 'live',
 });
+
+export { journaledHostRequest };
 
 export async function runCapabilityMode({
   mode,
@@ -189,34 +191,6 @@ function configuredNetworkPolicyHostRequest(hostRequest, manifest, parsed = {}) 
     ...hostRequest,
     policyRequestBytes: hostRequest?.requestBytes,
     requestBytes: fromUtf8(stableJson({ url, method })),
-  };
-}
-
-export function journaledHostRequest(hostRequest, manifest) {
-  const endpointSource = manifest?.diagnostics?.endpointSource;
-  if (endpointSource !== 'config' && endpointSource !== 'request-or-config') return hostRequest;
-  let parsed = {};
-  if (hostRequest?.requestBytes) {
-    try {
-      parsed = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
-    } catch {
-      return hostRequest;
-    }
-  }
-  if (endpointSource === 'request-or-config' && parsed?.url !== undefined && parsed.method !== undefined) return hostRequest;
-  const configured = configuredNetworkPolicyHostRequest(hostRequest, manifest, parsed);
-  if (configured === hostRequest) return hostRequest;
-  const policyTarget = JSON.parse(new TextDecoder().decode(configured.requestBytes));
-  return {
-    ...hostRequest,
-    effectIdentityBytes: fromUtf8(stableJson({
-      request: parsed,
-      configuredEndpoint: {
-        url: policyTarget.url,
-        method: policyTarget.method,
-      },
-      requestRendering: manifest?.diagnostics?.requestRendering ?? null,
-    })),
   };
 }
 

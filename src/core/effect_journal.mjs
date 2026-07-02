@@ -228,6 +228,7 @@ export class EffectJournal {
 
     const recordWithRequestBytes = await this.#recordWithRequestBytes(record);
     await assertRecoveredRequestWithinLimits(recordWithRequestBytes, manifest, this.policy);
+    await assertRecoveredEffectIdentityMatchesManifest(recordWithRequestBytes, manifest);
     assertManifestResponseWithinPolicy(manifest, this.policy);
     if (typeof driver.recover === 'function' || canSafelyReResolve(record.driverRecoveryClass)) {
       const recoveryResult = typeof driver.recover === 'function'
@@ -453,6 +454,41 @@ export class EffectJournal {
   }
 }
 
+export function journaledHostRequest(hostRequest, manifest) {
+  const endpointSource = manifest?.diagnostics?.endpointSource;
+  if (endpointSource !== 'config' && endpointSource !== 'request-or-config') return hostRequest;
+  let parsed = {};
+  if (hostRequest?.requestBytes) {
+    try {
+      parsed = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
+    } catch {
+      return hostRequest;
+    }
+  }
+  if (endpointSource === 'request-or-config' && parsed?.url !== undefined && parsed.method !== undefined) return hostRequest;
+  const configuredEndpoint = configuredEffectIdentityTarget(manifest, parsed);
+  if (!configuredEndpoint) return hostRequest;
+  return {
+    ...hostRequest,
+    effectIdentityBytes: fromUtf8(stableJson({
+      request: parsed,
+      configuredEndpoint,
+      requestRendering: manifest?.diagnostics?.requestRendering ?? null,
+    })),
+  };
+}
+
+function configuredEffectIdentityTarget(manifest, parsed = {}) {
+  const origins = Array.isArray(manifest?.diagnostics?.origins) ? manifest.diagnostics.origins : [];
+  const methods = Array.isArray(manifest?.diagnostics?.methods) ? manifest.diagnostics.methods : [];
+  const endpointSource = manifest?.diagnostics?.endpointSource;
+  const requestUrl = endpointSource === 'request-or-config' && parsed?.url !== undefined ? parsed.url : null;
+  const url = requestUrl ?? manifest?.diagnostics?.configuredEndpointUrl ?? manifest?.diagnostics?.configuredOrigin ?? (origins.length === 1 ? origins[0] : null);
+  const method = parsed.method ?? manifest?.diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : null);
+  if (!url || !method) return null;
+  return { url, method };
+}
+
 function driverFailureState(recoveryClass) {
   if (recoveryClass === EffectRecoveryClass.bestEffort) return EffectState.operatorInterventionRequired;
   if (RECOVER_AFTER_RESOLVE_FAILURE.has(recoveryClass)) return EffectState.running;
@@ -650,6 +686,19 @@ async function assertRecoveredRequestWithinLimits(record, manifest, policy) {
   if (checksum !== record.requestBytesChecksum) fail('ERR_EFFECT_REQUEST_BYTES_CHECKSUM_MISMATCH');
   if (record.requestBytes.byteLength > manifest.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
   if (policy.maximumRequestBytes !== undefined && record.requestBytes.byteLength > policy.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
+}
+
+async function assertRecoveredEffectIdentityMatchesManifest(record, manifest) {
+  const recoveredHostRequest = journaledHostRequest(record, manifest);
+  const effectIdentityBytes = recoveredHostRequest.effectIdentityBytes === undefined
+    ? record.requestBytes
+    : assertBytes(recoveredHostRequest.effectIdentityBytes, 'effectIdentityBytes');
+  const checksum = `sha256:${await sha256Hex(effectIdentityBytes)}`;
+  if (checksum !== effectIdentityChecksum(record)) {
+    fail('ERR_EFFECT_IDEMPOTENCY_CONFLICT', 'recovery driver rendered a different effect identity', {
+      idempotencyKeyWorldFingerprint: record.idempotencyKeyWorldFingerprint,
+    });
+  }
 }
 
 function assertManifestResponseWithinPolicy(manifest, policy) {

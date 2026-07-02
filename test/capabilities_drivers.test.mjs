@@ -97,6 +97,31 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.everyPendingRequestCovered, true);
   });
 
+  it('rejects explicit fallback HTTP methods during preflight', () => {
+    const request = {
+      ...httpRequest('https://allowed.example/path'),
+      requestBytes: fromUtf8(stableJson({ method: 'DELETE', body: { prompt: 'hi' } })),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://allowed.example/path',
+        allowEndpointFromRequest: true,
+        origins: ['https://allowed.example'],
+        methods: ['POST'],
+      })],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+      }),
+    });
+
+    assert.ok(report.blockers.includes('http-method-driver-denied:DELETE'));
+    assert.equal(report.coveredRequests.length, 1);
+  });
+
   it('preflights fixed configured HTTP endpoints independently of payload url fields', () => {
     const request = {
       ...httpRequest('https://payload.example/not-target'),

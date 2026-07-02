@@ -5,8 +5,9 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { EffectRecoveryClass } from '../src/core/actuator.mjs';
-import { EffectJournal, EffectState, prepareHostRequest } from '../src/core/effect_journal.mjs';
+import { EffectJournal, EffectState, journaledHostRequest, prepareHostRequest } from '../src/core/effect_journal.mjs';
 import { fromUtf8 } from '../src/core/store.mjs';
+import { GenericHttpJsonCapabilityDriver } from '../src/drivers/generic_http_json_capability_driver.mjs';
 import { HumanApprovalCapabilityDriver } from '../src/drivers/human_approval_capability_driver.mjs';
 import { HttpJsonDriver } from '../src/drivers/http_json_driver.mjs';
 import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
@@ -832,6 +833,29 @@ describe('EffectJournal', () => {
     await assert.rejects(
       () => journal.recover({}, observed, fixtureDriver({ recoveryClass: EffectRecoveryClass.pure })),
       { code: 'ERR_EFFECT_RECOVERY_CLASS_MISMATCH' },
+    );
+  });
+
+  it('rejects recovery drivers that render a different effect identity', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const request = httpHostRequest({
+      requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'hi' } })),
+    });
+    const originalDriver = new GenericHttpJsonCapabilityDriver({
+      endpointUrl: 'https://allowed.example/decide',
+      origins: ['https://allowed.example'],
+    });
+    const observed = await journal.observe(journaledHostRequest(request, originalDriver.manifest()), { manifest: originalDriver.manifest() });
+    const running = await store.putEffectRecord({ ...observed, state: EffectState.running, attemptCount: 1 });
+    const changedDriver = new GenericHttpJsonCapabilityDriver({
+      endpointUrl: 'https://other.example/decide',
+      origins: ['https://other.example'],
+    });
+
+    await assert.rejects(
+      () => journal.recover({}, running, changedDriver),
+      { code: 'ERR_EFFECT_IDEMPOTENCY_CONFLICT' },
     );
   });
 

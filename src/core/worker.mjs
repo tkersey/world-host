@@ -783,8 +783,8 @@ function requestOriginForManifest(hostRequest, manifest) {
 function requestMethodForManifest(hostRequest, manifest) {
   try {
     const request = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
-    if (fixedConfiguredEndpointManifest(manifest)) return String(manifest.diagnostics.defaultMethod ?? 'POST').toUpperCase();
-    if (request.url === undefined && configuredEndpointManifest(manifest)) return String(manifest.diagnostics.defaultMethod ?? 'POST').toUpperCase();
+    if (fixedConfiguredEndpointManifest(manifest)) return String(request.method ?? manifest.diagnostics.defaultMethod ?? 'POST').toUpperCase();
+    if (request.url === undefined && configuredEndpointManifest(manifest)) return String(request.method ?? manifest.diagnostics.defaultMethod ?? 'POST').toUpperCase();
     return String(request.method ?? manifest?.diagnostics?.defaultMethod ?? 'GET').toUpperCase();
   } catch {
     return null;
