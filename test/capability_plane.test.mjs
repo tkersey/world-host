@@ -695,6 +695,43 @@ describe('Capability Plane v0.2 core contracts', () => {
       });
       assert.equal(configuredPayloadUrlFetchUrl, 'https://allowed.example/decide');
 
+      let tinyBodyFetchCalled = false;
+      globalThis.fetch = async () => {
+        tinyBodyFetchCalled = true;
+        return new Response('{"action":{"variant":"final","text":"tiny-body"}}', {
+          status: 200,
+          headers: { 'x-request-id': 'request-tiny-body' },
+        });
+      };
+      const tinyBodyDriver = new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        maximumRequestBytes: 2,
+      });
+      await runCapabilityMode({
+        mode: 'live',
+        driver: tinyBodyDriver,
+        hostRequest: {
+          ...httpRequest(),
+          hostRequestFingerprint: 'world:host-request:00000000000000a5',
+          idempotencyKeyBytes: fromUtf8('http-key-tiny-body'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-tiny-body',
+          requestBytes: fromUtf8(stableJson({ body: {} })),
+        },
+        journalOptions: {
+          store: new MemoryStore(),
+          runId: 'tiny-body-run',
+          branchId: 'main',
+          parentTurnClosureFingerprint: 'world:turn-closure:parent',
+        },
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      });
+      assert.equal(tinyBodyFetchCalled, true);
+
       let defaultMethod = null;
       globalThis.fetch = async (url, options) => {
         defaultMethod = options.method;
@@ -1011,6 +1048,29 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_CAPABILITY_ORIGIN_DENIED' },
     );
     assert.equal(deniedOriginDriver.resolveCalled, false);
+
+    const unknownNetworkTargetDriver = policyProbeDriver();
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'live',
+        driver: unknownNetworkTargetDriver,
+        hostRequest: { ...httpRequest(), requestBytes: fromUtf8(stableJson({ body: { prompt: 'hi' } })) },
+        journalOptions: {
+          store: new MemoryStore(),
+          runId: 'unknown-network-target-run',
+          branchId: 'main',
+          parentTurnClosureFingerprint: 'world:turn-closure:parent',
+        },
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      }),
+      { code: 'ERR_CAPABILITY_NETWORK_TARGET_REQUIRED' },
+    );
+    assert.equal(unknownNetworkTargetDriver.resolveCalled, false);
 
     const deniedShadowDriver = policyProbeDriver();
     await assert.rejects(

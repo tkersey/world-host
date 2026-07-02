@@ -7,6 +7,7 @@ import { encodeResolutionInputBytes } from '../protocol/world_appliance_wire_cod
 import { encodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
 
 const DEFAULT_MAXIMUM_RESPONSE_ENVELOPE_BYTES = 1024 * 1024;
+const REQUEST_ENVELOPE_OVERHEAD_BYTES = 4096;
 const RESPONSE_ENVELOPE_OVERHEAD_BYTES = 8192;
 const DEFAULT_MAXIMUM_RESPONSE_BODY_BYTES = Math.floor((DEFAULT_MAXIMUM_RESPONSE_ENVELOPE_BYTES - RESPONSE_ENVELOPE_OVERHEAD_BYTES) / 6);
 
@@ -53,7 +54,7 @@ export class GenericHttpJsonCapabilityDriver {
       supportedDescriptorFingerprints: ['descriptor:http-json'],
       supportedActuationClasses: ['http'],
       supportedResponseStatuses: ['ok', 'http_error', 'deferred', 'failed'],
-      maximumRequestBytes: this.maximumRequestBytes,
+      maximumRequestBytes: encodedJsonStringEnvelopeLimit(this.maximumRequestBytes, REQUEST_ENVELOPE_OVERHEAD_BYTES),
       maximumResponseBytes: encodedJsonStringEnvelopeLimit(this.maximumResponseBytes, RESPONSE_ENVELOPE_OVERHEAD_BYTES),
       recoveryClass: EffectRecoveryClass.idempotent,
       concurrencyLimit: 4,

@@ -113,7 +113,7 @@ function shouldEnforceNetworkTarget(hostRequest, manifest) {
   try {
     const parsed = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
     if (manifest?.diagnostics?.endpointSource === 'request-or-config' && parsed?.url === undefined) return true;
-    return parsed?.url !== undefined;
+    return true;
   } catch {
     return true;
   }
