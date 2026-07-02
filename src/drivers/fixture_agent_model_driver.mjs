@@ -7,10 +7,11 @@ const DEFAULT_ACTUATOR_REF = 'fixture:agent-model';
 const DEFAULT_DESCRIPTOR = 'descriptor:fixture-agent-model';
 
 export class FixtureAgentModelDriver {
-  constructor({ scenario = 'skeleton', actuatorRef = DEFAULT_ACTUATOR_REF, descriptorFingerprint = DEFAULT_DESCRIPTOR } = {}) {
+  constructor({ scenario = 'skeleton', actuatorRef = DEFAULT_ACTUATOR_REF, descriptorFingerprint = DEFAULT_DESCRIPTOR, packFingerprint = null } = {}) {
     this.scenario = scenario;
     this.actuatorRef = actuatorRef;
     this.descriptorFingerprint = descriptorFingerprint;
+    this.packFingerprint = packFingerprint;
     this.responsesByKey = new Map();
     this.calls = 0;
   }
@@ -18,6 +19,7 @@ export class FixtureAgentModelDriver {
   manifest() {
     return {
       driverId: 'fixture-agent-model',
+      ...(this.packFingerprint ? { packFingerprint: this.packFingerprint } : {}),
       supportedActuatorRefs: [this.actuatorRef],
       supportedDescriptorFingerprints: [this.descriptorFingerprint],
       supportedActuationClasses: ['model'],

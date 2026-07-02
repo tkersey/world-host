@@ -138,10 +138,11 @@ async function assertCapabilityPackAdapterAbi(packManifest, artifacts) {
   const module = await import(await capabilityPackAdapterImportUrl(packManifest, artifacts));
   const Driver = module[packManifest.adapter.exportName];
   if (typeof Driver !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_EXPORT');
-  const driver = new Driver(capabilityPackAdapterOptions(packManifest.driverId));
+  const driver = new Driver(capabilityPackAdapterOptions(packManifest));
   const capabilityDriver = defineCapabilityDriver(driver);
   if (packManifest.canRecover === true && typeof driver.recover !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_RECOVER');
   const driverManifest = capabilityDriver.manifest();
+  if (driverManifest.packFingerprint !== packManifest.packFingerprint) fail('ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH', 'adapter manifest field mismatch: packFingerprint');
   for (const field of [
     'driverId',
     'supportedActuatorRefs',
@@ -168,9 +169,10 @@ async function capabilityPackAdapterImportUrl(packManifest, artifacts) {
   return pathToFileURL(target).href;
 }
 
-function capabilityPackAdapterOptions(driverId) {
-  if (driverId === 'generic-http-json') return { endpointUrl: 'https://example.invalid/decide' };
-  return {};
+function capabilityPackAdapterOptions(packManifest) {
+  const base = { packFingerprint: packManifest.packFingerprint };
+  if (packManifest.driverId === 'generic-http-json') return { ...base, endpointUrl: 'https://example.invalid/decide' };
+  return base;
 }
 
 function assertSameCapabilityPackManifestField(field, packValue, driverValue) {

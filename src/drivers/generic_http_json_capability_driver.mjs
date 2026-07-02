@@ -27,6 +27,7 @@ export class GenericHttpJsonCapabilityDriver {
     idempotencyHeaderName = 'Idempotency-Key',
     allowEndpointFromRequest = false,
     redactionRules = [],
+    packFingerprint = null,
   } = {}) {
     if (!endpointUrl) fail('ERR_HTTP_CAPABILITY_ENDPOINT_REQUIRED');
     assertNoReservedSecretHeaders(secretHeaders, idempotencyHeaderName);
@@ -46,11 +47,13 @@ export class GenericHttpJsonCapabilityDriver {
     this.idempotencyHeaderName = idempotencyHeaderName;
     this.allowEndpointFromRequest = allowEndpointFromRequest;
     this.redactionRules = redactionRules;
+    this.packFingerprint = packFingerprint;
   }
 
   manifest() {
     return {
       driverId: 'generic-http-json',
+      ...(this.packFingerprint ? { packFingerprint: this.packFingerprint } : {}),
       supportedActuatorRefs: ['http:json'],
       supportedDescriptorFingerprints: ['descriptor:http-json'],
       supportedActuationClasses: ['http'],

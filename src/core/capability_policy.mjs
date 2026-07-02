@@ -181,11 +181,10 @@ function assertNetworkAllowlistsPresent(policy) {
 }
 
 function assertFileRootAllowed(manifest, hostRequest, policy) {
-  if (!policy.allowedFileRoots.size) return;
+  if (!isFile(manifest, hostRequest)) return;
+  if (!policy.allowedFileRoots.size) fail('ERR_CAPABILITY_FILE_ROOT_ALLOWLIST_REQUIRED');
   const root = manifest?.diagnostics?.root ?? manifest?.policyRequirements?.root;
-  if (isFile(manifest, hostRequest) && (!root || !policy.allowedFileRoots.has(root))) {
-    fail('ERR_CAPABILITY_FILE_ROOT_DENIED', `file root denied: ${root ?? 'unknown'}`);
-  }
+  if (!root || !policy.allowedFileRoots.has(root)) fail('ERR_CAPABILITY_FILE_ROOT_DENIED', `file root denied: ${root ?? 'unknown'}`);
 }
 
 function parseJsonRequest(hostRequest) {

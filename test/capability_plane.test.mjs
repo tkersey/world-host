@@ -387,6 +387,32 @@ describe('Capability Plane v0.2 core contracts', () => {
           allowLiveEffects: true,
           allowFileEffects: true,
           allowBestEffort: true,
+        },
+        mode: 'live',
+      }),
+      { code: 'ERR_CAPABILITY_FILE_ROOT_ALLOWLIST_REQUIRED' },
+    );
+    assert.throws(
+      () => assertCapabilityPolicyAllows({
+        manifest: {
+          driverId: 'mislabelled-file',
+          supportedActuationClasses: ['file'],
+          authorityLabels: [],
+          recoveryClass: EffectRecoveryClass.bestEffort,
+          maximumResponseBytes: 1024,
+          diagnostics: { root: '/blocked' },
+        },
+        hostRequest: {
+          actuatorRef: 'sandbox:file',
+          descriptorFingerprint: 'descriptor:sandbox-file',
+          actuationClass: 'file',
+          responseSchema: { status: 'ok' },
+          requestBytes: fromUtf8(stableJson({ path: 'out.txt', operation: 'write', content: 'blocked' })),
+        },
+        policy: {
+          allowLiveEffects: true,
+          allowFileEffects: true,
+          allowBestEffort: true,
           allowedFileRoots: ['/allowed'],
         },
         mode: 'live',
@@ -763,6 +789,39 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.deepEqual(driver.manifest().supportedResponseStatuses, ['ok', 'http_error', 'deferred']);
       const packDriver = new HttpJsonPackCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' });
       assert.deepEqual(packDriver.manifest().supportedResponseStatuses, ['ok', 'http_error', 'deferred']);
+      const runtimePackFingerprint = 'sha256:'.concat('4'.repeat(64));
+      const pinnedPackDriver = defineCapabilityDriver(new HttpJsonPackCapabilityDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        packFingerprint: runtimePackFingerprint,
+      }));
+      assert.equal(pinnedPackDriver.manifest().packFingerprint, runtimePackFingerprint);
+      assert.throws(
+        () => assertCapabilityPolicyAllows({
+          manifest: pinnedPackDriver.manifest(),
+          hostRequest: httpRequest(),
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            deniedCapabilityPacks: [runtimePackFingerprint],
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+          mode: 'live',
+        }),
+        { code: 'ERR_CAPABILITY_PACK_DENIED' },
+      );
+      assert.equal(assertCapabilityPolicyAllows({
+        manifest: pinnedPackDriver.manifest(),
+        hostRequest: httpRequest(),
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedCapabilityPacks: [runtimePackFingerprint],
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+        mode: 'live',
+      }), true);
       assert.throws(
         () => new HttpJsonPackCapabilityDriver({ endpointUrl: 'https://allowed.example/decide?api_key=secret' }),
         { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },

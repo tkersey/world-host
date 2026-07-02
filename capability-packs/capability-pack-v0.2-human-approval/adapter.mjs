@@ -1129,13 +1129,15 @@ function secretLike(value) {
 
 // src/drivers/human_approval_capability_driver.mjs
 class HumanApprovalCapabilityDriver {
-  constructor({ mode = "noninteractive-deny", prompt = null } = {}) {
+  constructor({ mode = "noninteractive-deny", prompt = null, packFingerprint = null } = {}) {
     this.mode = mode;
     this.prompt = prompt;
+    this.packFingerprint = packFingerprint;
   }
   manifest() {
     return {
       driverId: "human-approval",
+      ...(this.packFingerprint ? { packFingerprint: this.packFingerprint } : {}),
       supportedActuatorRefs: ["human:approval"],
       supportedDescriptorFingerprints: ["descriptor:human-approval"],
       supportedActuationClasses: ["human"],

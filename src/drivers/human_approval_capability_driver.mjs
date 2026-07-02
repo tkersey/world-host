@@ -6,14 +6,16 @@ import { encodeResolutionInputBytes } from '../protocol/world_appliance_wire_cod
 import { encodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
 
 export class HumanApprovalCapabilityDriver {
-  constructor({ mode = 'noninteractive-deny', prompt = null } = {}) {
+  constructor({ mode = 'noninteractive-deny', prompt = null, packFingerprint = null } = {}) {
     this.mode = mode;
     this.prompt = prompt;
+    this.packFingerprint = packFingerprint;
   }
 
   manifest() {
     return {
       driverId: 'human-approval',
+      ...(this.packFingerprint ? { packFingerprint: this.packFingerprint } : {}),
       supportedActuatorRefs: ['human:approval'],
       supportedDescriptorFingerprints: ['descriptor:human-approval'],
       supportedActuationClasses: ['human'],
