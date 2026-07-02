@@ -108,6 +108,7 @@ export class CapabilityConformanceReceipt {
 export function assertCapabilityManifest(input, options = {}) {
   if (!input || typeof input !== 'object') fail('ERR_CAPABILITY_MANIFEST_INVALID');
   assertNoCredentialMaterial(input);
+  assertNoMetadataCredentialMaterial(input.metadataBytes);
   const formatVersion = exactInteger(input.formatVersion, 'formatVersion', world_host_capability_pack_format_version);
   const driverAbiVersion = exactInteger(input.driverAbiVersion, 'driverAbiVersion', world_host_capability_driver_abi_version);
   const manifest = new CapabilityManifest({
@@ -143,6 +144,7 @@ export function assertCapabilityManifest(input, options = {}) {
     docs: requiredStringList(input.docs ?? [], 'docs'),
   });
   assertNoCredentialMaterial(manifest);
+  assertNoMetadataCredentialMaterial(manifest.metadataBytes);
   assertNoOperationLabelAuthority(manifest);
   if (options.requirePackFingerprint && !manifest.packFingerprint) fail('ERR_CAPABILITY_PACK_FINGERPRINT_REQUIRED');
   return manifest;
@@ -277,6 +279,16 @@ function adapterHasImportCall(text) {
     const identifier = text.slice(start, index);
     const callStart = skipWhitespaceAndComments(text, index);
     if ((identifier === 'eval' || identifier === 'Function') && text[callStart] === '(') return true;
+    if (identifier === 'require' && previousSignificant !== '.') {
+      if (text[callStart] !== '(') return true;
+      const callEnd = skipBalancedParentheses(text, callStart);
+      const afterCall = skipWhitespaceAndComments(text, callEnd);
+      if (text[afterCall] === '{') {
+        previousSignificant = 'identifier';
+        continue;
+      }
+      return true;
+    }
     if (identifier !== 'import' && identifier !== 'require') {
       previousSignificant = 'identifier';
       continue;
@@ -467,6 +479,34 @@ function assertNoCredentialMaterial(value, path = []) {
   }
   if (typeof value === 'object') {
     for (const [key, child] of Object.entries(value)) assertNoCredentialMaterial(child, [...path, key]);
+  }
+}
+
+function assertNoMetadataCredentialMaterial(value) {
+  if (value instanceof Uint8Array) {
+    assertNoMetadataBytesCredentialMaterial(value);
+    return;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+  if (value.format !== 'base64' || typeof value.bytes !== 'string') return;
+  let binary;
+  try {
+    binary = atob(value.bytes);
+  } catch {
+    return;
+  }
+  assertNoMetadataBytesCredentialMaterial(Uint8Array.from(binary, (char) => char.charCodeAt(0)));
+}
+
+function assertNoMetadataBytesCredentialMaterial(bytes) {
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return;
+  }
+  if (artifactCredentialText(text)) {
+    fail('ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN', 'credential-like metadataBytes forbidden');
   }
 }
 

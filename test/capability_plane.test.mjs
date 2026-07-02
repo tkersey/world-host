@@ -1,6 +1,8 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -145,6 +147,16 @@ describe('Capability Plane v0.2 core contracts', () => {
         docs: [],
         checksums: [{ path: 'adapter.mjs', checksum: requireAdapterChecksum }],
       }, { 'adapter.mjs': requireAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const aliasedRequireAdapter = fromUtf8("const r = require; const fs = r('node:fs'); export const CapabilityDriver = fs;");
+    const aliasedRequireAdapterChecksum = `sha256:${await sha256Hex(aliasedRequireAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: aliasedRequireAdapterChecksum }],
+      }, { 'adapter.mjs': aliasedRequireAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
     const commentedImportAdapter = fromUtf8("const fs = await import/* adapter bypass */('node:fs'); export const CapabilityDriver = fs;");
@@ -301,6 +313,15 @@ describe('Capability Plane v0.2 core contracts', () => {
     );
     assert.throws(
       () => assertCapabilityManifest({ ...manifest, metadataBytes: ['sk', 'test-secret-value'].join('-') }),
+      { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
+    );
+    assert.throws(
+      () => assertCapabilityManifest({ ...manifest, metadataBytes: fromUtf8(['sk', 'metadata-secret-value'].join('-')) }),
+      { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
+    );
+    const encodedMetadataSecret = btoa(String.fromCharCode(...fromUtf8(['sk', 'base64-secret-value'].join('-'))));
+    assert.throws(
+      () => assertCapabilityManifest({ ...manifest, metadataBytes: { format: 'base64', bytes: encodedMetadataSecret } }),
       { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
     );
     assert.throws(
@@ -606,6 +627,45 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(emptySecretPreflight.blockers.includes('ERR_SECRET_MISSING'), true);
     } finally {
       await rm(secretBase, { recursive: true, force: true });
+    }
+  });
+
+  it('derives live smoke idempotency headers from the configured key', async () => {
+    let idempotencyHeader = null;
+    const server = createServer((request, response) => {
+      idempotencyHeader = request.headers['idempotency-key'];
+      request.resume();
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end('{}');
+    });
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-live-smoke-'));
+    try {
+      await listen(server);
+      const { port } = server.address();
+      const endpointUrl = `http://127.0.0.1:${port}/decide`;
+      const idempotencyKey = 'operator-selected-live-smoke-key';
+      const config = path.join(root, 'config.json');
+      await writeFile(config, JSON.stringify({ endpointUrl, idempotencyKey, body: { ok: true } }));
+      const result = await runBunProcess([
+        process.execPath,
+        'scripts/run-live-capability-smoke.mjs',
+        '--config',
+        config,
+        '--secret-provider',
+        'env',
+        '--allow-origin',
+        `http://127.0.0.1:${port}`,
+        '--live',
+      ], { env: { ...process.env, WORLD_HOST_LIVE_SMOKE: '1' } });
+      assert.equal(result.code, 0, result.stderr || result.stdout);
+      assert.equal(
+        idempotencyHeader,
+        `world:key:live-smoke:${createHash('sha256').update(fromUtf8(idempotencyKey)).digest('hex')}`,
+      );
+    } finally {
+      server.closeAllConnections?.();
+      await close(server);
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -2228,6 +2288,39 @@ function policyProbeDriver({ packFingerprint } = {}) {
       throw error;
     },
   };
+}
+
+async function runBunProcess(command, options = {}) {
+  const subprocess = Bun.spawn(command, { ...options, stdout: 'pipe', stderr: 'pipe' });
+  const [code, stdout, stderr] = await Promise.all([
+    subprocess.exited,
+    new Response(subprocess.stdout).text(),
+    new Response(subprocess.stderr).text(),
+  ]);
+  return { code, stdout, stderr };
+}
+
+function listen(server) {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
+}
+
+function close(server) {
+  return new Promise((resolve, reject) => {
+    if (!server.listening) {
+      resolve();
+      return;
+    }
+    server.close((error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
 }
 
 function modelShadowProbeDriver() {

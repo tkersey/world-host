@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 
 import { GenericHttpJsonCapabilityDriver } from '../src/drivers/generic_http_json_capability_driver.mjs';
@@ -34,10 +35,11 @@ const driver = new GenericHttpJsonCapabilityDriver({
   responseExtractionPath: config.responseExtractionPath ?? null,
 });
 
+const idempotencyKeyBytes = fromUtf8(config.idempotencyKey ?? 'live-smoke-key');
 const hostRequest = {
   hostRequestFingerprint: 'world:host-request:0000000000000c02',
-  idempotencyKeyBytes: fromUtf8(config.idempotencyKey ?? 'live-smoke-key'),
-  idempotencyKeyWorldFingerprint: 'world:key:live-smoke',
+  idempotencyKeyBytes,
+  idempotencyKeyWorldFingerprint: `world:key:live-smoke:${createHash('sha256').update(idempotencyKeyBytes).digest('hex')}`,
   actuatorRef: 'http:json',
   descriptorFingerprint: 'descriptor:http-json',
   actuationClass: 'http',
