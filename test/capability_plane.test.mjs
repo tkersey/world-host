@@ -493,6 +493,47 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(decodeResolutionInputBytes(result.resolutionInputBytes).status, 0);
       assert.equal(driver.dryRun({}, httpRequest()).wouldInvoke, true);
 
+      let secretHasCalls = 0;
+      let secretGetCalls = 0;
+      const untouchedSecretProvider = {
+        has() {
+          secretHasCalls += 1;
+          return true;
+        },
+        async get() {
+          secretGetCalls += 1;
+          return 'Bearer should-not-read';
+        },
+      };
+      const blockedSecretDriver = new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        secretHeaders: { Authorization: 'API_TOKEN' },
+        secretProvider: untouchedSecretProvider,
+      });
+      const deniedSecretPreflight = blockedSecretDriver.preflight({
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://other.example'],
+          allowedMethods: ['POST'],
+        },
+      }, httpRequest());
+      assert.equal(deniedSecretPreflight.accepted, false);
+      assert.equal(deniedSecretPreflight.blockers.includes('ERR_CAPABILITY_ORIGIN_DENIED'), true);
+      assert.equal(secretHasCalls, 0);
+      await assert.rejects(
+        () => blockedSecretDriver.resolve({
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            allowedOrigins: ['https://other.example'],
+            allowedMethods: ['POST'],
+          },
+        }, httpRequest()),
+        { code: 'ERR_CAPABILITY_ORIGIN_DENIED' },
+      );
+      assert.equal(secretGetCalls, 0);
+
       let observedBody = undefined;
       globalThis.fetch = async (url, options) => {
         observedBody = options.body;
@@ -1092,6 +1133,21 @@ describe('Capability Plane v0.2 core contracts', () => {
     });
     assert.equal(proposedApproval.proposedAction.approval.password, '[redacted]');
     assert.equal(proposedApproval.proposedAction.approval.apiKey, '[redacted]');
+    let promptedProposal = null;
+    const interactiveApproval = new HumanApprovalCapabilityDriver({
+      mode: 'interactive-terminal',
+      prompt: async ({ proposed }) => {
+        promptedProposal = proposed;
+        return true;
+      },
+    });
+    await interactiveApproval.resolve({}, {
+      ...approvalRequest(),
+      requestBytes: fromUtf8(stableJson({ action: 'approve-file-write', password: 'fixture-password', apiKey: 'fixture-key' })),
+    });
+    assert.equal(promptedProposal.password, '[redacted]');
+    assert.equal(promptedProposal.apiKey, '[redacted]');
+    assert.equal(JSON.stringify(promptedProposal).includes('fixture-password'), false);
     const operatorRecovery = await defineCapabilityDriver(approval).recover({}, {});
     assert.equal(operatorRecovery.operatorInterventionRequired, true);
     const approved = await approval.resolve({}, approvalRequest());

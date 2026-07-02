@@ -52,7 +52,7 @@ export class HumanApprovalCapabilityDriver {
   }
 
   async resolve(context, hostRequest) {
-    const decision = await this.approve({ proposed: { hostRequest } });
+    const decision = await this.approve({ proposed: this.#redactedPrompt(hostRequest) });
     return this.#resolution(hostRequest, decision.approved ? 'approved' : 'rejected', decision.record);
   }
 

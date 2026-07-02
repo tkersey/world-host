@@ -74,11 +74,13 @@ export class GenericHttpJsonCapabilityDriver {
   preflight(context, hostRequest) {
     const structural = defaultCapabilityPreflight(this.manifest(), hostRequest);
     const blockers = [...structural.blockers];
-    try {
-      this.#assertSecrets();
-      this.#assertPolicyAllows(context, hostRequest);
-    } catch (error) {
-      blockers.push(error.code ?? 'ERR_HTTP_CAPABILITY_PREFLIGHT_REJECTED');
+    if (!blockers.length) {
+      try {
+        this.#assertPolicyAllows(context, hostRequest);
+        this.#assertSecrets();
+      } catch (error) {
+        blockers.push(error.code ?? 'ERR_HTTP_CAPABILITY_PREFLIGHT_REJECTED');
+      }
     }
     return new CapabilityPreflightReport({ accepted: blockers.length === 0, blockers });
   }
@@ -106,8 +108,8 @@ export class GenericHttpJsonCapabilityDriver {
   }
 
   async resolve(context, hostRequest) {
-    this.#assertSecrets();
     this.#assertPolicyAllows(context, hostRequest);
+    this.#assertSecrets();
     const request = this.#request(hostRequest);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
