@@ -1,4 +1,5 @@
 import { EffectJournal, assertResolutionAccepted } from './effect_journal.mjs';
+import { assertDriverCanResolve } from './actuator.mjs';
 import { assertCapabilityPolicyAllows, createCapabilityPolicy } from './capability_policy.mjs';
 import { assertCapabilityResolutionBoundary, defineCapabilityDriver } from './capability_driver.mjs';
 import { fail, fromUtf8, stableJson } from './store.mjs';
@@ -26,6 +27,7 @@ export async function runCapabilityMode({
   const manifest = driver.manifest();
   const livePolicy = createCapabilityPolicy(policy);
   if (mode === CapabilityExecutionMode.fixture) {
+    assertManifestCoversHostRequest(manifest, hostRequest);
     assertFixtureModeAllowed(manifest, hostRequest);
     assertCapabilityPreflightAccepted(driver.preflight(context, hostRequest));
     const resolved = await driver.resolve(context, hostRequest);
@@ -34,9 +36,11 @@ export async function runCapabilityMode({
     return { ...resolved, mode, submittedToWorld: true };
   }
   if (mode === CapabilityExecutionMode.dryRun) {
+    assertManifestCoversHostRequest(manifest, hostRequest);
     return { mode, submittedToWorld: false, dryRun: await driver.dryRun(context, hostRequest) };
   }
   if (mode === CapabilityExecutionMode.shadow) {
+    assertManifestCoversHostRequest(manifest, hostRequest);
     const shadowContext = { ...context, mode: 'shadow', policy: livePolicy };
     if (context?.allowShadowNetwork === true || context?.allowShadowLiveEffects === true) {
       assertCapabilityPolicyAllows({
@@ -51,6 +55,7 @@ export async function runCapabilityMode({
     return { mode, submittedToWorld: false, shadow: await driver.shadow(shadowContext, hostRequest, recordedResolution) };
   }
   if (mode === CapabilityExecutionMode.approval) {
+    assertManifestCoversHostRequest(manifest, hostRequest);
     const proposed = await driver.dryRun(context, hostRequest);
     const decision = await approvalDecision(approval, { manifest, hostRequest, proposed });
     if (decision.approved !== true) return { mode, submittedToWorld: false, approved: false, proposed };
@@ -104,6 +109,11 @@ function liveContext(context, policy, action = null) {
 
 function submittedResolutionToWorld(resolved) {
   return resolved?.resolutionInputBytes instanceof Uint8Array;
+}
+
+function assertManifestCoversHostRequest(manifest, hostRequest) {
+  assertDriverCanResolve(manifest, hostRequest);
+  return true;
 }
 
 function assertCapabilityPreflightAccepted(report) {

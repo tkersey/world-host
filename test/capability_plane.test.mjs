@@ -395,7 +395,29 @@ describe('Capability Plane v0.2 core contracts', () => {
         driver,
         hostRequest: { ...request, actuatorRef: 'http:json' },
       }),
-      { code: 'ERR_CAPABILITY_PREFLIGHT_BLOCKED' },
+      { code: 'ERR_ACTUATOR_REF_NOT_SUPPORTED' },
+    );
+    const uncoveredRequest = { ...request, actuatorRef: 'model:other' };
+    await assert.rejects(
+      () => runCapabilityMode({ mode: 'fixture', driver: hostFieldOverrideFixtureDriver(), hostRequest: uncoveredRequest }),
+      { code: 'ERR_ACTUATOR_REF_NOT_SUPPORTED' },
+    );
+    await assert.rejects(
+      () => runCapabilityMode({ mode: 'dry-run', driver: hostFieldOverrideFixtureDriver(), hostRequest: uncoveredRequest }),
+      { code: 'ERR_ACTUATOR_REF_NOT_SUPPORTED' },
+    );
+    await assert.rejects(
+      () => runCapabilityMode({ mode: 'shadow', driver: hostFieldOverrideFixtureDriver(), hostRequest: uncoveredRequest, recordedResolution: fromUtf8('recorded') }),
+      { code: 'ERR_ACTUATOR_REF_NOT_SUPPORTED' },
+    );
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'approval',
+        driver: hostFieldOverrideFixtureDriver(),
+        hostRequest: uncoveredRequest,
+        approval: () => ({ approved: true }),
+      }),
+      { code: 'ERR_ACTUATOR_REF_NOT_SUPPORTED' },
     );
     const dry = await runCapabilityMode({ mode: 'dry-run', driver, hostRequest: request });
     assert.equal(dry.submittedToWorld, false);
