@@ -88,6 +88,7 @@ async function runCapabilityCommand(args, io) {
   const subcommand = args[0] ?? 'help';
   if (subcommand === 'check-pack') {
     const pack = requiredOption(args, '--pack');
+    const trustedExecuteAdapters = args.includes('--trusted-execute-adapters');
     const {
       assertCapabilityConformanceReceipt,
       assertCapabilityPackChecksums,
@@ -98,7 +99,7 @@ async function runCapabilityCommand(args, io) {
     const artifacts = {};
     for (const item of checked.checksums) artifacts[item.path] = new Uint8Array(await readPackFile(pack, item.path));
     await assertCapabilityPackChecksums(checked, artifacts);
-    await assertCapabilityPackAdapterAbi(checked, artifacts);
+    if (trustedExecuteAdapters) await assertCapabilityPackAdapterAbi(checked, artifacts);
     const receipt = assertCapabilityConformanceReceipt(JSON.parse(await readPackFile(pack, 'conformance.json', 'utf8')));
     if (receipt.driverId !== checked.driverId) fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH', 'conformance receipt driverId does not match manifest');
     if (receipt.packFingerprint !== checked.packFingerprint) fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH', 'conformance receipt packFingerprint does not match manifest');
@@ -109,6 +110,7 @@ async function runCapabilityCommand(args, io) {
       driverId: checked.driverId,
       packFingerprint: checked.packFingerprint,
       artifactCount: checked.checksums.length,
+      trustedAdapterExecution: trustedExecuteAdapters,
       worldAuthoredEvidence: false,
     }), null, 2)}\n`);
     return 0;

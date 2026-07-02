@@ -26,7 +26,7 @@
     "proof:agent": "bun scripts/run-agent-closure-conformance.mjs",
     "proof:boundaries": "bun scripts/check-boundaries.mjs",
     "proof:capabilities": "bun test test/capability_plane.test.mjs test/capability_sidecar.test.mjs",
-    "proof:capability-packs": "bun scripts/check-capability-packs.mjs",
+    "proof:capability-packs": "bun scripts/check-capability-packs.mjs --trusted-execute-adapters",
     "proof:sidecars": "bun test test/capability_sidecar.test.mjs",
     "proof:secrets": "bun test test/capability_plane.test.mjs",
     "proof:policy": "bun test test/capability_plane.test.mjs",

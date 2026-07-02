@@ -829,6 +829,62 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('does not execute capability pack adapters during default CLI check-pack', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-no-exec-'));
+    const pack = path.join(root, 'capability-pack-v0.2-fixture');
+    try {
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      const sideEffectPath = path.join(root, 'adapter-executed.txt');
+      const adapterBytes = fromUtf8(`
+        await Bun.write(${JSON.stringify(sideEffectPath)}, 'executed');
+        export class CapabilityDriver {
+          manifest() {
+            return {
+              driverId: 'fixture-agent-model',
+              packFingerprint: ${JSON.stringify('placeholder')},
+              supportedActuatorRefs: ['fixture:agent-model'],
+              supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+              supportedActuationClasses: ['model'],
+              supportedResponseStatuses: ['ok', 'final'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'pure',
+              concurrencyLimit: 1,
+              authorityLabels: ['model:fixture-agent']
+            };
+          }
+          preflight() { return { accepted: true }; }
+          dryRun() { return { wouldInvoke: false }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          async resolve() { return { resolutionInputBytes: new Uint8Array(), hostClaimBytes: new Uint8Array() }; }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.checksums = manifest.checksums.map((item) => item.path === 'adapter.mjs'
+        ? { ...item, checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` }
+        : item);
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      const receipt = JSON.parse(await readFile(path.join(pack, 'conformance.json'), 'utf8'));
+      receipt.packFingerprint = manifest.packFingerprint;
+      const receiptBytes = fromUtf8(`${JSON.stringify(receipt, null, 2)}\n`);
+      await writeFile(path.join(pack, 'conformance.json'), receiptBytes);
+      manifest.checksums = manifest.checksums.map((item) => item.path === 'conformance.json'
+        ? { ...item, checksum: `sha256:${createHash('sha256').update(receiptBytes).digest('hex')}` }
+        : item);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      assert.equal(await runBunCli(['capability', 'check-pack', '--pack', pack], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      }), 0);
+      await assert.rejects(() => readFile(sideEffectPath), { code: 'ENOENT' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('rejects capability pack adapters that do not satisfy the runtime ABI during proof', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-abi-'));
     const packs = path.join(root, 'capability-packs');
@@ -873,7 +929,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         : item);
       await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 
-      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs')], {
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
         cwd: root,
         encoding: 'utf8',
       });
@@ -885,12 +941,12 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
-  it('rejects capability pack adapters that do not satisfy the runtime ABI during CLI check-pack', async () => {
+  it('rejects capability pack adapters that do not satisfy the runtime ABI during trusted CLI check-pack', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-cli-abi-'));
     const pack = path.join(root, 'capability-pack-v0.2-fixture');
     try {
       await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
-      assert.equal(await runBunCli(['capability', 'check-pack', '--pack', pack], {
+      assert.equal(await runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
         stdout: { write() {} },
         stderr: { write() {} },
       }), 0);
@@ -932,7 +988,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 
       await assert.rejects(
-        () => runBunCli(['capability', 'check-pack', '--pack', pack], {
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
           stdout: { write() {} },
           stderr: { write() {} },
         }),

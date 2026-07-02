@@ -11,6 +11,7 @@ import {
 } from '../src/core/capability_pack.mjs';
 import { defineCapabilityDriver } from '../src/core/capability_driver.mjs';
 
+const trustedExecuteAdapters = process.argv.includes('--trusted-execute-adapters');
 const root = path.resolve('capability-packs');
 const names = (await readdir(root).catch(() => [])).filter((name) => name.startsWith('capability-pack-v0.2-')).sort();
 if (!names.length) {
@@ -27,7 +28,7 @@ for (const name of names) {
   const artifacts = {};
   for (const item of checked.checksums) artifacts[item.path] = new Uint8Array(await readPackFile(packRoot, item.path));
   await assertCapabilityPackChecksums(checked, artifacts);
-  await assertAdapterManifestMatchesPack(checked, artifacts, name);
+  if (trustedExecuteAdapters) await assertAdapterManifestMatchesPack(checked, artifacts, name);
   const receipt = JSON.parse(await readPackFile(packRoot, 'conformance.json', 'utf8'));
   assertCapabilityConformanceReceipt(receipt);
   if (receipt.packFingerprint !== checked.packFingerprint) throw new Error(`ERR_CAPABILITY_CONFORMANCE_PACK_FINGERPRINT:${name}`);
@@ -38,6 +39,7 @@ for (const name of names) {
     driverId: checked.driverId,
     packFingerprint: checked.packFingerprint,
     artifactCount: checked.checksums.length,
+    trustedAdapterExecution: trustedExecuteAdapters,
   });
 }
 

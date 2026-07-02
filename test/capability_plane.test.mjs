@@ -2,7 +2,6 @@ import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:http';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -881,55 +880,59 @@ describe('Capability Plane v0.2 core contracts', () => {
   });
 
   it('derives live smoke idempotency headers from the configured key', async () => {
-    let idempotencyHeader = null;
-    let smokeStatus = 200;
-    const server = createServer((request, response) => {
-      idempotencyHeader = request.headers['idempotency-key'];
-      request.resume();
-      response.writeHead(smokeStatus, { 'content-type': 'application/json' });
-      response.end(smokeStatus === 200 ? '{}' : 'failed');
-    });
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-live-smoke-'));
     try {
-      await listen(server);
-      const { port } = server.address();
-      const endpointUrl = `http://127.0.0.1:${port}/decide`;
+      const headerPath = path.join(root, 'idempotency-header.txt');
+      const preload = path.join(root, 'mock-fetch.mjs');
+      await writeFile(preload, `
+        import { writeFileSync } from 'node:fs';
+        globalThis.fetch = async (_url, init = {}) => {
+          writeFileSync(process.env.WORLD_HOST_TEST_FETCH_HEADER_FILE, String(init.headers?.['Idempotency-Key'] ?? ''));
+          const status = Number(process.env.WORLD_HOST_TEST_FETCH_STATUS ?? '200');
+          return new Response(status === 200 ? '{}' : 'failed', {
+            status,
+            headers: { 'content-type': status === 200 ? 'application/json' : 'text/plain' },
+          });
+        };
+      `);
+      const endpointUrl = 'https://allowed.example/decide';
       const idempotencyKey = 'operator-selected-live-smoke-key';
       const config = path.join(root, 'config.json');
       await writeFile(config, JSON.stringify({ endpointUrl, idempotencyKey, body: { ok: true } }));
       const result = await runBunProcess([
         process.execPath,
+        '--preload',
+        preload,
         'scripts/run-live-capability-smoke.mjs',
         '--config',
         config,
         '--secret-provider',
         'env',
         '--allow-origin',
-        `http://127.0.0.1:${port}`,
+        'https://allowed.example',
         '--live',
-      ], { env: { ...process.env, WORLD_HOST_LIVE_SMOKE: '1' } });
+      ], { env: { ...process.env, WORLD_HOST_LIVE_SMOKE: '1', WORLD_HOST_TEST_FETCH_HEADER_FILE: headerPath, WORLD_HOST_TEST_FETCH_STATUS: '200' } });
       assert.equal(result.code, 0, result.stderr || result.stdout);
       assert.equal(
-        idempotencyHeader,
+        await Bun.file(headerPath).text(),
         `world:key:live-smoke:${createHash('sha256').update(fromUtf8(idempotencyKey)).digest('hex')}`,
       );
-      smokeStatus = 500;
       const failingResult = await runBunProcess([
         process.execPath,
+        '--preload',
+        preload,
         'scripts/run-live-capability-smoke.mjs',
         '--config',
         config,
         '--secret-provider',
         'env',
         '--allow-origin',
-        `http://127.0.0.1:${port}`,
+        'https://allowed.example',
         '--live',
-      ], { env: { ...process.env, WORLD_HOST_LIVE_SMOKE: '1' } });
+      ], { env: { ...process.env, WORLD_HOST_LIVE_SMOKE: '1', WORLD_HOST_TEST_FETCH_HEADER_FILE: headerPath, WORLD_HOST_TEST_FETCH_STATUS: '500' } });
       assert.notEqual(failingResult.code, 0);
       assert.match(failingResult.stderr, /ERR_LIVE_SMOKE_HTTP_ERROR_RESOLUTION/);
     } finally {
-      server.closeAllConnections?.();
-      await close(server);
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -3163,29 +3166,6 @@ async function runBunProcess(command, options = {}) {
     new Response(subprocess.stderr).text(),
   ]);
   return { code, stdout, stderr };
-}
-
-function listen(server) {
-  return new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      server.off('error', reject);
-      resolve();
-    });
-  });
-}
-
-function close(server) {
-  return new Promise((resolve, reject) => {
-    if (!server.listening) {
-      resolve();
-      return;
-    }
-    server.close((error) => {
-      if (error) reject(error);
-      else resolve();
-    });
-  });
 }
 
 function modelShadowProbeDriver({ authorityLabels = ['model:openai'] } = {}) {
