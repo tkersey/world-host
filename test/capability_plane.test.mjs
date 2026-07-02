@@ -592,16 +592,18 @@ describe('Capability Plane v0.2 core contracts', () => {
           headers: { 'x-request-id': 'request-configured' },
         });
       };
+      const configuredEndpointRequest = { ...httpRequest(), requestBytes: fromUtf8(stableJson({ body: { prompt: 'hi' } })) };
+      const configuredEndpointJournalOptions = {
+        store: new MemoryStore(),
+        runId: 'configured-endpoint-run',
+        branchId: 'main',
+        parentTurnClosureFingerprint: 'world:turn-closure:parent',
+      };
       const configuredEndpointLive = await runCapabilityMode({
         mode: 'live',
         driver: new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }),
-        hostRequest: { ...httpRequest(), requestBytes: fromUtf8(stableJson({ body: { prompt: 'hi' } })) },
-        journalOptions: {
-          store: new MemoryStore(),
-          runId: 'configured-endpoint-run',
-          branchId: 'main',
-          parentTurnClosureFingerprint: 'world:turn-closure:parent',
-        },
+        hostRequest: configuredEndpointRequest,
+        journalOptions: configuredEndpointJournalOptions,
         policy: {
           allowLiveEffects: true,
           allowNetworkEffects: true,
@@ -611,6 +613,24 @@ describe('Capability Plane v0.2 core contracts', () => {
       });
       assert.equal(configuredEndpointFetchCalled, true);
       assert.equal(decodeResolutionInputBytes(configuredEndpointLive.resolutionInputBytes).status, 0);
+      globalThis.fetch = async () => {
+        throw new Error('configured endpoint reuse should be blocked by current policy');
+      };
+      await assert.rejects(
+        () => runCapabilityMode({
+          mode: 'live',
+          driver: new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }),
+          hostRequest: configuredEndpointRequest,
+          journalOptions: configuredEndpointJournalOptions,
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            allowedOrigins: ['https://other.example'],
+            allowedMethods: ['POST'],
+          },
+        }),
+        { code: 'ERR_CAPABILITY_ORIGIN_DENIED' },
+      );
 
       let configuredPayloadUrlFetchUrl = null;
       globalThis.fetch = async (url) => {
@@ -775,11 +795,7 @@ describe('Capability Plane v0.2 core contracts', () => {
           },
           policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
         }),
-        (error) => {
-          assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
-          assert.deepEqual(error.details.blockers, ['ERR_CAPABILITY_ORIGIN_DENIED']);
-          return true;
-        },
+        { code: 'ERR_CAPABILITY_ORIGIN_DENIED' },
       );
       assert.equal(blockedFetchCalled, false);
 

@@ -30,6 +30,7 @@ export class GenericHttpJsonCapabilityDriver {
     if (!endpointUrl) fail('ERR_HTTP_CAPABILITY_ENDPOINT_REQUIRED');
     const parsedEndpointUrl = parseHttpUrl(endpointUrl);
     this.endpointUrl = endpointUrl;
+    this.endpointOrigin = parsedEndpointUrl.origin;
     this.methods = new Set(methods.map((method) => String(method).toUpperCase()));
     this.origins = new Set(origins.length ? origins : [parsedEndpointUrl.origin]);
     this.secretHeaders = secretHeaders;
@@ -61,6 +62,8 @@ export class GenericHttpJsonCapabilityDriver {
         origins: [...this.origins],
         methods: [...this.methods],
         endpointSource: this.allowEndpointFromRequest ? 'request-or-config' : 'config',
+        configuredOrigin: this.endpointOrigin,
+        defaultMethod: [...this.methods][0] ?? 'POST',
         secretHeaders: Object.keys(this.secretHeaders),
       },
     };

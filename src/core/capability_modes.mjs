@@ -105,19 +105,29 @@ function assertCapabilityPreflightAccepted(report) {
 }
 
 function shouldEnforceNetworkTarget(hostRequest, manifest) {
-  if (manifest?.diagnostics?.endpointSource === 'config') return false;
+  if (manifest?.diagnostics?.endpointSource === 'config') return true;
   if (!hostRequest?.requestBytes) return true;
   try {
-    return JSON.parse(new TextDecoder().decode(hostRequest.requestBytes))?.url !== undefined;
+    const parsed = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
+    if (manifest?.diagnostics?.endpointSource === 'request-or-config' && parsed?.url === undefined) return true;
+    return parsed?.url !== undefined;
   } catch {
     return true;
   }
 }
 
 function networkPolicyHostRequest(hostRequest, manifest) {
-  if (manifest?.diagnostics?.endpointSource === 'config' || !hostRequest?.requestBytes) return hostRequest;
+  const endpointSource = manifest?.diagnostics?.endpointSource;
+  if (!hostRequest?.requestBytes) {
+    return endpointSource === 'config' || endpointSource === 'request-or-config'
+      ? configuredNetworkPolicyHostRequest(hostRequest, manifest)
+      : hostRequest;
+  }
   try {
     const parsed = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
+    if (endpointSource === 'config' || (endpointSource === 'request-or-config' && parsed?.url === undefined)) {
+      return configuredNetworkPolicyHostRequest(hostRequest, manifest, parsed);
+    }
     if (parsed?.url === undefined || parsed.method !== undefined) return hostRequest;
     const methods = Array.isArray(manifest?.diagnostics?.methods) ? manifest.diagnostics.methods : [];
     if (methods.length !== 1) return hostRequest;
@@ -125,6 +135,19 @@ function networkPolicyHostRequest(hostRequest, manifest) {
   } catch {
     return hostRequest;
   }
+}
+
+function configuredNetworkPolicyHostRequest(hostRequest, manifest, parsed = {}) {
+  const origins = Array.isArray(manifest?.diagnostics?.origins) ? manifest.diagnostics.origins : [];
+  const methods = Array.isArray(manifest?.diagnostics?.methods) ? manifest.diagnostics.methods : [];
+  const url = manifest?.diagnostics?.configuredOrigin ?? (origins.length === 1 ? origins[0] : null);
+  const method = parsed.method ?? manifest?.diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : null);
+  if (!url || !method) return hostRequest;
+  return {
+    ...hostRequest,
+    policyRequestBytes: hostRequest?.requestBytes,
+    requestBytes: fromUtf8(stableJson({ url, method })),
+  };
 }
 
 function assertFixtureModeAllowed(manifest, hostRequest) {
