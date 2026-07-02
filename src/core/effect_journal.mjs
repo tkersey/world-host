@@ -109,16 +109,17 @@ export class EffectJournal {
     const manifest = driver.manifest();
     assertDriverCanResolve(manifest, hostRequest);
     assertDriverRecoveryHookSufficient(manifest, driver);
-    const prepared = await prepareHostRequest(hostRequest);
-    const normalizedHostRequest = normalizePreparedHostRequest(hostRequest, prepared);
+    const journalHostRequest = journaledHostRequest(hostRequest, manifest);
+    const prepared = await prepareHostRequest(journalHostRequest);
+    const normalizedHostRequest = normalizePreparedHostRequest(journalHostRequest, prepared);
     assertPreparedRequestWithinLimits(prepared, manifest, this.policy);
     assertDurableRecoveryAllowed(manifest.recoveryClass, this.policy);
     return await withEffectKeyLock(this.store, effectLockKey(this.runId, prepared.idempotencyKey), async () => {
-      let observed = await this.#observePrepared(hostRequest, prepared, { manifest, createIfMissing: false });
+      let observed = await this.#observePrepared(journalHostRequest, prepared, { manifest, createIfMissing: false });
       const existingOutcome = observed ? await this.#nonInvokingResolution(observed, normalizedHostRequest, manifest) : null;
       if (existingOutcome) return existingOutcome;
       if (typeof options.beforeInvoke === 'function') await options.beforeInvoke(context, normalizedHostRequest);
-      if (!observed) observed = await this.#observePrepared(hostRequest, prepared, { manifest });
+      if (!observed) observed = await this.#observePrepared(journalHostRequest, prepared, { manifest });
       const observedOutcome = await this.#nonInvokingResolution(observed, normalizedHostRequest, manifest);
       if (observedOutcome) return observedOutcome;
       if (observed.state === EffectState.running) return await this.#recoverLocked(context, observed, driver);

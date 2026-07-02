@@ -619,6 +619,60 @@ describe('EffectJournal', () => {
     }
   });
 
+  it('journals configured capability identity during direct resolve', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const request = httpHostRequest({
+      requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'hi' } })),
+    });
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    try {
+      globalThis.fetch = async (url) => {
+        calls += 1;
+        assert.equal(String(url), 'https://allowed.example/decide');
+        return new Response('{"action":{"variant":"final","text":"direct-configured"}}', {
+          status: 200,
+          headers: { 'x-request-id': 'direct-configured-1' },
+        });
+      };
+      await journal.resolve({
+        mode: 'live',
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      }, request, new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        origins: ['https://allowed.example'],
+      }));
+
+      globalThis.fetch = async () => {
+        throw new Error('configured endpoint identity conflict should block before fetch');
+      };
+      await assert.rejects(
+        () => journal.resolve({
+          mode: 'live',
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            allowedOrigins: ['https://other.example'],
+            allowedMethods: ['POST'],
+          },
+        }, request, new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://other.example/decide',
+          origins: ['https://other.example'],
+        })),
+        { code: 'ERR_EFFECT_IDEMPOTENCY_CONFLICT' },
+      );
+      assert.equal(calls, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('routes transactional resolve failures through recovery before retrying side effects', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
