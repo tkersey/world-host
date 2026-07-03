@@ -806,6 +806,7 @@ function agentRuntimeRunOptions(args, options = {}) {
     effectPolicy: {
       allowBestEffort: true,
       requireApprovalForBestEffort: false,
+      requireApprovalForDestructiveEffects: false,
       allowedFileRoots: [sandboxRoot],
       ...(options.effectPolicy ?? {}),
     },

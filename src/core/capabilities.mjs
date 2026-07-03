@@ -348,6 +348,7 @@ function policyBlockers(route, request, policy) {
     const root = route.diagnostics?.root;
     if (allowedFileRoots.size && (!root || !allowedFileRoots.has(root))) blockers.push(`file-root-denied:${root ?? 'unknown'}`);
   }
+  if (isHumanRoute(route, request) && policy.allowHumanEffects !== true) blockers.push('ERR_CAPABILITY_HUMAN_DENIED');
   if (request && (request.actuationClass === 'http' || route.authorityLabels.includes('network:http'))) {
     const origin = requestOriginForRoute(request, route);
     const driverOrigins = Array.isArray(route.diagnostics?.origins) ? new Set(route.diagnostics.origins) : null;
@@ -371,6 +372,12 @@ function isFileRoute(route, request) {
   return request?.actuationClass === 'file' ||
     (route.supportedActuationClasses ?? []).includes('file') ||
     (route.authorityLabels ?? []).some((label) => label.startsWith('file:'));
+}
+
+function isHumanRoute(route, request) {
+  return request?.actuationClass === 'human' ||
+    (route.supportedActuationClasses ?? []).includes('human') ||
+    (route.authorityLabels ?? []).some((label) => label.startsWith('human:'));
 }
 
 function driverMatchesExceptResponseStatus(manifest, request) {

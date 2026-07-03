@@ -14,6 +14,7 @@ import { SandboxFileDriver } from '../src/drivers/sandbox_file_driver.mjs';
 import { HttpJsonDriver } from '../src/drivers/http_json_driver.mjs';
 import { GenericHttpJsonCapabilityDriver } from '../src/drivers/generic_http_json_capability_driver.mjs';
 import { GenericHttpJsonModelDriver } from '../src/drivers/model_capability_driver.mjs';
+import { HumanApprovalCapabilityDriver } from '../src/drivers/human_approval_capability_driver.mjs';
 import { fromUtf8, stableJson } from '../src/core/store.mjs';
 import { decodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
@@ -406,6 +407,38 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(oneNewWithCachedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'), false);
     assert.ok(mismatchedCachedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
     assert.ok(wrongFullKeyReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+  });
+
+  it('requires human-effect opt-in during receiver preflight', () => {
+    const humanRequest = {
+      actuatorRef: 'human:approval',
+      descriptorFingerprint: 'descriptor:human-approval',
+      actuationClass: 'human',
+      responseSchema: { status: 'ok' },
+      idempotencyKeyWorldFingerprint: 'world:key:human-preflight',
+      requestBytes: fromUtf8(stableJson({ action: 'approve' })),
+    };
+    const driver = new HumanApprovalCapabilityDriver({ mode: 'noninteractive-allow' });
+    const deniedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [humanRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['human:approval'] }),
+    });
+    const allowedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [humanRequest],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowHumanEffects: true,
+        allowedAuthorityLabels: ['human:approval'],
+      }),
+    });
+
+    assert.ok(deniedReport.blockers.includes('ERR_CAPABILITY_HUMAN_DENIED'));
+    assert.deepEqual(allowedReport.blockers, []);
   });
 
   it('binds cached model replay budget exemptions to output validation policy', () => {

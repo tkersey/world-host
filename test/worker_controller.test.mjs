@@ -1736,7 +1736,11 @@ describe('RunController and WorldWorker', () => {
 
       await assert.rejects(
         () => controller.advance(runId, branchId),
-        { code: 'ERR_CAPABILITY_HUMAN_DENIED' },
+        (error) => {
+          assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+          assert.ok(error.details?.blockers?.includes('ERR_CAPABILITY_HUMAN_DENIED'));
+          return true;
+        },
       );
       assert.equal(approveCalled, false);
     }

@@ -1264,6 +1264,44 @@ describe('Capability Plane v0.2 core contracts', () => {
       }),
       { code: 'ERR_CAPABILITY_FILE_ROOT_DENIED' },
     );
+    const fileManifest = {
+      driverId: 'sandbox-file',
+      supportedActuationClasses: ['file'],
+      authorityLabels: ['file:sandbox'],
+      recoveryClass: EffectRecoveryClass.bestEffort,
+      maximumResponseBytes: 1024,
+      diagnostics: { root: '/allowed' },
+    };
+    const writeHostRequest = {
+      actuatorRef: 'sandbox:file',
+      descriptorFingerprint: 'descriptor:sandbox-file',
+      actuationClass: 'file',
+      responseSchema: { status: 'ok' },
+      requestBytes: fromUtf8(stableJson({ path: 'out.txt', operation: 'write', content: 'blocked' })),
+    };
+    const filePolicy = {
+      allowLiveEffects: true,
+      allowFileEffects: true,
+      allowBestEffort: true,
+      requireApprovalForBestEffort: false,
+      allowedFileRoots: ['/allowed'],
+    };
+    assert.throws(
+      () => assertCapabilityPolicyAllows({
+        manifest: fileManifest,
+        hostRequest: writeHostRequest,
+        policy: filePolicy,
+        mode: 'live',
+      }),
+      { code: 'ERR_CAPABILITY_APPROVAL_REQUIRED' },
+    );
+    assert.equal(assertCapabilityPolicyAllows({
+      manifest: fileManifest,
+      hostRequest: writeHostRequest,
+      policy: filePolicy,
+      action: { approved: true },
+      mode: 'live',
+    }), true);
     assert.throws(
       () => assertCapabilityPolicyAllows({
         manifest,

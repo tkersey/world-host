@@ -79,7 +79,7 @@ export function assertCapabilityPolicyAllows({ manifest, hostRequest = null, pol
   }
   assertFileRootAllowed(manifest, hostRequest, policy);
   const approved = action?.approved === true;
-  if (action?.destructive === true && policy.requireApprovalForDestructiveEffects && !approved) fail('ERR_CAPABILITY_APPROVAL_REQUIRED');
+  if ((action?.destructive === true || isDestructiveHostRequest(manifest, hostRequest)) && policy.requireApprovalForDestructiveEffects && !approved) fail('ERR_CAPABILITY_APPROVAL_REQUIRED');
   if (isNetwork(manifest, hostRequest) && policy.requireApprovalForNetworkEffects && !approved) fail('ERR_CAPABILITY_APPROVAL_REQUIRED');
   if (manifest?.recoveryClass === EffectRecoveryClass.bestEffort && policy.requireApprovalForBestEffort && !approved) fail('ERR_CAPABILITY_APPROVAL_REQUIRED');
   return true;
@@ -188,6 +188,12 @@ function assertFileRootAllowed(manifest, hostRequest, policy) {
   if (!policy.allowedFileRoots.size) fail('ERR_CAPABILITY_FILE_ROOT_ALLOWLIST_REQUIRED');
   const root = manifest?.diagnostics?.root ?? manifest?.policyRequirements?.root;
   if (!root || !policy.allowedFileRoots.has(root)) fail('ERR_CAPABILITY_FILE_ROOT_DENIED', `file root denied: ${root ?? 'unknown'}`);
+}
+
+function isDestructiveHostRequest(manifest, hostRequest) {
+  if (!isFile(manifest, hostRequest)) return false;
+  const request = parseJsonRequest(hostRequest);
+  return request?.operation !== 'read';
 }
 
 function parseJsonRequest(hostRequest) {
