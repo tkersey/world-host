@@ -266,6 +266,16 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': aliasedGlobalFunctionImportAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const assignedGlobalFunctionImportAdapter = fromUtf8('const name = "Function"; let g; g = globalThis; const F = g[name]; const fs = F("s", "return import(s)")("node:fs"); export const CapabilityDriver = fs;');
+    const assignedGlobalFunctionImportAdapterChecksum = `sha256:${await sha256Hex(assignedGlobalFunctionImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: assignedGlobalFunctionImportAdapterChecksum }],
+      }, { 'adapter.mjs': assignedGlobalFunctionImportAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const escapedComputedRequireAdapter = fromUtf8("const fs = globalThis['requ\\u0069re']('node:fs'); export const CapabilityDriver = fs;");
     const escapedComputedRequireAdapterChecksum = `sha256:${await sha256Hex(escapedComputedRequireAdapter)}`;
     await assert.rejects(

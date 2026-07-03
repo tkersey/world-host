@@ -469,7 +469,10 @@ function adapterHasImportCall(text) {
 }
 
 function adapterAliasesGlobalObject(text) {
-  return /\b(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*(?:globalThis|global|window|self)\b/.test(text);
+  const identifier = '[A-Za-z_$][A-Za-z0-9_$]*';
+  const globalObject = '(?:globalThis|global|window|self)';
+  return new RegExp(`\\b(?:const|let|var)\\s+${identifier}\\s*=\\s*${globalObject}\\b`).test(text) ||
+    new RegExp(`(?:^|[;{}(),\\n])\\s*${identifier}\\s*=\\s*${globalObject}\\b`).test(text);
 }
 
 function dangerousCallAt(text, index) {
