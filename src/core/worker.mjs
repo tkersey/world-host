@@ -350,20 +350,21 @@ export class RunController {
         hostRequest: item.hostRequest,
         worldHostRequest: item.worldHostRequest,
       });
-      assertSelectedEffectPolicyAllows(item.manifest, item.hostRequest, policy, context?.action);
+      assertSelectedEffectPolicyAllows(item.manifest, item.hostRequest, policy, context?.action, { allowCachedLiveModelReplay: true });
       const journalHostRequest = journaledHostRequest(item.hostRequest, item.manifest);
       const driver = controllerResolveDriver(item.driver);
       const resolved = await journal.resolve(
         context,
         journalHostRequest,
         driver,
-        typeof driver?.preflight === 'function'
-          ? {
-              beforeInvoke: async (preflightContext, preflightHostRequest) => {
-                assertCapabilityPreflightAccepted(await driver.preflight(preflightContext, preflightHostRequest));
-              },
+        {
+          beforeInvoke: async (preflightContext, preflightHostRequest) => {
+            assertSelectedEffectPolicyAllows(item.manifest, item.hostRequest, policy, context?.action);
+            if (typeof driver?.preflight === 'function') {
+              assertCapabilityPreflightAccepted(await driver.preflight(preflightContext, preflightHostRequest));
             }
-          : {},
+          },
+        },
       );
       effects[pendingPositions.get(item)] = { ...resolved, worldHostRequest: item.worldHostRequest };
     });
@@ -379,11 +380,11 @@ function exposesCapabilityAbi(driver) {
   return typeof driver?.preflight === 'function' && typeof driver?.dryRun === 'function' && typeof driver?.shadow === 'function';
 }
 
-function assertSelectedEffectPolicyAllows(manifest, hostRequest, policy, action = null) {
+function assertSelectedEffectPolicyAllows(manifest, hostRequest, policy, action = null, options = {}) {
   assertCapabilityPolicyAllows({
     manifest,
     hostRequest: networkPolicyHostRequest(hostRequest, manifest),
-    policy: capabilityPolicyForSelectedEffect(policy, manifest, hostRequest),
+    policy: capabilityPolicyForSelectedEffect(policy, manifest, hostRequest, options),
     mode: 'live',
     action,
   });
@@ -686,7 +687,7 @@ async function defaultEffectContextFactory(context) {
   };
 }
 
-function capabilityPolicyForSelectedEffect(policy = {}, manifest = {}, hostRequest = {}) {
+function capabilityPolicyForSelectedEffect(policy = {}, manifest = {}, hostRequest = {}, options = {}) {
   const authorityLabels = manifest?.authorityLabels ?? [];
   const actuationClasses = manifest?.supportedActuationClasses ?? [];
   const network = hostRequest?.actuationClass === 'http' ||
@@ -713,7 +714,7 @@ function capabilityPolicyForSelectedEffect(policy = {}, manifest = {}, hostReque
     requireApprovalForDestructiveEffects: policy.requireApprovalForDestructiveEffects !== false,
     requireApprovalForNetworkEffects: policy.requireApprovalForNetworkEffects === true,
     requireApprovalForBestEffort: policy.requireApprovalForBestEffort !== false,
-    maximumLiveModelCalls: model ? 1 : 0,
+    maximumLiveModelCalls: modelLiveBudget(policy, model, options),
     maximumRequestBytes: policy.maximumRequestBytes,
     maximumResponseBytes: policy.maximumResponseBytes,
     allowedOrigins: [...allowedHttpOrigins],
@@ -723,6 +724,12 @@ function capabilityPolicyForSelectedEffect(policy = {}, manifest = {}, hostReque
     allowedCapabilityPacks: [...policySet(policy.allowedCapabilityPacks)],
     deniedCapabilityPacks: [...policySet(policy.deniedCapabilityPacks)],
   };
+}
+
+function modelLiveBudget(policy, model, options) {
+  if (!model) return 0;
+  const budget = policy.maximumLiveModelCalls ?? 0;
+  return options.allowCachedLiveModelReplay ? Math.max(1, budget) : budget;
 }
 
 function selectEffectDriver(drivers, hostRequest, policy = {}, preferredAuthorityLabels = []) {

@@ -2083,6 +2083,104 @@ describe('RunController and WorldWorker', () => {
     }
   });
 
+  it('preserves zero live model budgets when cached preflight routes cannot be reused', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const requestBytes = fromUtf8(JSON.stringify({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: 'goal=shadowed-cache' }));
+    const effectIdentityBytes = fromUtf8(stableJson({
+      request: JSON.parse(new TextDecoder().decode(requestBytes)),
+      configuredEndpoint: { url: 'https://allowed.example/decide', method: 'POST' },
+      requestRendering: {
+        requestTemplateFingerprint: null,
+        secretHeadersFingerprint: `sha256:${sha256Hex(fromUtf8(stableJson({})))}`,
+        idempotencyHeaderName: 'Idempotency-Key',
+        responseExtractionPathFingerprint: `sha256:${sha256Hex(fromUtf8(stableJson('action')))}`,
+      },
+      modelOutputValidation: {
+        outputSchema: 'boundary.Agent.Action.v0',
+        allowedToolIds: ['actuate', 'read_file', 'write_file'],
+      },
+    }));
+    const baseRecord = {
+      runId,
+      parentTurnClosureFingerprint: 'world:closure:cached-model-parent',
+      hostRequestFingerprint: 'world:host-request:0000000000000a01',
+      idempotencyKey: {
+        format: 'world-idempotency-key-bytes.hex',
+        bytesHex: Buffer.from('shadowed-model-budget-key').toString('hex'),
+      },
+      idempotencyKeyWorldFingerprint: 'world:key:shadowed-model-budget',
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClass: 'model',
+      responseSchema: { status: 'ok' },
+      requestBytesChecksum: `sha256:${sha256Hex(requestBytes)}`,
+      requestIdentityChecksum: `sha256:${sha256Hex(effectIdentityBytes)}`,
+      driverRecoveryClass: EffectRecoveryClass.idempotent,
+    };
+    const resolutionInputRef = await store.putBlob(encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xa01n,
+      status: 0,
+      responseValueImageBytes: fixtureResponseValueBytes('cached-model', 0xa01n),
+      hostClaimBytes: fromUtf8('claim'),
+      attemptNumber: 1,
+      metadata: fromUtf8('metadata'),
+    }));
+    await store.putEffectRecord(createEffectRecord({
+      ...baseRecord,
+      branchId: 'cached-branch',
+      state: EffectState.resolved,
+      resolutionInputRef,
+    }));
+    await store.putEffectRecord(createEffectRecord({
+      ...baseRecord,
+      branchId,
+      state: EffectState.observed,
+    }));
+    let fetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"action":{"variant":"final","text":"should-not-fetch"}}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonModelDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          packFingerprint: 'sha256:'.concat('b'.repeat(64)),
+        })],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['model:http-json', 'network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          maximumLiveModelCalls: 0,
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'model:decision',
+          descriptorFingerprint: 'descriptor:agent-decision-prompt',
+          actuationClass: 'model',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('shadowed-model-budget-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:shadowed-model-budget',
+          requestBytes,
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      await assert.rejects(
+        () => controller.advance(runId, branchId),
+        { code: 'ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED' },
+      );
+      assert.equal(fetchCalled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('preserves controller capability pack pins before resolving effects', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
