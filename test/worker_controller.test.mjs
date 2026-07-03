@@ -1941,7 +1941,7 @@ describe('RunController and WorldWorker', () => {
       closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
     });
     const fixtureModelDriver = fixtureEffectDriver({
-      driverId: 'fixture-model-budget-route',
+      driverId: 'generic-http-json-model',
       actuatorRef: 'model:decision',
       descriptorFingerprint: 'descriptor:agent-decision-prompt',
       actuationClasses: ['model'],

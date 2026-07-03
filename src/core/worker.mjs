@@ -1086,27 +1086,29 @@ function prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, hostRequestM
 }
 
 function bindEffectPlanToPreflightReport(plan, report, effectDrivers, policy) {
-  const coveredRequests = report.coveredRequests ?? [];
+  const selectedRoutes = report.selectedPendingRequestRoutes ?? [];
   const pending = plan.pending.map((item, index) => {
-    const covered = coveredRequests[index];
-    if (!covered) fail('ERR_HOST_REQUEST_DRIVER_UNAVAILABLE', 'preflight report missing covered HostRequest', unresolvedHostRequestDiagnostic(item.index, item.hostRequest));
-    if (item.manifest.driverId === covered.driverId) return item;
-    const selection = selectEffectDriverById(effectDrivers, item.hostRequest, policy, covered.driverId);
+    const route = selectedRoutes[index];
+    if (!route) fail('ERR_HOST_REQUEST_DRIVER_UNAVAILABLE', 'preflight report missing selected HostRequest route', unresolvedHostRequestDiagnostic(item.index, item.hostRequest));
+    const selection = selectEffectDriverByPreflightRoute(effectDrivers, item.hostRequest, policy, route);
     if (!selection) fail('ERR_HOST_REQUEST_DRIVER_UNAVAILABLE', 'preflight-covered driver unavailable for pending HostRequest', {
       ...unresolvedHostRequestDiagnostic(item.index, item.hostRequest),
-      driverId: covered.driverId,
+      driverId: route.driverId,
+      driverIndex: route.driverIndex,
     });
+    if (item.driver === selection.driver) return item;
     return { ...item, ...selection };
   });
   return { ...plan, pending };
 }
 
-function selectEffectDriverById(drivers, hostRequest, policy, driverId) {
-  for (const driver of drivers) {
-    const manifest = driverManifest(driver);
-    if (manifest?.driverId === driverId && driverSupportsManifest(manifest, hostRequest, policy)) return { driver, manifest };
-  }
-  return null;
+function selectEffectDriverByPreflightRoute(drivers, hostRequest, policy, route) {
+  if (!Number.isSafeInteger(route.driverIndex) || route.driverIndex < 0 || route.driverIndex >= drivers.length) return null;
+  const driver = drivers[route.driverIndex];
+  const manifest = driverManifest(driver);
+  if (manifest?.driverId !== route.driverId) return null;
+  if (!driverSupportsManifest(manifest, hostRequest, policy)) return null;
+  return { driver, manifest };
 }
 
 function preferredAuthorityLabelsForHostRequest(hostRequest, application, effectDrivers, policy) {

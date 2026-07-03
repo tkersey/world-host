@@ -9,6 +9,7 @@ export class CapabilityReport {
     Object.freeze(this.blockers);
     Object.freeze(this.warnings);
     Object.freeze(this.coveredRequests);
+    if (this.selectedPendingRequestRoutes) Object.freeze(this.selectedPendingRequestRoutes);
     Object.freeze(this);
   }
 }
@@ -67,7 +68,7 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
   const policy = createRunPolicy(policyInput);
   const blockers = [];
   const warnings = [];
-  const manifests = drivers.map((driver) => normalizeDriverManifest(driver.manifest()));
+  const manifests = drivers.map((driver, driverIndex) => manifestWithDriverIndex(normalizeDriverManifest(driver.manifest()), driverIndex));
   const coveredRequests = [];
   const selectedRequiredActuatorRoutes = [];
   const selectedPendingRequestRoutes = [];
@@ -168,6 +169,12 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
     fileNetworkAuthoritiesAllowed: !blockers.some((item) => item.startsWith('authority-denied') || item === 'http-origin-allowlist-required' || item.startsWith('http-origin-denied') || item.startsWith('http-origin-driver-denied') || item === 'http-method-allowlist-required' || item.startsWith('http-method-denied') || item.startsWith('http-method-driver-denied') || item === 'file-root-allowlist-required' || item.startsWith('file-root-denied')),
     supervisionPolicyAccepted: !blockers.includes('supervision-policy-rejected'),
     coveredRequests,
+    selectedPendingRequestRoutes: selectedPendingRequestRoutes.map(({ manifest, request }) => ({
+      actuatorRef: request.actuatorRef,
+      descriptorFingerprint: request.descriptorFingerprint,
+      driverId: manifest.driverId,
+      driverIndex: manifest.driverIndex,
+    })),
     blockers,
     warnings,
   });
@@ -178,6 +185,10 @@ function normalizeDriverManifest(raw) {
   if (raw.packFingerprint == null) return manifest;
   if (typeof raw.packFingerprint !== 'string') fail('ERR_INVALID_DRIVER_MANIFEST', 'packFingerprint must be a string');
   return Object.freeze({ ...manifest, packFingerprint: raw.packFingerprint });
+}
+
+function manifestWithDriverIndex(manifest, driverIndex) {
+  return Object.freeze({ ...manifest, driverIndex });
 }
 
 function normalizeRequiredActuator(required) {
