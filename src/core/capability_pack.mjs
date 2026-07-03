@@ -426,6 +426,7 @@ function adapterHasImportCall(text) {
     while (index < text.length && identifierPart(text[index])) index += 1;
     const identifier = text.slice(start, index);
     const callStart = skipWhitespaceAndComments(text, index);
+    if (identifier === 'Reflect' && reflectiveGetterAccess(text, callStart)) return true;
     if (identifier === 'eval' || identifier === 'Function' || identifier === 'getBuiltinModule' ||
       identifier === 'Worker' || identifier === 'SharedWorker') {
       return true;
@@ -476,6 +477,21 @@ function computedMemberAccess(text, openBracket, afterBracket) {
 function dangerousMemberName(value) {
   return value === 'eval' || value === 'Function' || value === 'require' || value === 'constructor' ||
     value === 'getBuiltinModule' || value === 'Worker' || value === 'SharedWorker';
+}
+
+function reflectiveGetterAccess(text, index) {
+  index = skipWhitespaceAndComments(text, index);
+  if (text[index] === '.') {
+    index = skipWhitespaceAndComments(text, index + 1);
+    const start = index;
+    if (!identifierStart(text[index])) return false;
+    while (index < text.length && identifierPart(text[index])) index += 1;
+    return text.slice(start, index) === 'get';
+  }
+  if (text[index] !== '[') return false;
+  const afterBracket = skipBalancedBracket(text, index);
+  const name = readComputedMemberName(text, index + 1, afterBracket - 1);
+  return name.static ? name.value === 'get' : true;
 }
 
 function readComputedMemberName(text, index, closeBracket) {
@@ -789,6 +805,9 @@ function sidecarCommandArtifacts(command) {
       artifacts.push(value);
       if (!sidecarRuntimeCommandPosition(command, index) && !sidecarRuntimeOptionValuePosition(command, index)) entrypointSeen = true;
     }
+  }
+  if (!entrypointSeen) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'sidecar command must reference a pack-relative checksum-covered entrypoint');
   }
   return artifacts;
 }

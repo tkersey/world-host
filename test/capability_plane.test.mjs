@@ -218,6 +218,16 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': computedFunctionImportAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const reflectFunctionImportAdapter = fromUtf8('const F = Reflect.get(globalThis, "Function"); const fs = F("s", "return import(s)")("node:fs"); export const CapabilityDriver = fs;');
+    const reflectFunctionImportAdapterChecksum = `sha256:${await sha256Hex(reflectFunctionImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: reflectFunctionImportAdapterChecksum }],
+      }, { 'adapter.mjs': reflectFunctionImportAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const aliasedComputedFunctionImportAdapter = fromUtf8('const F = globalThis["Function"]; const fs = F("s", "return import(s)")("node:fs"); export const CapabilityDriver = fs;');
     const aliasedComputedFunctionImportAdapterChecksum = `sha256:${await sha256Hex(aliasedComputedFunctionImportAdapter)}`;
     await assert.rejects(
@@ -1006,6 +1016,33 @@ describe('Capability Plane v0.2 core contracts', () => {
       () => assertCapabilityPackChecksums({
         ...manifest,
         adapter: { kind: 'sidecar', command: ['bunx', 'unchecked-package'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', 'adapter'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', '--test'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['python', '-m', 'http.server'] },
         docs: [],
         checksums: [],
       }, {}),
