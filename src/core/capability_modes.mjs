@@ -200,15 +200,16 @@ function assertFixtureModeAllowed(manifest, hostRequest) {
   const liveActuationClasses = new Set(['http', 'file', 'human']);
   const manifestLiveActuationClasses = (manifest.supportedActuationClasses ?? []).filter((item) => liveActuationClasses.has(item));
   const requestedLiveActuationClasses = liveActuationClasses.has(hostRequest?.actuationClass) ? [hostRequest.actuationClass] : [];
+  const liveModelActuationClasses = isLiveModelCall(manifest, hostRequest) ? ['model'] : [];
   const liveAuthorityLabels = (manifest.authorityLabels ?? []).filter((label) => (
     label.startsWith('network:') ||
     label.startsWith('file:') ||
     label.startsWith('human:') ||
     (label.startsWith('model:') && !label.startsWith('model:fixture'))
   ));
-  if (manifestLiveActuationClasses.length || requestedLiveActuationClasses.length || liveAuthorityLabels.length) {
+  if (manifestLiveActuationClasses.length || requestedLiveActuationClasses.length || liveModelActuationClasses.length || liveAuthorityLabels.length) {
     fail('ERR_CAPABILITY_FIXTURE_LIVE_EFFECT_DENIED', 'fixture mode cannot invoke live-effect authority', {
-      actuationClasses: [...new Set([...manifestLiveActuationClasses, ...requestedLiveActuationClasses])],
+      actuationClasses: [...new Set([...manifestLiveActuationClasses, ...requestedLiveActuationClasses, ...liveModelActuationClasses])],
       labels: liveAuthorityLabels,
     });
   }

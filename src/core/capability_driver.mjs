@@ -108,12 +108,14 @@ export function assertCapabilityPreflightReport(value) {
 }
 
 export function assertDryRunReport(value) {
+  assertNoWorldEvidenceKeys(value);
   if (value instanceof DryRunReport) return value;
   if (!value || typeof value !== 'object') fail('ERR_CAPABILITY_DRY_RUN_REPORT_INVALID');
   return new DryRunReport(value);
 }
 
 export function assertShadowReport(value) {
+  assertNoWorldEvidenceKeys(value);
   if (value instanceof ShadowReport) return value;
   if (!value || typeof value !== 'object') fail('ERR_CAPABILITY_SHADOW_REPORT_INVALID');
   return new ShadowReport(value);
@@ -128,6 +130,7 @@ export function assertCapabilityResolutionBoundary(value) {
 
 export function assertNoWorldEvidenceKeys(value, path = []) {
   if (value == null || typeof value !== 'object') return true;
+  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return true;
   for (const [key, child] of Object.entries(value)) {
     if (FORBIDDEN_WORLD_EVIDENCE_KEYS.has(key)) {
       fail('ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN', `capability driver must not author ${key}`, { path: [...path, key].join('.') });

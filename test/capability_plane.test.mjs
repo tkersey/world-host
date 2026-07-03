@@ -16,7 +16,7 @@ import {
   world_host_capability_driver_abi_version,
   world_host_capability_pack_format_version,
 } from '../src/core/capability_pack.mjs';
-import { assertCapabilityResolutionBoundary, defineCapabilityDriver } from '../src/core/capability_driver.mjs';
+import { assertCapabilityResolutionBoundary, assertNoWorldEvidenceKeys, defineCapabilityDriver } from '../src/core/capability_driver.mjs';
 import { assertCapabilityPolicyAllows, createCapabilityPolicy, redactCapabilityDiagnostics } from '../src/core/capability_policy.mjs';
 import { runCapabilityMode } from '../src/core/capability_modes.mjs';
 import { EnvSecretProvider, assertNoSecretValuePersisted, assertRequiredSecretsAvailable, redactSecrets } from '../src/core/secrets.mjs';
@@ -1703,6 +1703,43 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_CAPABILITY_FIXTURE_LIVE_EFFECT_DENIED' },
     );
     assert.equal(fixtureModelLiveEffectResolveCalled, false);
+    let fixtureUnlabeledModelLiveEffectResolveCalled = false;
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'fixture',
+        driver: deterministicModelLiveEffectDriver(() => {
+          fixtureUnlabeledModelLiveEffectResolveCalled = true;
+        }, { authorityLabels: [], driverId: 'unlabeled-deterministic-model-http' }),
+        hostRequest: genericHttpModelRequest('goal=fixture-unlabeled-model-live', 'model-fixture-unlabeled-live-key'),
+      }),
+      { code: 'ERR_CAPABILITY_FIXTURE_LIVE_EFFECT_DENIED' },
+    );
+    assert.equal(fixtureUnlabeledModelLiveEffectResolveCalled, false);
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'dry-run',
+        driver: worldEvidenceReportDriver({ dryRunReport: { wouldInvoke: false, proposedAction: { turnClosureBytes: fromUtf8('closure') } } }),
+        hostRequest: request,
+      }),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'shadow',
+        driver: worldEvidenceReportDriver({ shadowReport: { liveInvoked: false, schemaAccepted: false, diagnostics: { runHead: { generation: 1 } } } }),
+        hostRequest: request,
+        recordedResolution: fromUtf8('recorded'),
+      }),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
+    const bytesWithEnumerableGetter = new Uint8Array([1, 2, 3]);
+    Object.defineProperty(bytesWithEnumerableGetter, 'expensive', {
+      enumerable: true,
+      get() {
+        throw new Error('byte arrays should be evidence-scan leaves');
+      },
+    });
+    assert.equal(assertNoWorldEvidenceKeys({ bytesWithEnumerableGetter }), true);
 
     const approved = await runCapabilityMode({
       mode: 'approval',
@@ -3815,11 +3852,11 @@ function deterministicLiveEffectDriver(onResolve, { authorityLabels = ['network:
   };
 }
 
-function deterministicModelLiveEffectDriver(onResolve) {
+function deterministicModelLiveEffectDriver(onResolve, { authorityLabels = ['model:http-json'], driverId = 'fixture-agent-model' } = {}) {
   return {
     manifest() {
       return {
-        driverId: 'fixture-agent-model',
+        driverId,
         supportedActuatorRefs: ['model:decision'],
         supportedDescriptorFingerprints: ['descriptor:agent-decision-prompt'],
         supportedActuationClasses: ['model'],
@@ -3828,7 +3865,7 @@ function deterministicModelLiveEffectDriver(onResolve) {
         maximumResponseBytes: 1024 * 1024,
         recoveryClass: EffectRecoveryClass.idempotent,
         concurrencyLimit: 1,
-        authorityLabels: ['model:http-json'],
+        authorityLabels,
         diagnostics: { deterministic: true },
       };
     },
@@ -3847,6 +3884,17 @@ function deterministicModelLiveEffectDriver(onResolve) {
       error.code = 'ERR_FIXTURE_MODEL_LIVE_EFFECT_RESOLVED';
       throw error;
     },
+  };
+}
+
+function worldEvidenceReportDriver({ dryRunReport = { wouldInvoke: false }, shadowReport = { liveInvoked: false, schemaAccepted: false } } = {}) {
+  const delegate = new FixtureAgentModelCapabilityDriver();
+  return {
+    manifest: () => delegate.manifest(),
+    preflight: () => ({ accepted: true }),
+    dryRun: () => dryRunReport,
+    shadow: () => shadowReport,
+    resolve: delegate.resolve.bind(delegate),
   };
 }
 
