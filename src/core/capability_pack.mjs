@@ -811,12 +811,12 @@ function sidecarCommandArtifacts(command) {
       }
       if (!entrypointSeen && sidecarOptionRequiresArtifact(value)) {
         const candidate = command[index + 1];
-        if (sidecarPreloadArtifact(candidate)) {
+        if (sidecarOptionValueArtifact(value, candidate)) {
           artifacts.push(candidate);
           index += 1;
           continue;
         }
-        fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar preload option must reference a pack-relative checksum-covered artifact: ${value}`);
+        fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar runtime option must reference a pack-relative checksum-covered artifact: ${value}`);
       }
     }
     if (sidecarCommandArtifact(value)) {
@@ -865,7 +865,11 @@ function sidecarOptionArtifact(value, { allowPreload = true } = {}) {
 }
 
 function sidecarOptionRequiresArtifact(value) {
-  return sidecarPreloadOptionConsumesNext(value);
+  return sidecarPreloadOptionConsumesNext(value) || SIDECAR_RUNTIME_VALUE_OPTIONS.has(value);
+}
+
+function sidecarOptionValueArtifact(option, candidate) {
+  return sidecarPreloadOptionConsumesNext(option) ? sidecarPreloadArtifact(candidate) : sidecarCommandArtifact(candidate);
 }
 
 function sidecarPreloadOption(value) {

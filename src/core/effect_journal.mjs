@@ -72,10 +72,10 @@ export class EffectJournal {
   async #observePrepared(hostRequest, prepared, options = {}) {
     const existing = await this.store.getEffectRecord(this.runId, prepared.idempotencyKey, this.branchId);
     if (existing) return await this.#reuseOrConflict(existing, prepared);
+    if (options.createIfMissing === false) return null;
 
     const reusable = await this.#branchLocalReusableRecord(prepared);
     if (reusable) return reusable;
-    if (options.createIfMissing === false) return null;
 
     const manifest = options.manifest ? normalizeManifest(options.manifest) : null;
     const recoveryClass = options.recoveryClass ?? manifest?.recoveryClass ?? hostRequest.recoveryClass;

