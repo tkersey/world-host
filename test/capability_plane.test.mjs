@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { EffectRecoveryClass } from '../src/core/actuator.mjs';
+import { ActuationClass, EffectRecoveryClass } from '../src/core/actuator.mjs';
 import { EffectJournal, EffectState } from '../src/core/effect_journal.mjs';
 import {
   assertCapabilityManifest,
@@ -1837,6 +1837,7 @@ describe('Capability Plane v0.2 core contracts', () => {
   });
 
   it('supports generic HTTP JSON and human approval reference capabilities', async () => {
+    assert.equal(ActuationClass.human, 'human');
     const originalFetch = globalThis.fetch;
     let observedHeaders = null;
     try {

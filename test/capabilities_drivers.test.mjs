@@ -260,6 +260,22 @@ describe('capability preflight and reference drivers', () => {
     assert.deepEqual(allowedReport.blockers, []);
     assert.equal(allowedReport.everyPendingRequestCovered, true);
 
+    const stringAllowedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path', 'POST')],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: 'network:http',
+        allowedCapabilityPacks: packFingerprint,
+        allowedHttpOrigins: 'https://allowed.example',
+        allowedHttpMethods: 'POST',
+      }),
+    });
+
+    assert.deepEqual(stringAllowedReport.blockers, []);
+    assert.equal(stringAllowedReport.everyPendingRequestCovered, true);
+
     const deniedReport = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },
       currentHead: { generation: 0 },
@@ -274,6 +290,21 @@ describe('capability preflight and reference drivers', () => {
     });
 
     assert.ok(deniedReport.blockers.includes('ERR_CAPABILITY_PACK_DENIED'));
+
+    const stringDeniedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path', 'POST')],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: 'network:http',
+        deniedCapabilityPacks: packFingerprint,
+        allowedHttpOrigins: 'https://allowed.example',
+        allowedHttpMethods: 'POST',
+      }),
+    });
+
+    assert.ok(stringDeniedReport.blockers.includes('ERR_CAPABILITY_PACK_DENIED'));
 
     const wrappedDeniedReport = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },

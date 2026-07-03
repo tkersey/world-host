@@ -11,6 +11,7 @@ export const EffectRecoveryClass = Object.freeze({
 export const ActuationClass = Object.freeze({
   model: 'model',
   file: 'file',
+  human: 'human',
   http: 'http',
   fixture: 'fixture',
   host: 'host',
