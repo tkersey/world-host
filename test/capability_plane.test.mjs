@@ -248,6 +248,16 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': escapedComputedFunctionImportAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const aliasedGlobalFunctionImportAdapter = fromUtf8('const name = "Function"; const g = globalThis; const F = g[name]; const fs = F("s", "return import(s)")("node:fs"); export const CapabilityDriver = fs;');
+    const aliasedGlobalFunctionImportAdapterChecksum = `sha256:${await sha256Hex(aliasedGlobalFunctionImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: aliasedGlobalFunctionImportAdapterChecksum }],
+      }, { 'adapter.mjs': aliasedGlobalFunctionImportAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const escapedComputedRequireAdapter = fromUtf8("const fs = globalThis['requ\\u0069re']('node:fs'); export const CapabilityDriver = fs;");
     const escapedComputedRequireAdapterChecksum = `sha256:${await sha256Hex(escapedComputedRequireAdapter)}`;
     await assert.rejects(
@@ -566,6 +576,28 @@ describe('Capability Plane v0.2 core contracts', () => {
       docs: [],
       checksums: [{ path: 'bin/adapter', checksum: sidecarChecksum }],
     }, { 'bin/adapter': sidecar }), true);
+    const extensionlessSidecarImport = fromUtf8("import './helper.mjs';\nconsole.log('ready');\n");
+    const extensionlessSidecarImportChecksum = `sha256:${await sha256Hex(extensionlessSidecarImport)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', './adapter'] },
+        docs: [],
+        checksums: [{ path: './adapter', checksum: extensionlessSidecarImportChecksum }],
+      }, { './adapter': extensionlessSidecarImport }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const typeScriptSidecarImport = fromUtf8("import './helper.ts';\nconsole.log('ready');\n");
+    const typeScriptSidecarImportChecksum = `sha256:${await sha256Hex(typeScriptSidecarImport)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['deno', 'run', './adapter.ts'] },
+        docs: [],
+        checksums: [{ path: './adapter.ts', checksum: typeScriptSidecarImportChecksum }],
+      }, { './adapter.ts': typeScriptSidecarImport }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     assert.equal(await assertCapabilityPackChecksums({
       ...manifest,
       adapter: { kind: 'sidecar', command: ['bin/adapter', '--config=config.json'] },

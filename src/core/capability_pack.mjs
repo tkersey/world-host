@@ -311,8 +311,9 @@ function assertAdapterArtifactSelfContained(manifest, artifacts) {
 
 function assertSidecarAdapterArtifactsSelfContained(manifest, artifacts) {
   if (manifest.adapter.kind !== 'sidecar') return;
+  const runtimeEntrypoint = sidecarRuntimeEntrypointArtifact(manifest.adapter.command);
   for (const artifactPath of sidecarCommandArtifacts(manifest.adapter.command)) {
-    if (!javascriptArtifactPath(artifactPath)) continue;
+    if (!javascriptArtifactPath(artifactPath) && artifactPath !== runtimeEntrypoint) continue;
     assertJavaScriptAdapterArtifactSelfContained(artifactPath, artifacts, 'sidecar adapter');
   }
 }
@@ -372,6 +373,7 @@ function artifactCredentialSentinel(value) {
 }
 
 function adapterHasImportCall(text) {
+  if (adapterAliasesGlobalObject(text)) return true;
   let previousSignificant = null;
   for (let index = 0; index < text.length;) {
     index = skipWhitespaceAndComments(text, index);
@@ -455,6 +457,10 @@ function adapterHasImportCall(text) {
     return true;
   }
   return false;
+}
+
+function adapterAliasesGlobalObject(text) {
+  return /\b(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*(?:globalThis|global|window|self)\b/.test(text);
 }
 
 function dangerousCallAt(text, index) {
@@ -918,6 +924,12 @@ function sidecarRuntimeRemoteEntrypoint(command, index) {
 
 function sidecarRemoteCommandTarget(value) {
   return typeof value === 'string' && /^[A-Za-z][A-Za-z0-9+.-]*:/.test(value);
+}
+
+function sidecarRuntimeEntrypointArtifact(command) {
+  if (!sidecarRuntimeCommandPosition(command, 0)) return null;
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  return entrypointIndex < 0 ? null : command[entrypointIndex];
 }
 
 function sidecarEntrypointIndex(command) {
