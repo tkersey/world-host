@@ -134,7 +134,7 @@ export class RunController {
     }));
     const parentClosureBytes = await this.store.getBlob(parentHead.turnClosureRef);
     assertParentHeadMatchesClosure(parentHead, parentClosureBytes);
-    const needsHostEffectPlan = prepareNeedsHostEffectPlan(
+    let needsHostEffectPlan = prepareNeedsHostEffectPlan(
       parentHead,
       parentClosureBytes,
       this.hostRequestMapper,
@@ -144,14 +144,16 @@ export class RunController {
     );
     if (needsHostEffectPlan?.pending.length > 0) {
       const effectRecords = await this.store.listEffectRecords(runId);
-      assertCapabilityReportAccepted(preflightCapabilities({
+      const preflightReport = preflightCapabilities({
         application,
         currentHead: parentHead,
         pendingRequests: needsHostEffectPlan.pending.map((item) => item.hostRequest),
         drivers: this.effectDrivers,
         policy,
         effectRecords,
-      }));
+      });
+      assertCapabilityReportAccepted(preflightReport);
+      needsHostEffectPlan = bindEffectPlanToPreflightReport(needsHostEffectPlan, preflightReport, this.effectDrivers, policy);
     }
     const imageBytes = await this.store.getBlob(application.executableImageRef);
     const executableHostFingerprint = `sha256:${await sha256Hex(imageBytes)}`;
@@ -1081,6 +1083,30 @@ function prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, hostRequestM
     });
   }
   return { parentSummary, pending, unresolvedHostRequests };
+}
+
+function bindEffectPlanToPreflightReport(plan, report, effectDrivers, policy) {
+  const coveredRequests = report.coveredRequests ?? [];
+  const pending = plan.pending.map((item, index) => {
+    const covered = coveredRequests[index];
+    if (!covered) fail('ERR_HOST_REQUEST_DRIVER_UNAVAILABLE', 'preflight report missing covered HostRequest', unresolvedHostRequestDiagnostic(item.index, item.hostRequest));
+    if (item.manifest.driverId === covered.driverId) return item;
+    const selection = selectEffectDriverById(effectDrivers, item.hostRequest, policy, covered.driverId);
+    if (!selection) fail('ERR_HOST_REQUEST_DRIVER_UNAVAILABLE', 'preflight-covered driver unavailable for pending HostRequest', {
+      ...unresolvedHostRequestDiagnostic(item.index, item.hostRequest),
+      driverId: covered.driverId,
+    });
+    return { ...item, ...selection };
+  });
+  return { ...plan, pending };
+}
+
+function selectEffectDriverById(drivers, hostRequest, policy, driverId) {
+  for (const driver of drivers) {
+    const manifest = driverManifest(driver);
+    if (manifest?.driverId === driverId && driverSupportsManifest(manifest, hostRequest, policy)) return { driver, manifest };
+  }
+  return null;
 }
 
 function preferredAuthorityLabelsForHostRequest(hostRequest, application, effectDrivers, policy) {

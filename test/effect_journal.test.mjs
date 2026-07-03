@@ -674,6 +674,56 @@ describe('EffectJournal', () => {
     }
   });
 
+  it('journals configured capability identity from fallback request objects', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const request = httpHostRequest({
+      requestBytes: undefined,
+      request: { body: { prompt: 'first' } },
+    });
+    const driver = new GenericHttpJsonCapabilityDriver({
+      endpointUrl: 'https://allowed.example/decide',
+      origins: ['https://allowed.example'],
+    });
+    const context = {
+      mode: 'live',
+      policy: {
+        allowLiveEffects: true,
+        allowNetworkEffects: true,
+        allowedOrigins: ['https://allowed.example'],
+        allowedMethods: ['POST'],
+      },
+    };
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    try {
+      globalThis.fetch = async (url, options) => {
+        calls += 1;
+        assert.equal(String(url), 'https://allowed.example/decide');
+        assert.equal(JSON.parse(options.body).prompt, 'first');
+        return new Response('{"action":{"variant":"final","text":"fallback-configured"}}', {
+          status: 200,
+          headers: { 'x-request-id': 'fallback-configured-1' },
+        });
+      };
+      await journal.resolve(context, request, driver);
+
+      globalThis.fetch = async () => {
+        throw new Error('fallback identity conflict should block before fetch');
+      };
+      await assert.rejects(
+        () => journal.resolve(context, {
+          ...request,
+          request: { body: { prompt: 'second' } },
+        }, driver),
+        { code: 'ERR_EFFECT_IDEMPOTENCY_CONFLICT' },
+      );
+      assert.equal(calls, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('observes configured capability identity through supplied manifests', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });

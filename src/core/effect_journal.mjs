@@ -462,12 +462,11 @@ export function journaledHostRequest(hostRequest, manifest) {
   if (endpointSource !== 'config' && endpointSource !== 'request-or-config') return hostRequest;
   const requestRendering = manifest?.diagnostics?.requestRendering ?? null;
   let parsed = {};
-  if (hostRequest?.requestBytes) {
-    try {
-      parsed = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
-    } catch {
-      return hostRequest;
-    }
+  try {
+    const requestBytes = hostRequest?.requestBytes ?? fromUtf8(stableJson(hostRequest?.request ?? {}));
+    parsed = JSON.parse(new TextDecoder().decode(requestBytes));
+  } catch {
+    return hostRequest;
   }
   if (endpointSource === 'request-or-config' && parsed?.url !== undefined && parsed.method !== undefined) {
     return requestRendering === null && !hasModelOutputValidation(manifest?.diagnostics) ? hostRequest : {

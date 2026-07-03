@@ -1935,6 +1935,65 @@ describe('RunController and WorldWorker', () => {
     }
   });
 
+  it('resolves through the preflight-selected non-live model route', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const fixtureModelDriver = fixtureEffectDriver({
+      driverId: 'fixture-model-budget-route',
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClasses: ['model'],
+      responseStatuses: ['ok'],
+      authorityLabels: ['model:fixture'],
+      diagnostics: { deterministic: true },
+    });
+    let fetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"action":{"variant":"final","text":"should-not-call-live-model"}}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [
+          new GenericHttpJsonModelDriver({
+            endpointUrl: 'https://allowed.example/decide',
+            packFingerprint: 'sha256:'.concat('c'.repeat(64)),
+          }),
+          fixtureModelDriver,
+        ],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['model:http-json', 'network:http', 'model:fixture']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          maximumLiveModelCalls: 0,
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'model:decision',
+          descriptorFingerprint: 'descriptor:agent-decision-prompt',
+          actuationClass: 'model',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('model-fixture-budget-route-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:model-fixture-budget-route',
+          requestBytes: fromUtf8(JSON.stringify({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: 'goal=fixture-budget-route' })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fixtureModelDriver.invocationCount, 1);
+      assert.equal(fetchCalled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('does not charge cached model replays against controller live model budgets', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
