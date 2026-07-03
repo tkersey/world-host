@@ -399,6 +399,42 @@ describe('capability preflight and reference drivers', () => {
         },
       }],
     });
+    const nonLiveDriver = fixtureDriverWithAuthority(['model:fixture'], {
+      driverId: 'fixture-model-budget',
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClasses: ['model'],
+    });
+    const liveOnlyRequest = {
+      ...modelRequest('live-only'),
+      descriptorFingerprint: 'descriptor:agent-live-only',
+    };
+    const liveOnlyDriver = fixtureDriverWithAuthority(['model:live'], {
+      driverId: 'live-model-only',
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-live-only',
+      actuationClasses: ['model'],
+    });
+    const liveFirstWithFixtureFallbackReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [modelRequest('fixture-fallback')],
+      drivers: [driver, nonLiveDriver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:live', 'model:fixture'],
+        maximumLiveModelCalls: 0,
+      }),
+    });
+    const mixedBudgetWithFixtureFallbackReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [modelRequest('fixture-fallback'), liveOnlyRequest],
+      drivers: [driver, nonLiveDriver, liveOnlyDriver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:live', 'model:fixture'],
+        maximumLiveModelCalls: 1,
+      }),
+    });
 
     assert.ok(zeroBudgetReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
     assert.ok(overBudgetReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
@@ -407,6 +443,17 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(oneNewWithCachedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'), false);
     assert.ok(mismatchedCachedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
     assert.ok(wrongFullKeyReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+    assert.deepEqual(liveFirstWithFixtureFallbackReport.blockers, []);
+    assert.deepEqual(liveFirstWithFixtureFallbackReport.coveredRequests, [{
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      driverId: 'fixture-model-budget',
+    }]);
+    assert.deepEqual(mixedBudgetWithFixtureFallbackReport.blockers, []);
+    assert.deepEqual(mixedBudgetWithFixtureFallbackReport.coveredRequests.map(({ driverId }) => driverId), [
+      'fixture-model-budget',
+      'live-model-only',
+    ]);
   });
 
   it('requires human-effect opt-in during receiver preflight', () => {

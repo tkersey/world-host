@@ -122,10 +122,10 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
     const preferredAuthorityLabels = requiredOption
       ? preferredAuthorityLabelsForRequirement(requiredOption, requiredActuatorOptions, requiredAuthorityLabels)
       : preferredAuthorityLabelsWithoutRequirement(requiredAuthorityLabels);
-    const route = selectPreferredAuthorityManifest(candidates, preferredAuthorityLabels);
+    const route = selectPendingRequestRoute(candidates, preferredAuthorityLabels, request, policy, effectRecords, selectedLiveModelRequestCount);
     coveredRequests.push({ actuatorRef: request.actuatorRef, descriptorFingerprint: request.descriptorFingerprint, driverId: route.driverId });
     selectedPendingRequestRoutes.push({ manifest: route, request });
-    if (isLiveModelRoute(route, request) && !hasReusableEffectOutcome(request, effectRecords, route)) selectedLiveModelRequestCount += 1;
+    if (chargesLiveModelBudget(route, request, effectRecords)) selectedLiveModelRequestCount += 1;
   }
 
   for (const label of requiredAuthorityLabels) {
@@ -420,6 +420,24 @@ function selectPreferredAuthorityManifest(manifests, preferredAuthorityLabels) {
   return selected;
 }
 
+function selectPendingRequestRoute(candidates, preferredAuthorityLabels, request, policy, effectRecords, selectedLiveModelRequestCount) {
+  const selected = selectPreferredAuthorityManifest(candidates, preferredAuthorityLabels);
+  if (!chargesLiveModelBudget(selected, request, effectRecords)) return selected;
+
+  const nonChargingCandidates = candidates.filter((manifest) => !chargesLiveModelBudget(manifest, request, effectRecords));
+  if (!nonChargingCandidates.length) return selected;
+  if (selectedLiveModelRequestCount >= policy.maximumLiveModelCalls) {
+    return selectPreferredAuthorityManifest(nonChargingCandidates, preferredAuthorityLabels);
+  }
+
+  const selectedScore = authorityPreferenceScore(selected, preferredAuthorityLabels);
+  const equallyPreferredNonChargingCandidates = nonChargingCandidates.filter((manifest) =>
+    authorityPreferenceScore(manifest, preferredAuthorityLabels) === selectedScore);
+  return equallyPreferredNonChargingCandidates.length
+    ? selectPreferredAuthorityManifest(equallyPreferredNonChargingCandidates, preferredAuthorityLabels)
+    : selected;
+}
+
 function authorityPreferenceScore(manifest, preferredAuthorityLabels) {
   return preferredAuthorityLabels.filter((label) => manifest.authorityLabels.includes(label)).length;
 }
@@ -499,4 +517,8 @@ function isLiveModelRoute(route, request) {
   if (route?.driverId === 'fixture-agent-model') return false;
   if (!modelLabels.length) return true;
   return false;
+}
+
+function chargesLiveModelBudget(route, request, effectRecords) {
+  return isLiveModelRoute(route, request) && !hasReusableEffectOutcome(request, effectRecords, route);
 }
