@@ -847,12 +847,16 @@ function sidecarOptionArtifact(value, { allowPreload = true } = {}) {
   }
   const separator = value.indexOf('=');
   if (separator < 0) return null;
+  const option = value.slice(0, separator);
   const candidate = value.slice(separator + 1);
   if (sidecarPreloadOption(value)) {
     if (!allowPreload) return null;
     if (!sidecarPreloadArtifact(candidate)) {
       fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar preload option must reference a pack-relative checksum-covered artifact: ${value}`);
     }
+  }
+  if (SIDECAR_RUNTIME_VALUE_OPTIONS.has(option) && !sidecarCommandArtifact(candidate)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar runtime option must reference a pack-relative checksum-covered artifact: ${value}`);
   }
   return sidecarCommandArtifact(candidate) ? candidate : null;
 }
@@ -917,7 +921,7 @@ function sidecarInlineEvalFlag(runtime, value) {
   if (typeof value !== 'string') return false;
   if (runtime === 'deno' && value === 'eval') return true;
   if (runtime === 'python' || runtime.startsWith('python') || runtime === 'pypy' || runtime.startsWith('pypy')) {
-    return value === '-c' || value.startsWith('-c');
+    return value === '-c' || value.startsWith('-c') || value === '-m' || value.startsWith('-m');
   }
   if (runtime === 'php') return value === '-r' || value.startsWith('-r');
   return value === '-e' || value === '--eval' || value === '-p' || value === '--print' ||

