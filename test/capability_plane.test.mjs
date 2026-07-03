@@ -65,6 +65,14 @@ describe('Capability Plane v0.2 core contracts', () => {
       () => assertCapabilityManifest({ ...manifest, supportedTurnClosureVersion: 'v999' }),
       { code: 'ERR_CAPABILITY_VERSION_UNSUPPORTED' },
     );
+    assert.throws(
+      () => assertCapabilityManifest({ ...manifest, recoveryClass: EffectRecoveryClass.externallyRecoverable, canRecover: false }),
+      { code: 'ERR_CAPABILITY_MANIFEST_INVALID' },
+    );
+    assert.throws(
+      () => assertCapabilityManifest({ ...manifest, recoveryClass: EffectRecoveryClass.transactional, canRecover: false }),
+      { code: 'ERR_CAPABILITY_MANIFEST_INVALID' },
+    );
     const changedArtifact = fromUtf8('changed adapter bytes');
     const changedArtifactChecksum = `sha256:${await sha256Hex(changedArtifact)}`;
     const changedChecksumManifest = {

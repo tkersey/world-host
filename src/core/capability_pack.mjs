@@ -206,6 +206,15 @@ export function assertCapabilityManifest(input, options = {}) {
   assertNoMetadataCredentialMaterial(input.metadataBytes);
   const formatVersion = exactInteger(input.formatVersion, 'formatVersion', world_host_capability_pack_format_version);
   const driverAbiVersion = exactInteger(input.driverAbiVersion, 'driverAbiVersion', world_host_capability_driver_abi_version);
+  const recoveryClass = assertRecoveryClass(input.recoveryClass);
+  const canRecover = requiredBoolean(input.canRecover, 'canRecover');
+  if (
+    (recoveryClass === EffectRecoveryClass.externallyRecoverable ||
+      recoveryClass === EffectRecoveryClass.transactional) &&
+    canRecover !== true
+  ) {
+    fail('ERR_CAPABILITY_MANIFEST_INVALID', 'externally recoverable and transactional drivers must declare canRecover');
+  }
   const manifest = new CapabilityManifest({
     formatVersion,
     packFingerprint: optionalFingerprint(input.packFingerprint, 'packFingerprint'),
@@ -220,11 +229,11 @@ export function assertCapabilityManifest(input, options = {}) {
     supportedDescriptorFingerprints: requiredStringList(input.supportedDescriptorFingerprints, 'supportedDescriptorFingerprints'),
     supportedActuationClasses: requiredStringList(input.supportedActuationClasses, 'supportedActuationClasses'),
     supportedResponseStatuses: requiredKnownResponseStatusList(input.supportedResponseStatuses, 'supportedResponseStatuses'),
-    recoveryClass: assertRecoveryClass(input.recoveryClass),
+    recoveryClass,
     canDryRun: requiredBoolean(input.canDryRun, 'canDryRun'),
     canShadow: requiredBoolean(input.canShadow, 'canShadow'),
     canReplay: requiredBoolean(input.canReplay, 'canReplay'),
-    canRecover: requiredBoolean(input.canRecover, 'canRecover'),
+    canRecover,
     propagatesWorldIdempotencyKey: requiredBoolean(input.propagatesWorldIdempotencyKey, 'propagatesWorldIdempotencyKey'),
     requiresApproval: requiredBoolean(input.requiresApproval, 'requiresApproval'),
     requiredSecrets: normalizeSecretDescriptors(input.requiredSecrets ?? []),
