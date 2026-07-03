@@ -1837,6 +1837,14 @@ describe('Capability Plane v0.2 core contracts', () => {
       }),
       { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
     );
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'fixture',
+        driver: worldEvidenceReportDriver({ preflightReport: { accepted: true, diagnostics: { turnClosureBytes: fromUtf8('closure') } } }),
+        hostRequest: request,
+      }),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
     const bytesWithEnumerableGetter = new Uint8Array([1, 2, 3]);
     Object.defineProperty(bytesWithEnumerableGetter, 'expensive', {
       enumerable: true,
@@ -4021,11 +4029,11 @@ function deterministicModelLiveEffectDriver(onResolve, { authorityLabels = ['mod
   };
 }
 
-function worldEvidenceReportDriver({ dryRunReport = { wouldInvoke: false }, shadowReport = { liveInvoked: false, schemaAccepted: false } } = {}) {
+function worldEvidenceReportDriver({ preflightReport = { accepted: true }, dryRunReport = { wouldInvoke: false }, shadowReport = { liveInvoked: false, schemaAccepted: false } } = {}) {
   const delegate = new FixtureAgentModelCapabilityDriver();
   return {
     manifest: () => delegate.manifest(),
-    preflight: () => ({ accepted: true }),
+    preflight: () => preflightReport,
     dryRun: () => dryRunReport,
     shadow: () => shadowReport,
     resolve: delegate.resolve.bind(delegate),

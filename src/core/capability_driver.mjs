@@ -102,6 +102,7 @@ export function defaultCapabilityPreflight(manifestLike, hostRequest) {
 }
 
 export function assertCapabilityPreflightReport(value) {
+  assertNoWorldEvidenceKeys(value);
   if (value instanceof CapabilityPreflightReport) return value;
   if (!value || typeof value !== 'object') fail('ERR_CAPABILITY_PREFLIGHT_REPORT_INVALID');
   return new CapabilityPreflightReport(value);
