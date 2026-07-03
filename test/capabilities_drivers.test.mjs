@@ -382,6 +382,7 @@ describe('capability preflight and reference drivers', () => {
     };
     const cachedModelRequestChecksum = `sha256:${createHash('sha256').update(cachedModelRequest.requestBytes).digest('hex')}`;
     const cachedModelEffect = {
+      branchId: 'main',
       idempotencyKeyWorldFingerprint: cachedModelRequest.idempotencyKeyWorldFingerprint,
       hostRequestFingerprint: cachedModelRequest.hostRequestFingerprint,
       idempotencyKey: {
@@ -392,9 +393,14 @@ describe('capability preflight and reference drivers', () => {
       state: EffectState.resolved,
       resolutionInputRef: { checksum: 'sha256:cached-model-resolution' },
     };
+    const shadowedCachedEffects = [
+      { ...cachedModelEffect, branchId: 'cached-branch' },
+      { ...cachedModelEffect, state: EffectState.observed, resolutionInputRef: undefined },
+    ];
     const replayOnlyReport = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },
       currentHead: { generation: 0 },
+      currentBranchId: 'main',
       pendingRequests: [cachedModelRequest],
       drivers: [driver],
       policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 0 }),
@@ -403,10 +409,29 @@ describe('capability preflight and reference drivers', () => {
     const oneNewWithCachedReport = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },
       currentHead: { generation: 0 },
+      currentBranchId: 'main',
       pendingRequests: [cachedModelRequest, freshModelRequest],
       drivers: [driver],
       policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
       effectRecords: [cachedModelEffect],
+    });
+    const shadowedReplayReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 0 }),
+      effectRecords: shadowedCachedEffects,
+    });
+    const shadowedMixedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest, freshModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
+      effectRecords: shadowedCachedEffects,
     });
     const mismatchedCachedReport = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },
@@ -472,6 +497,8 @@ describe('capability preflight and reference drivers', () => {
     assert.ok(wrappedOverBudgetReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
     assert.equal(replayOnlyReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'), false);
     assert.equal(oneNewWithCachedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'), false);
+    assert.ok(shadowedReplayReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+    assert.ok(shadowedMixedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
     assert.ok(mismatchedCachedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
     assert.ok(wrongFullKeyReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
     assert.deepEqual(liveFirstWithFixtureFallbackReport.blockers, []);

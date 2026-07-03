@@ -2173,7 +2173,11 @@ describe('RunController and WorldWorker', () => {
 
       await assert.rejects(
         () => controller.advance(runId, branchId),
-        { code: 'ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED' },
+        (error) => {
+          assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+          assert.ok(error.details?.blockers?.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+          return true;
+        },
       );
       assert.equal(fetchCalled, false);
     } finally {

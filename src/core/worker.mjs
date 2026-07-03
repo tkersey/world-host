@@ -147,6 +147,7 @@ export class RunController {
       const preflightReport = preflightCapabilities({
         application,
         currentHead: parentHead,
+        currentBranchId: branchId,
         pendingRequests: needsHostEffectPlan.pending.map((item) => item.hostRequest),
         drivers: this.effectDrivers,
         policy,

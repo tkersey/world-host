@@ -64,7 +64,7 @@ export function createHostCapabilityManifest(input = {}) {
   });
 }
 
-export function preflightCapabilities({ application, applianceManifest = {}, currentHead = null, pendingRequests = [], drivers = [], policy: policyInput = createRunPolicy(), effectRecords = [] }) {
+export function preflightCapabilities({ application, applianceManifest = {}, currentHead = null, currentBranchId = null, pendingRequests = [], drivers = [], policy: policyInput = createRunPolicy(), effectRecords = [] }) {
   const policy = createRunPolicy(policyInput);
   const blockers = [];
   const warnings = [];
@@ -123,10 +123,10 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
     const preferredAuthorityLabels = requiredOption
       ? preferredAuthorityLabelsForRequirement(requiredOption, requiredActuatorOptions, requiredAuthorityLabels)
       : preferredAuthorityLabelsWithoutRequirement(requiredAuthorityLabels);
-    const route = selectPendingRequestRoute(candidates, preferredAuthorityLabels, request, policy, effectRecords, selectedLiveModelRequestCount);
+    const route = selectPendingRequestRoute(candidates, preferredAuthorityLabels, request, policy, effectRecords, selectedLiveModelRequestCount, currentBranchId);
     coveredRequests.push({ actuatorRef: request.actuatorRef, descriptorFingerprint: request.descriptorFingerprint, driverId: route.driverId });
     selectedPendingRequestRoutes.push({ manifest: route, request });
-    if (chargesLiveModelBudget(route, request, effectRecords)) selectedLiveModelRequestCount += 1;
+    if (chargesLiveModelBudget(route, request, effectRecords, currentBranchId)) selectedLiveModelRequestCount += 1;
   }
 
   for (const label of requiredAuthorityLabels) {
@@ -199,19 +199,29 @@ function normalizeRequiredActuator(required) {
   };
 }
 
-function hasReusableEffectOutcome(request, effectRecords, route) {
+function hasReusableEffectOutcome(request, effectRecords, route, currentBranchId = null) {
   if (!request?.idempotencyKeyWorldFingerprint || !request?.hostRequestFingerprint) return false;
   const identity = reusableRequestIdentity(request, route);
   if (!identity) return false;
-  return effectRecords.some((record) => (
+  const matchingRecords = effectRecords.filter((record) => (
     record?.idempotencyKeyWorldFingerprint === request.idempotencyKeyWorldFingerprint &&
     record?.hostRequestFingerprint === request.hostRequestFingerprint &&
     record?.idempotencyKey?.format === 'world-idempotency-key-bytes.hex' &&
     record.idempotencyKey.bytesHex === identity.idempotencyKeyBytesHex &&
-    (record.requestIdentityChecksum ?? record.requestBytesChecksum) === identity.requestIdentityChecksum &&
-    record?.resolutionInputRef &&
-    (record.state === 'resolved' || record.state === 'submitted' || record.state === 'closure_committed')
+    (record.requestIdentityChecksum ?? record.requestBytesChecksum) === identity.requestIdentityChecksum
   ));
+  if (currentBranchId) {
+    const currentBranchRecord = matchingRecords.find((record) => record?.branchId === currentBranchId);
+    if (currentBranchRecord) return reusableOutcomeRecord(currentBranchRecord);
+  }
+  return matchingRecords.some(reusableOutcomeRecord);
+}
+
+function reusableOutcomeRecord(record) {
+  return Boolean(
+    record?.resolutionInputRef &&
+    (record.state === 'resolved' || record.state === 'submitted' || record.state === 'closure_committed'),
+  );
 }
 
 function reusableRequestIdentity(request, route) {
@@ -431,11 +441,11 @@ function selectPreferredAuthorityManifest(manifests, preferredAuthorityLabels) {
   return selected;
 }
 
-function selectPendingRequestRoute(candidates, preferredAuthorityLabels, request, policy, effectRecords, selectedLiveModelRequestCount) {
+function selectPendingRequestRoute(candidates, preferredAuthorityLabels, request, policy, effectRecords, selectedLiveModelRequestCount, currentBranchId = null) {
   const selected = selectPreferredAuthorityManifest(candidates, preferredAuthorityLabels);
-  if (!chargesLiveModelBudget(selected, request, effectRecords)) return selected;
+  if (!chargesLiveModelBudget(selected, request, effectRecords, currentBranchId)) return selected;
 
-  const nonChargingCandidates = candidates.filter((manifest) => !chargesLiveModelBudget(manifest, request, effectRecords));
+  const nonChargingCandidates = candidates.filter((manifest) => !chargesLiveModelBudget(manifest, request, effectRecords, currentBranchId));
   if (!nonChargingCandidates.length) return selected;
   if (selectedLiveModelRequestCount >= policy.maximumLiveModelCalls) {
     return selectPreferredAuthorityManifest(nonChargingCandidates, preferredAuthorityLabels);
@@ -530,6 +540,6 @@ function isLiveModelRoute(route, request) {
   return false;
 }
 
-function chargesLiveModelBudget(route, request, effectRecords) {
-  return isLiveModelRoute(route, request) && !hasReusableEffectOutcome(request, effectRecords, route);
+function chargesLiveModelBudget(route, request, effectRecords, currentBranchId = null) {
+  return isLiveModelRoute(route, request) && !hasReusableEffectOutcome(request, effectRecords, route, currentBranchId);
 }
