@@ -61,9 +61,11 @@ export class EffectJournal {
   }
 
   async observe(hostRequest, options = {}) {
-    const prepared = await prepareHostRequest(hostRequest);
+    const manifest = options.manifest ? normalizeManifest(options.manifest) : null;
+    const journalHostRequest = manifest ? journaledHostRequest(hostRequest, manifest) : hostRequest;
+    const prepared = await prepareHostRequest(journalHostRequest);
     return await withEffectKeyLock(this.store, effectLockKey(this.runId, prepared.idempotencyKey), async () => {
-      return await this.#observePrepared(hostRequest, prepared, options);
+      return await this.#observePrepared(journalHostRequest, prepared, options);
     });
   }
 

@@ -674,6 +674,47 @@ describe('EffectJournal', () => {
     }
   });
 
+  it('observes configured capability identity through supplied manifests', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const request = httpHostRequest({
+      requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'hi' } })),
+    });
+    const driver = new GenericHttpJsonCapabilityDriver({
+      endpointUrl: 'https://allowed.example/decide',
+      origins: ['https://allowed.example'],
+    });
+    const observed = await journal.observe(request, { manifest: driver.manifest() });
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    try {
+      globalThis.fetch = async (url) => {
+        calls += 1;
+        assert.equal(String(url), 'https://allowed.example/decide');
+        return new Response('{"action":{"variant":"final","text":"observed-configured"}}', {
+          status: 200,
+          headers: { 'x-request-id': 'observed-configured-1' },
+        });
+      };
+
+      const resolved = await journal.resolve({
+        mode: 'live',
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      }, request, driver);
+
+      assert.equal(observed.requestIdentityChecksum, resolved.record.requestIdentityChecksum);
+      assert.equal(resolved.record.state, EffectState.resolved);
+      assert.equal(calls, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('journals model output validation policy during direct resolve', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
