@@ -879,6 +879,15 @@ describe('Capability Plane v0.2 core contracts', () => {
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
+        adapter: { kind: 'sidecar', command: ['deno', 'run', 'https://example.test/sidecar.ts'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
         adapter: { kind: 'sidecar', command: ['python', '-c', 'print("unchecked")'] },
         docs: [],
         checksums: [],

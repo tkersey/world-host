@@ -8,11 +8,12 @@ import { tmpdir } from 'node:os';
 
 import { EffectRecoveryClass, assertDriverManifest, defineActuatorDriver } from '../src/core/actuator.mjs';
 import { createRunPolicy, preflightCapabilities } from '../src/core/capabilities.mjs';
-import { EffectJournal, EffectState } from '../src/core/effect_journal.mjs';
+import { EffectJournal, EffectState, journaledHostRequest } from '../src/core/effect_journal.mjs';
 import { FixtureModelDriver } from '../src/drivers/fixture_model_driver.mjs';
 import { SandboxFileDriver } from '../src/drivers/sandbox_file_driver.mjs';
 import { HttpJsonDriver } from '../src/drivers/http_json_driver.mjs';
 import { GenericHttpJsonCapabilityDriver } from '../src/drivers/generic_http_json_capability_driver.mjs';
+import { GenericHttpJsonModelDriver } from '../src/drivers/model_capability_driver.mjs';
 import { fromUtf8, stableJson } from '../src/core/store.mjs';
 import { decodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
@@ -405,6 +406,66 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(oneNewWithCachedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'), false);
     assert.ok(mismatchedCachedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
     assert.ok(wrongFullKeyReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+  });
+
+  it('binds cached model replay budget exemptions to output validation policy', () => {
+    const modelRequest = {
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClass: 'model',
+      responseSchema: { status: 'ok' },
+      idempotencyKeyBytes: fromUtf8('model-output-policy-key'),
+      idempotencyKeyWorldFingerprint: 'world:key:model-output-policy',
+      requestBytes: fromUtf8(stableJson({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: 'goal=policy-cache' })),
+      hostRequestFingerprint: 'world:host-request:0000000000000c03',
+    };
+    const permissiveDriver = new GenericHttpJsonModelDriver({
+      endpointUrl: 'https://allowed.example/decide',
+      allowedToolIds: ['actuate', 'write_file'],
+    });
+    const strictDriver = new GenericHttpJsonModelDriver({
+      endpointUrl: 'https://allowed.example/decide',
+      allowedToolIds: ['actuate'],
+    });
+    const cachedIdentityBytes = journaledHostRequest(modelRequest, permissiveDriver.manifest()).effectIdentityBytes;
+    const cachedEffect = {
+      idempotencyKeyWorldFingerprint: modelRequest.idempotencyKeyWorldFingerprint,
+      hostRequestFingerprint: modelRequest.hostRequestFingerprint,
+      idempotencyKey: {
+        format: 'world-idempotency-key-bytes.hex',
+        bytesHex: Buffer.from('model-output-policy-key').toString('hex'),
+      },
+      requestBytesChecksum: `sha256:${createHash('sha256').update(modelRequest.requestBytes).digest('hex')}`,
+      requestIdentityChecksum: `sha256:${createHash('sha256').update(cachedIdentityBytes).digest('hex')}`,
+      state: EffectState.resolved,
+      resolutionInputRef: { checksum: 'sha256:cached-model-output-policy-resolution' },
+    };
+    const policy = createRunPolicy({
+      allowedAuthorityLabels: ['model:http-json', 'network:http'],
+      allowedHttpOrigins: ['https://allowed.example'],
+      allowedHttpMethods: ['POST'],
+      maximumLiveModelCalls: 0,
+    });
+
+    const permissiveReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [modelRequest],
+      drivers: [permissiveDriver],
+      policy,
+      effectRecords: [cachedEffect],
+    });
+    const strictReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [modelRequest],
+      drivers: [strictDriver],
+      policy,
+      effectRecords: [cachedEffect],
+    });
+
+    assert.equal(permissiveReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'), false);
+    assert.ok(strictReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
   });
 
   it('requires descriptor coverage for application-level actuator requirements', () => {

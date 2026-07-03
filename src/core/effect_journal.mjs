@@ -468,24 +468,16 @@ export function journaledHostRequest(hostRequest, manifest) {
     }
   }
   if (endpointSource === 'request-or-config' && parsed?.url !== undefined && parsed.method !== undefined) {
-    return requestRendering === null ? hostRequest : {
+    return requestRendering === null && !hasModelOutputValidation(manifest?.diagnostics) ? hostRequest : {
       ...hostRequest,
-      effectIdentityBytes: fromUtf8(stableJson({
-        request: parsed,
-        configuredEndpoint: null,
-        requestRendering,
-      })),
+      effectIdentityBytes: fromUtf8(stableJson(effectIdentityPayload(manifest?.diagnostics, parsed, null, requestRendering))),
     };
   }
   const configuredEndpoint = configuredEffectIdentityTarget(manifest, parsed);
-  if (!configuredEndpoint && requestRendering === null) return hostRequest;
+  if (!configuredEndpoint && requestRendering === null && !hasModelOutputValidation(manifest?.diagnostics)) return hostRequest;
   return {
     ...hostRequest,
-    effectIdentityBytes: fromUtf8(stableJson({
-      request: parsed,
-      configuredEndpoint,
-      requestRendering,
-    })),
+    effectIdentityBytes: fromUtf8(stableJson(effectIdentityPayload(manifest?.diagnostics, parsed, configuredEndpoint, requestRendering))),
   };
 }
 
@@ -498,6 +490,16 @@ function configuredEffectIdentityTarget(manifest, parsed = {}) {
   const method = parsed.method ?? manifest?.diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : null);
   if (!url || !method) return null;
   return { url, method };
+}
+
+function effectIdentityPayload(diagnostics, request, configuredEndpoint, requestRendering) {
+  const payload = { request, configuredEndpoint, requestRendering };
+  if (hasModelOutputValidation(diagnostics)) payload.modelOutputValidation = diagnostics.modelOutputValidation;
+  return payload;
+}
+
+function hasModelOutputValidation(diagnostics) {
+  return diagnostics != null && Object.prototype.hasOwnProperty.call(diagnostics, 'modelOutputValidation');
 }
 
 function driverFailureState(recoveryClass) {

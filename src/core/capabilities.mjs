@@ -230,13 +230,13 @@ function routeEffectIdentityBytes(requestBytes, route) {
     return null;
   }
   if (endpointSource === 'request-or-config' && parsed?.url !== undefined && parsed.method !== undefined) {
-    return requestRendering === null
+    return requestRendering === null && !hasModelOutputValidation(route?.diagnostics)
       ? null
-      : fromUtf8(stableJson({ request: parsed, configuredEndpoint: null, requestRendering }));
+      : fromUtf8(stableJson(effectIdentityPayload(route?.diagnostics, parsed, null, requestRendering)));
   }
   const configuredEndpoint = configuredEffectIdentityTargetForRoute(route, parsed);
-  if (!configuredEndpoint && requestRendering === null) return null;
-  return fromUtf8(stableJson({ request: parsed, configuredEndpoint, requestRendering }));
+  if (!configuredEndpoint && requestRendering === null && !hasModelOutputValidation(route?.diagnostics)) return null;
+  return fromUtf8(stableJson(effectIdentityPayload(route?.diagnostics, parsed, configuredEndpoint, requestRendering)));
 }
 
 function configuredEffectIdentityTargetForRoute(route, parsed = {}) {
@@ -248,6 +248,16 @@ function configuredEffectIdentityTargetForRoute(route, parsed = {}) {
   const method = parsed.method ?? route?.diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : null);
   if (!url || !method) return null;
   return { url, method };
+}
+
+function effectIdentityPayload(diagnostics, request, configuredEndpoint, requestRendering) {
+  const payload = { request, configuredEndpoint, requestRendering };
+  if (hasModelOutputValidation(diagnostics)) payload.modelOutputValidation = diagnostics.modelOutputValidation;
+  return payload;
+}
+
+function hasModelOutputValidation(diagnostics) {
+  return diagnostics != null && Object.prototype.hasOwnProperty.call(diagnostics, 'modelOutputValidation');
 }
 
 function uniqueFlat(groups) {

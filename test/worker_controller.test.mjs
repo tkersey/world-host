@@ -1946,6 +1946,10 @@ describe('RunController and WorldWorker', () => {
         idempotencyHeaderName: 'Idempotency-Key',
         responseExtractionPathFingerprint: `sha256:${sha256Hex(fromUtf8(stableJson('action')))}`,
       },
+      modelOutputValidation: {
+        outputSchema: 'boundary.Agent.Action.v0',
+        allowedToolIds: ['actuate', 'read_file', 'write_file'],
+      },
     }));
     const resolutionInputRef = await store.putBlob(encodeResolutionInputBytes({
       targetHostRequestFingerprint: 0xa01n,

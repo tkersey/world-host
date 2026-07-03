@@ -859,6 +859,9 @@ function assertSafeSidecarCommandToken(command, index) {
   if (sidecarRuntimeEvalFlag(command, index)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command evaluates inline code outside checksum coverage: ${value}`);
   }
+  if (sidecarRuntimeRemoteEntrypoint(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command uses a remote runtime entrypoint outside checksum coverage: ${value}`);
+  }
 }
 
 function sidecarRuntimeEvalFlag(command, index) {
@@ -885,6 +888,17 @@ function sidecarInlineEvalFlag(runtime, value) {
   if (runtime === 'php') return value === '-r' || value.startsWith('-r');
   return value === '-e' || value === '--eval' || value === '-p' || value === '--print' ||
     value.startsWith('-e') || value.startsWith('-p') || value.startsWith('--eval=') || value.startsWith('--print=');
+}
+
+function sidecarRuntimeRemoteEntrypoint(command, index) {
+  if (!sidecarRuntimeOptionPosition(command, index)) return false;
+  if (!sidecarRemoteCommandTarget(command[index])) return false;
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  return entrypointIndex < 0 || index < entrypointIndex;
+}
+
+function sidecarRemoteCommandTarget(value) {
+  return typeof value === 'string' && /^[A-Za-z][A-Za-z0-9+.-]*:/.test(value);
 }
 
 function sidecarEntrypointIndex(command) {

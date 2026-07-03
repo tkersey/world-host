@@ -8,6 +8,7 @@ import { EffectRecoveryClass } from '../src/core/actuator.mjs';
 import { EffectJournal, EffectState, journaledHostRequest, prepareHostRequest } from '../src/core/effect_journal.mjs';
 import { fromUtf8 } from '../src/core/store.mjs';
 import { GenericHttpJsonCapabilityDriver } from '../src/drivers/generic_http_json_capability_driver.mjs';
+import { GenericHttpJsonModelDriver } from '../src/drivers/model_capability_driver.mjs';
 import { HumanApprovalCapabilityDriver } from '../src/drivers/human_approval_capability_driver.mjs';
 import { HttpJsonDriver } from '../src/drivers/http_json_driver.mjs';
 import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
@@ -673,6 +674,52 @@ describe('EffectJournal', () => {
     }
   });
 
+  it('journals model output validation policy during direct resolve', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const request = modelHostRequest();
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    const context = {
+      mode: 'live',
+      policy: {
+        allowLiveEffects: true,
+        allowNetworkEffects: true,
+        maximumLiveModelCalls: 1,
+        allowedOrigins: ['https://allowed.example'],
+        allowedMethods: ['POST'],
+        allowedAuthorityLabels: ['model:http-json', 'network:http'],
+      },
+    };
+    try {
+      globalThis.fetch = async () => {
+        calls += 1;
+        return new Response('{"action":{"variant":"tool","toolId":"write_file","payload":"{}"}}', {
+          status: 200,
+          headers: { 'x-request-id': 'model-output-policy-1' },
+        });
+      };
+      await journal.resolve(context, request, new GenericHttpJsonModelDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        allowedToolIds: ['actuate', 'write_file'],
+      }));
+
+      globalThis.fetch = async () => {
+        throw new Error('model output policy identity conflict should block before fetch');
+      };
+      await assert.rejects(
+        () => journal.resolve(context, request, new GenericHttpJsonModelDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          allowedToolIds: ['actuate'],
+        })),
+        { code: 'ERR_EFFECT_IDEMPOTENCY_CONFLICT' },
+      );
+      assert.equal(calls, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('routes transactional resolve failures through recovery before retrying side effects', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
@@ -1235,6 +1282,20 @@ function httpHostRequest(overrides = {}) {
     idempotencyKeyWorldFingerprint: 'world:key:http',
     requestBytes: fromUtf8(JSON.stringify({ url: 'https://allowed.example/path' })),
     hostRequestFingerprint: 'world:host-request:00000000000000a1',
+    ...overrides,
+  };
+}
+
+function modelHostRequest(overrides = {}) {
+  return {
+    actuatorRef: 'model:decision',
+    descriptorFingerprint: 'descriptor:agent-decision-prompt',
+    actuationClass: 'model',
+    responseSchema: { status: 'ok' },
+    idempotencyKeyBytes: fromUtf8('complete-model-idempotency-key'),
+    idempotencyKeyWorldFingerprint: 'world:key:model',
+    requestBytes: fromUtf8(JSON.stringify({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: 'goal=model-output-policy' })),
+    hostRequestFingerprint: 'world:host-request:00000000000000b1',
     ...overrides,
   };
 }

@@ -46,8 +46,10 @@ export class GenericHttpJsonModelDriver {
   }
 
   manifest() {
+    const httpManifest = this.http.manifest();
+    const outputValidation = modelOutputValidationDiagnostics(this.allowedToolIds);
     return {
-      ...this.http.manifest(),
+      ...httpManifest,
       driverId: 'generic-http-json-model',
       supportedActuatorRefs: ['model:decision'],
       supportedDescriptorFingerprints: ['descriptor:agent-decision-prompt'],
@@ -56,10 +58,11 @@ export class GenericHttpJsonModelDriver {
       recoveryClass: EffectRecoveryClass.idempotent,
       authorityLabels: ['model:http-json', 'network:http'],
       diagnostics: {
-        ...this.http.manifest().diagnostics,
+        ...httpManifest.diagnostics,
         vendorSpecific: false,
         outputSchema: 'boundary.Agent.Action.v0',
-        allowedToolIds: [...this.allowedToolIds],
+        allowedToolIds: [...outputValidation.allowedToolIds],
+        modelOutputValidation: outputValidation,
       },
     };
   }
@@ -145,6 +148,13 @@ export class GenericHttpJsonModelDriver {
       schemaAccepted: Boolean(recordedResolution),
     });
   }
+}
+
+function modelOutputValidationDiagnostics(allowedToolIds) {
+  return {
+    outputSchema: 'boundary.Agent.Action.v0',
+    allowedToolIds: [...allowedToolIds].sort(),
+  };
 }
 
 function redactedEndpoint(endpointUrl) {
