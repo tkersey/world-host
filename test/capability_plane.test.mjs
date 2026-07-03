@@ -489,6 +489,19 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': artifact, 'README.md': secretReadme }),
       { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
     );
+    const quotedSecretJson = fromUtf8('{"api_key":"abcd1234"}');
+    const quotedSecretJsonChecksum = `sha256:${await sha256Hex(quotedSecretJson)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [
+          { path: 'adapter.mjs', checksum: withChecksums.checksums[0].checksum },
+          { path: 'config.json', checksum: quotedSecretJsonChecksum },
+        ],
+      }, { 'adapter.mjs': artifact, 'config.json': quotedSecretJson }),
+      { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
+    );
     const privateKeyReadme = fromUtf8('-----BEGIN PRIVATE KEY-----\nredacted\n-----END PRIVATE KEY-----\n');
     const privateKeyReadmeChecksum = `sha256:${await sha256Hex(privateKeyReadme)}`;
     await assert.rejects(
@@ -1446,6 +1459,25 @@ describe('Capability Plane v0.2 core contracts', () => {
       policy: { allowLiveEffects: true },
       mode: 'live',
     }), { code: 'ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED' });
+    assert.throws(() => assertCapabilityPolicyAllows({
+      manifest: {
+        driverId: 'prompt-capability',
+        authorityLabels: [],
+        recoveryClass: EffectRecoveryClass.idempotent,
+        maximumResponseBytes: 1024,
+      },
+      hostRequest: {
+        ...httpRequest(),
+        actuationClass: 'fixture',
+        policyRequestBytes: fromUtf8('prompt-body'),
+        requestBytes: fromUtf8('[]'),
+      },
+      policy: {
+        maximumRequestBytes: 1024,
+        maximumPromptBytes: 4,
+      },
+      mode: 'dry-run',
+    }), { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' });
     assert.throws(() => assertCapabilityPolicyAllows({
       manifest: {
         driverId: 'http',
@@ -2481,13 +2513,41 @@ describe('Capability Plane v0.2 core contracts', () => {
             allowedMethods: ['POST'],
           },
         }),
-        (error) => {
-          assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
-          assert.deepEqual(error.details.blockers, ['ERR_CAPABILITY_PROMPT_TOO_LARGE']);
-          return true;
-        },
+        { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
       );
       assert.equal(renderedLimitedFetchCalled, false);
+
+      let promptLimitedFetchCalled = false;
+      globalThis.fetch = async () => {
+        promptLimitedFetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      await assert.rejects(
+        () => runCapabilityMode({
+          mode: 'live',
+          driver: new GenericHttpJsonCapabilityDriver({
+            endpointUrl: 'https://allowed.example/decide',
+            requestTemplate: { prompt: 'x'.repeat(128) },
+          }),
+          hostRequest: { ...httpRequest(), requestBytes: fromUtf8(stableJson({ body: 'x' })) },
+          journalOptions: {
+            store: new MemoryStore(),
+            runId: 'prompt-limit-run',
+            branchId: 'main',
+            parentTurnClosureFingerprint: 'world:turn-closure:parent',
+          },
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            maximumRequestBytes: 4096,
+            maximumPromptBytes: 8,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }),
+        { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+      );
+      assert.equal(promptLimitedFetchCalled, false);
 
       let missingAllowlistFetchCalled = false;
       globalThis.fetch = async () => {

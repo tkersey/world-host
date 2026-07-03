@@ -370,7 +370,7 @@ function artifactCredentialText(text) {
   for (const match of text.matchAll(scheme)) {
     if (!artifactCredentialSentinel(match[1])) return true;
   }
-  const assignment = /(?:^|[?&;,\s{])(?:credential|authorization|token|secret|password|(?:api|access|private)[_-]?key)\s*[:=]\s*["']?([A-Za-z0-9._~+/-]{8,}={0,2})/ig;
+  const assignment = /(?:^|[?&;,\s{])["']?(?:credential|authorization|token|secret|password|(?:api|access|private)[_-]?key)["']?\s*[:=]\s*["']?([A-Za-z0-9._~+/-]{8,}={0,2})/ig;
   for (const match of text.matchAll(assignment)) {
     if (!artifactCredentialSentinel(match[1])) return true;
   }
