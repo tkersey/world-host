@@ -705,7 +705,7 @@ function capabilityPolicyForSelectedEffect(policy = {}, manifest = {}, hostReque
     allowLiveEffects: true,
     allowNetworkEffects: network,
     allowFileEffects: file,
-    allowHumanEffects: human,
+    allowHumanEffects: human && policy.allowHumanEffects === true,
     allowBestEffort: policy.allowBestEffort === true,
     auditOnly: policy.auditOnly === true,
     requireApprovalForDestructiveEffects: policy.requireApprovalForDestructiveEffects !== false,

@@ -16,6 +16,7 @@ import { BunWorldWorker } from '../src/bun/bun_worker.mjs';
 import { HttpJsonDriver } from '../src/drivers/http_json_driver.mjs';
 import { GenericHttpJsonCapabilityDriver } from '../src/drivers/generic_http_json_capability_driver.mjs';
 import { GenericHttpJsonModelDriver } from '../src/drivers/model_capability_driver.mjs';
+import { HumanApprovalCapabilityDriver } from '../src/drivers/human_approval_capability_driver.mjs';
 
 const FIXTURE_FILE_ROOT = '/fixture/sandbox';
 
@@ -1700,6 +1701,72 @@ describe('RunController and WorldWorker', () => {
       assert.equal(contextFactoryCalled, false);
     } finally {
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('requires explicit controller opt-in before resolving human effects', async () => {
+    const humanRequest = () => ({
+      actuatorRef: 'human:approval',
+      descriptorFingerprint: 'descriptor:human-approval',
+      actuationClass: 'human',
+      responseSchema: { status: 'ok' },
+      idempotencyKeyBytes: fromUtf8('human-approval-key'),
+      idempotencyKeyWorldFingerprint: 'world:key:human-approval',
+      requestBytes: fromUtf8(JSON.stringify({ prompt: 'approve?' })),
+      hostRequestFingerprint: 'world:host-request:0000000000000a01',
+    });
+
+    {
+      const { store, runId, branchId } = await fixtureStore({
+        headStatus: 'needs_host',
+        closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+      });
+      let approveCalled = false;
+      const driver = new HumanApprovalCapabilityDriver({ mode: 'noninteractive-allow' });
+      driver.approve = async () => {
+        approveCalled = true;
+        return { approved: true, record: { kind: 'test-human-approval' } };
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [driver],
+        hostRequestMapper: humanRequest,
+      });
+
+      await assert.rejects(
+        () => controller.advance(runId, branchId),
+        { code: 'ERR_CAPABILITY_HUMAN_DENIED' },
+      );
+      assert.equal(approveCalled, false);
+    }
+
+    {
+      const { store, runId, branchId } = await fixtureStore({
+        headStatus: 'needs_host',
+        closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+      });
+      let approveCalled = false;
+      const driver = new HumanApprovalCapabilityDriver({ mode: 'noninteractive-allow' });
+      driver.approve = async () => {
+        approveCalled = true;
+        return { approved: true, record: { kind: 'test-human-approval' } };
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [driver],
+        effectPolicy: {
+          allowHumanEffects: true,
+          allowedAuthorityLabels: new Set(['human:approval']),
+        },
+        hostRequestMapper: humanRequest,
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(approveCalled, true);
     }
   });
 

@@ -17,6 +17,7 @@ export function createRunPolicy(input = {}) {
   return Object.freeze({
     durableAutomatic: input.durableAutomatic !== false,
     allowBestEffort: input.allowBestEffort === true,
+    allowHumanEffects: input.allowHumanEffects === true,
     allowPartialEffectBatch: input.allowPartialEffectBatch === true,
     auditOnly: input.auditOnly === true,
     requireApprovalForDestructiveEffects: input.requireApprovalForDestructiveEffects !== false,
