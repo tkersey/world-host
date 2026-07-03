@@ -537,11 +537,43 @@ function readComputedMemberName(text, index, closeBracket) {
 function computedGlobalReceiver(text, openBracket) {
   let index = skipWhitespaceAndCommentsBackward(text, openBracket - 1);
   if (text[index] === '.' && text[index - 1] === '?') index = skipWhitespaceAndCommentsBackward(text, index - 2);
+  if (text[index] === ')') {
+    const openParenthesis = matchingOpenParenthesisBackward(text, index);
+    if (openParenthesis < 0) return false;
+    return globalReceiverExpressionSpan(text, openParenthesis + 1, index - 1);
+  }
   if (index < 0 || !identifierPart(text[index])) return false;
   const end = index + 1;
   while (index >= 0 && identifierPart(text[index])) index -= 1;
-  const identifier = text.slice(index + 1, end);
+  return globalReceiverExpressionSpan(text, index + 1, end - 1);
+}
+
+function globalReceiverExpressionSpan(text, start, end) {
+  start = skipWhitespaceAndComments(text, start);
+  end = skipWhitespaceAndCommentsBackward(text, end);
+  if (start > end) return false;
+  if (text[start] === '(' && text[end] === ')') {
+    const closeParenthesis = skipBalancedParentheses(text, start);
+    if (closeParenthesis === end + 1) return globalReceiverExpressionSpan(text, start + 1, end - 1);
+  }
+  if (!identifierStart(text[start])) return false;
+  let index = start + 1;
+  while (index <= end && identifierPart(text[index])) index += 1;
+  if (skipWhitespaceAndComments(text, index) <= end) return false;
+  const identifier = text.slice(start, index);
   return identifier === 'globalThis' || identifier === 'global' || identifier === 'window' || identifier === 'self';
+}
+
+function matchingOpenParenthesisBackward(text, closeParenthesis) {
+  let depth = 0;
+  for (let index = closeParenthesis; index >= 0; index -= 1) {
+    if (text[index] === ')') depth += 1;
+    if (text[index] === '(') {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
 }
 
 function skipWhitespaceAndComments(text, index) {
