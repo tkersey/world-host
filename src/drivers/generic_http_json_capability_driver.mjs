@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { EffectRecoveryClass } from '../core/actuator.mjs';
 import { CapabilityPreflightReport, DryRunReport, ShadowReport, capabilityHostClaimBytes, defaultCapabilityPreflight } from '../core/capability_driver.mjs';
+import { hostRequestTargetFingerprint } from '../core/effect_journal.mjs';
 import { assertCapabilityPolicyAllows, createCapabilityPolicy } from '../core/capability_policy.mjs';
 import { assertRequiredSecretsAvailable } from '../core/secrets.mjs';
 import { assertBytes, fail, fromUtf8, stableJson } from '../core/store.mjs';
@@ -59,7 +60,7 @@ export class GenericHttpJsonCapabilityDriver {
       supportedActuatorRefs: ['http:json'],
       supportedDescriptorFingerprints: ['descriptor:http-json'],
       supportedActuationClasses: ['http'],
-      supportedResponseStatuses: ['ok', 'http_error', 'deferred'],
+      supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
       maximumRequestBytes: encodedJsonStringEnvelopeLimit(this.maximumRequestBytes, REQUEST_ENVELOPE_OVERHEAD_BYTES),
       maximumResponseBytes: encodedJsonStringEnvelopeLimit(this.maximumResponseBytes, RESPONSE_ENVELOPE_OVERHEAD_BYTES),
       recoveryClass: EffectRecoveryClass.idempotent,
@@ -137,14 +138,24 @@ export class GenericHttpJsonCapabilityDriver {
           assertNoKnownSecretEcho(transactionRef, secretValues);
           return this.#resolution(hostRequest, { status: 'http_error', statusCode: response.status }, 1, transactionRef);
         }
-        const bytes = await readResponseBytes(response, this.maximumResponseBytes);
-        const json = bytes.byteLength ? JSON.parse(new TextDecoder().decode(bytes)) : null;
-        const body = extractPath(json, this.responseExtractionPath);
-        const payload = { status: 'ok', statusCode: response.status, body };
-        assertNoKnownSecretEcho(payload, secretValues);
         const transactionRef = response.headers.get('x-request-id');
-        assertNoKnownSecretEcho(transactionRef, secretValues);
-        return this.#resolution(hostRequest, payload, 0, transactionRef);
+        try {
+          const bytes = await readResponseBytes(response, this.maximumResponseBytes);
+          const json = bytes.byteLength ? JSON.parse(new TextDecoder().decode(bytes)) : null;
+          const body = extractPath(json, this.responseExtractionPath);
+          const payload = { status: 'ok', statusCode: response.status, body };
+          assertNoKnownSecretEcho(payload, secretValues);
+          assertNoKnownSecretEcho(transactionRef, secretValues);
+          return this.#resolution(hostRequest, payload, 0, transactionRef);
+        } catch (error) {
+          if (error?.name === 'AbortError') throw error;
+          const safeTransactionRef = safeHttpTransactionRef(transactionRef, secretValues);
+          return this.#resolution(hostRequest, {
+            status: 'failed',
+            statusCode: response.status,
+            failureCode: error.code ?? 'ERR_HTTP_RESPONSE_VALIDATION_FAILED',
+          }, 2, safeTransactionRef);
+        }
       });
     } catch (error) {
       if (error?.name === 'AbortError') {
@@ -286,10 +297,15 @@ export class GenericHttpJsonCapabilityDriver {
         responseValueImageBytes,
         hostClaimBytes: capabilityHostClaimBytes({ driver: 'generic-http-json', status: payload.status }),
         attemptNumber: 1,
-        metadata: fromUtf8(stableJson({ driver: 'generic-http-json', status: payload.status, statusCode: payload.statusCode ?? null })),
+        metadata: fromUtf8(stableJson({
+          driver: 'generic-http-json',
+          status: payload.status,
+          statusCode: payload.statusCode ?? null,
+          failureCode: payload.failureCode ?? null,
+        })),
       }),
       driverTransactionRef: transactionRef,
-      diagnostics: { status: payload.status, statusCode: payload.statusCode ?? null },
+      diagnostics: { status: payload.status, statusCode: payload.statusCode ?? null, failureCode: payload.failureCode ?? null },
     };
   }
 }
@@ -392,6 +408,15 @@ function assertNoKnownSecretEcho(value, secretValues) {
   });
 }
 
+function safeHttpTransactionRef(transactionRef, secretValues) {
+  try {
+    assertNoKnownSecretEcho(transactionRef, secretValues);
+    return transactionRef;
+  } catch {
+    return null;
+  }
+}
+
 function secretEchoCandidates(secretValues) {
   const candidates = new Set();
   for (const value of secretValues.values()) {
@@ -435,11 +460,7 @@ function extractPath(value, path) {
 }
 
 function resolutionTarget(hostRequest = {}) {
-  const value = hostRequest.hostRequestFingerprint;
-  if (typeof value === 'bigint' || typeof value === 'number') return BigInt(value);
-  const match = String(value ?? '').match(/(?:0x|world:host-request:)?([0-9a-f]+)$/i);
-  if (!match) fail('ERR_HOST_REQUEST_FINGERPRINT_REQUIRED');
-  return BigInt(`0x${match[1]}`);
+  return hostRequestTargetFingerprint(hostRequest);
 }
 
 function assertResolvableHttpHostRequest(hostRequest = {}) {

@@ -1,5 +1,7 @@
+import { createHash } from 'node:crypto';
+
 import { EffectRecoveryClass, assertDriverCanResolve, assertDriverManifest, assertDurableRecoveryAllowed } from './actuator.mjs';
-import { fail } from './store.mjs';
+import { assertBytes, fail, fromUtf8, stableJson, toHex } from './store.mjs';
 
 export class CapabilityReport {
   constructor(fields) {
@@ -16,7 +18,14 @@ export function createRunPolicy(input = {}) {
     durableAutomatic: input.durableAutomatic !== false,
     allowBestEffort: input.allowBestEffort === true,
     allowPartialEffectBatch: input.allowPartialEffectBatch === true,
+    auditOnly: input.auditOnly === true,
+    requireApprovalForDestructiveEffects: input.requireApprovalForDestructiveEffects !== false,
+    requireApprovalForNetworkEffects: input.requireApprovalForNetworkEffects === true,
+    requireApprovalForBestEffort: input.requireApprovalForBestEffort !== false,
+    maximumLiveModelCalls: nonNegativeSafeInteger(input.maximumLiveModelCalls ?? 0, 'maximumLiveModelCalls'),
     allowedAuthorityLabels: new Set(input.allowedAuthorityLabels ?? []),
+    allowedCapabilityPacks: new Set(input.allowedCapabilityPacks ?? []),
+    deniedCapabilityPacks: new Set(input.deniedCapabilityPacks ?? []),
     allowedFileRoots: new Set(input.allowedFileRoots ?? []),
     allowedHttpOrigins: new Set(input.allowedHttpOrigins ?? []),
     allowedHttpMethods: new Set(iterable(input.allowedHttpMethods).map((item) => String(item).toUpperCase())),
@@ -29,6 +38,11 @@ export function createRunPolicy(input = {}) {
 
 function positiveSafeInteger(value, field) {
   if (!Number.isSafeInteger(value) || value < 1) fail('ERR_RUN_POLICY_LIMIT_INVALID', `${field} must be a positive safe integer`);
+  return value;
+}
+
+function nonNegativeSafeInteger(value, field) {
+  if (!Number.isSafeInteger(value) || value < 0) fail('ERR_RUN_POLICY_LIMIT_INVALID', `${field} must be a non-negative safe integer`);
   return value;
 }
 
@@ -48,14 +62,15 @@ export function createHostCapabilityManifest(input = {}) {
   });
 }
 
-export function preflightCapabilities({ application, applianceManifest = {}, currentHead = null, pendingRequests = [], drivers = [], policy: policyInput = createRunPolicy() }) {
+export function preflightCapabilities({ application, applianceManifest = {}, currentHead = null, pendingRequests = [], drivers = [], policy: policyInput = createRunPolicy(), effectRecords = [] }) {
   const policy = createRunPolicy(policyInput);
   const blockers = [];
   const warnings = [];
-  const manifests = drivers.map((driver) => assertDriverManifest(driver.manifest()));
+  const manifests = drivers.map((driver) => normalizeDriverManifest(driver.manifest()));
   const coveredRequests = [];
   const selectedRequiredActuatorRoutes = [];
   const selectedPendingRequestRoutes = [];
+  let selectedLiveModelRequestCount = 0;
   const hasPendingRequestContext = pendingRequests.length > 0;
   const requiredAuthorityLabels = application?.requiredHostAuthorityLabels ?? [];
   const requiredActuatorOptions = [];
@@ -109,6 +124,7 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
     const route = selectPreferredAuthorityManifest(candidates, preferredAuthorityLabels);
     coveredRequests.push({ actuatorRef: request.actuatorRef, descriptorFingerprint: request.descriptorFingerprint, driverId: route.driverId });
     selectedPendingRequestRoutes.push({ manifest: route, request });
+    if (isLiveModelRoute(route, request) && !hasReusableEffectOutcome(request, effectRecords, route)) selectedLiveModelRequestCount += 1;
   }
 
   for (const label of requiredAuthorityLabels) {
@@ -133,6 +149,7 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
   }
 
   const runtimeLimits = application?.requiredRuntimeLimits ?? {};
+  if (selectedLiveModelRequestCount > policy.maximumLiveModelCalls) blockers.push('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED');
   if (runtimeLimits.maximumConcurrentEffects > policy.maximumConcurrentEffects) blockers.push('runtime-concurrency-limit-exceeds-policy');
   if (runtimeLimits.maximumRequestBytes > policy.maximumRequestBytes) blockers.push('runtime-request-limit-exceeds-policy');
   if (runtimeLimits.maximumResponseBytes > policy.maximumResponseBytes) blockers.push('runtime-response-limit-exceeds-policy');
@@ -147,12 +164,19 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
     responseStatusesSupported: !blockers.some((item) => item.includes('RESPONSE_STATUS')),
     valueSizeLimitsSupported: !blockers.some((item) => item.startsWith('runtime-') || item === 'request-limit-exceeds-policy' || item === 'response-limit-exceeds-policy'),
     recoveryClassSufficient: !blockers.includes('ERR_BEST_EFFORT_REQUIRES_OPERATOR_OPT_IN'),
-    fileNetworkAuthoritiesAllowed: !blockers.some((item) => item.startsWith('authority-denied') || item === 'http-origin-allowlist-required' || item.startsWith('http-origin-denied') || item.startsWith('http-origin-driver-denied') || item === 'http-method-allowlist-required' || item.startsWith('http-method-denied') || item.startsWith('http-method-driver-denied') || item.startsWith('file-root-denied')),
+    fileNetworkAuthoritiesAllowed: !blockers.some((item) => item.startsWith('authority-denied') || item === 'http-origin-allowlist-required' || item.startsWith('http-origin-denied') || item.startsWith('http-origin-driver-denied') || item === 'http-method-allowlist-required' || item.startsWith('http-method-denied') || item.startsWith('http-method-driver-denied') || item === 'file-root-allowlist-required' || item.startsWith('file-root-denied')),
     supervisionPolicyAccepted: !blockers.includes('supervision-policy-rejected'),
     coveredRequests,
     blockers,
     warnings,
   });
+}
+
+function normalizeDriverManifest(raw) {
+  const manifest = assertDriverManifest(raw);
+  if (raw.packFingerprint == null) return manifest;
+  if (typeof raw.packFingerprint !== 'string') fail('ERR_INVALID_DRIVER_MANIFEST', 'packFingerprint must be a string');
+  return Object.freeze({ ...manifest, packFingerprint: raw.packFingerprint });
 }
 
 function normalizeRequiredActuator(required) {
@@ -161,6 +185,68 @@ function normalizeRequiredActuator(required) {
     actuatorRef: required?.actuatorRef,
     descriptorFingerprint: required?.descriptorFingerprint ?? null,
   };
+}
+
+function hasReusableEffectOutcome(request, effectRecords, route) {
+  if (!request?.idempotencyKeyWorldFingerprint || !request?.hostRequestFingerprint) return false;
+  const identity = reusableRequestIdentity(request, route);
+  if (!identity) return false;
+  return effectRecords.some((record) => (
+    record?.idempotencyKeyWorldFingerprint === request.idempotencyKeyWorldFingerprint &&
+    record?.hostRequestFingerprint === request.hostRequestFingerprint &&
+    record?.idempotencyKey?.format === 'world-idempotency-key-bytes.hex' &&
+    record.idempotencyKey.bytesHex === identity.idempotencyKeyBytesHex &&
+    (record.requestIdentityChecksum ?? record.requestBytesChecksum) === identity.requestIdentityChecksum &&
+    record?.resolutionInputRef &&
+    (record.state === 'resolved' || record.state === 'submitted' || record.state === 'closure_committed')
+  ));
+}
+
+function reusableRequestIdentity(request, route) {
+  try {
+    const idempotencyKeyBytes = assertBytes(request.idempotencyKeyBytes, 'idempotencyKeyBytes');
+    const requestBytes = assertBytes(request.requestBytes, 'requestBytes');
+    const effectIdentityBytes = request.effectIdentityBytes === undefined
+      ? routeEffectIdentityBytes(requestBytes, route) ?? requestBytes
+      : assertBytes(request.effectIdentityBytes, 'effectIdentityBytes');
+    return {
+      idempotencyKeyBytesHex: toHex(idempotencyKeyBytes),
+      requestIdentityChecksum: `sha256:${createHash('sha256').update(effectIdentityBytes).digest('hex')}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function routeEffectIdentityBytes(requestBytes, route) {
+  const endpointSource = route?.diagnostics?.endpointSource;
+  if (endpointSource !== 'config' && endpointSource !== 'request-or-config') return null;
+  const requestRendering = route?.diagnostics?.requestRendering ?? null;
+  let parsed = {};
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(requestBytes));
+  } catch {
+    return null;
+  }
+  if (endpointSource === 'request-or-config' && parsed?.url !== undefined && parsed.method !== undefined) {
+    return requestRendering === null
+      ? null
+      : fromUtf8(stableJson({ request: parsed, configuredEndpoint: null, requestRendering }));
+  }
+  const configuredEndpoint = configuredEffectIdentityTargetForRoute(route, parsed);
+  if (!configuredEndpoint && requestRendering === null) return null;
+  return fromUtf8(stableJson({ request: parsed, configuredEndpoint, requestRendering }));
+}
+
+function configuredEffectIdentityTargetForRoute(route, parsed = {}) {
+  const origins = Array.isArray(route?.diagnostics?.origins) ? route.diagnostics.origins : [];
+  const methods = Array.isArray(route?.diagnostics?.methods) ? route.diagnostics.methods : [];
+  const endpointSource = route?.diagnostics?.endpointSource;
+  const requestUrl = endpointSource === 'request-or-config' && parsed?.url !== undefined ? parsed.url : null;
+  const url = requestUrl ?? route?.diagnostics?.configuredEndpointUrl ?? route?.diagnostics?.configuredOrigin ?? (origins.length === 1 ? origins[0] : null);
+  const method = parsed.method ?? route?.diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : null);
+  if (!url || !method) return null;
+  return { url, method };
 }
 
 function uniqueFlat(groups) {
@@ -231,14 +317,25 @@ function policyBlockers(route, request, policy) {
   } catch (error) {
     blockers.push(error.code);
   }
+  if (policy.deniedCapabilityPacks.has(route.packFingerprint) || policy.deniedCapabilityPacks.has(route.driverId)) {
+    blockers.push('ERR_CAPABILITY_PACK_DENIED');
+  }
+  if (
+    policy.allowedCapabilityPacks.size &&
+    !policy.allowedCapabilityPacks.has(route.packFingerprint) &&
+    !policy.allowedCapabilityPacks.has(route.driverId)
+  ) {
+    blockers.push('ERR_CAPABILITY_PACK_NOT_ALLOWED');
+  }
   const deniedLabels = route.authorityLabels.filter((label) => policy.allowedAuthorityLabels.size && !policy.allowedAuthorityLabels.has(label));
   if (deniedLabels.length) blockers.push(`authority-denied:${deniedLabels.join(',')}`);
   if (request && policy.maximumRequestBytes !== undefined && request.requestBytes?.byteLength > policy.maximumRequestBytes) blockers.push('request-limit-exceeds-policy');
   if (policy.maximumResponseBytes !== undefined && route.maximumResponseBytes > policy.maximumResponseBytes) blockers.push('response-limit-exceeds-policy');
   const allowedFileRoots = policy.allowedFileRoots ?? new Set();
-  if (allowedFileRoots.size && isFileRoute(route, request)) {
+  if (isFileRoute(route, request)) {
+    if (!allowedFileRoots.size) blockers.push('file-root-allowlist-required');
     const root = route.diagnostics?.root;
-    if (!root || !allowedFileRoots.has(root)) blockers.push(`file-root-denied:${root ?? 'unknown'}`);
+    if (allowedFileRoots.size && (!root || !allowedFileRoots.has(root))) blockers.push(`file-root-denied:${root ?? 'unknown'}`);
   }
   if (request && (request.actuationClass === 'http' || route.authorityLabels.includes('network:http'))) {
     const origin = requestOriginForRoute(request, route);
@@ -360,7 +457,8 @@ function requestMethodForRoute(request, route) {
     const value = JSON.parse(text);
     if (fixedConfiguredEndpointRoute(route)) return String(value.method ?? route.diagnostics.defaultMethod ?? 'POST').toUpperCase();
     if (value.url === undefined && configuredEndpointRoute(route)) return String(value.method ?? route.diagnostics.defaultMethod ?? 'POST').toUpperCase();
-    return String(value.method ?? route?.diagnostics?.defaultMethod ?? 'GET').toUpperCase();
+    const methods = Array.isArray(route?.diagnostics?.methods) ? route.diagnostics.methods : [];
+    return String(value.method ?? route?.diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : 'GET')).toUpperCase();
   } catch {
     return null;
   }
@@ -372,4 +470,15 @@ function fixedConfiguredEndpointRoute(route) {
 
 function configuredEndpointRoute(route) {
   return route?.diagnostics?.endpointSource === 'config' || route?.diagnostics?.endpointSource === 'request-or-config';
+}
+
+function isLiveModelRoute(route, request) {
+  const modelLabels = (route?.authorityLabels ?? []).filter((label) => label.startsWith('model:'));
+  if (modelLabels.some((label) => !label.startsWith('model:fixture'))) return true;
+  const modelCapable = request?.actuationClass === 'model' ||
+    (route?.supportedActuationClasses ?? []).includes('model');
+  if (!modelCapable) return false;
+  if (route?.driverId === 'fixture-agent-model') return false;
+  if (!modelLabels.length) return true;
+  return false;
 }

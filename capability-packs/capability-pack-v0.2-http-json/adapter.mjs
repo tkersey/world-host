@@ -1364,7 +1364,7 @@ class GenericHttpJsonCapabilityDriver {
       supportedActuatorRefs: ["http:json"],
       supportedDescriptorFingerprints: ["descriptor:http-json"],
       supportedActuationClasses: ["http"],
-      supportedResponseStatuses: ["ok", "http_error", "deferred"],
+      supportedResponseStatuses: ["ok", "http_error", "failed", "deferred"],
       maximumRequestBytes: encodedJsonStringEnvelopeLimit(this.maximumRequestBytes, REQUEST_ENVELOPE_OVERHEAD_BYTES),
       maximumResponseBytes: encodedJsonStringEnvelopeLimit(this.maximumResponseBytes, RESPONSE_ENVELOPE_OVERHEAD_BYTES),
       recoveryClass: EffectRecoveryClass.idempotent,
@@ -1438,14 +1438,25 @@ class GenericHttpJsonCapabilityDriver {
           assertNoKnownSecretEcho(transactionRef2, secretValues);
           return this.#resolution(hostRequest, { status: "http_error", statusCode: response.status }, 1, transactionRef2);
         }
-        const bytes2 = await readResponseBytes(response, this.maximumResponseBytes);
-        const json = bytes2.byteLength ? JSON.parse(new TextDecoder().decode(bytes2)) : null;
-        const body = extractPath(json, this.responseExtractionPath);
-        const payload = { status: "ok", statusCode: response.status, body };
-        assertNoKnownSecretEcho(payload, secretValues);
         const transactionRef = response.headers.get("x-request-id");
-        assertNoKnownSecretEcho(transactionRef, secretValues);
-        return this.#resolution(hostRequest, payload, 0, transactionRef);
+        try {
+          const bytes2 = await readResponseBytes(response, this.maximumResponseBytes);
+          const json = bytes2.byteLength ? JSON.parse(new TextDecoder().decode(bytes2)) : null;
+          const body = extractPath(json, this.responseExtractionPath);
+          const payload = { status: "ok", statusCode: response.status, body };
+          assertNoKnownSecretEcho(payload, secretValues);
+          assertNoKnownSecretEcho(transactionRef, secretValues);
+          return this.#resolution(hostRequest, payload, 0, transactionRef);
+        } catch (error) {
+          if (error?.name === "AbortError")
+            throw error;
+          const safeTransactionRef = safeHttpTransactionRef(transactionRef, secretValues);
+          return this.#resolution(hostRequest, {
+            status: "failed",
+            statusCode: response.status,
+            failureCode: error.code ?? "ERR_HTTP_RESPONSE_VALIDATION_FAILED"
+          }, 2, safeTransactionRef);
+        }
       });
     } catch (error) {
       if (error?.name === "AbortError") {
@@ -1586,10 +1597,15 @@ class GenericHttpJsonCapabilityDriver {
         responseValueImageBytes,
         hostClaimBytes: capabilityHostClaimBytes({ driver: "generic-http-json", status: payload.status }),
         attemptNumber: 1,
-        metadata: fromUtf8(stableJson({ driver: "generic-http-json", status: payload.status, statusCode: payload.statusCode ?? null }))
+        metadata: fromUtf8(stableJson({
+          driver: "generic-http-json",
+          status: payload.status,
+          statusCode: payload.statusCode ?? null,
+          failureCode: payload.failureCode ?? null
+        }))
       }),
       driverTransactionRef: transactionRef,
-      diagnostics: { status: payload.status, statusCode: payload.statusCode ?? null }
+      diagnostics: { status: payload.status, statusCode: payload.statusCode ?? null, failureCode: payload.failureCode ?? null }
     };
   }
 }
@@ -1683,6 +1699,14 @@ function assertNoKnownSecretEcho(value, secretValues) {
     }
   });
 }
+function safeHttpTransactionRef(transactionRef, secretValues) {
+  try {
+    assertNoKnownSecretEcho(transactionRef, secretValues);
+    return transactionRef;
+  } catch {
+    return null;
+  }
+}
 function secretEchoCandidates(secretValues) {
   const candidates = new Set;
   for (const value of secretValues.values()) {
@@ -1733,11 +1757,16 @@ function extractPath(value, path) {
 function resolutionTarget(hostRequest = {}) {
   const value = hostRequest.hostRequestFingerprint;
   if (typeof value === "bigint" || typeof value === "number")
-    return BigInt(value);
-  const match = String(value ?? "").match(/(?:0x|world:host-request:)?([0-9a-f]+)$/i);
+    return assertU64Fingerprint(BigInt(value));
+  const match = String(value ?? "").match(/^(?:world:host-request:|0x)([0-9a-f]+)$/i);
   if (!match)
     fail("ERR_HOST_REQUEST_FINGERPRINT_REQUIRED");
-  return BigInt(`0x${match[1]}`);
+  return assertU64Fingerprint(BigInt(`0x${match[1]}`));
+}
+function assertU64Fingerprint(value) {
+  if (value < 0n || value > (1n << 64n) - 1n)
+    fail("ERR_HOST_REQUEST_FINGERPRINT_RANGE", "HostRequest fingerprint must fit the World u64 wire range");
+  return value;
 }
 function assertResolvableHttpHostRequest(hostRequest = {}) {
   resolutionTarget(hostRequest);

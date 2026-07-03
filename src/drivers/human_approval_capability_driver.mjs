@@ -1,5 +1,6 @@
 import { EffectRecoveryClass } from '../core/actuator.mjs';
 import { DryRunReport, ShadowReport, capabilityHostClaimBytes, defaultCapabilityPreflight } from '../core/capability_driver.mjs';
+import { hostRequestTargetFingerprint } from '../core/effect_journal.mjs';
 import { assertCapabilityPolicyAllows, redactCapabilityDiagnostics } from '../core/capability_policy.mjs';
 import { fail, fromUtf8, stableJson } from '../core/store.mjs';
 import { encodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
@@ -35,6 +36,7 @@ export class HumanApprovalCapabilityDriver {
     if (!blockers.length) {
       try {
         assertHumanPolicyAllows(context, this.manifest(), hostRequest);
+        assertFixedModeSupportsResponseSchema(this.mode, hostRequest);
       } catch (error) {
         blockers.push(error.code ?? 'ERR_HUMAN_APPROVAL_PREFLIGHT_REJECTED');
       }
@@ -64,6 +66,7 @@ export class HumanApprovalCapabilityDriver {
 
   async resolve(context, hostRequest) {
     assertHumanPolicyAllows(context, this.manifest(), hostRequest);
+    assertFixedModeSupportsResponseSchema(this.mode, hostRequest);
     resolutionTarget(hostRequest);
     const decision = await this.approve({ proposed: this.#redactedPrompt(hostRequest) });
     return this.#resolution(hostRequest, decision.approved ? 'approved' : 'rejected', decision.record);
@@ -122,9 +125,16 @@ function assertHumanPolicyAllows(context, manifest, hostRequest) {
 }
 
 function resolutionTarget(hostRequest = {}) {
-  const value = hostRequest.hostRequestFingerprint;
-  if (typeof value === 'bigint' || typeof value === 'number') return BigInt(value);
-  const match = String(value ?? '').match(/(?:0x|world:host-request:)?([0-9a-f]+)$/i);
-  if (!match) fail('ERR_HOST_REQUEST_FINGERPRINT_REQUIRED');
-  return BigInt(`0x${match[1]}`);
+  return hostRequestTargetFingerprint(hostRequest);
+}
+
+function assertFixedModeSupportsResponseSchema(mode, hostRequest = {}) {
+  const status = hostRequest.responseSchema?.status;
+  if (!status || mode === 'interactive-terminal') return;
+  if (mode === 'noninteractive-allow' && status !== 'ok') {
+    fail('ERR_HUMAN_APPROVAL_RESPONSE_SCHEMA_UNSUPPORTED', 'noninteractive allow can only emit ok approvals');
+  }
+  if (mode === 'noninteractive-deny' && status !== 'rejected') {
+    fail('ERR_HUMAN_APPROVAL_RESPONSE_SCHEMA_UNSUPPORTED', 'noninteractive deny can only emit rejected approvals');
+  }
 }

@@ -159,7 +159,7 @@ function shouldEnforceNetworkTarget(hostRequest, manifest) {
   }
 }
 
-function networkPolicyHostRequest(hostRequest, manifest) {
+export function networkPolicyHostRequest(hostRequest, manifest) {
   const endpointSource = manifest?.diagnostics?.endpointSource;
   if (!hostRequest?.requestBytes) {
     return endpointSource === 'config' || endpointSource === 'request-or-config'
@@ -173,8 +173,7 @@ function networkPolicyHostRequest(hostRequest, manifest) {
     }
     if (parsed?.url === undefined || parsed.method !== undefined) return hostRequest;
     const methods = Array.isArray(manifest?.diagnostics?.methods) ? manifest.diagnostics.methods : [];
-    const method = manifest?.diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : null);
-    if (!method) return hostRequest;
+    const method = manifest?.diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : 'GET');
     return { ...hostRequest, requestBytes: fromUtf8(stableJson({ ...parsed, method })) };
   } catch {
     return hostRequest;

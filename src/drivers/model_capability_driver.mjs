@@ -76,13 +76,13 @@ export class GenericHttpJsonModelDriver {
       }
     }
     if (blockers.length) return new CapabilityPreflightReport({ accepted: false, blockers });
-    return this.http.preflight(context, transportHostRequest(hostRequest));
+    return this.http.preflight(transportContext(context), transportHostRequest(hostRequest));
   }
 
   async resolve(context, hostRequest) {
     parseDecisionPrompt(hostRequest.requestBytes);
     this.#assertPolicyAllows(context, hostRequest);
-    const result = await this.http.resolve(context, transportHostRequest(hostRequest));
+    const result = await this.http.resolve(transportContext(context), transportHostRequest(hostRequest));
     const resolution = decodeResolutionInputBytes(result.resolutionInputBytes);
     if (resolution.status !== 0) {
       return modelResolutionFromTransport(result, resolution, { status: resolution.status === 4 ? 'deferred' : 'failed' });
@@ -171,6 +171,18 @@ function transportHostRequest(hostRequest) {
     descriptorFingerprint: 'descriptor:http-json',
     actuationClass: 'http',
     responseSchema: transportResponseSchema(hostRequest.responseSchema),
+  };
+}
+
+function transportContext(context = {}) {
+  const policy = context?.policy ?? {};
+  return {
+    ...context,
+    policy: {
+      ...policy,
+      allowedCapabilityPacks: [],
+      deniedCapabilityPacks: [],
+    },
   };
 }
 

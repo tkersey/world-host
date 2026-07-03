@@ -358,6 +358,86 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': aliasedFunctionImportAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const workerAdapter = fromUtf8("const worker = new Worker('./helper.mjs'); export const CapabilityDriver = worker;");
+    const workerAdapterChecksum = `sha256:${await sha256Hex(workerAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: workerAdapterChecksum }],
+      }, { 'adapter.mjs': workerAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const aliasedWorkerAdapter = fromUtf8("const W = Worker; const worker = new W('./helper.mjs'); export const CapabilityDriver = worker;");
+    const aliasedWorkerAdapterChecksum = `sha256:${await sha256Hex(aliasedWorkerAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: aliasedWorkerAdapterChecksum }],
+      }, { 'adapter.mjs': aliasedWorkerAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const globalWorkerAdapter = fromUtf8("const worker = new globalThis.Worker('./helper.mjs'); export const CapabilityDriver = worker;");
+    const globalWorkerAdapterChecksum = `sha256:${await sha256Hex(globalWorkerAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: globalWorkerAdapterChecksum }],
+      }, { 'adapter.mjs': globalWorkerAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const parenthesizedGlobalWorkerAdapter = fromUtf8("const worker = new (globalThis.Worker)('./helper.mjs'); export const CapabilityDriver = worker;");
+    const parenthesizedGlobalWorkerAdapterChecksum = `sha256:${await sha256Hex(parenthesizedGlobalWorkerAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: parenthesizedGlobalWorkerAdapterChecksum }],
+      }, { 'adapter.mjs': parenthesizedGlobalWorkerAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const builtinModuleAdapter = fromUtf8("const fs = process.getBuiltinModule('node:fs'); export const CapabilityDriver = fs;");
+    const builtinModuleAdapterChecksum = `sha256:${await sha256Hex(builtinModuleAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: builtinModuleAdapterChecksum }],
+      }, { 'adapter.mjs': builtinModuleAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const aliasedBuiltinModuleAdapter = fromUtf8("const gbm = process.getBuiltinModule; const fs = gbm('node:fs'); export const CapabilityDriver = fs;");
+    const aliasedBuiltinModuleAdapterChecksum = `sha256:${await sha256Hex(aliasedBuiltinModuleAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: aliasedBuiltinModuleAdapterChecksum }],
+      }, { 'adapter.mjs': aliasedBuiltinModuleAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const optionalBuiltinModuleAdapter = fromUtf8("const fs = process.getBuiltinModule?.('node:fs'); export const CapabilityDriver = fs;");
+    const optionalBuiltinModuleAdapterChecksum = `sha256:${await sha256Hex(optionalBuiltinModuleAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: optionalBuiltinModuleAdapterChecksum }],
+      }, { 'adapter.mjs': optionalBuiltinModuleAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const parenthesizedBuiltinModuleAdapter = fromUtf8("const fs = (process.getBuiltinModule)('node:fs'); export const CapabilityDriver = fs;");
+    const parenthesizedBuiltinModuleAdapterChecksum = `sha256:${await sha256Hex(parenthesizedBuiltinModuleAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: parenthesizedBuiltinModuleAdapterChecksum }],
+      }, { 'adapter.mjs': parenthesizedBuiltinModuleAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const malformedAdapter = fromUtf8('if (');
     const malformedAdapterChecksum = `sha256:${await sha256Hex(malformedAdapter)}`;
     await assert.rejects(
@@ -413,6 +493,42 @@ describe('Capability Plane v0.2 core contracts', () => {
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
+        adapter: { kind: 'sidecar', command: ['bin/adapter'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bin/adapter', '--config=config.json'] },
+        docs: [],
+        checksums: [{ path: 'bin/adapter', checksum: sidecarChecksum }],
+      }, { 'bin/adapter': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['@scope/adapter.mjs'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['@scope/register'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
         adapter: { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] },
         docs: [],
         checksums: [{ path: 'bun', checksum: launcherChecksum }],
@@ -436,10 +552,91 @@ describe('Capability Plane v0.2 core contracts', () => {
     }, { 'sidecar.mjs': sidecar }), true);
     assert.equal(await assertCapabilityPackChecksums({
       ...manifest,
+      adapter: { kind: 'sidecar', command: ['bin/adapter'] },
+      docs: [],
+      checksums: [{ path: 'bin/adapter', checksum: sidecarChecksum }],
+    }, { 'bin/adapter': sidecar }), true);
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'sidecar', command: ['bin/adapter', '--config=config.json'] },
+      docs: [],
+      checksums: [
+        { path: 'bin/adapter', checksum: sidecarChecksum },
+        { path: 'config.json', checksum: sidecarChecksum },
+      ],
+    }, { 'bin/adapter': sidecar, 'config.json': sidecar }), true);
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'sidecar', command: ['@scope/adapter.mjs'] },
+      docs: [],
+      checksums: [{ path: '@scope/adapter.mjs', checksum: sidecarChecksum }],
+    }, { '@scope/adapter.mjs': sidecar }), true);
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'sidecar', command: ['@scope/register'] },
+      docs: [],
+      checksums: [{ path: '@scope/register', checksum: sidecarChecksum }],
+    }, { '@scope/register': sidecar }), true);
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
       adapter: { kind: 'sidecar', command: ['bun', '--endpoint=https://api.example/v1', 'sidecar.mjs', '--model=gpt-4.1'] },
       docs: [],
       checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
     }, { 'sidecar.mjs': sidecar }), true);
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'sidecar', command: ['bun', 'sidecar.mjs', '-p8080'] },
+      docs: [],
+      checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+    }, { 'sidecar.mjs': sidecar }), true);
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'sidecar', command: ['bun', 'sidecar.mjs', '--import', 'remote'] },
+      docs: [],
+      checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+    }, { 'sidecar.mjs': sidecar }), true);
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'sidecar', command: ['node', '--trace-warnings', 'sidecar.mjs', '--import', 'remote'] },
+      docs: [],
+      checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+    }, { 'sidecar.mjs': sidecar }), true);
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', './adapter.mjs', '--require=./plugin.mjs'] },
+        docs: [],
+        checksums: [{ path: './adapter.mjs', checksum: sidecarChecksum }],
+      }, { './adapter.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'sidecar', command: ['node', './adapter.mjs', '--require=./plugin.mjs'] },
+      docs: [],
+      checksums: [
+        { path: './adapter.mjs', checksum: sidecarChecksum },
+        { path: './plugin.mjs', checksum: sidecarChecksum },
+      ],
+    }, { './adapter.mjs': sidecar, './plugin.mjs': sidecar }), true);
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', 'sidecar.mjs', '--config=config.json'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+      }, { 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'sidecar', command: ['bun', 'sidecar.mjs', '--config=config.json'] },
+      docs: [],
+      checksums: [
+        { path: 'sidecar.mjs', checksum: sidecarChecksum },
+        { path: 'config.json', checksum: sidecarChecksum },
+      ],
+    }, { 'sidecar.mjs': sidecar, 'config.json': sidecar }), true);
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
@@ -449,6 +646,55 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'sidecar.mjs': sidecar }),
       { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
     );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--config', 'config.json', '-e', 'console.log(1)'] },
+        docs: [],
+        checksums: [{ path: 'config.json', checksum: sidecarChecksum }],
+      }, { 'config.json': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    const sidecarEnvFile = fromUtf8('SETTING=value\n');
+    const sidecarEnvFileChecksum = `sha256:${await sha256Hex(sidecarEnvFile)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', '--env-file', '.env.local', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+      }, { 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'sidecar', command: ['node', '--env-file', '.env.local', 'sidecar.mjs'] },
+      docs: [],
+      checksums: [
+        { path: 'sidecar.mjs', checksum: sidecarChecksum },
+        { path: '.env.local', checksum: sidecarEnvFileChecksum },
+      ],
+    }, { 'sidecar.mjs': sidecar, '.env.local': sidecarEnvFile }), true);
+    const sidecarCertificate = fromUtf8('-----BEGIN CERTIFICATE-----\npublic\n-----END CERTIFICATE-----\n');
+    const sidecarCertificateChecksum = `sha256:${await sha256Hex(sidecarCertificate)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['deno', 'run', '--cert', 'cert.pem', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+      }, { 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'sidecar', command: ['deno', 'run', '--cert', 'cert.pem', 'sidecar.mjs'] },
+      docs: [],
+      checksums: [
+        { path: 'sidecar.mjs', checksum: sidecarChecksum },
+        { path: 'cert.pem', checksum: sidecarCertificateChecksum },
+      ],
+    }, { 'sidecar.mjs': sidecar, 'cert.pem': sidecarCertificate }), true);
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
@@ -471,6 +717,290 @@ describe('Capability Plane v0.2 core contracts', () => {
         ],
       }, { 'sidecar.mjs': sidecar, './helper.mjs': sidecarOptionImport }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'sidecar', command: ['node', '-r./helper.mjs', 'sidecar.mjs'] },
+      docs: [],
+      checksums: [
+        { path: 'sidecar.mjs', checksum: sidecarChecksum },
+        { path: './helper.mjs', checksum: sidecarChecksum },
+      ],
+    }, { 'sidecar.mjs': sidecar, './helper.mjs': sidecar }), true);
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'sidecar', command: ['node', '-r./helper.mjs', 'sidecar.mjs', '-p8080'] },
+      docs: [],
+      checksums: [
+        { path: 'sidecar.mjs', checksum: sidecarChecksum },
+        { path: './helper.mjs', checksum: sidecarChecksum },
+      ],
+    }, { 'sidecar.mjs': sidecar, './helper.mjs': sidecar }), true);
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', '--import=preload.mjs', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: 'preload.mjs', checksum: sidecarChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, 'preload.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', '--import=evil-package', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+      }, { 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['./node', '--import=evil-package', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: './node', checksum: sidecarChecksum },
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+        ],
+      }, { './node': sidecar, 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['env', 'node', '--import=evil-package', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+      }, { 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['sh', '-c', 'echo unchecked'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['SH', '-c', 'echo unchecked'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    const scopedPreload = fromUtf8('export const scoped = true;');
+    const scopedPreloadChecksum = `sha256:${await sha256Hex(scopedPreload)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', '--require=@scope/register', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: '@scope/register', checksum: scopedPreloadChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, '@scope/register': scopedPreload }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', '-rleft-pad/register', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: 'left-pad/register', checksum: sidecarChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, 'left-pad/register': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', '--loader=evil-package', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+      }, { 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', '--experimental-loader', 'evil-package', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+      }, { 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', '--import'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', '-e', 'import("node:fs")'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', '--conditions', './cond', '-e', 'import("node:fs")'] },
+        docs: [],
+        checksums: [{ path: './cond', checksum: sidecarChecksum }],
+      }, { './cond': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['deno', 'eval', 'import("node:fs")'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['python', '-c', 'print("unchecked")'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['ruby', '-e', 'puts "unchecked"'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '-econsole.log(1)'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '-p1+2'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--print=1+2'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['npm', 'exec', 'unchecked-package'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['npm', 'run', 'start'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', 'run', 'start'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['npm', 'create', 'unchecked-package'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['pnpm', 'init', 'unchecked-package'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['npm', '--yes', 'exec', 'unchecked-package'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['npm', '--cache', './cache', 'exec', 'unchecked-package'] },
+        docs: [],
+        checksums: [{ path: './cache', checksum: sidecarChecksum }],
+      }, { './cache': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['npm', 'x', 'unchecked-package'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bunx', 'unchecked-package'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
     const sidecarImport = fromUtf8("import './helper.mjs';\nconsole.log('ready');\n");
     const sidecarImportChecksum = `sha256:${await sha256Hex(sidecarImport)}`;
@@ -1161,9 +1691,9 @@ describe('Capability Plane v0.2 core contracts', () => {
         secretHeaders: { Authorization: 'API_TOKEN' },
         secretProvider: new EnvSecretProvider({ API_TOKEN: 'Bearer fixture-token-value' }),
       });
-      assert.deepEqual(driver.manifest().supportedResponseStatuses, ['ok', 'http_error', 'deferred']);
+      assert.deepEqual(driver.manifest().supportedResponseStatuses, ['ok', 'http_error', 'failed', 'deferred']);
       const packDriver = new HttpJsonPackCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' });
-      assert.deepEqual(packDriver.manifest().supportedResponseStatuses, ['ok', 'http_error', 'deferred']);
+      assert.deepEqual(packDriver.manifest().supportedResponseStatuses, ['ok', 'http_error', 'failed', 'deferred']);
       const renderingPackDriver = new HttpJsonPackCapabilityDriver({
         endpointUrl: 'https://allowed.example/decide',
         secretHeaders: { Authorization: 'API_TOKEN' },
@@ -1225,8 +1755,7 @@ describe('Capability Plane v0.2 core contracts', () => {
           headers: { 'x-request-id': 'pack-post-response-failure' },
         });
       };
-      await assert.rejects(
-        () => new HttpJsonPackCapabilityDriver({
+      const packPostResponseFailure = await new HttpJsonPackCapabilityDriver({
           endpointUrl: 'https://allowed.example/decide',
           retryPolicy: { attempts: 2 },
         }).resolve({
@@ -1241,9 +1770,9 @@ describe('Capability Plane v0.2 core contracts', () => {
           hostRequestFingerprint: 'world:host-request:00000000000000ae',
           idempotencyKeyBytes: fromUtf8('http-pack-post-response-failure'),
           idempotencyKeyWorldFingerprint: 'world:key:http-pack-post-response-failure',
-        }),
-        SyntaxError,
-      );
+        });
+      assert.equal(decodeResolutionInputBytes(packPostResponseFailure.resolutionInputBytes).status, 2);
+      assert.equal(packPostResponseFailure.diagnostics.status, 'failed');
       assert.equal(packPostResponseFailureFetchCount, 1);
       globalThis.fetch = async (url, options) => {
         observedHeaders = options.headers;
@@ -1362,8 +1891,7 @@ describe('Capability Plane v0.2 core contracts', () => {
         status: 200,
         headers: { 'x-request-id': 'request-secret-echo' },
       });
-      await assert.rejects(
-        () => new GenericHttpJsonCapabilityDriver({
+      const secretEcho = await new GenericHttpJsonCapabilityDriver({
           endpointUrl: 'https://allowed.example/decide',
           secretHeaders: { Authorization: 'API_TOKEN' },
           secretProvider: new EnvSecretProvider({ API_TOKEN: 'Bearer fixture-token-value' }),
@@ -1374,15 +1902,14 @@ describe('Capability Plane v0.2 core contracts', () => {
           hostRequestFingerprint: 'world:host-request:00000000000000ab',
           idempotencyKeyBytes: fromUtf8('http-key-secret-echo'),
           idempotencyKeyWorldFingerprint: 'world:key:http-secret-echo',
-        }),
-        { code: 'ERR_SECRET_PERSISTED' },
-      );
+        });
+      assert.equal(decodeResolutionInputBytes(secretEcho.resolutionInputBytes).status, 2);
+      assert.equal(secretEcho.diagnostics.failureCode, 'ERR_SECRET_PERSISTED');
       globalThis.fetch = async () => new Response('{"action":{"variant":"final","text":"ok"}}', {
         status: 200,
         headers: { 'x-request-id': 'Bearer fixture-token-value' },
       });
-      await assert.rejects(
-        () => new GenericHttpJsonCapabilityDriver({
+      const secretTransactionRef = await new GenericHttpJsonCapabilityDriver({
           endpointUrl: 'https://allowed.example/decide',
           secretHeaders: { Authorization: 'API_TOKEN' },
           secretProvider: new EnvSecretProvider({ API_TOKEN: 'Bearer fixture-token-value' }),
@@ -1393,9 +1920,10 @@ describe('Capability Plane v0.2 core contracts', () => {
           hostRequestFingerprint: 'world:host-request:00000000000000ac',
           idempotencyKeyBytes: fromUtf8('http-key-secret-transaction-ref'),
           idempotencyKeyWorldFingerprint: 'world:key:http-secret-transaction-ref',
-        }),
-        { code: 'ERR_SECRET_PERSISTED' },
-      );
+        });
+      assert.equal(decodeResolutionInputBytes(secretTransactionRef.resolutionInputBytes).status, 2);
+      assert.equal(secretTransactionRef.diagnostics.failureCode, 'ERR_SECRET_PERSISTED');
+      assert.equal(secretTransactionRef.driverTransactionRef, null);
 
       let secretHasCalls = 0;
       let secretGetCalls = 0;
@@ -1502,16 +2030,15 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(retryFetchCount, 2);
       assert.equal(decodeResolutionInputBytes(retried.resolutionInputBytes).status, 0);
 
-      let postResponseFailureFetchCount = 0;
+      let directPostResponseFailureFetchCount = 0;
       globalThis.fetch = async () => {
-        postResponseFailureFetchCount += 1;
+        directPostResponseFailureFetchCount += 1;
         return new Response('{not-json', {
           status: 200,
           headers: { 'x-request-id': 'request-post-response-failure' },
         });
       };
-      await assert.rejects(
-        () => new GenericHttpJsonCapabilityDriver({
+      const postResponseFailure = await new GenericHttpJsonCapabilityDriver({
           endpointUrl: 'https://allowed.example/decide',
           retryPolicy: { attempts: 2 },
         }).resolve({
@@ -1521,10 +2048,10 @@ describe('Capability Plane v0.2 core contracts', () => {
           hostRequestFingerprint: 'world:host-request:00000000000000ad',
           idempotencyKeyBytes: fromUtf8('http-key-post-response-failure'),
           idempotencyKeyWorldFingerprint: 'world:key:http-post-response-failure',
-        }),
-        SyntaxError,
-      );
-      assert.equal(postResponseFailureFetchCount, 1);
+        });
+      assert.equal(decodeResolutionInputBytes(postResponseFailure.resolutionInputBytes).status, 2);
+      assert.equal(postResponseFailure.diagnostics.failureCode, 'ERR_HTTP_RESPONSE_VALIDATION_FAILED');
+      assert.equal(directPostResponseFailureFetchCount, 1);
 
       let stalledBodyAborted = false;
       globalThis.fetch = async (url, options) => new Response(new ReadableStream({
@@ -2245,12 +2772,50 @@ describe('Capability Plane v0.2 core contracts', () => {
         endpointUrl: 'https://allowed.example/decide',
         maximumResponseBytes: 10,
       });
-      await assert.rejects(
-        () => limitedDriver.resolve({
+      const limitedResult = await limitedDriver.resolve({
           policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
-        }, httpRequest()),
-        { code: 'ERR_HTTP_RESPONSE_TOO_LARGE' },
+        }, httpRequest());
+      assert.equal(decodeResolutionInputBytes(limitedResult.resolutionInputBytes).status, 2);
+      assert.equal(limitedResult.diagnostics.failureCode, 'ERR_HTTP_RESPONSE_TOO_LARGE');
+
+      let postResponseFailureFetchCount = 0;
+      globalThis.fetch = async () => {
+        postResponseFailureFetchCount += 1;
+        return new Response('{not-json', {
+          status: 200,
+          headers: { 'x-request-id': 'post-response-validation-failed' },
+        });
+      };
+      const postResponseStore = new MemoryStore();
+      await assert.rejects(
+        () => runCapabilityMode({
+          mode: 'live',
+          driver: new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }),
+          hostRequest: {
+            ...httpRequest(),
+            hostRequestFingerprint: 'world:host-request:00000000000000af',
+            idempotencyKeyBytes: fromUtf8('http-post-response-validation-failed'),
+            idempotencyKeyWorldFingerprint: 'world:key:http-post-response-validation-failed',
+          },
+          journalOptions: {
+            store: postResponseStore,
+            runId: 'http-post-response-validation-failed-run',
+            branchId: 'main',
+            parentTurnClosureFingerprint: 'world:turn-closure:parent',
+          },
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }),
+        { code: 'ERR_EFFECT_RESPONSE_STATUS_MISMATCH' },
       );
+      const postResponseRecords = await postResponseStore.listEffectRecords('http-post-response-validation-failed-run');
+      assert.equal(postResponseRecords.length, 1);
+      assert.equal(postResponseRecords[0].state, EffectState.failed);
+      assert.equal(postResponseFailureFetchCount, 1);
 
       let directFetchCalled = false;
       globalThis.fetch = async () => {
@@ -2262,6 +2827,18 @@ describe('Capability Plane v0.2 core contracts', () => {
           policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
         }, { ...httpRequest(), hostRequestFingerprint: undefined }),
         { code: 'ERR_HOST_REQUEST_FINGERPRINT_REQUIRED' },
+      );
+      await assert.rejects(
+        () => new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }).resolve({
+          policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+        }, { ...httpRequest(), hostRequestFingerprint: 'not-a-world-prefix-deadbeef' }),
+        { code: 'ERR_HOST_REQUEST_FINGERPRINT_REQUIRED' },
+      );
+      await assert.rejects(
+        () => new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }).resolve({
+          policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+        }, { ...httpRequest(), hostRequestFingerprint: 'world:host-request:10000000000000000' }),
+        { code: 'ERR_HOST_REQUEST_FINGERPRINT_RANGE' },
       );
       assert.equal(directFetchCalled, false);
       await assert.rejects(
@@ -2422,6 +2999,12 @@ describe('Capability Plane v0.2 core contracts', () => {
       () => packApproval.resolve({}, approvalRequest()),
       { code: 'ERR_CAPABILITY_LIVE_DENIED' },
     );
+    await assert.rejects(
+      () => packApproval.resolve({
+        policy: { allowLiveEffects: true, allowHumanEffects: true },
+      }, { ...approvalRequest(), responseSchema: { status: 'rejected' } }),
+      { code: 'ERR_HUMAN_APPROVAL_RESPONSE_SCHEMA_UNSUPPORTED' },
+    );
     assert.equal(decodeResolutionInputBytes((await packApproval.resolve({
       policy: { allowLiveEffects: true, allowHumanEffects: true },
     }, approvalRequest())).resolutionInputBytes).status, 0);
@@ -2467,7 +3050,29 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { ...approvalRequest(), hostRequestFingerprint: undefined }),
       { code: 'ERR_HOST_REQUEST_FINGERPRINT_REQUIRED' },
     );
+    await assert.rejects(
+      () => targetDeniedApproval.resolve({
+        policy: { allowLiveEffects: true, allowHumanEffects: true },
+      }, { ...approvalRequest(), hostRequestFingerprint: 'not-a-world-prefix-deadbeef' }),
+      { code: 'ERR_HOST_REQUEST_FINGERPRINT_REQUIRED' },
+    );
+    await assert.rejects(
+      () => targetDeniedApproval.resolve({
+        policy: { allowLiveEffects: true, allowHumanEffects: true },
+      }, { ...approvalRequest(), hostRequestFingerprint: 'world:host-request:10000000000000000' }),
+      { code: 'ERR_HOST_REQUEST_FINGERPRINT_RANGE' },
+    );
     assert.equal(targetPromptCalled, false);
+    const fixedDeny = new HumanApprovalCapabilityDriver({ mode: 'noninteractive-deny' });
+    assert.equal(fixedDeny.preflight({
+      policy: { allowLiveEffects: true, allowHumanEffects: true },
+    }, approvalRequest()).accepted, false);
+    await assert.rejects(
+      () => fixedDeny.resolve({
+        policy: { allowLiveEffects: true, allowHumanEffects: true },
+      }, approvalRequest()),
+      { code: 'ERR_HUMAN_APPROVAL_RESPONSE_SCHEMA_UNSUPPORTED' },
+    );
     await interactiveApproval.resolve({
       policy: { allowLiveEffects: true, allowHumanEffects: true },
     }, {
@@ -2811,10 +3416,37 @@ describe('Capability Plane v0.2 core contracts', () => {
         { code: 'ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED' },
       );
       assert.equal(budgetFetchCalled, false);
+      const pinnedModelDriver = new GenericHttpJsonModelDriver({
+        endpointUrl: 'https://allowed.example/decide',
+      });
       globalThis.fetch = async () => new Response('{"action":{"variant":"tool","toolId":"actuate","payload":""}}', {
         status: 200,
         headers: { 'x-request-id': 'request-2' },
       });
+      const pinnedModelPreflight = pinnedModelDriver.preflight({
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          maximumLiveModelCalls: 1,
+          allowedAuthorityLabels: ['model:http-json', 'network:http'],
+          allowedCapabilityPacks: ['generic-http-json-model'],
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      }, genericHttpModelRequest('goal=invoke', 'model-pinned-pack-preflight-key'));
+      assert.equal(pinnedModelPreflight.accepted, true);
+      const pinnedModel = await pinnedModelDriver.resolve({
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          maximumLiveModelCalls: 1,
+          allowedAuthorityLabels: ['model:http-json', 'network:http'],
+          allowedCapabilityPacks: ['generic-http-json-model'],
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      }, genericHttpModelRequest('goal=invoke', 'model-pinned-pack-key'));
+      assert.equal(decodeResolutionInputBytes(pinnedModel.resolutionInputBytes).status, 0);
       const result = await driver.resolve({
         policy: {
           allowLiveEffects: true,

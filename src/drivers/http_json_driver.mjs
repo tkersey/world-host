@@ -26,7 +26,7 @@ export class HttpJsonDriver {
       recoveryClass: EffectRecoveryClass.idempotent,
       concurrencyLimit: 4,
       authorityLabels: ['network:http'],
-      diagnostics: { origins: [...this.origins], methods: [...this.methods] },
+      diagnostics: { origins: [...this.origins], methods: [...this.methods], defaultMethod: 'GET' },
     };
   }
 

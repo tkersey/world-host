@@ -1,13 +1,14 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { link, mkdir, mkdtemp, readFile, symlink, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { EffectRecoveryClass, assertDriverManifest } from '../src/core/actuator.mjs';
+import { EffectRecoveryClass, assertDriverManifest, defineActuatorDriver } from '../src/core/actuator.mjs';
 import { createRunPolicy, preflightCapabilities } from '../src/core/capabilities.mjs';
-import { EffectJournal } from '../src/core/effect_journal.mjs';
+import { EffectJournal, EffectState } from '../src/core/effect_journal.mjs';
 import { FixtureModelDriver } from '../src/drivers/fixture_model_driver.mjs';
 import { SandboxFileDriver } from '../src/drivers/sandbox_file_driver.mjs';
 import { HttpJsonDriver } from '../src/drivers/http_json_driver.mjs';
@@ -15,6 +16,8 @@ import { GenericHttpJsonCapabilityDriver } from '../src/drivers/generic_http_jso
 import { fromUtf8, stableJson } from '../src/core/store.mjs';
 import { decodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
+
+const FIXTURE_FILE_ROOT = path.resolve('/tmp/world-host-fixture-file-root');
 
 describe('capability preflight and reference drivers', () => {
   it('accepts only exact driver manifest coverage under receiver-local policy', () => {
@@ -233,6 +236,177 @@ describe('capability preflight and reference drivers', () => {
     }]);
   });
 
+  it('preserves capability pack fingerprints during preflight policy checks', () => {
+    const packFingerprint = 'sha256:'.concat('f'.repeat(64));
+    const driver = new GenericHttpJsonCapabilityDriver({
+      endpointUrl: 'https://allowed.example/path',
+      packFingerprint,
+    });
+    const allowedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path', 'POST')],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedCapabilityPacks: [packFingerprint],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.deepEqual(allowedReport.blockers, []);
+    assert.equal(allowedReport.everyPendingRequestCovered, true);
+
+    const deniedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path', 'POST')],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        deniedCapabilityPacks: [packFingerprint],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.ok(deniedReport.blockers.includes('ERR_CAPABILITY_PACK_DENIED'));
+
+    const wrappedDeniedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path', 'POST')],
+      drivers: [defineActuatorDriver(driver)],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        deniedCapabilityPacks: [packFingerprint],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.ok(wrappedDeniedReport.blockers.includes('ERR_CAPABILITY_PACK_DENIED'));
+  });
+
+  it('reports live model budget blockers during receiver preflight', () => {
+    const modelRequest = (key) => ({
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClass: 'model',
+      responseSchema: { status: 'ok' },
+      idempotencyKeyWorldFingerprint: `key:model-budget:${key}`,
+      requestBytes: fromUtf8(stableJson({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: `goal=budget:${key}` })),
+    });
+    const driver = fixtureDriverWithAuthority(['model:live'], {
+      driverId: 'live-model',
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClasses: ['model'],
+    });
+    const zeroBudgetReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [modelRequest('zero')],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 0 }),
+    });
+    const overBudgetReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [modelRequest('first'), modelRequest('second')],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
+    });
+    const wrappedModelRequest = (key) => ({
+      ...modelRequest(key),
+      actuatorRef: 'world:model-bridge',
+      descriptorFingerprint: 'descriptor:world-model-bridge',
+      actuationClass: 'world:actuation-class:1',
+    });
+    const wrappedDriver = fixtureDriverWithAuthority(['model:http-json'], {
+      driverId: 'wrapped-live-model',
+      actuatorRef: 'world:model-bridge',
+      descriptorFingerprint: 'descriptor:world-model-bridge',
+      actuationClasses: ['world:actuation-class:1'],
+    });
+    const wrappedOverBudgetReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [wrappedModelRequest('first'), wrappedModelRequest('second')],
+      drivers: [wrappedDriver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:http-json'], maximumLiveModelCalls: 1 }),
+    });
+    const cachedModelRequest = {
+      ...modelRequest('cached'),
+      idempotencyKeyBytes: fromUtf8('model-budget-cached-key'),
+      hostRequestFingerprint: 'world:host-request:0000000000000c01',
+    };
+    const freshModelRequest = {
+      ...modelRequest('fresh'),
+      idempotencyKeyBytes: fromUtf8('model-budget-fresh-key'),
+      hostRequestFingerprint: 'world:host-request:0000000000000c02',
+    };
+    const cachedModelRequestChecksum = `sha256:${createHash('sha256').update(cachedModelRequest.requestBytes).digest('hex')}`;
+    const cachedModelEffect = {
+      idempotencyKeyWorldFingerprint: cachedModelRequest.idempotencyKeyWorldFingerprint,
+      hostRequestFingerprint: cachedModelRequest.hostRequestFingerprint,
+      idempotencyKey: {
+        format: 'world-idempotency-key-bytes.hex',
+        bytesHex: Buffer.from('model-budget-cached-key').toString('hex'),
+      },
+      requestBytesChecksum: cachedModelRequestChecksum,
+      state: EffectState.resolved,
+      resolutionInputRef: { checksum: 'sha256:cached-model-resolution' },
+    };
+    const replayOnlyReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 0 }),
+      effectRecords: [cachedModelEffect],
+    });
+    const oneNewWithCachedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [cachedModelRequest, freshModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
+      effectRecords: [cachedModelEffect],
+    });
+    const mismatchedCachedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 0 }),
+      effectRecords: [{ ...cachedModelEffect, hostRequestFingerprint: 'world:host-request:0000000000000bad' }],
+    });
+    const wrongFullKeyReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 0 }),
+      effectRecords: [{
+        ...cachedModelEffect,
+        idempotencyKey: {
+          format: 'world-idempotency-key-bytes.hex',
+          bytesHex: Buffer.from('different-model-budget-key').toString('hex'),
+        },
+      }],
+    });
+
+    assert.ok(zeroBudgetReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+    assert.ok(overBudgetReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+    assert.ok(wrappedOverBudgetReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+    assert.equal(replayOnlyReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'), false);
+    assert.equal(oneNewWithCachedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'), false);
+    assert.ok(mismatchedCachedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+    assert.ok(wrongFullKeyReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+  });
+
   it('requires descriptor coverage for application-level actuator requirements', () => {
     const report = preflightCapabilities({
       application: {
@@ -297,6 +471,56 @@ describe('capability preflight and reference drivers', () => {
     } finally {
       await rm(allowedRoot, { recursive: true, force: true });
       await rm(blockedRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('requires receiver file root allowlists for file authority routes', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-authority-file-root-'));
+    try {
+      const report = preflightCapabilities({
+        application: {
+          requiredActuators: [],
+          requiredRuntimeLimits: {},
+        },
+        currentHead: { generation: 0 },
+        pendingRequests: [fileRequest('out.txt')],
+        drivers: [new SandboxFileDriver({ root })],
+        policy: createRunPolicy({
+          allowBestEffort: true,
+          allowedAuthorityLabels: ['file:sandbox'],
+        }),
+      });
+
+      assert.ok(report.blockers.includes('file-root-allowlist-required'));
+      assert.equal(report.fileNetworkAuthoritiesAllowed, false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('requires receiver file root allowlists for required file actuators', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-required-file-root-'));
+    try {
+      const report = preflightCapabilities({
+        application: {
+          requiredActuators: [{
+            actuatorRef: 'sandbox:file',
+            descriptorFingerprint: 'descriptor:sandbox-file',
+          }],
+          requiredRuntimeLimits: {},
+        },
+        currentHead: { generation: 0 },
+        drivers: [new SandboxFileDriver({ root })],
+        policy: createRunPolicy({
+          allowBestEffort: true,
+          allowedAuthorityLabels: ['file:sandbox'],
+        }),
+      });
+
+      assert.ok(report.blockers.includes('required-actuator-policy-blocked:sandbox:file'));
+      assert.ok(report.blockers.includes('file-root-allowlist-required'));
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -385,9 +609,13 @@ describe('capability preflight and reference drivers', () => {
           actuatorRef: 'sandbox:file',
           descriptorFingerprint: 'descriptor:sandbox-file',
           actuationClasses: ['file'],
+          diagnostics: { root: FIXTURE_FILE_ROOT },
         }),
       ],
-      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture', 'file:sandbox'] }),
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:fixture', 'file:sandbox'],
+        allowedFileRoots: [FIXTURE_FILE_ROOT],
+      }),
     });
 
     assert.deepEqual(report.blockers, []);
@@ -418,15 +646,22 @@ describe('capability preflight and reference drivers', () => {
       currentHead: { generation: 0 },
       pendingRequests: [fileRequest('out.txt')],
       drivers: [
-        fixtureDriverWithAuthority(['model:fixture', 'file:sandbox'], { driverId: 'cross-labeled-model' }),
+        fixtureDriverWithAuthority(['model:fixture', 'file:sandbox'], {
+          driverId: 'cross-labeled-model',
+          diagnostics: { root: FIXTURE_FILE_ROOT },
+        }),
         fixtureDriverWithAuthority([], {
           driverId: 'unlabeled-file',
           actuatorRef: 'sandbox:file',
           descriptorFingerprint: 'descriptor:sandbox-file',
           actuationClasses: ['file'],
+          diagnostics: { root: FIXTURE_FILE_ROOT },
         }),
       ],
-      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture', 'file:sandbox'] }),
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:fixture', 'file:sandbox'],
+        allowedFileRoots: [FIXTURE_FILE_ROOT],
+      }),
     });
 
     assert.ok(report.blockers.includes('required-authority-unbound:file:sandbox'));
@@ -466,9 +701,13 @@ describe('capability preflight and reference drivers', () => {
           actuatorRef: 'sandbox:file',
           descriptorFingerprint: 'descriptor:sandbox-file',
           actuationClasses: ['file'],
+          diagnostics: { root: FIXTURE_FILE_ROOT },
         }),
       ],
-      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture', 'file:sandbox'] }),
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:fixture', 'file:sandbox'],
+        allowedFileRoots: [FIXTURE_FILE_ROOT],
+      }),
     });
 
     assert.deepEqual(report.blockers, []);
@@ -543,9 +782,13 @@ describe('capability preflight and reference drivers', () => {
           actuatorRef: 'sandbox:file',
           descriptorFingerprint: 'descriptor:sandbox-file',
           actuationClasses: ['file'],
+          diagnostics: { root: FIXTURE_FILE_ROOT },
         }),
       ],
-      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture', 'file:sandbox'] }),
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:fixture', 'file:sandbox'],
+        allowedFileRoots: [FIXTURE_FILE_ROOT],
+      }),
     });
 
     assert.deepEqual(report.blockers, []);
@@ -577,9 +820,13 @@ describe('capability preflight and reference drivers', () => {
           actuatorRef: 'sandbox:file',
           descriptorFingerprint: 'descriptor:sandbox-file',
           actuationClasses: ['file'],
+          diagnostics: { root: FIXTURE_FILE_ROOT },
         }),
       ],
-      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture'] }),
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:fixture'],
+        allowedFileRoots: [FIXTURE_FILE_ROOT],
+      }),
     });
 
     assert.deepEqual(report.blockers, []);
@@ -619,9 +866,13 @@ describe('capability preflight and reference drivers', () => {
           actuatorRef: 'sandbox:file',
           descriptorFingerprint: 'descriptor:sandbox-file',
           actuationClasses: ['file'],
+          diagnostics: { root: FIXTURE_FILE_ROOT },
         }),
       ],
-      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture'] }),
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:fixture'],
+        allowedFileRoots: [FIXTURE_FILE_ROOT],
+      }),
     });
 
     assert.ok(report.blockers.includes('required-authority-unbound:model:fixture'));

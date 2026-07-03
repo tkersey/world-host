@@ -50,7 +50,11 @@ export function defineActuatorDriver(driver) {
   if (typeof driver.resolve !== 'function') fail('ERR_ACTUATOR_DRIVER_RESOLVE_REQUIRED');
   return Object.freeze({
     manifest() {
-      return assertDriverManifest(driver.manifest());
+      const raw = driver.manifest();
+      const manifest = assertDriverManifest(raw);
+      if (raw.packFingerprint == null) return manifest;
+      if (typeof raw.packFingerprint !== 'string') fail('ERR_INVALID_DRIVER_MANIFEST', 'packFingerprint must be a string');
+      return Object.freeze({ ...manifest, packFingerprint: raw.packFingerprint });
     },
     resolve: driver.resolve.bind(driver),
     recover: typeof driver.recover === 'function' ? driver.recover.bind(driver) : undefined,

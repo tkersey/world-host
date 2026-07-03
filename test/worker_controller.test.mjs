@@ -7,13 +7,17 @@ import { createApplicationRecord } from '../src/core/application.mjs';
 import { createEffectRecord, EffectState } from '../src/core/effect_journal.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from '../src/core/run.mjs';
 import { RunController, WorldWorker, assertWarmWorkerBinding } from '../src/core/worker.mjs';
-import { fromUtf8 } from '../src/core/store.mjs';
+import { fromUtf8, stableJson } from '../src/core/store.mjs';
 import { encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
 import { wyhash64 } from '../src/protocol/world_loaded_value_codec.mjs';
 import { summarizeTurnClosureForRunHead } from '../src/protocol/world_universal_appliance_codec.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
 import { BunWorldWorker } from '../src/bun/bun_worker.mjs';
+import { HttpJsonDriver } from '../src/drivers/http_json_driver.mjs';
 import { GenericHttpJsonCapabilityDriver } from '../src/drivers/generic_http_json_capability_driver.mjs';
+import { GenericHttpJsonModelDriver } from '../src/drivers/model_capability_driver.mjs';
+
+const FIXTURE_FILE_ROOT = '/fixture/sandbox';
 
 describe('RunController and WorldWorker', () => {
   it('advances a branch only after persisting the next closure blob', async () => {
@@ -886,6 +890,7 @@ describe('RunController and WorldWorker', () => {
     const wrongLabel = fixtureEffectDriver({
       driverId: 'wrong-label-fixture',
       authorityLabels: ['file:sandbox'],
+      diagnostics: { root: FIXTURE_FILE_ROOT },
     });
     const modelAuthority = fixtureEffectDriver({
       driverId: 'model-authority-fixture',
@@ -895,6 +900,7 @@ describe('RunController and WorldWorker', () => {
       driverId: 'file-authority-fixture',
       actuatorRef: 'world:actuator-ref:0000000000000bad',
       authorityLabels: ['file:sandbox'],
+      diagnostics: { root: FIXTURE_FILE_ROOT },
     });
     const controller = new RunController({
       store,
@@ -902,6 +908,7 @@ describe('RunController and WorldWorker', () => {
       effectDrivers: [wrongLabel, modelAuthority, fileAuthority],
       effectPolicy: {
         allowedAuthorityLabels: ['model:fixture', 'file:sandbox'],
+        allowedFileRoots: [FIXTURE_FILE_ROOT],
       },
     });
 
@@ -911,6 +918,70 @@ describe('RunController and WorldWorker', () => {
     assert.equal(wrongLabel.invocationCount, 0);
     assert.equal(modelAuthority.invocationCount, 1);
     assert.equal(fileAuthority.invocationCount, 0);
+  });
+
+  it('ignores pack-denied required actuator routes while preferring authority labels', async () => {
+    const deniedPackFingerprint = 'sha256:'.concat('6'.repeat(64));
+    const allowedPackFingerprint = 'sha256:'.concat('7'.repeat(64));
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+      applicationOverrides: {
+        requiredActuators: [
+          {
+            actuatorRef: 'world:actuator-ref:0000000000000a05',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+          },
+          {
+            actuatorRef: 'world:actuator-ref:0000000000000bad',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+          },
+        ],
+        requiredHostAuthorityLabels: ['model:fixture', 'file:sandbox'],
+      },
+    });
+    const wrongLabel = fixtureEffectDriver({
+      driverId: 'wrong-label-pack-allowed',
+      authorityLabels: ['file:sandbox'],
+      packFingerprint: allowedPackFingerprint,
+      diagnostics: { root: FIXTURE_FILE_ROOT },
+    });
+    const modelAuthority = fixtureEffectDriver({
+      driverId: 'model-authority-pack-allowed',
+      authorityLabels: ['model:fixture'],
+      packFingerprint: allowedPackFingerprint,
+    });
+    const fileAuthority = fixtureEffectDriver({
+      driverId: 'file-authority-pack-allowed',
+      actuatorRef: 'world:actuator-ref:0000000000000bad',
+      authorityLabels: ['file:sandbox'],
+      packFingerprint: allowedPackFingerprint,
+      diagnostics: { root: FIXTURE_FILE_ROOT },
+    });
+    const deniedModelAuthority = fixtureEffectDriver({
+      driverId: 'model-authority-pack-denied',
+      actuatorRef: 'world:actuator-ref:0000000000000bad',
+      authorityLabels: ['model:fixture'],
+      packFingerprint: deniedPackFingerprint,
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [wrongLabel, modelAuthority, fileAuthority, deniedModelAuthority],
+      effectPolicy: {
+        allowedAuthorityLabels: ['model:fixture', 'file:sandbox'],
+        deniedCapabilityPacks: [deniedPackFingerprint],
+        allowedFileRoots: [FIXTURE_FILE_ROOT],
+      },
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(wrongLabel.invocationCount, 0);
+    assert.equal(modelAuthority.invocationCount, 1);
+    assert.equal(fileAuthority.invocationCount, 0);
+    assert.equal(deniedModelAuthority.invocationCount, 0);
   });
 
   it('rejects unlabeled active needs_host drivers despite cross-labeled inactive actuators', async () => {
@@ -937,6 +1008,7 @@ describe('RunController and WorldWorker', () => {
     const crossLabeledModel = fixtureEffectDriver({
       driverId: 'cross-labeled-model',
       authorityLabels: ['model:fixture', 'file:sandbox'],
+      diagnostics: { root: FIXTURE_FILE_ROOT },
     });
     const unlabeledFile = fixtureEffectDriver({
       driverId: 'unlabeled-file',
@@ -949,6 +1021,7 @@ describe('RunController and WorldWorker', () => {
       effectDrivers: [crossLabeledModel, unlabeledFile],
       effectPolicy: {
         allowedAuthorityLabels: ['model:fixture', 'file:sandbox'],
+        allowedFileRoots: [FIXTURE_FILE_ROOT],
       },
     });
 
@@ -1154,6 +1227,133 @@ describe('RunController and WorldWorker', () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it('preserves raw HTTP driver default methods before policy guard', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    try {
+      globalThis.fetch = async (url, options) => {
+        fetchCount += 1;
+        assert.equal(String(url), 'https://allowed.example/path');
+        assert.equal(options.method, 'GET');
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const rawDefaultDriver = new HttpJsonDriver({
+        origins: ['https://allowed.example'],
+        methods: ['GET', 'POST'],
+      });
+      const driverWithoutDiagnosticDefault = {
+        manifest() {
+          const manifest = rawDefaultDriver.manifest();
+          const { defaultMethod, ...diagnostics } = manifest.diagnostics;
+          return {
+            ...manifest,
+            driverId: 'http-json-without-diagnostic-default',
+            diagnostics,
+          };
+        },
+        resolve(context, hostRequest) {
+          return rawDefaultDriver.resolve(context, hostRequest);
+        },
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [driverWithoutDiagnosticDefault],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['GET']),
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('raw-http-default-method-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:raw-http-default-method',
+          requestBytes: fromUtf8(JSON.stringify({ url: 'https://allowed.example/path' })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fetchCount, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('preserves singleton raw HTTP methods before policy guard', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    let invocationCount = 0;
+    const singletonPostDriver = {
+      manifest() {
+        return {
+          driverId: 'http-json-singleton-post',
+          supportedActuatorRefs: ['http:json'],
+          supportedDescriptorFingerprints: ['descriptor:http-json'],
+          supportedActuationClasses: ['http'],
+          supportedResponseStatuses: ['ok'],
+          maximumRequestBytes: 4096,
+          maximumResponseBytes: 4096,
+          recoveryClass: EffectRecoveryClass.idempotent,
+          concurrencyLimit: 1,
+          authorityLabels: ['network:http'],
+          diagnostics: { origins: ['https://allowed.example'], methods: ['POST'] },
+        };
+      },
+      async resolve(context, hostRequest) {
+        invocationCount += 1;
+        const request = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
+        assert.equal(request.method ?? 'POST', 'POST');
+        return {
+          resolutionInputBytes: encodeResolutionInputBytes({
+            targetHostRequestFingerprint: 0xa01n,
+            status: 0,
+            responseValueImageBytes: fixtureResponseValueBytes('response', 0xa01n),
+            hostClaimBytes: fromUtf8('claim'),
+            attemptNumber: 1,
+            metadata: fromUtf8('metadata'),
+          }),
+        };
+      },
+    };
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [singletonPostDriver],
+      effectPolicy: {
+        allowedAuthorityLabels: new Set(['network:http']),
+        allowedHttpOrigins: new Set(['https://allowed.example']),
+        allowedHttpMethods: new Set(['POST']),
+      },
+      hostRequestMapper: () => ({
+        actuatorRef: 'http:json',
+        descriptorFingerprint: 'descriptor:http-json',
+        actuationClass: 'http',
+        responseSchema: { status: 'ok' },
+        idempotencyKeyBytes: fromUtf8('raw-http-singleton-post-key'),
+        idempotencyKeyWorldFingerprint: 'world:key:raw-http-singleton-post',
+        requestBytes: fromUtf8(JSON.stringify({ url: 'https://allowed.example/path' })),
+        hostRequestFingerprint: 'world:host-request:0000000000000a01',
+      }),
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(invocationCount, 1);
   });
 
   it('leaves configured HTTP requests with unsupported explicit methods unresolved in partial batches', async () => {
@@ -1391,6 +1591,461 @@ describe('RunController and WorldWorker', () => {
         },
       );
       assert.equal(fetchCalled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('preserves controller audit-only and approval requirements before resolving effects', async () => {
+    for (const [policy, expectedCode, key] of [
+      [{ auditOnly: true }, 'ERR_CAPABILITY_AUDIT_ONLY_DENIED', 'audit-only'],
+      [{ requireApprovalForNetworkEffects: true }, 'ERR_CAPABILITY_APPROVAL_REQUIRED', 'approval-required'],
+    ]) {
+      const { store, runId, branchId } = await fixtureStore({
+        headStatus: 'needs_host',
+        closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+      });
+      let fetchCalled = false;
+      const originalFetch = globalThis.fetch;
+      try {
+        globalThis.fetch = async () => {
+          fetchCalled = true;
+          return new Response('{"status":"ok"}', { status: 200 });
+        };
+        const controller = new RunController({
+          store,
+          workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+          effectDrivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
+          effectPolicy: {
+            ...policy,
+            allowedAuthorityLabels: new Set(['network:http']),
+            allowedHttpOrigins: new Set(['https://allowed.example']),
+            allowedHttpMethods: new Set(['POST']),
+          },
+          hostRequestMapper: () => ({
+            actuatorRef: 'http:json',
+            descriptorFingerprint: 'descriptor:http-json',
+            actuationClass: 'http',
+            responseSchema: { status: 'ok' },
+            idempotencyKeyBytes: fromUtf8(`http-${key}-key`),
+            idempotencyKeyWorldFingerprint: `world:key:http-${key}`,
+            requestBytes: fromUtf8(JSON.stringify({ body: { prompt: key } })),
+            hostRequestFingerprint: 'world:host-request:0000000000000a01',
+          }),
+        });
+
+        await assert.rejects(
+          () => controller.advance(runId, branchId),
+          { code: expectedCode },
+        );
+        assert.equal(fetchCalled, false);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    }
+  });
+
+  it('enforces controller policy before custom capability contexts', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    let fetchCalled = false;
+    let contextFactoryCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
+        effectPolicy: {
+          auditOnly: true,
+          allowedAuthorityLabels: new Set(['network:http']),
+            allowedHttpOrigins: new Set(['https://allowed.example']),
+            allowedHttpMethods: new Set(['POST']),
+          },
+        effectContextFactory: async (context) => {
+          contextFactoryCalled = true;
+          return {
+            ...context,
+            policy: {
+              allowLiveEffects: true,
+              allowNetworkEffects: true,
+              allowedOrigins: ['https://allowed.example'],
+              allowedMethods: ['POST'],
+            },
+          };
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('http-context-policy-drop-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-context-policy-drop',
+          requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'policy-drop' } })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      await assert.rejects(
+        () => controller.advance(runId, branchId),
+        { code: 'ERR_CAPABILITY_AUDIT_ONLY_DENIED' },
+      );
+      assert.equal(fetchCalled, false);
+      assert.equal(contextFactoryCalled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('enforces controller audit-only and approval requirements before raw effect drivers', async () => {
+    for (const [policy, expectedCode, key] of [
+      [{ auditOnly: true }, 'ERR_CAPABILITY_AUDIT_ONLY_DENIED', 'raw-audit-only'],
+      [{ requireApprovalForNetworkEffects: true }, 'ERR_CAPABILITY_APPROVAL_REQUIRED', 'raw-approval-required'],
+    ]) {
+      const { store, runId, branchId } = await fixtureStore({
+        headStatus: 'needs_host',
+        closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+      });
+      let fetchCalled = false;
+      const originalFetch = globalThis.fetch;
+      try {
+        globalThis.fetch = async () => {
+          fetchCalled = true;
+          return new Response('{"status":"ok"}', { status: 200 });
+        };
+        const controller = new RunController({
+          store,
+          workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+          effectDrivers: [new HttpJsonDriver({
+            origins: ['https://allowed.example'],
+            methods: ['POST'],
+          })],
+          effectPolicy: {
+            ...policy,
+            allowedAuthorityLabels: new Set(['network:http']),
+            allowedHttpOrigins: new Set(['https://allowed.example']),
+            allowedHttpMethods: new Set(['POST']),
+          },
+          hostRequestMapper: () => ({
+            actuatorRef: 'http:json',
+            descriptorFingerprint: 'descriptor:http-json',
+            actuationClass: 'http',
+            responseSchema: { status: 'ok' },
+            idempotencyKeyBytes: fromUtf8(`http-${key}-key`),
+            idempotencyKeyWorldFingerprint: `world:key:http-${key}`,
+            requestBytes: fromUtf8(JSON.stringify({
+              url: 'https://allowed.example/decide',
+              method: 'POST',
+              body: { prompt: key },
+            })),
+            hostRequestFingerprint: 'world:host-request:0000000000000a01',
+          }),
+        });
+
+        await assert.rejects(
+          () => controller.advance(runId, branchId),
+          { code: expectedCode },
+        );
+        assert.equal(fetchCalled, false);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    }
+  });
+
+  it('passes approved context actions through raw effect policy guards', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    try {
+      globalThis.fetch = async () => {
+        fetchCount += 1;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new HttpJsonDriver({
+          origins: ['https://allowed.example'],
+          methods: ['POST'],
+        })],
+        effectPolicy: {
+          requireApprovalForNetworkEffects: true,
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+        },
+        effectContextFactory: async (context) => ({
+          ...context,
+          action: { approved: true },
+        }),
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('http-raw-approved-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-raw-approved',
+          requestBytes: fromUtf8(JSON.stringify({
+            url: 'https://allowed.example/decide',
+            method: 'POST',
+            body: { prompt: 'approved' },
+          })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fetchCount, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('preserves controller live model budgets before resolving effects', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    let fetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"action":{"variant":"final","text":"denied"}}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonModelDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          packFingerprint: 'sha256:'.concat('a'.repeat(64)),
+        })],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['model:http-json', 'network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          maximumLiveModelCalls: 0,
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'model:decision',
+          descriptorFingerprint: 'descriptor:agent-decision-prompt',
+          actuationClass: 'model',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('model-budget-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:model-budget',
+          requestBytes: fromUtf8(JSON.stringify({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: 'goal=budget' })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      await assert.rejects(
+        () => controller.advance(runId, branchId),
+        (error) => {
+          assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+          assert.ok(error.details?.blockers?.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+          return true;
+        },
+      );
+      assert.equal(fetchCalled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('does not charge cached model replays against controller live model budgets', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const requestBytes = fromUtf8(JSON.stringify({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: 'goal=cached-budget' }));
+    const effectIdentityBytes = fromUtf8(stableJson({
+      request: JSON.parse(new TextDecoder().decode(requestBytes)),
+      configuredEndpoint: { url: 'https://allowed.example/decide', method: 'POST' },
+      requestRendering: {
+        requestTemplateFingerprint: null,
+        secretHeadersFingerprint: `sha256:${sha256Hex(fromUtf8(stableJson({})))}`,
+        idempotencyHeaderName: 'Idempotency-Key',
+        responseExtractionPathFingerprint: `sha256:${sha256Hex(fromUtf8(stableJson('action')))}`,
+      },
+    }));
+    const resolutionInputRef = await store.putBlob(encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xa01n,
+      status: 0,
+      responseValueImageBytes: fixtureResponseValueBytes('cached-model', 0xa01n),
+      hostClaimBytes: fromUtf8('claim'),
+      attemptNumber: 1,
+      metadata: fromUtf8('metadata'),
+    }));
+    await store.putEffectRecord(createEffectRecord({
+      runId,
+      branchId,
+      parentTurnClosureFingerprint: 'world:closure:cached-model-parent',
+      hostRequestFingerprint: 'world:host-request:0000000000000a01',
+      idempotencyKey: {
+        format: 'world-idempotency-key-bytes.hex',
+        bytesHex: Buffer.from('cached-model-budget-key').toString('hex'),
+      },
+      idempotencyKeyWorldFingerprint: 'world:key:cached-model-budget',
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClass: 'model',
+      responseSchema: { status: 'ok' },
+      requestBytesChecksum: `sha256:${sha256Hex(requestBytes)}`,
+      requestIdentityChecksum: `sha256:${sha256Hex(effectIdentityBytes)}`,
+      state: EffectState.resolved,
+      driverRecoveryClass: EffectRecoveryClass.idempotent,
+      resolutionInputRef,
+    }));
+    let fetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"action":{"variant":"final","text":"should-not-fetch"}}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonModelDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          packFingerprint: 'sha256:'.concat('b'.repeat(64)),
+        })],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['model:http-json', 'network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          maximumLiveModelCalls: 0,
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'model:decision',
+          descriptorFingerprint: 'descriptor:agent-decision-prompt',
+          actuationClass: 'model',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('cached-model-budget-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:cached-model-budget',
+          requestBytes,
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fetchCalled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('preserves controller capability pack pins before resolving effects', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const packFingerprint = 'sha256:'.concat('c'.repeat(64));
+    let fetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          packFingerprint,
+        })],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          deniedCapabilityPacks: new Set([packFingerprint]),
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('http-pack-denied-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-pack-denied',
+          requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'pack denied' } })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      await assert.rejects(
+        () => controller.advance(runId, branchId),
+        { code: 'ERR_HOST_REQUEST_DRIVER_UNAVAILABLE' },
+      );
+      assert.equal(fetchCalled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('applies controller capability pack pins before selecting an effect driver', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const deniedPackFingerprint = 'sha256:'.concat('d'.repeat(64));
+    const allowedPackFingerprint = 'sha256:'.concat('e'.repeat(64));
+    const originalFetch = globalThis.fetch;
+    let observedUrl = null;
+    try {
+      globalThis.fetch = async (url) => {
+        observedUrl = url;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [
+          new GenericHttpJsonCapabilityDriver({
+            endpointUrl: 'https://denied.example/decide',
+            packFingerprint: deniedPackFingerprint,
+          }),
+          new GenericHttpJsonCapabilityDriver({
+            endpointUrl: 'https://allowed.example/decide',
+            packFingerprint: allowedPackFingerprint,
+          }),
+        ],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://denied.example', 'https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          deniedCapabilityPacks: new Set([deniedPackFingerprint]),
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('http-pack-selected-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-pack-selected',
+          requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'pack selected' } })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(observedUrl, 'https://allowed.example/decide');
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -1927,6 +2582,7 @@ function fixtureEffectDriver(options = {}) {
     manifest() {
       return {
         driverId: options.driverId ?? 'test.effect.driver',
+        ...(options.packFingerprint ? { packFingerprint: options.packFingerprint } : {}),
         supportedActuatorRefs: [options.actuatorRef ?? 'world:actuator-ref:0000000000000a05'],
         supportedDescriptorFingerprints: [options.descriptorFingerprint ?? 'world:descriptor:0000000000000a0b'],
         supportedActuationClasses: options.actuationClasses ?? ['world:actuation-class:1'],

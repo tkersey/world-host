@@ -771,7 +771,7 @@ function assertResolutionStatusAccepted(status, hostRequest, manifest) {
   if (status !== expectedWireStatus) fail('ERR_EFFECT_RESPONSE_STATUS_MISMATCH', 'driver ResolutionInput status does not match the HostRequest response schema');
 }
 
-function hostRequestTargetFingerprint(hostRequest) {
+export function hostRequestTargetFingerprint(hostRequest) {
   const value = hostRequest.hostRequestFingerprint;
   if (typeof value === 'bigint' || typeof value === 'number') return assertU64Fingerprint(BigInt(value));
   const match = String(value ?? '').match(/^(?:world:host-request:|0x)([0-9a-f]+)$/i);

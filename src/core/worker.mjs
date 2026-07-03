@@ -2,7 +2,8 @@ import { EffectJournal } from './effect_journal.mjs';
 import { assertDurableRecoveryAllowed } from './actuator.mjs';
 import { assertCapabilityReportAccepted, createRunPolicy, preflightCapabilities } from './capabilities.mjs';
 import { defineCapabilityDriver } from './capability_driver.mjs';
-import { assertCapabilityPreflightAccepted, journaledHostRequest } from './capability_modes.mjs';
+import { assertCapabilityPreflightAccepted, journaledHostRequest, networkPolicyHostRequest } from './capability_modes.mjs';
+import { assertCapabilityPolicyAllows } from './capability_policy.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from './run.mjs';
 import { assertBytes, fail, fromUtf8, toHex } from './store.mjs';
 import { decodeApplianceManifest, decodeResolutionInputBytes, encodeRestoreTurnInput, resolutionResponded } from '../protocol/world_appliance_wire_codec.mjs';
@@ -142,12 +143,14 @@ export class RunController {
       application,
     );
     if (needsHostEffectPlan?.pending.length > 0) {
+      const effectRecords = await this.store.listEffectRecords(runId);
       assertCapabilityReportAccepted(preflightCapabilities({
         application,
         currentHead: parentHead,
         pendingRequests: needsHostEffectPlan.pending.map((item) => item.hostRequest),
         drivers: this.effectDrivers,
         policy,
+        effectRecords,
       }));
     }
     const imageBytes = await this.store.getBlob(application.executableImageRef);
@@ -331,6 +334,7 @@ export class RunController {
     const pendingPositions = new Map(pending.map((item, index) => [item, index]));
     const groups = groupPendingEffects(pending);
     await runGroupedBounded(groups, policy, async (item) => {
+      assertSelectedEffectPreContextPolicyAllows(policy);
       const context = await this.effectContextFactory({
         run,
         branchId,
@@ -344,6 +348,7 @@ export class RunController {
         hostRequest: item.hostRequest,
         worldHostRequest: item.worldHostRequest,
       });
+      assertSelectedEffectPolicyAllows(item.manifest, item.hostRequest, policy, context?.action);
       const journalHostRequest = journaledHostRequest(item.hostRequest, item.manifest);
       const driver = controllerResolveDriver(item.driver);
       const resolved = await journal.resolve(
@@ -370,6 +375,20 @@ function controllerResolveDriver(driver) {
 
 function exposesCapabilityAbi(driver) {
   return typeof driver?.preflight === 'function' && typeof driver?.dryRun === 'function' && typeof driver?.shadow === 'function';
+}
+
+function assertSelectedEffectPolicyAllows(manifest, hostRequest, policy, action = null) {
+  assertCapabilityPolicyAllows({
+    manifest,
+    hostRequest: networkPolicyHostRequest(hostRequest, manifest),
+    policy: capabilityPolicyForSelectedEffect(policy, manifest, hostRequest),
+    mode: 'live',
+    action,
+  });
+}
+
+function assertSelectedEffectPreContextPolicyAllows(policy) {
+  if (policy?.auditOnly === true) fail('ERR_CAPABILITY_AUDIT_ONLY_DENIED');
 }
 
 async function recordBranchHeadProvenance(store, runId, branchId, parentHead, nextHead) {
@@ -688,6 +707,10 @@ function capabilityPolicyForSelectedEffect(policy = {}, manifest = {}, hostReque
     allowFileEffects: file,
     allowHumanEffects: human,
     allowBestEffort: policy.allowBestEffort === true,
+    auditOnly: policy.auditOnly === true,
+    requireApprovalForDestructiveEffects: policy.requireApprovalForDestructiveEffects !== false,
+    requireApprovalForNetworkEffects: policy.requireApprovalForNetworkEffects === true,
+    requireApprovalForBestEffort: policy.requireApprovalForBestEffort !== false,
     maximumLiveModelCalls: model ? 1 : 0,
     maximumRequestBytes: policy.maximumRequestBytes,
     maximumResponseBytes: policy.maximumResponseBytes,
@@ -695,6 +718,8 @@ function capabilityPolicyForSelectedEffect(policy = {}, manifest = {}, hostReque
     allowedMethods: [...allowedHttpMethods],
     allowedFileRoots: [...policySet(policy.allowedFileRoots)],
     allowedAuthorityLabels: [...policySet(policy.allowedAuthorityLabels)],
+    allowedCapabilityPacks: [...policySet(policy.allowedCapabilityPacks)],
+    deniedCapabilityPacks: [...policySet(policy.deniedCapabilityPacks)],
   };
 }
 
@@ -740,6 +765,16 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}) {
   if (hostRequest.requestBytes?.byteLength > manifest.maximumRequestBytes) return false;
   if (policy.maximumRequestBytes !== undefined && hostRequest.requestBytes?.byteLength > policy.maximumRequestBytes) return false;
   if (policy.maximumResponseBytes !== undefined && manifest.maximumResponseBytes > policy.maximumResponseBytes) return false;
+  const deniedCapabilityPacks = policySet(policy.deniedCapabilityPacks);
+  if (deniedCapabilityPacks.has(manifest.packFingerprint) || deniedCapabilityPacks.has(manifest.driverId)) return false;
+  const allowedCapabilityPacks = policySet(policy.allowedCapabilityPacks);
+  if (
+    allowedCapabilityPacks.size &&
+    !allowedCapabilityPacks.has(manifest.packFingerprint) &&
+    !allowedCapabilityPacks.has(manifest.driverId)
+  ) {
+    return false;
+  }
   const allowedAuthorityLabels = policySet(policy.allowedAuthorityLabels);
   if (allowedAuthorityLabels.size && manifest.authorityLabels.some((label) => !allowedAuthorityLabels.has(label))) return false;
   const allowedHttpOrigins = policySet(policy.allowedHttpOrigins);
@@ -801,7 +836,8 @@ function requestMethodForManifest(hostRequest, manifest) {
     const request = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
     if (fixedConfiguredEndpointManifest(manifest)) return String(request.method ?? manifest.diagnostics.defaultMethod ?? 'POST').toUpperCase();
     if (request.url === undefined && configuredEndpointManifest(manifest)) return String(request.method ?? manifest.diagnostics.defaultMethod ?? 'POST').toUpperCase();
-    return String(request.method ?? manifest?.diagnostics?.defaultMethod ?? 'GET').toUpperCase();
+    const methods = Array.isArray(manifest?.diagnostics?.methods) ? manifest.diagnostics.methods : [];
+    return String(request.method ?? manifest?.diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : 'GET')).toUpperCase();
   } catch {
     return null;
   }
@@ -1081,6 +1117,16 @@ function driverSupportsRequiredActuator(manifest, requirement, policy) {
     return false;
   }
   if (policy.maximumResponseBytes !== undefined && manifest.maximumResponseBytes > policy.maximumResponseBytes) return false;
+  const deniedCapabilityPacks = policySet(policy.deniedCapabilityPacks);
+  if (deniedCapabilityPacks.has(manifest.packFingerprint) || deniedCapabilityPacks.has(manifest.driverId)) return false;
+  const allowedCapabilityPacks = policySet(policy.allowedCapabilityPacks);
+  if (
+    allowedCapabilityPacks.size &&
+    !allowedCapabilityPacks.has(manifest.packFingerprint) &&
+    !allowedCapabilityPacks.has(manifest.driverId)
+  ) {
+    return false;
+  }
   const allowedAuthorityLabels = policySet(policy.allowedAuthorityLabels);
   if (allowedAuthorityLabels.size && manifest.authorityLabels.some((label) => !allowedAuthorityLabels.has(label))) return false;
   return true;

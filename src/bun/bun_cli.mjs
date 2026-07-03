@@ -657,6 +657,7 @@ async function runImport(args, io, storePath, options = {}) {
           pendingRequests: pendingRequests.map(preflightOptions.hostRequestMapper ?? worldHostRequestToEffectRequest),
           drivers: preflightOptions.effectDrivers ?? [],
           policy: preflightOptions.effectPolicy ?? createRunPolicy(),
+          effectRecords: candidate.bundle.effects ?? [],
         });
       },
     });
@@ -804,6 +805,8 @@ function agentRuntimeRunOptions(args, options = {}) {
     ],
     effectPolicy: {
       allowBestEffort: true,
+      requireApprovalForBestEffort: false,
+      allowedFileRoots: [sandboxRoot],
       ...(options.effectPolicy ?? {}),
     },
     turnInputFactory: options.turnInputFactory ?? agentRuntimeTurnInputFactory(scenario),

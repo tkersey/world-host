@@ -39,6 +39,101 @@ const SEMANTIC_FIELDS = Object.freeze([
 const SECRET_PATTERN = /credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key/i;
 const CONFORMANCE_RECEIPT_PATH = 'conformance.json';
 const ADAPTER_IMPORT_SCANNER = globalThis.Bun?.Transpiler ? new globalThis.Bun.Transpiler({ loader: 'js' }) : null;
+const SIDECAR_RUNTIME_WRAPPERS = new Set([
+  'bash',
+  'cmd',
+  'cmd.exe',
+  'command',
+  'csh',
+  'dash',
+  'env',
+  'fish',
+  'ksh',
+  'nohup',
+  'powershell',
+  'powershell.exe',
+  'pwsh',
+  'sh',
+  'tcsh',
+  'time',
+  'zsh',
+]);
+const SIDECAR_JS_RUNTIMES = new Set(['bun', 'node', 'deno']);
+const SIDECAR_INLINE_EVAL_RUNTIMES = new Set([
+  'bun',
+  'deno',
+  'lua',
+  'luajit',
+  'node',
+  'perl',
+  'php',
+  'ruby',
+  'rscript',
+]);
+const SIDECAR_RUNTIME_VALUE_OPTIONS = new Set([
+  '--conditions',
+  '--config',
+  '--config-file',
+  '-C',
+  '--env-file',
+  '--env-file-if-exists',
+  '--experimental-config-file',
+  '--experimental-policy',
+  '--heap-prof-dir',
+  '--icu-data-dir',
+  '--import-map',
+  '--openssl-config',
+  '--redirect-warnings',
+  '--snapshot-blob',
+  '--test-reporter-destination',
+  '--watch-path',
+  '--cert',
+]);
+const SIDECAR_RUNTIME_FLAG_ONLY_OPTIONS = new Set([
+  '--no-warnings',
+  '--trace-warnings',
+]);
+const SIDECAR_PACKAGE_MANAGER_VALUE_OPTIONS = new Set([
+  '--cache',
+  '--cache-folder',
+  '--config',
+  '--config-file',
+  '--cwd',
+  '--dir',
+  '--filter',
+  '--globalconfig',
+  '--modules-folder',
+  '--otp',
+  '--prefix',
+  '--registry',
+  '--store-dir',
+  '--tag',
+  '--userconfig',
+  '--workspace',
+  '-C',
+  '-w',
+]);
+const SIDECAR_PACKAGE_MANAGER_SCRIPT_COMMANDS = new Set([
+  'add',
+  'ci',
+  'create',
+  'dlx',
+  'exec',
+  'i',
+  'init',
+  'install',
+  'link',
+  'rebuild',
+  'restart',
+  'run',
+  'run-script',
+  'start',
+  'stop',
+  'test',
+  'update',
+  'upgrade',
+  'x',
+]);
 
 export class CapabilityManifest {
   constructor(fields) {
@@ -216,11 +311,9 @@ function assertAdapterArtifactSelfContained(manifest, artifacts) {
 
 function assertSidecarAdapterArtifactsSelfContained(manifest, artifacts) {
   if (manifest.adapter.kind !== 'sidecar') return;
-  for (const item of manifest.adapter.command) {
-    for (const artifactPath of sidecarCommandArtifacts(item)) {
-      if (!javascriptArtifactPath(artifactPath)) continue;
-      assertJavaScriptAdapterArtifactSelfContained(artifactPath, artifacts, 'sidecar adapter');
-    }
+  for (const artifactPath of sidecarCommandArtifacts(manifest.adapter.command)) {
+    if (!javascriptArtifactPath(artifactPath)) continue;
+    assertJavaScriptAdapterArtifactSelfContained(artifactPath, artifacts, 'sidecar adapter');
   }
 }
 
@@ -252,7 +345,8 @@ function assertNoArtifactCredentialMaterial(artifactPath, bytes) {
 }
 
 function textArtifactPath(artifactPath) {
-  return /\.(?:c?m?js|json|md|txt|ya?ml|toml|ini|conf|cfg|env|sh|bash|zsh|fish|py|rb|pl)$/i.test(artifactPath);
+  return /\.(?:c?m?js|json|md|txt|ya?ml|toml|ini|conf|cfg|env|pem|crt|cer|key|sh|bash|zsh|fish|py|rb|pl)$/i.test(artifactPath) ||
+    /(?:^|[/\\])\.env(?:\.[A-Za-z0-9._-]+)?$/i.test(artifactPath);
 }
 
 function javascriptArtifactPath(artifactPath) {
@@ -287,7 +381,7 @@ function adapterHasImportCall(text) {
       const afterBracket = skipBalancedBracket(text, index);
       const callStart = skipWhitespaceAndComments(text, afterBracket);
       const computedMember = computedMemberAccess(text, index, afterBracket);
-      if (computedMember.dangerous || (computedMember.dynamic && dangerousCallAt(text, callStart))) return true;
+      if (computedMember.dangerous || (computedMember.dynamic && dangerousCallAfterCallee(text, callStart))) return true;
       index = afterBracket;
       previousSignificant = ']';
       continue;
@@ -332,7 +426,10 @@ function adapterHasImportCall(text) {
     while (index < text.length && identifierPart(text[index])) index += 1;
     const identifier = text.slice(start, index);
     const callStart = skipWhitespaceAndComments(text, index);
-    if (identifier === 'eval' || identifier === 'Function') return true;
+    if (identifier === 'eval' || identifier === 'Function' || identifier === 'getBuiltinModule' ||
+      identifier === 'Worker' || identifier === 'SharedWorker') {
+      return true;
+    }
     if (identifier === 'constructor' && previousSignificant === '.' && text[callStart] === '(') return true;
     if (identifier === 'require') {
       if (text[callStart] !== '(') return true;
@@ -345,7 +442,7 @@ function adapterHasImportCall(text) {
       return true;
     }
     if (identifier !== 'import') {
-      previousSignificant = 'identifier';
+      previousSignificant = identifier === 'new' ? 'new' : 'identifier';
       continue;
     }
     if (text[callStart] !== '(') {
@@ -363,6 +460,12 @@ function dangerousCallAt(text, index) {
   return text[index] === '(' || (text[index] === '?' && text[index + 1] === '.' && text[index + 2] === '(');
 }
 
+function dangerousCallAfterCallee(text, index) {
+  index = skipWhitespaceAndComments(text, index);
+  while (text[index] === ')') index = skipWhitespaceAndComments(text, index + 1);
+  return dangerousCallAt(text, index);
+}
+
 function computedMemberAccess(text, openBracket, afterBracket) {
   const closeBracket = afterBracket - 1;
   const name = readComputedMemberName(text, openBracket + 1, closeBracket);
@@ -371,7 +474,8 @@ function computedMemberAccess(text, openBracket, afterBracket) {
 }
 
 function dangerousMemberName(value) {
-  return value === 'eval' || value === 'Function' || value === 'require' || value === 'constructor';
+  return value === 'eval' || value === 'Function' || value === 'require' || value === 'constructor' ||
+    value === 'getBuiltinModule' || value === 'Worker' || value === 'SharedWorker';
 }
 
 function readComputedMemberName(text, index, closeBracket) {
@@ -643,34 +747,216 @@ function assertReferencedArtifactsCovered(manifest) {
   ]);
   if (manifest.adapter.kind === 'in_process' && manifest.adapter.module) required.add(manifest.adapter.module);
   if (manifest.adapter.kind === 'sidecar') {
-    for (const item of manifest.adapter.command) {
-      for (const artifactPath of sidecarCommandArtifacts(item)) required.add(artifactPath);
-    }
+    for (const artifactPath of sidecarCommandArtifacts(manifest.adapter.command)) required.add(artifactPath);
   }
   for (const path of required) {
     if (!covered.has(path)) fail('ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED', `referenced artifact is not checksum-covered: ${path}`);
   }
 }
 
-function sidecarCommandArtifacts(value) {
-  const optionArtifact = sidecarOptionArtifact(value);
-  if (optionArtifact) return [optionArtifact];
-  return sidecarCommandArtifact(value) ? [value] : [];
+function sidecarCommandArtifacts(command) {
+  const artifacts = [];
+  let entrypointSeen = false;
+  for (let index = 0; index < command.length; index += 1) {
+    const value = command[index];
+    assertSafeSidecarCommandToken(command, index);
+    const genericOptionArtifact = sidecarGenericOptionArtifact(value);
+    if (genericOptionArtifact && !sidecarRuntimeOptionPosition(command, index)) {
+      artifacts.push(genericOptionArtifact);
+      continue;
+    }
+    if (sidecarRuntimeOptionPosition(command, index)) {
+      const optionArtifact = sidecarOptionArtifact(value, { allowPreload: !entrypointSeen });
+      if (optionArtifact) {
+        artifacts.push(optionArtifact);
+        continue;
+      }
+      if (entrypointSeen && genericOptionArtifact) {
+        artifacts.push(genericOptionArtifact);
+        continue;
+      }
+      if (!entrypointSeen && sidecarOptionRequiresArtifact(value)) {
+        const candidate = command[index + 1];
+        if (sidecarPreloadArtifact(candidate)) {
+          artifacts.push(candidate);
+          index += 1;
+          continue;
+        }
+        fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar preload option must reference a pack-relative checksum-covered artifact: ${value}`);
+      }
+    }
+    if (sidecarCommandArtifact(value)) {
+      artifacts.push(value);
+      if (!sidecarRuntimeCommandPosition(command, index) && !sidecarRuntimeOptionValuePosition(command, index)) entrypointSeen = true;
+    }
+  }
+  return artifacts;
 }
 
-function sidecarOptionArtifact(value) {
+function sidecarRuntimeCommandPosition(command, index) {
+  return index === 0 && SIDECAR_JS_RUNTIMES.has(commandBaseName(command[0]).toLowerCase());
+}
+
+function sidecarRuntimeOptionPosition(command, index) {
+  return index > 0 && SIDECAR_JS_RUNTIMES.has(commandBaseName(command[0]).toLowerCase());
+}
+
+function sidecarOptionArtifact(value, { allowPreload = true } = {}) {
   if (!value.startsWith('-')) return null;
+  if (value.startsWith('-r') && value !== '-r') {
+    if (!allowPreload) return null;
+    const candidate = value.slice(2);
+    if (!sidecarPreloadArtifact(candidate)) {
+      fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar preload option must reference a pack-relative checksum-covered artifact: ${value}`);
+    }
+    return candidate;
+  }
+  const separator = value.indexOf('=');
+  if (separator < 0) return null;
+  const candidate = value.slice(separator + 1);
+  if (sidecarPreloadOption(value)) {
+    if (!allowPreload) return null;
+    if (!sidecarPreloadArtifact(candidate)) {
+      fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar preload option must reference a pack-relative checksum-covered artifact: ${value}`);
+    }
+  }
+  return sidecarCommandArtifact(candidate) ? candidate : null;
+}
+
+function sidecarOptionRequiresArtifact(value) {
+  return sidecarPreloadOptionConsumesNext(value);
+}
+
+function sidecarPreloadOption(value) {
+  return value === '--import' || value === '--require' || value === '-r' || value === '--preload' ||
+    value === '--loader' || value === '--experimental-loader' ||
+    value.startsWith('--import=') || value.startsWith('--require=') || value.startsWith('--preload=') ||
+    value.startsWith('--loader=') || value.startsWith('--experimental-loader=') ||
+    (value.startsWith('-r') && value !== '-r');
+}
+
+function sidecarPreloadOptionConsumesNext(value) {
+  return value === '--import' || value === '--require' || value === '-r' || value === '--preload' ||
+    value === '--loader' || value === '--experimental-loader';
+}
+
+function sidecarPreloadArtifact(value) {
+  return sidecarCommandArtifact(value) && (value.startsWith('./') || value.startsWith('../'));
+}
+
+function assertSafeSidecarCommandToken(command, index) {
+  const value = command[index];
+  const executable = commandBaseName(value).toLowerCase();
+  if (index === 0 && SIDECAR_RUNTIME_WRAPPERS.has(executable)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command wraps runtime execution outside checksum coverage: ${value}`);
+  }
+  if (index === 0 && ['bunx', 'npx', 'pnpx'].includes(executable)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command executes packages outside checksum coverage: ${value}`);
+  }
+  if (sidecarPackageExecBeforeArtifact(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command executes packages outside checksum coverage: ${command[0]} ${value}`);
+  }
+  if (sidecarRuntimeEvalFlag(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command evaluates inline code outside checksum coverage: ${value}`);
+  }
+}
+
+function sidecarRuntimeEvalFlag(command, index) {
+  if (index < 1) return false;
+  const runtime = commandBaseName(command[0]).toLowerCase();
+  if (!sidecarInlineEvalRuntime(runtime)) return false;
+  const value = command[index];
+  const evalFlag = sidecarInlineEvalFlag(runtime, value);
+  if (!evalFlag) return false;
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  return entrypointIndex < 0 || index < entrypointIndex;
+}
+
+function sidecarInlineEvalRuntime(runtime) {
+  return SIDECAR_INLINE_EVAL_RUNTIMES.has(runtime) || /^python(?:\d+(?:\.\d+)*)?$/.test(runtime) || /^pypy(?:\d+)?$/.test(runtime);
+}
+
+function sidecarInlineEvalFlag(runtime, value) {
+  if (typeof value !== 'string') return false;
+  if (runtime === 'deno' && value === 'eval') return true;
+  if (runtime === 'python' || runtime.startsWith('python') || runtime === 'pypy' || runtime.startsWith('pypy')) {
+    return value === '-c' || value.startsWith('-c');
+  }
+  if (runtime === 'php') return value === '-r' || value.startsWith('-r');
+  return value === '-e' || value === '--eval' || value === '-p' || value === '--print' ||
+    value.startsWith('-e') || value.startsWith('-p') || value.startsWith('--eval=') || value.startsWith('--print=');
+}
+
+function sidecarEntrypointIndex(command) {
+  for (let index = 1; index < command.length; index += 1) {
+    const value = command[index];
+    if (sidecarOptionArtifact(value)) continue;
+    if (sidecarOptionRequiresArtifact(value)) {
+      index += 1;
+      continue;
+    }
+    if (sidecarRuntimeOptionValuePosition(command, index)) continue;
+    if (sidecarCommandArtifact(value)) return index;
+  }
+  return -1;
+}
+
+function sidecarRuntimeOptionValuePosition(command, index) {
+  if (!sidecarRuntimeOptionPosition(command, index)) return false;
+  const previous = command[index - 1];
+  return sidecarOptionConsumesNextValue(previous) || sidecarUnknownRuntimeOptionValuePosition(command, index);
+}
+
+function sidecarOptionConsumesNextValue(value) {
+  if (typeof value !== 'string' || !value.startsWith('-') || value.includes('=')) return false;
+  return sidecarPreloadOptionConsumesNext(value) || SIDECAR_RUNTIME_VALUE_OPTIONS.has(value);
+}
+
+function sidecarUnknownRuntimeOptionValuePosition(command, index) {
+  if (index < 2) return false;
+  const previous = command[index - 1];
+  if (typeof previous !== 'string' || !previous.startsWith('-') || previous.includes('=')) return false;
+  if (sidecarPreloadOption(previous)) return false;
+  if (SIDECAR_RUNTIME_FLAG_ONLY_OPTIONS.has(previous)) return false;
+  if (sidecarOptionConsumesNextValue(previous)) return false;
+  return sidecarCommandArtifact(command[index]);
+}
+
+function sidecarGenericOptionArtifact(value) {
+  if (typeof value !== 'string' || !value.startsWith('-')) return null;
   const separator = value.indexOf('=');
   if (separator < 0) return null;
   const candidate = value.slice(separator + 1);
   return sidecarCommandArtifact(candidate) ? candidate : null;
 }
 
+function sidecarPackageExecBeforeArtifact(command, index) {
+  if (index < 1 || !SIDECAR_PACKAGE_MANAGER_SCRIPT_COMMANDS.has(String(command[index]).toLowerCase())) return false;
+  if (!['bun', 'npm', 'pnpm', 'yarn'].includes(commandBaseName(command[0]).toLowerCase())) return false;
+  for (let cursor = 1; cursor < index; cursor += 1) {
+    if (sidecarCommandArtifact(command[cursor]) && !sidecarPackageManagerOptionValuePosition(command, cursor)) return false;
+  }
+  return true;
+}
+
+function sidecarPackageManagerOptionValuePosition(command, index) {
+  if (index < 2 || !['bun', 'npm', 'pnpm', 'yarn'].includes(commandBaseName(command[0]).toLowerCase())) return false;
+  const previous = command[index - 1];
+  if (typeof previous !== 'string' || !previous.startsWith('-') || previous.includes('=')) return false;
+  return SIDECAR_PACKAGE_MANAGER_VALUE_OPTIONS.has(previous);
+}
+
+function commandBaseName(value) {
+  return String(value).split(/[\\/]/).at(-1);
+}
+
 function sidecarCommandArtifact(value) {
+  if (typeof value !== 'string' || !value.length) return false;
   if (value.startsWith('-')) return false;
+  if (value.startsWith('@') && !value.includes('/') && !sidecarArtifactPath(value)) return false;
   if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)) return false;
   if (sidecarEnvAssignment(value) && !sidecarArtifactPath(value)) return false;
-  return value.startsWith('./') || value.includes('/') || sidecarArtifactPath(value);
+  return value.startsWith('./') || value.startsWith('../') || value.includes('/') || sidecarArtifactPath(value);
 }
 
 function sidecarEnvAssignment(value) {
@@ -678,7 +964,7 @@ function sidecarEnvAssignment(value) {
 }
 
 function sidecarArtifactPath(value) {
-  return /\.(?:c?m?js|json|md|txt|ya?ml|toml|ini|conf|cfg|env|sh|bash|zsh|fish|py|rb|pl|wasm|bin|exe)$/i.test(value);
+  return textArtifactPath(value) || /\.(?:wasm|bin|exe)$/i.test(value);
 }
 
 function normalizeAdapter(adapter) {

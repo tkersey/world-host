@@ -1156,6 +1156,7 @@ class HumanApprovalCapabilityDriver {
     if (!blockers.length) {
       try {
         assertHumanPolicyAllows(context, this.manifest(), hostRequest);
+        assertFixedModeSupportsResponseSchema(this.mode, hostRequest);
       } catch (error) {
         blockers.push(error.code ?? "ERR_HUMAN_APPROVAL_PREFLIGHT_REJECTED");
       }
@@ -1184,6 +1185,7 @@ class HumanApprovalCapabilityDriver {
   }
   async resolve(context, hostRequest) {
     assertHumanPolicyAllows(context, this.manifest(), hostRequest);
+    assertFixedModeSupportsResponseSchema(this.mode, hostRequest);
     resolutionTarget(hostRequest);
     const decision = await this.approve({ proposed: this.#redactedPrompt(hostRequest) });
     return this.#resolution(hostRequest, decision.approved ? "approved" : "rejected", decision.record);
@@ -1268,11 +1270,25 @@ function positivePolicyLimit(value, field) {
 function resolutionTarget(hostRequest = {}) {
   const value = hostRequest.hostRequestFingerprint;
   if (typeof value === "bigint" || typeof value === "number")
-    return BigInt(value);
-  const match = String(value ?? "").match(/(?:0x|world:host-request:)?([0-9a-f]+)$/i);
+    return assertU64Fingerprint(BigInt(value));
+  const match = String(value ?? "").match(/^(?:world:host-request:|0x)([0-9a-f]+)$/i);
   if (!match)
     fail("ERR_HOST_REQUEST_FINGERPRINT_REQUIRED");
-  return BigInt(`0x${match[1]}`);
+  return assertU64Fingerprint(BigInt(`0x${match[1]}`));
+}
+function assertU64Fingerprint(value) {
+  if (value < 0n || value > (1n << 64n) - 1n)
+    fail("ERR_HOST_REQUEST_FINGERPRINT_RANGE", "HostRequest fingerprint must fit the World u64 wire range");
+  return value;
+}
+function assertFixedModeSupportsResponseSchema(mode, hostRequest = {}) {
+  const status = hostRequest.responseSchema?.status;
+  if (!status || mode === "interactive-terminal")
+    return;
+  if (mode === "noninteractive-allow" && status !== "ok")
+    fail("ERR_HUMAN_APPROVAL_RESPONSE_SCHEMA_UNSUPPORTED", "noninteractive allow can only emit ok approvals");
+  if (mode === "noninteractive-deny" && status !== "rejected")
+    fail("ERR_HUMAN_APPROVAL_RESPONSE_SCHEMA_UNSUPPORTED", "noninteractive deny can only emit rejected approvals");
 }
 export {
   HumanApprovalCapabilityDriver as CapabilityDriver
