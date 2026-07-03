@@ -519,6 +519,35 @@ describe('capability preflight and reference drivers', () => {
     assert.deepEqual(allowedReport.blockers, []);
   });
 
+  it('rejects invalid human approval modes during driver preflight', async () => {
+    const humanRequest = {
+      actuatorRef: 'human:approval',
+      descriptorFingerprint: 'descriptor:human-approval',
+      actuationClass: 'human',
+      responseSchema: { status: 'ok' },
+      idempotencyKeyWorldFingerprint: 'world:key:human-preflight',
+      requestBytes: fromUtf8(stableJson({ action: 'approve' })),
+    };
+    const policy = createRunPolicy({
+      allowHumanEffects: true,
+      allowedAuthorityLabels: ['human:approval'],
+    });
+    const context = { policy };
+    const missingPromptDriver = new HumanApprovalCapabilityDriver({ mode: 'interactive-terminal' });
+    const unsupportedModeDriver = new HumanApprovalCapabilityDriver({ mode: 'browser-popup', prompt: async () => true });
+    const missingPromptReport = missingPromptDriver.preflight(context, humanRequest);
+    const unsupportedModeReport = unsupportedModeDriver.preflight(context, humanRequest);
+
+    assert.equal(missingPromptReport.accepted, false);
+    assert.ok(missingPromptReport.blockers.includes('ERR_HUMAN_APPROVAL_PROMPT_REQUIRED'));
+    assert.equal(unsupportedModeReport.accepted, false);
+    assert.ok(unsupportedModeReport.blockers.includes('ERR_HUMAN_APPROVAL_MODE_UNSUPPORTED'));
+    await assert.rejects(
+      () => missingPromptDriver.resolve(context, humanRequest),
+      { code: 'ERR_HUMAN_APPROVAL_PROMPT_REQUIRED' },
+    );
+  });
+
   it('binds cached model replay budget exemptions to output validation policy', () => {
     const modelRequest = {
       actuatorRef: 'model:decision',

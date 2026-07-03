@@ -1234,6 +1234,32 @@ describe('EffectJournal', () => {
     assert.equal(driver.calls, 1);
   });
 
+  it('reuses cross-branch outcomes before live preflight', async () => {
+    const store = new MemoryStore();
+    const mainJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const alternateJournal = new EffectJournal({ store, runId: 'run', branchId: 'alternate', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+
+    await mainJournal.resolve({}, hostRequest(), driver);
+    let preflightCalled = false;
+    const alternate = await alternateJournal.resolve({}, hostRequest(), driver, {
+      beforeInvoke() {
+        preflightCalled = true;
+        const error = new Error('preflight blocked');
+        error.code = 'ERR_TEST_PREFLIGHT_BLOCKED';
+        throw error;
+      },
+    });
+    const records = await store.listEffectRecords('run');
+
+    assert.equal(alternate.reused, true);
+    assert.equal(preflightCalled, false);
+    assert.equal(driver.calls, 1);
+    assert.equal(records.length, 2);
+    assert.equal(records.filter((record) => record.branchId === 'main').length, 1);
+    assert.equal(records.filter((record) => record.branchId === 'alternate').length, 1);
+  });
+
   it('does not rebind cross-branch running effects before preflight', async () => {
     const store = new MemoryStore();
     const mainJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });

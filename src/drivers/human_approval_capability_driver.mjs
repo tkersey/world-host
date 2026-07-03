@@ -35,6 +35,7 @@ export class HumanApprovalCapabilityDriver {
     const blockers = [...structural.blockers];
     if (!blockers.length) {
       try {
+        assertHumanApprovalModeReady(this.mode, this.prompt);
         assertHumanPolicyAllows(context, this.manifest(), hostRequest);
         assertFixedModeSupportsResponseSchema(this.mode, hostRequest);
       } catch (error) {
@@ -57,14 +58,15 @@ export class HumanApprovalCapabilityDriver {
   }
 
   async approve({ proposed }) {
+    assertHumanApprovalModeReady(this.mode, this.prompt);
     if (this.mode === 'noninteractive-allow') return { approved: true, record: this.#record('approved') };
     if (this.mode === 'noninteractive-deny') return { approved: false, record: this.#record('denied') };
-    if (typeof this.prompt !== 'function') fail('ERR_HUMAN_APPROVAL_PROMPT_REQUIRED');
     const approved = await this.prompt({ proposed }) === true;
     return { approved, record: this.#record(approved ? 'approved' : 'denied') };
   }
 
   async resolve(context, hostRequest) {
+    assertHumanApprovalModeReady(this.mode, this.prompt);
     assertHumanPolicyAllows(context, this.manifest(), hostRequest);
     assertFixedModeSupportsResponseSchema(this.mode, hostRequest);
     resolutionTarget(hostRequest);
@@ -122,6 +124,15 @@ function assertHumanPolicyAllows(context, manifest, hostRequest) {
     policy: context?.policy ?? {},
     mode: 'live',
   });
+}
+
+function assertHumanApprovalModeReady(mode, prompt) {
+  if (mode !== 'noninteractive-allow' && mode !== 'noninteractive-deny' && mode !== 'interactive-terminal') {
+    fail('ERR_HUMAN_APPROVAL_MODE_UNSUPPORTED', 'unsupported human approval mode');
+  }
+  if (mode === 'interactive-terminal' && typeof prompt !== 'function') {
+    fail('ERR_HUMAN_APPROVAL_PROMPT_REQUIRED', 'interactive human approval requires a prompt');
+  }
 }
 
 function resolutionTarget(hostRequest = {}) {

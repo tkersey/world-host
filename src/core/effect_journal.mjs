@@ -72,7 +72,9 @@ export class EffectJournal {
   async #observePrepared(hostRequest, prepared, options = {}) {
     const existing = await this.store.getEffectRecord(this.runId, prepared.idempotencyKey, this.branchId);
     if (existing) return await this.#reuseOrConflict(existing, prepared);
-    if (options.createIfMissing === false) return null;
+    if (options.createIfMissing === false) {
+      return await this.#branchLocalReusableRecord(prepared, { outcomesOnly: true });
+    }
 
     const reusable = await this.#branchLocalReusableRecord(prepared);
     if (reusable) return reusable;
@@ -358,7 +360,7 @@ export class EffectJournal {
     return existing;
   }
 
-  async #branchLocalReusableRecord(prepared) {
+  async #branchLocalReusableRecord(prepared, options = {}) {
     const idempotencyKeyJson = stableJson(prepared.idempotencyKey);
     let reusable = null;
     for (const record of await this.list()) {
@@ -379,7 +381,7 @@ export class EffectJournal {
       const hasOutcome = TERMINAL_WITH_OUTCOME.has(record.state) && record.resolutionInputRef;
       if (hasOutcome && (reusable === null || reusable.state === EffectState.running)) {
         reusable = record;
-      } else if (reusable === null && record.state === EffectState.running) {
+      } else if (!options.outcomesOnly && reusable === null && record.state === EffectState.running) {
         reusable = record;
       }
     }
