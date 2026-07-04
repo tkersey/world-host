@@ -61,6 +61,8 @@ const SIDECAR_RUNTIME_WRAPPERS = new Set([
   'sh',
   'tcsh',
   'time',
+  'timeout',
+  'gtimeout',
   'zsh',
 ]);
 const SIDECAR_JS_RUNTIMES = new Set(['bun', 'node', 'deno']);
@@ -1712,6 +1714,12 @@ function assertSafeSidecarCommandToken(command, index) {
   if (sidecarRuntimeModuleLoaderOption(command, index)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command loads runtime modules outside checksum coverage: ${value}`);
   }
+  if (sidecarRuntimePackageScriptOption(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command executes package scripts outside checksum coverage: ${value}`);
+  }
+  if (sidecarRuntimePermissionGrantOption(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command grants runtime permissions outside receiver policy: ${value}`);
+  }
   if (sidecarRuntimeImportMapOption(command, index)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'sidecar command import maps are not supported');
   }
@@ -1769,6 +1777,23 @@ function sidecarRuntimeModuleLoaderOption(command, index) {
   const value = command[index];
   const option = value.includes('=') ? value.slice(0, value.indexOf('=')) : value;
   if (!SIDECAR_MODULE_LOADER_OPTIONS.has(option)) return false;
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  return entrypointIndex < 0 || index < entrypointIndex;
+}
+
+function sidecarRuntimePackageScriptOption(command, index) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'node' || !sidecarRuntimeOptionPosition(command, index)) return false;
+  const value = command[index];
+  if (value !== '--run' && !value.startsWith('--run=')) return false;
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  return entrypointIndex < 0 || index < entrypointIndex;
+}
+
+function sidecarRuntimePermissionGrantOption(command, index) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'deno' || !sidecarRuntimeOptionPosition(command, index)) return false;
+  const value = command[index];
+  const option = value.includes('=') ? value.slice(0, value.indexOf('=')) : value;
+  if (!option.startsWith('--allow-')) return false;
   const entrypointIndex = sidecarEntrypointIndex(command);
   return entrypointIndex < 0 || index < entrypointIndex;
 }
@@ -1873,8 +1898,20 @@ function sidecarGenericOptionArtifact(value) {
 }
 
 function sidecarPackageExecBeforeArtifact(command, index) {
+  if (sidecarCorepackPackageExecBeforeArtifact(command, index)) return true;
   if (index < 1 || !SIDECAR_PACKAGE_MANAGER_SCRIPT_COMMANDS.has(String(command[index]).toLowerCase())) return false;
   if (!['bun', 'npm', 'pnpm', 'yarn'].includes(commandBaseName(command[0]).toLowerCase())) return false;
+  for (let cursor = 1; cursor < index; cursor += 1) {
+    if (sidecarCommandArtifact(command[cursor]) && !sidecarPackageManagerOptionValuePosition(command, cursor)) return false;
+  }
+  return true;
+}
+
+function sidecarCorepackPackageExecBeforeArtifact(command, index) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'corepack') return false;
+  if (index < 2 || !SIDECAR_PACKAGE_MANAGER_SCRIPT_COMMANDS.has(String(command[index]).toLowerCase())) return false;
+  const packageManager = String(command[1]).toLowerCase();
+  if (!['bun', 'npm', 'pnpm', 'yarn'].includes(packageManager)) return false;
   for (let cursor = 1; cursor < index; cursor += 1) {
     if (sidecarCommandArtifact(command[cursor]) && !sidecarPackageManagerOptionValuePosition(command, cursor)) return false;
   }

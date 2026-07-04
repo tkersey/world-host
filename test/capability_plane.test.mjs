@@ -19,6 +19,7 @@ import {
 import { assertCapabilityResolutionBoundary, assertNoWorldEvidenceKeys, defineCapabilityDriver } from '../src/core/capability_driver.mjs';
 import { assertCapabilityPolicyAllows, createCapabilityPolicy, redactCapabilityDiagnostics } from '../src/core/capability_policy.mjs';
 import { runCapabilityMode } from '../src/core/capability_modes.mjs';
+import { preflightCapabilities } from '../src/core/capabilities.mjs';
 import { EnvSecretProvider, assertNoSecretValuePersisted, assertRequiredSecretsAvailable, redactSecrets } from '../src/core/secrets.mjs';
 import { FileSecretProvider, PromptSecretProvider } from '../src/bun/secret_providers.mjs';
 import { HostEventStream, HostEventType } from '../src/core/observability.mjs';
@@ -1839,6 +1840,15 @@ describe('Capability Plane v0.2 core contracts', () => {
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', '--run=adapter'] },
+        docs: [],
+        checksums: [],
+      }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
         adapter: { kind: 'sidecar', command: ['python', '-c', 'print("unchecked")'] },
         docs: [],
         checksums: [],
@@ -1929,6 +1939,15 @@ describe('Capability Plane v0.2 core contracts', () => {
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
+        adapter: { kind: 'sidecar', command: ['deno', 'run', '--no-config', '--allow-read=.', './sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: './sidecar.mjs', checksum: sidecarChecksum }],
+      }, { './sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
         adapter: { kind: 'sidecar', command: ['npm', 'create', 'unchecked-package'] },
         docs: [],
         checksums: [],
@@ -1983,6 +2002,15 @@ describe('Capability Plane v0.2 core contracts', () => {
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
+        adapter: { kind: 'sidecar', command: ['corepack', 'pnpm', 'dlx', 'unchecked-package', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+      }, { 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
         adapter: { kind: 'sidecar', command: ['node', 'adapter'] },
         docs: [],
         checksums: [],
@@ -1996,6 +2024,15 @@ describe('Capability Plane v0.2 core contracts', () => {
         docs: [],
         checksums: [],
       }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['timeout', '10', 'node', '--import=evil-package', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+      }, { 'sidecar.mjs': sidecar }),
       { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
     await assert.rejects(
@@ -2347,7 +2384,7 @@ describe('Capability Plane v0.2 core contracts', () => {
     }), true);
     assert.equal(assertCapabilityPolicyAllows({
       manifest: {
-        driverId: 'model',
+        driverId: 'fixture-agent-model',
         authorityLabels: ['model:fixture'],
         recoveryClass: EffectRecoveryClass.idempotent,
         maximumResponseBytes: 1024,
@@ -2356,6 +2393,17 @@ describe('Capability Plane v0.2 core contracts', () => {
       policy: { allowLiveEffects: true, allowedOrigins: ['https://other.example'], allowedMethods: ['POST'] },
       mode: 'live',
     }), true);
+    assert.throws(() => assertCapabilityPolicyAllows({
+      manifest: {
+        driverId: 'spoofed-fixture-model',
+        authorityLabels: ['model:fixture-openai'],
+        recoveryClass: EffectRecoveryClass.idempotent,
+        maximumResponseBytes: 1024,
+      },
+      hostRequest: { ...genericHttpModelRequest('goal=policy-spoofed-fixture', 'model-policy-spoofed-fixture-key') },
+      policy: { allowLiveEffects: true },
+      mode: 'live',
+    }), { code: 'ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED' });
     assert.throws(() => assertCapabilityPolicyAllows({
       manifest: {
         driverId: 'mixed-model-labels',
@@ -2410,6 +2458,14 @@ describe('Capability Plane v0.2 core contracts', () => {
       },
       mode: 'dry-run',
     }), { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' });
+    const requestlessHttpReport = preflightCapabilities({
+      application: { requiredHostAuthorityLabels: ['network:http'] },
+      drivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
+      policy: { allowedAuthorityLabels: ['network:http'] },
+    });
+    assert.ok(requestlessHttpReport.blockers.includes('required-authority-policy-blocked:network:http'));
+    assert.ok(requestlessHttpReport.blockers.includes('http-origin-allowlist-required'));
+    assert.ok(requestlessHttpReport.blockers.includes('http-method-allowlist-required'));
     assert.throws(() => assertCapabilityPolicyAllows({
       manifest: {
         driverId: 'http',
@@ -2852,7 +2908,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       driver: parkedDriver,
       hostRequest: parkedRequest,
       journalOptions: parkedJournal,
-      policy: { allowLiveEffects: true, allowBestEffort: true, requireApprovalForBestEffort: false },
+      policy: { allowLiveEffects: true, allowBestEffort: true, requireApprovalForBestEffort: false, maximumLiveModelCalls: 1 },
     });
     assert.equal(parked.operatorInterventionRequired, true);
     assert.equal(parked.submittedToWorld, false);

@@ -4,6 +4,8 @@ import { EffectRecoveryClass, ResponseStatusCode, assertDriverCanResolve, assert
 import { assertBytes, fail, fromUtf8, stableJson, toHex } from './store.mjs';
 import { decodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
 
+const FIXTURE_MODEL_AUTHORITY_LABELS = new Set(['model:fixture', 'model:fixture-agent']);
+
 export class CapabilityReport {
   constructor(fields) {
     Object.assign(this, fields);
@@ -569,7 +571,7 @@ function policyBlockers(route, request, policy) {
     if (allowedFileRoots.size && (!root || !allowedFileRoots.has(root))) blockers.push(`file-root-denied:${root ?? 'unknown'}`);
   }
   if (isHumanRoute(route, request) && policy.allowHumanEffects !== true) blockers.push('ERR_CAPABILITY_HUMAN_DENIED');
-  if (request && (request.actuationClass === 'http' || route.authorityLabels.includes('network:http'))) {
+  if (isHttpRoute(route, request)) {
     const origin = requestOriginForRoute(request, route);
     const driverOrigins = Array.isArray(route.diagnostics?.origins) ? new Set(route.diagnostics.origins) : null;
     if (driverOrigins && (!origin || !driverOrigins.has(origin))) blockers.push(`http-origin-driver-denied:${origin ?? 'unknown'}`);
@@ -698,6 +700,7 @@ export { EffectRecoveryClass };
 
 function requestOriginForRoute(request, route) {
   try {
+    if (!request) return configuredRouteOrigin(route);
     const text = new TextDecoder().decode(request.requestBytes);
     const value = JSON.parse(text);
     if (fixedConfiguredEndpointRoute(route)) return route.diagnostics.configuredOrigin;
@@ -710,6 +713,7 @@ function requestOriginForRoute(request, route) {
 
 function requestMethodForRoute(request, route) {
   try {
+    if (!request) return configuredRouteMethod(route);
     const text = new TextDecoder().decode(request.requestBytes);
     const value = JSON.parse(text);
     if (fixedConfiguredEndpointRoute(route)) return String(value.method ?? route.diagnostics.defaultMethod ?? 'POST').toUpperCase();
@@ -729,15 +733,43 @@ function configuredEndpointRoute(route) {
   return route?.diagnostics?.endpointSource === 'config' || route?.diagnostics?.endpointSource === 'request-or-config';
 }
 
+function configuredRouteOrigin(route) {
+  if (route?.diagnostics?.configuredOrigin) return route.diagnostics.configuredOrigin;
+  const origins = Array.isArray(route?.diagnostics?.origins) ? route.diagnostics.origins : [];
+  return origins.length === 1 ? origins[0] : null;
+}
+
+function configuredRouteMethod(route) {
+  if (route?.diagnostics?.defaultMethod) return String(route.diagnostics.defaultMethod).toUpperCase();
+  const methods = Array.isArray(route?.diagnostics?.methods) ? route.diagnostics.methods : [];
+  return methods.length === 1 ? String(methods[0]).toUpperCase() : null;
+}
+
+function isHttpRoute(route, request) {
+  return request?.actuationClass === 'http' ||
+    (route?.supportedActuationClasses ?? []).includes('http') ||
+    (route?.authorityLabels ?? []).includes('network:http');
+}
+
 function isLiveModelRoute(route, request) {
   const modelLabels = (route?.authorityLabels ?? []).filter((label) => label.startsWith('model:'));
-  if (modelLabels.some((label) => !label.startsWith('model:fixture'))) return true;
+  const liveModelLabels = modelLabels.filter((label) => !fixtureModelLabel(label));
   const modelCapable = request?.actuationClass === 'model' ||
-    (route?.supportedActuationClasses ?? []).includes('model');
+    (route?.supportedActuationClasses ?? []).includes('model') ||
+    liveModelLabels.length > 0;
   if (!modelCapable) return false;
   if (route?.driverId === 'fixture-agent-model') return false;
-  if (!modelLabels.length) return true;
-  return false;
+  if (!liveModelLabels.length && hasDeterministicFixtureModelAuthority(route, modelLabels)) return false;
+  return true;
+}
+
+function hasDeterministicFixtureModelAuthority(route, modelLabels = (route?.authorityLabels ?? []).filter((label) => label.startsWith('model:'))) {
+  if (route?.diagnostics?.deterministic !== true) return false;
+  return modelLabels.length > 0 && modelLabels.every(fixtureModelLabel);
+}
+
+function fixtureModelLabel(label) {
+  return FIXTURE_MODEL_AUTHORITY_LABELS.has(label);
 }
 
 function chargesLiveModelBudget(

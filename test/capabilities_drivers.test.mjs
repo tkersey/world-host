@@ -611,6 +611,7 @@ describe('capability preflight and reference drivers', () => {
       actuatorRef: 'model:decision',
       descriptorFingerprint: 'descriptor:agent-decision-prompt',
       actuationClasses: ['model'],
+      diagnostics: { deterministic: true },
     });
     const liveOnlyRequest = {
       ...modelRequest('live-only'),

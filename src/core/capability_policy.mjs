@@ -1,6 +1,8 @@
 import { EffectRecoveryClass } from './actuator.mjs';
 import { fail } from './store.mjs';
 
+const FIXTURE_MODEL_AUTHORITY_LABELS = new Set(['model:fixture', 'model:fixture-agent']);
+
 export function createCapabilityPolicy(input = {}) {
   return new CapabilityPolicy(input);
 }
@@ -173,14 +175,24 @@ function isHuman(manifest, hostRequest) {
 }
 
 function isLiveModelCall(manifest, hostRequest) {
+  const modelLabels = (manifest?.authorityLabels ?? []).filter((label) => label.startsWith('model:'));
+  const liveModelLabels = modelLabels.filter((label) => !fixtureModelLabel(label));
   const modelCapable = hostRequest?.actuationClass === 'model' ||
-    (manifest?.supportedActuationClasses ?? []).includes('model');
+    (manifest?.supportedActuationClasses ?? []).includes('model') ||
+    liveModelLabels.length > 0;
   if (!modelCapable) return false;
   if (manifest?.driverId === 'fixture-agent-model') return false;
-  const labels = manifest?.authorityLabels ?? [];
-  const modelLabels = labels.filter((label) => label.startsWith('model:'));
-  if (!modelLabels.length) return true;
-  return modelLabels.some((label) => !label.startsWith('model:fixture'));
+  if (!liveModelLabels.length && hasDeterministicFixtureModelAuthority(manifest, modelLabels)) return false;
+  return true;
+}
+
+function hasDeterministicFixtureModelAuthority(manifest, modelLabels = (manifest?.authorityLabels ?? []).filter((label) => label.startsWith('model:'))) {
+  if (manifest?.diagnostics?.deterministic !== true) return false;
+  return modelLabels.length > 0 && modelLabels.every(fixtureModelLabel);
+}
+
+function fixtureModelLabel(label) {
+  return FIXTURE_MODEL_AUTHORITY_LABELS.has(label);
 }
 
 function assertOriginAndMethodAllowed(hostRequest, policy) {
