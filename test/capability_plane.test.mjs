@@ -4358,6 +4358,18 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.deepEqual(packApproval.manifest().supportedResponseStatuses, ['ok']);
     assert.deepEqual(new HumanApprovalPackCapabilityDriver({ mode: 'noninteractive-deny' }).manifest().supportedResponseStatuses, ['rejected']);
     assert.equal(packApproval.preflight({}, approvalRequest()).accepted, false);
+    const unsupportedPackApproval = new HumanApprovalPackCapabilityDriver({ mode: 'interactive', prompt: async () => true });
+    const unsupportedPackApprovalReport = unsupportedPackApproval.preflight({
+      policy: { allowLiveEffects: true, allowHumanEffects: true },
+    }, approvalRequest());
+    assert.equal(unsupportedPackApprovalReport.accepted, false);
+    assert.ok(unsupportedPackApprovalReport.blockers.includes('ERR_HUMAN_APPROVAL_MODE_UNSUPPORTED'));
+    await assert.rejects(
+      () => unsupportedPackApproval.resolve({
+        policy: { allowLiveEffects: true, allowHumanEffects: true },
+      }, approvalRequest()),
+      { code: 'ERR_HUMAN_APPROVAL_MODE_UNSUPPORTED' },
+    );
     const pinnedApprovalPackFingerprint = 'sha256:'.concat('6'.repeat(64));
     const pinnedPackApproval = new HumanApprovalPackCapabilityDriver({
       mode: 'noninteractive-allow',

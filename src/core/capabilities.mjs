@@ -327,6 +327,7 @@ function reusableOutcomeRecord(record, request, route, effectResolutionInputs, p
   const resolutionInputBytes = effectResolutionInputs.get(blobRefKey(record.resolutionInputRef));
   if (!resolutionInputBytes) return false;
   try {
+    assertReusableRecoveryClassAccepted(record, route);
     assertReusableResolutionAccepted(resolutionInputBytes, request, route, policy);
   } catch (error) {
     const blockers = reusableRecordCanRerun(record, route, currentBranchId, currentParentTurnClosureFingerprint)
@@ -336,6 +337,12 @@ function reusableOutcomeRecord(record, request, route, effectResolutionInputs, p
     return false;
   }
   return true;
+}
+
+function assertReusableRecoveryClassAccepted(record, route) {
+  if (record.driverRecoveryClass && route?.recoveryClass && record.driverRecoveryClass !== route.recoveryClass) {
+    fail('ERR_EFFECT_RECOVERY_CLASS_MISMATCH');
+  }
 }
 
 function assertReusableResolutionAccepted(resolutionInputBytes, request, route, policy) {

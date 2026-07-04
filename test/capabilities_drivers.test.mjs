@@ -337,6 +337,13 @@ describe('capability preflight and reference drivers', () => {
       actuatorRef: 'model:decision',
       descriptorFingerprint: 'descriptor:agent-decision-prompt',
       actuationClasses: ['model'],
+      recoveryClass: EffectRecoveryClass.idempotent,
+    });
+    const rerunnableDriver = fixtureDriverWithAuthority(['model:live'], {
+      driverId: 'live-model-rerunnable',
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClasses: ['model'],
     });
     const zeroBudgetReport = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },
@@ -440,6 +447,7 @@ describe('capability preflight and reference drivers', () => {
       descriptorFingerprint: 'descriptor:agent-decision-prompt',
       actuationClasses: ['model'],
       maximumResponseBytes: 8,
+      recoveryClass: EffectRecoveryClass.idempotent,
     });
     const mismatchedResolutionReport = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },
@@ -456,10 +464,20 @@ describe('capability preflight and reference drivers', () => {
       currentHead: { generation: 0 },
       currentBranchId: 'main',
       pendingRequests: [cachedModelRequest],
-      drivers: [driver],
+      drivers: [rerunnableDriver],
       policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
       effectRecords: [{ ...cachedModelEffect, driverRecoveryClass: EffectRecoveryClass.pure, resolutionInputRef: mismatchedResolutionInputRef }],
       effectResolutionInputs: new Map([[blobRefKey(mismatchedResolutionInputRef), mismatchedResolutionInputBytes]]),
+    });
+    const mismatchedRecoveryClassReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 0 }),
+      effectRecords: [{ ...cachedModelEffect, driverRecoveryClass: EffectRecoveryClass.pure }],
+      effectResolutionInputs: cachedModelResolutionInputs,
     });
     const mismatchedResolutionWithoutRequestBytesReport = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },
@@ -486,7 +504,7 @@ describe('capability preflight and reference drivers', () => {
       currentHead: { generation: 1, turnClosureWorldFingerprint: 'turn:1' },
       currentBranchId: 'main',
       pendingRequests: [cachedModelRequest],
-      drivers: [driver],
+      drivers: [rerunnableDriver],
       policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
       effectRecords: [{
         ...cachedModelEffect,
@@ -502,7 +520,7 @@ describe('capability preflight and reference drivers', () => {
       currentHead: { generation: 1, turnClosureWorldFingerprint: 'turn:1' },
       currentBranchId: 'main',
       pendingRequests: [cachedModelRequest],
-      drivers: [driver],
+      drivers: [rerunnableDriver],
       policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
       effectRecords: [{
         ...cachedModelEffect,
@@ -538,7 +556,7 @@ describe('capability preflight and reference drivers', () => {
       currentHead: { generation: 0 },
       currentBranchId: 'main',
       pendingRequests: [cachedModelRequest],
-      drivers: [driver],
+      drivers: [rerunnableDriver],
       policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
       effectRecords: [{ ...cachedModelEffect, branchId: 'cached-branch', state: EffectState.submitted, driverRecoveryClass: EffectRecoveryClass.pure, resolutionInputRef: mismatchedResolutionInputRef }],
       effectResolutionInputs: new Map([[blobRefKey(mismatchedResolutionInputRef), mismatchedResolutionInputBytes]]),
@@ -612,6 +630,7 @@ describe('capability preflight and reference drivers', () => {
       actuatorRef: 'model:decision',
       descriptorFingerprint: 'descriptor:agent-decision-prompt',
       actuationClasses: ['model'],
+      recoveryClass: EffectRecoveryClass.idempotent,
       diagnostics: { deterministic: true },
     });
     const liveOnlyRequest = {
@@ -662,6 +681,7 @@ describe('capability preflight and reference drivers', () => {
       actuatorRef: 'model:decision',
       descriptorFingerprint: 'descriptor:agent-decision-prompt',
       actuationClasses: ['model'],
+      recoveryClass: EffectRecoveryClass.idempotent,
       diagnostics: {
         endpointSource: 'request-or-config',
         modelOutputValidation: { schema: 'strict-agent-action' },
@@ -729,6 +749,8 @@ describe('capability preflight and reference drivers', () => {
     assert.ok(mismatchedResolutionReport.blockers.includes('ERR_CAPABILITY_REUSABLE_EFFECT_TARGET_MISMATCH'));
     assert.ok(mismatchedResolutionReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
     assert.deepEqual(mismatchedResolutionRerunReport.blockers, []);
+    assert.ok(mismatchedRecoveryClassReport.blockers.includes('ERR_EFFECT_RECOVERY_CLASS_MISMATCH'));
+    assert.ok(mismatchedRecoveryClassReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
     assert.deepEqual(mismatchedResolutionWithoutRequestBytesReport.blockers, ['ERR_CAPABILITY_REUSABLE_EFFECT_TARGET_MISMATCH']);
     assert.deepEqual(mismatchedSubmittedResolutionReport.blockers, ['ERR_CAPABILITY_REUSABLE_EFFECT_TARGET_MISMATCH']);
     assert.deepEqual(mismatchedSameBranchOldParentSubmittedResolutionReport.blockers, []);
@@ -738,7 +760,7 @@ describe('capability preflight and reference drivers', () => {
     assert.deepEqual(unsupportedStatusSubmittedResolutionReport.blockers, ['ERR_CAPABILITY_REUSABLE_EFFECT_STATUS_MISMATCH']);
     assert.equal(unsupportedStatusSubmittedResolutionReport.responseStatusesSupported, false);
     assert.deepEqual(mismatchedCrossBranchSubmittedResolutionReport.blockers, []);
-    assert.deepEqual(fallbackWithInvalidReusableReport.blockers, ['ERR_CAPABILITY_REUSABLE_EFFECT_TARGET_MISMATCH']);
+    assert.deepEqual(fallbackWithInvalidReusableReport.blockers, []);
     assert.deepEqual(fallbackWithInvalidReusableReport.coveredRequests, [{
       actuatorRef: 'model:decision',
       descriptorFingerprint: 'descriptor:agent-decision-prompt',
@@ -1898,7 +1920,7 @@ function fixtureDriverWithAuthority(authorityLabels, options = {}) {
         supportedResponseStatuses: ['ok'],
         maximumRequestBytes: 1024 * 1024,
         maximumResponseBytes: options.maximumResponseBytes ?? 1024 * 1024,
-        recoveryClass: EffectRecoveryClass.pure,
+        recoveryClass: options.recoveryClass ?? EffectRecoveryClass.pure,
         concurrencyLimit: 1,
         authorityLabels,
         diagnostics: options.diagnostics ?? {},
