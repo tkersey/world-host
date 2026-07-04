@@ -67,6 +67,7 @@ describe('Capability sidecar transport', () => {
       assert.equal((await sidecar.manifest()).payload.driverId, 'fixture-sidecar');
       assert.equal((await sidecar.resolve({ request: 'ok' })).payload.ok, true);
       assert.equal((await new CapabilitySidecar({ command: ['bun', sidecarPath], timeoutMs: 1000 }).manifest()).payload.driverId, 'fixture-sidecar');
+      assert.equal((await new CapabilitySidecar({ command: ['bun', 'sidecar.mjs'], cwd: root, timeoutMs: 1000 }).manifest()).payload.driverId, 'fixture-sidecar');
       await assert.rejects(() => sidecar.dryRun({}), { code: 'ERR_CAPABILITY_SIDECAR_EXIT' });
 
       const envPath = path.join(root, 'env.mjs');

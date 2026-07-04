@@ -58,6 +58,7 @@ export function assertCapabilityPolicyAllows({
   checkNetworkTarget = true,
   checkFileRoot = true,
   checkRecoveryClass = true,
+  checkLiveModelBudget = true,
   enforceApprovalRequirements = true,
 }) {
   const policy = createCapabilityPolicy(inputPolicy);
@@ -79,7 +80,7 @@ export function assertCapabilityPolicyAllows({
   if (requireEffectOptIn && isNetwork(manifest, hostRequest) && policy.allowNetworkEffects !== true) fail('ERR_CAPABILITY_NETWORK_DENIED');
   if (requireEffectOptIn && isFile(manifest, hostRequest) && policy.allowFileEffects !== true) fail('ERR_CAPABILITY_FILE_DENIED');
   if (requireEffectOptIn && isHuman(manifest, hostRequest) && policy.allowHumanEffects !== true) fail('ERR_CAPABILITY_HUMAN_DENIED');
-  if (mode === 'live' && isLiveModelCall(manifest, hostRequest) && policy.maximumLiveModelCalls < 1) fail('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED');
+  if (checkLiveModelBudget && mode === 'live' && isLiveModelCall(manifest, hostRequest) && policy.maximumLiveModelCalls < 1) fail('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED');
   if (checkRecoveryClass && manifest?.recoveryClass === EffectRecoveryClass.bestEffort && policy.allowBestEffort !== true) fail('ERR_BEST_EFFORT_REQUIRES_OPERATOR_OPT_IN');
   if (hostRequest?.requestBytes?.byteLength > policy.maximumRequestBytes) fail('ERR_CAPABILITY_PROMPT_TOO_LARGE');
   if (hostRequest?.policyRequestBytes?.byteLength > policy.maximumPromptBytes) fail('ERR_CAPABILITY_PROMPT_TOO_LARGE');

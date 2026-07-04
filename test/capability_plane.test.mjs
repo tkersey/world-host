@@ -4919,20 +4919,26 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(semanticMetadata.transportDriver, 'generic-http-json');
       assert.equal(semanticMetadata.outputSchema, 'boundary.Agent.Action.v0');
 
-      globalThis.fetch = async () => new Response('{"action":{"variant":"final","text":"live ok"}}', {
-        status: 200,
-        headers: { 'x-request-id': 'request-live-model' },
-      });
+      let liveModelFetchCount = 0;
+      globalThis.fetch = async () => {
+        liveModelFetchCount += 1;
+        return new Response('{"action":{"variant":"final","text":"live ok"}}', {
+          status: 200,
+          headers: { 'x-request-id': 'request-live-model' },
+        });
+      };
+      const liveModelJournalOptions = {
+        store: new MemoryStore(),
+        runId: 'model-live-run',
+        branchId: 'main',
+        parentTurnClosureFingerprint: 'world:turn-closure:parent',
+      };
+      const liveModelRequest = genericHttpModelRequest('goal=invoke', 'model-live-key');
       const liveModel = await runCapabilityMode({
         mode: 'live',
         driver,
-        hostRequest: genericHttpModelRequest('goal=invoke', 'model-live-key'),
-        journalOptions: {
-          store: new MemoryStore(),
-          runId: 'model-live-run',
-          branchId: 'main',
-          parentTurnClosureFingerprint: 'world:turn-closure:parent',
-        },
+        hostRequest: liveModelRequest,
+        journalOptions: liveModelJournalOptions,
         policy: {
           allowLiveEffects: true,
           allowNetworkEffects: true,
@@ -4941,10 +4947,26 @@ describe('Capability Plane v0.2 core contracts', () => {
           allowedMethods: ['POST'],
         },
       });
+      assert.equal(liveModelFetchCount, 1);
       assert.deepEqual(
         decodeAgentActionFromResolutionInput(liveModel.resolutionInputBytes),
         { variant: 'final', text: 'live ok' },
       );
+      const replayedLiveModel = await runCapabilityMode({
+        mode: 'live',
+        driver,
+        hostRequest: liveModelRequest,
+        journalOptions: liveModelJournalOptions,
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          maximumLiveModelCalls: 0,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      });
+      assert.equal(replayedLiveModel.reused, true);
+      assert.equal(liveModelFetchCount, 1);
 
       globalThis.fetch = async () => new Response('{"action":{"variant":"tool","toolId":"unknown_tool","payload":""}}', { status: 200 });
       const unknownAction = await driver.resolve({

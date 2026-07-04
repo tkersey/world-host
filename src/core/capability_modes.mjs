@@ -86,6 +86,7 @@ export async function runCapabilityMode({
       mode: 'live',
       action: { approved: true },
       enforceNetworkTarget: shouldEnforceNetworkTarget(hostRequest, manifest),
+      checkLiveModelBudget: false,
     });
     if (!journalOptions) fail('ERR_CAPABILITY_APPROVAL_JOURNAL_REQUIRED', 'approval mode live effects require EffectJournal options');
     const journal = journalOptions instanceof EffectJournal ? journalOptions : new EffectJournal({ ...journalOptions, policy: livePolicy });
@@ -93,6 +94,14 @@ export async function runCapabilityMode({
     const journalHostRequest = journaledHostRequest(hostRequest, manifest);
     const resolved = await journal.resolve(approvedContext, journalHostRequest, driver, {
       beforeInvoke: async (preflightContext, preflightHostRequest) => {
+        assertCapabilityPolicyAllows({
+          manifest,
+          hostRequest: networkPolicyHostRequest(preflightHostRequest, manifest),
+          policy: livePolicy,
+          mode: 'live',
+          action: { approved: true },
+          enforceNetworkTarget: shouldEnforceNetworkTarget(preflightHostRequest, manifest),
+        });
         assertCapabilityPreflightAccepted(await driver.preflight(preflightContext, preflightHostRequest));
       },
     });
@@ -104,6 +113,7 @@ export async function runCapabilityMode({
     policy: livePolicy,
     mode: 'live',
     enforceNetworkTarget: shouldEnforceNetworkTarget(hostRequest, manifest),
+    checkLiveModelBudget: false,
   });
   if (!journalOptions) fail('ERR_CAPABILITY_LIVE_JOURNAL_REQUIRED', 'live mode requires EffectJournal options');
   const journal = journalOptions instanceof EffectJournal ? journalOptions : new EffectJournal({ ...journalOptions, policy: livePolicy });
@@ -111,6 +121,13 @@ export async function runCapabilityMode({
   const journalHostRequest = journaledHostRequest(hostRequest, manifest);
   const resolved = await journal.resolve(liveDriverContext, journalHostRequest, driver, {
     beforeInvoke: async (preflightContext, preflightHostRequest) => {
+      assertCapabilityPolicyAllows({
+        manifest,
+        hostRequest: networkPolicyHostRequest(preflightHostRequest, manifest),
+        policy: livePolicy,
+        mode: 'live',
+        enforceNetworkTarget: shouldEnforceNetworkTarget(preflightHostRequest, manifest),
+      });
       assertCapabilityPreflightAccepted(await driver.preflight(preflightContext, preflightHostRequest));
     },
   });

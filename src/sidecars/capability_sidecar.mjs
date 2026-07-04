@@ -52,9 +52,12 @@ const BUN_RUNTIME_VALUE_OPTIONS = new Set([
 ]);
 
 export class CapabilitySidecar {
-  constructor({ command, timeoutMs = 5000, maximumFrameBytes = 1024 * 1024, env = {} } = {}) {
+  constructor({ command, cwd = null, timeoutMs = 5000, maximumFrameBytes = 1024 * 1024, env = {} } = {}) {
     if (!Array.isArray(command) || command.length === 0 || command.some((item) => typeof item !== 'string' || item.length === 0)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar command must be an argv array');
+    }
+    if (cwd != null && (typeof cwd !== 'string' || cwd.length === 0)) {
+      fail('ERR_CAPABILITY_SIDECAR_CWD_INVALID', 'sidecar cwd must be a path string');
     }
     if (bareScriptEntrypoint(command[0])) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar script entrypoints must be path-qualified');
@@ -66,6 +69,7 @@ export class CapabilitySidecar {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar Bun shebang entrypoints must be path-qualified');
     }
     this.command = command;
+    this.cwd = cwd == null ? undefined : path.resolve(cwd);
     this.timeoutMs = timeoutMs;
     this.maximumFrameBytes = maximumFrameBytes;
     this.env = sidecarEnv({ PATH: sidecarPath(), ...env });
@@ -81,6 +85,7 @@ export class CapabilitySidecar {
       timeoutMs: this.timeoutMs,
       maximumFrameBytes: this.maximumFrameBytes,
       env: this.env,
+      cwd: this.cwd,
     });
     if (!response || response.command !== command) fail('ERR_CAPABILITY_SIDECAR_RESPONSE_COMMAND');
     return response;
@@ -112,14 +117,15 @@ export class CapabilitySidecar {
 }
 
 export class CapabilitySidecarConformance {
-  constructor({ command, vectors = [] } = {}) {
+  constructor({ command, cwd = null, vectors = [] } = {}) {
     this.command = command;
+    this.cwd = cwd;
     this.vectors = Object.freeze([...vectors]);
     Object.freeze(this);
   }
 
   async run() {
-    const sidecar = new CapabilitySidecar({ command: this.command });
+    const sidecar = new CapabilitySidecar({ command: this.command, cwd: this.cwd });
     const manifest = await sidecar.manifest();
     return Object.freeze({
       manifest,
@@ -143,13 +149,14 @@ export function decodeSidecarFrame(bytes, maximumFrameBytes = 1024 * 1024) {
   return decodeBytes(parsed);
 }
 
-async function runSidecarCommand({ argv, input, timeoutMs, maximumFrameBytes, env }) {
+async function runSidecarCommand({ argv, input, timeoutMs, maximumFrameBytes, env, cwd }) {
   return await new Promise((resolve, reject) => {
     const spawnArgv = sidecarSpawnArgv(argv);
     const child = spawn(spawnArgv[0], spawnArgv.slice(1), {
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: false,
       env,
+      cwd,
     });
     let stdout = new Uint8Array();
     let stderr = '';
