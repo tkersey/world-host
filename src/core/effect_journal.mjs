@@ -9,6 +9,7 @@ import {
 import { createRunPolicy } from './capabilities.mjs';
 import { assertBlobRef, assertBytes, fail, fromUtf8, stableJson, toHex } from './store.mjs';
 import { decodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
+import { decodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
 
 export const EffectState = Object.freeze({
   observed: 'observed',
@@ -586,6 +587,7 @@ function retryableReusableResolutionError(error, manifest, policy) {
     'ERR_EFFECT_RESPONSE_STATUS_MISMATCH',
     'ERR_EFFECT_RESPONSE_REQUIRED',
     'ERR_EFFECT_RESPONSE_FORBIDDEN',
+    'ERR_EFFECT_MODEL_OUTPUT_INVALID',
   ]).has(error.code);
 }
 
@@ -787,19 +789,73 @@ export function assertResolutionAccepted(resolutionInputBytes, hostRequest, mani
   const maximumResponseBytes = policy.maximumResponseBytes === undefined
     ? manifest.maximumResponseBytes
     : Math.min(manifest.maximumResponseBytes, policy.maximumResponseBytes);
-  if (maximumResponseBytes === Number.MAX_SAFE_INTEGER) return;
-  if (resolutionInputBytes.byteLength > maximumResponseBytes) {
-    fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver ResolutionInput exceeds byte limit');
+  if (maximumResponseBytes !== Number.MAX_SAFE_INTEGER) {
+    if (resolutionInputBytes.byteLength > maximumResponseBytes) {
+      fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver ResolutionInput exceeds byte limit');
+    }
+    if (resolution.responseValueImageBytes.byteLength > maximumResponseBytes) {
+      fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver ResolutionInput response exceeds byte limit');
+    }
+    if (resolution.hostClaimBytes.byteLength > maximumResponseBytes) {
+      fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver ResolutionInput host claim exceeds byte limit');
+    }
+    if (resolution.metadata.byteLength > maximumResponseBytes) {
+      fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver ResolutionInput metadata exceeds byte limit');
+    }
   }
-  if (resolution.responseValueImageBytes.byteLength > maximumResponseBytes) {
-    fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver ResolutionInput response exceeds byte limit');
+  assertModelOutputAccepted(resolution, manifest);
+}
+
+function assertModelOutputAccepted(resolution, manifest) {
+  const validation = manifest?.diagnostics?.modelOutputValidation;
+  if (validation == null || resolution.status !== 0) return;
+  assertModelOutputValidationSupported(validation);
+  try {
+    validateAgentActionValueImage(resolution.responseValueImageBytes, validation);
+  } catch (error) {
+    fail('ERR_EFFECT_MODEL_OUTPUT_INVALID', 'model ResolutionInput output does not satisfy driver validation', {
+      error: error?.code ?? String(error?.message ?? error),
+    });
   }
-  if (resolution.hostClaimBytes.byteLength > maximumResponseBytes) {
-    fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver ResolutionInput host claim exceeds byte limit');
+}
+
+function assertModelOutputValidationSupported(validation) {
+  if (validation?.outputSchema !== 'boundary.Agent.Action.v0') {
+    fail('ERR_EFFECT_MODEL_OUTPUT_VALIDATION_UNSUPPORTED');
   }
-  if (resolution.metadata.byteLength > maximumResponseBytes) {
-    fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver ResolutionInput metadata exceeds byte limit');
+}
+
+function validateAgentActionValueImage(responseValueImageBytes, validation) {
+  let payload;
+  try {
+    const payloadBytes = decodeCanonicalValueImage(responseValueImageBytes).payload;
+    payload = JSON.parse(new TextDecoder().decode(payloadBytes));
+  } catch {
+    fail('ERR_AGENT_ACTION_MALFORMED');
   }
+  const action = payload?.schema === 'boundary.Agent.Action.v0' ? payload.action : payload?.body;
+  validateAgentAction(action, validation);
+}
+
+function validateAgentAction(action, validation) {
+  const allowedToolIds = new Set(validation.allowedToolIds ?? []);
+  if (!action || typeof action !== 'object' || typeof action.variant !== 'string') {
+    fail('ERR_AGENT_ACTION_MALFORMED');
+  }
+  if (action.variant === 'final') {
+    if (typeof action.text !== 'string') fail('ERR_AGENT_ACTION_MALFORMED');
+    return;
+  }
+  if (action.variant === 'tool') {
+    if (typeof action.toolId !== 'string' || typeof action.payload !== 'string') fail('ERR_AGENT_ACTION_MALFORMED');
+    if (!allowedToolIds.has(action.toolId)) fail('ERR_AGENT_ACTION_TOOL_UNKNOWN');
+    return;
+  }
+  if (action.variant === 'defer') {
+    if (typeof action.reason !== 'string') fail('ERR_AGENT_ACTION_MALFORMED');
+    return;
+  }
+  fail('ERR_AGENT_ACTION_MALFORMED');
 }
 
 function assertDriverCarriedBytesAccepted(resolved, manifest, policy) {

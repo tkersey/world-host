@@ -1003,6 +1003,114 @@ describe('capability preflight and reference drivers', () => {
     assert.ok(forgedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
   });
 
+  it('invalidates cached model outputs that fail journal output validation before reuse', async () => {
+    const modelRequest = {
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClass: 'model',
+      responseSchema: { status: 'ok' },
+      idempotencyKeyBytes: fromUtf8('model-output-journal-cache-key'),
+      idempotencyKeyWorldFingerprint: 'world:key:model-output-journal-cache',
+      requestBytes: fromUtf8(stableJson({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: 'goal=journal-cache' })),
+      hostRequestFingerprint: 'world:host-request:0000000000000d04',
+    };
+    let liveInvocations = 0;
+    const strictDriver = {
+      manifest() {
+        return {
+          driverId: 'strict-model-output-cache',
+          supportedActuatorRefs: ['model:decision'],
+          supportedDescriptorFingerprints: ['descriptor:agent-decision-prompt'],
+          supportedActuationClasses: ['model'],
+          supportedResponseStatuses: ['ok'],
+          maximumRequestBytes: 4096,
+          maximumResponseBytes: 4096,
+          recoveryClass: EffectRecoveryClass.idempotent,
+          concurrencyLimit: 1,
+          authorityLabels: ['model:http-json'],
+          diagnostics: {
+            endpointSource: 'config',
+            configuredEndpointUrl: 'https://allowed.example/decide',
+            defaultMethod: 'POST',
+            modelOutputValidation: {
+              outputSchema: 'boundary.Agent.Action.v0',
+              allowedToolIds: ['actuate'],
+            },
+          },
+        };
+      },
+      async resolve() {
+        liveInvocations += 1;
+        return {
+          resolutionInputBytes: encodeResolutionInputBytes({
+            targetHostRequestFingerprint: 0xd04n,
+            status: 0,
+            responseValueImageBytes: agentActionValueImage({ variant: 'final', text: 'fresh model output' }),
+            hostClaimBytes: fromUtf8('host-claim:fresh-model-output'),
+            attemptNumber: liveInvocations,
+            metadata: fromUtf8('fresh-model-output-resolution'),
+          }),
+        };
+      },
+    };
+    const manifest = strictDriver.manifest();
+    const store = new MemoryStore();
+    const cachedResolutionInputBytes = encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xd04n,
+      status: 0,
+      responseValueImageBytes: agentActionValueImage({ variant: 'tool', toolId: 'write_file', payload: 'cached invalid tool' }),
+      hostClaimBytes: fromUtf8('host-claim:cached-invalid-model-output'),
+      attemptNumber: 1,
+      metadata: fromUtf8('cached-invalid-model-output-resolution'),
+    });
+    const requestBytesRef = await store.putBlob(modelRequest.requestBytes);
+    const cachedResolutionInputRef = await store.putBlob(cachedResolutionInputBytes);
+    const journaledRequest = journaledHostRequest(modelRequest, manifest);
+    const cachedEffect = {
+      runId: 'run:model-output-journal-cache',
+      branchId: 'branch:model-output-journal-cache',
+      parentTurnClosureFingerprint: 'world:closure:model-output-journal-cache-parent',
+      hostRequestFingerprint: modelRequest.hostRequestFingerprint,
+      idempotencyKey: {
+        format: 'world-idempotency-key-bytes.hex',
+        bytesHex: Buffer.from('model-output-journal-cache-key').toString('hex'),
+      },
+      idempotencyKeyWorldFingerprint: modelRequest.idempotencyKeyWorldFingerprint,
+      actuatorRef: modelRequest.actuatorRef,
+      descriptorFingerprint: modelRequest.descriptorFingerprint,
+      actuationClass: modelRequest.actuationClass,
+      responseSchema: modelRequest.responseSchema,
+      requestBytesRef,
+      requestBytesChecksum: `sha256:${createHash('sha256').update(modelRequest.requestBytes).digest('hex')}`,
+      requestIdentityChecksum: `sha256:${createHash('sha256').update(journaledRequest.effectIdentityBytes).digest('hex')}`,
+      state: EffectState.resolved,
+      attemptCount: 1,
+      driverRecoveryClass: EffectRecoveryClass.idempotent,
+      resolutionInputRef: cachedResolutionInputRef,
+      diagnostics: {},
+    };
+    await store.putEffectRecord(cachedEffect);
+    const journal = new EffectJournal({
+      store,
+      runId: cachedEffect.runId,
+      branchId: cachedEffect.branchId,
+      parentTurnClosureFingerprint: cachedEffect.parentTurnClosureFingerprint,
+      policy: {
+        allowedAuthorityLabels: ['model:http-json'],
+        maximumLiveModelCalls: 1,
+      },
+    });
+
+    const result = await journal.resolve({}, modelRequest, strictDriver);
+    const current = await store.getEffectRecord(cachedEffect.runId, cachedEffect.idempotencyKey, cachedEffect.branchId);
+
+    assert.equal(liveInvocations, 1);
+    assert.equal(result.reused, false);
+    assert.equal(decodeResolutionInputBytes(result.resolutionInputBytes).status, 0);
+    assert.notDeepEqual(current.resolutionInputRef, cachedResolutionInputRef);
+    assert.equal(current.diagnostics.invalidReusableResolution, 'ERR_EFFECT_MODEL_OUTPUT_INVALID');
+  });
+
   it('requires descriptor coverage for application-level actuator requirements', () => {
     const report = preflightCapabilities({
       application: {

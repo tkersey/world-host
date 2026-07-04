@@ -701,6 +701,16 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': aliasedBuiltinModuleAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const computedAliasedBuiltinModuleAdapter = fromUtf8("const name = 'getBuiltinModule'; const gbm = process[name]; const fs = gbm('node:fs'); export const CapabilityDriver = fs;");
+    const computedAliasedBuiltinModuleAdapterChecksum = `sha256:${await sha256Hex(computedAliasedBuiltinModuleAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: computedAliasedBuiltinModuleAdapterChecksum }],
+      }, { 'adapter.mjs': computedAliasedBuiltinModuleAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const optionalBuiltinModuleAdapter = fromUtf8("const fs = process.getBuiltinModule?.('node:fs'); export const CapabilityDriver = fs;");
     const optionalBuiltinModuleAdapterChecksum = `sha256:${await sha256Hex(optionalBuiltinModuleAdapter)}`;
     await assert.rejects(

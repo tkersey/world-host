@@ -673,6 +673,7 @@ function artifactCredentialSentinel(value) {
 function adapterHasImportCall(text) {
   if (adapterAliasesGlobalObject(text)) return true;
   if (adapterAliasesReflectiveGetter(text)) return true;
+  if (adapterAliasesDangerousComputedMember(text)) return true;
   let previousSignificant = null;
   for (let index = 0; index < text.length;) {
     index = skipWhitespaceAndComments(text, index);
@@ -795,6 +796,46 @@ function adapterAliasesReflectiveGetter(text) {
   const getterDeclaration = new RegExp(`\\b(?:const|let|var)\\s+${identifier}\\s*=\\s*(?:${reflectAliasPattern})\\s*${getterAccess}`);
   const getterUse = new RegExp(`\\b(?:${reflectAliasPattern})\\s*${getterAccess}`);
   return getterDeclaration.test(text) || getterUse.test(text);
+}
+
+function adapterAliasesDangerousComputedMember(text) {
+  const identifier = '[A-Za-z_$][A-Za-z0-9_$]*';
+  const literalAliases = new Set();
+  const literalDeclaration = /\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(["'`])([^"'`]+)\2/g;
+  for (const match of text.matchAll(literalDeclaration)) {
+    if (dangerousMemberName(match[3])) literalAliases.add(match[1]);
+  }
+  const aliasDeclaration = new RegExp(`\\b(?:const|let|var)\\s+(${identifier})\\s*=\\s*(${identifier})\\b`, 'g');
+  for (let changed = true; changed;) {
+    changed = false;
+    aliasDeclaration.lastIndex = 0;
+    for (const match of text.matchAll(aliasDeclaration)) {
+      if (literalAliases.has(match[2]) && !literalAliases.has(match[1])) {
+        literalAliases.add(match[1]);
+        changed = true;
+      }
+    }
+  }
+  if (!literalAliases.size) return false;
+  const aliasPattern = [...literalAliases].map(escapeRegExp).join('|');
+  const dangerousReceiver = '(?:process|globalThis|global|window|self)';
+  const computedDangerousMember = `${dangerousReceiver}\\s*(?:\\?\\.)?\\[\\s*(?:${aliasPattern})\\s*\\]`;
+  const directCall = new RegExp(`\\b${computedDangerousMember}\\s*(?:\\?\\.\\s*)?\\(`);
+  if (directCall.test(text)) return true;
+  const calleeAliases = new Set();
+  const memberDeclaration = new RegExp(`\\b(?:const|let|var)\\s+(${identifier})\\s*=\\s*${computedDangerousMember}`, 'g');
+  for (const match of text.matchAll(memberDeclaration)) calleeAliases.add(match[1]);
+  const memberAssignment = new RegExp(`(?:^|[;{}(),\\n])\\s*(${identifier})\\s*=\\s*${computedDangerousMember}`, 'g');
+  for (const match of text.matchAll(memberAssignment)) calleeAliases.add(match[1]);
+  for (const alias of calleeAliases) {
+    const call = new RegExp(`\\b${escapeRegExp(alias)}\\s*(?:\\?\\.\\s*)?\\(`);
+    if (call.test(text)) return true;
+  }
+  return false;
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
 }
 
 function dangerousCallAt(text, index) {
