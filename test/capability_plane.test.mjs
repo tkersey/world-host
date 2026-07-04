@@ -591,6 +591,16 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': constructorFunctionImportAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const constructorAliasImportAdapter = fromUtf8('const F = (class {}).constructor; const fs = F("s", "return import(s)")("node:fs"); export const CapabilityDriver = fs;');
+    const constructorAliasImportAdapterChecksum = `sha256:${await sha256Hex(constructorAliasImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: constructorAliasImportAdapterChecksum }],
+      }, { 'adapter.mjs': constructorAliasImportAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const computedConstructorFunctionImportAdapter = fromUtf8('const fs = []["filter"]["constructor"]("s", "return import(s)")("node:fs"); export const CapabilityDriver = fs;');
     const computedConstructorFunctionImportAdapterChecksum = `sha256:${await sha256Hex(computedConstructorFunctionImportAdapter)}`;
     await assert.rejects(
@@ -1636,6 +1646,20 @@ describe('Capability Plane v0.2 core contracts', () => {
         { path: '.env.local', checksum: sidecarEnvFileChecksum },
       ],
     }, { 'sidecar.mjs': sidecar, '.env.local': sidecarEnvFile }), true);
+    const nodeOptionsEnvFile = fromUtf8('NODE_OPTIONS=--import=evil-package\nSETTING=value\n');
+    const nodeOptionsEnvFileChecksum = `sha256:${await sha256Hex(nodeOptionsEnvFile)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', '--env-file=.env.local', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: '.env.local', checksum: nodeOptionsEnvFileChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, '.env.local': nodeOptionsEnvFile }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
     const nodeConfigWithImport = fromUtf8(JSON.stringify({ nodeOptions: { import: 'evil-package' } }));
     const nodeConfigWithImportChecksum = `sha256:${await sha256Hex(nodeConfigWithImport)}`;
     await assert.rejects(
@@ -2090,6 +2114,21 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'sidecar.mjs': sidecar }),
       { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
+    for (const command of [
+      ['pnpm', 'node', '-e', 'import("node:fs")', './sidecar.mjs'],
+      ['yarn', 'node', '-e', 'import("node:fs")', './sidecar.mjs'],
+      ['corepack', 'pnpm', 'node', '-e', 'import("node:fs")', './sidecar.mjs'],
+    ]) {
+      await assert.rejects(
+        () => assertCapabilityPackChecksums({
+          ...manifest,
+          adapter: { kind: 'sidecar', command },
+          docs: [],
+          checksums: [{ path: './sidecar.mjs', checksum: sidecarChecksum }],
+        }, { './sidecar.mjs': sidecar }),
+        { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+      );
+    }
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
@@ -2155,6 +2194,17 @@ describe('Capability Plane v0.2 core contracts', () => {
         docs: [],
         checksums: [{ path: './sidecar.sh', checksum: secretSidecarChecksum }],
       }, { './sidecar.sh': secretSidecar }),
+      { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
+    );
+    const prefixedTokenSidecar = fromUtf8('const GITHUB_TOKEN = "abcdefghijklmnop";\n');
+    const prefixedTokenSidecarChecksum = `sha256:${await sha256Hex(prefixedTokenSidecar)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['./sidecar.sh'] },
+        docs: [],
+        checksums: [{ path: './sidecar.sh', checksum: prefixedTokenSidecarChecksum }],
+      }, { './sidecar.sh': prefixedTokenSidecar }),
       { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
     );
     assert.throws(

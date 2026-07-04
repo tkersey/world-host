@@ -324,6 +324,7 @@ export async function assertCapabilityPackChecksums(manifestLike, artifacts = {}
   }
   assertSidecarDenoConfigsDoNotDefineImportMaps(manifest, artifacts);
   assertSidecarNodeConfigsDoNotLoadModules(manifest, artifacts);
+  assertSidecarNodeEnvFilesDoNotLoadModules(manifest, artifacts);
   assertAdapterArtifactSelfContained(manifest, artifacts);
   assertSidecarAdapterArtifactsSelfContained(manifest, artifacts);
   return true;
@@ -418,6 +419,42 @@ function assertSidecarNodeConfigDoesNotLoadModules(artifactPath, artifacts) {
   if (nodeConfigLoadsModules(config?.nodeOptions)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Node sidecar configs must not load modules outside checksum coverage');
   }
+}
+
+function assertSidecarNodeEnvFilesDoNotLoadModules(manifest, artifacts) {
+  if (manifest.adapter.kind !== 'sidecar') return;
+  const commands = [manifest.adapter.command];
+  const shebangCommand = sidecarShebangRuntimeCommand(manifest.adapter.command, artifacts);
+  if (shebangCommand) commands.push(shebangCommand);
+  for (const command of commands) {
+    for (const artifactPath of sidecarNodeEnvFileArtifacts(command)) {
+      assertSidecarNodeEnvFileDoesNotLoadModules(artifactPath, artifacts);
+    }
+  }
+}
+
+function assertSidecarNodeEnvFileDoesNotLoadModules(artifactPath, artifacts) {
+  const bytes = artifacts[artifactPath];
+  if (!(bytes instanceof Uint8Array)) return;
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `Node sidecar env file must be UTF-8 text: ${artifactPath}`);
+  }
+  if (nodeEnvFileSetsNodeOptions(text)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Node sidecar env files must not set NODE_OPTIONS');
+  }
+}
+
+function nodeEnvFileSetsNodeOptions(text) {
+  for (const line of text.split(/\r\n|\r|\n/)) {
+    const trimmed = line.trimStart();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const content = trimmed.startsWith('export ') ? trimmed.slice('export '.length).trimStart() : trimmed;
+    if (/^NODE_OPTIONS\s*=/.test(content)) return true;
+  }
+  return false;
 }
 
 function nodeConfigLoadsModules(nodeOptions) {
@@ -615,9 +652,13 @@ function artifactCredentialText(text) {
   for (const match of text.matchAll(scheme)) {
     if (!artifactCredentialSentinel(match[1])) return true;
   }
-  const assignment = /(?:^|[?&;,\s{])["']?(?:credential|authorization|token|secret|password|(?:api|access|private)[_-]?key)["']?\s*[:=]\s*["']?([A-Za-z0-9._~+/-]{8,}={0,2})/ig;
-  for (const match of text.matchAll(assignment)) {
-    if (!artifactCredentialSentinel(match[1])) return true;
+  const quotedAssignment = /(?:^|[?&;,\s{])["']?([A-Za-z_][A-Za-z0-9_.-]*)["']?\s*[:=]\s*(["'])([A-Za-z0-9._~+/-]{8,}={0,2})\2/ig;
+  for (const match of text.matchAll(quotedAssignment)) {
+    if (SECRET_PATTERN.test(match[1]) && !artifactCredentialSentinel(match[3])) return true;
+  }
+  const envAssignment = /(?:^|\r?\n)\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_.-]*)\s*=\s*([A-Za-z0-9._~+/-]{8,}={0,2})\s*(?:#.*)?(?=\r?\n|$)/ig;
+  for (const match of text.matchAll(envAssignment)) {
+    if (SECRET_PATTERN.test(match[1]) && !artifactCredentialSentinel(match[2])) return true;
   }
   return false;
 }
@@ -688,7 +729,7 @@ function adapterHasImportCall(text) {
       identifier === 'Worker' || identifier === 'SharedWorker') {
       return true;
     }
-    if (identifier === 'constructor' && previousSignificant === '.' && text[callStart] === '(') return true;
+    if (identifier === 'constructor' && previousSignificant === '.') return true;
     if (identifier === 'require') {
       if (text[callStart] !== '(') return true;
       const callEnd = skipBalancedParentheses(text, callStart);
@@ -1522,6 +1563,32 @@ function sidecarNodeConfigOptionConsumesNext(value) {
   return value === '--experimental-config-file';
 }
 
+function sidecarNodeEnvFileArtifacts(command) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'node') return [];
+  const artifacts = [];
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  for (let index = 1; index < command.length; index += 1) {
+    if (!sidecarRuntimeOptionPosition(command, index)) continue;
+    if (entrypointIndex >= 0 && index > entrypointIndex) continue;
+    const artifact = sidecarNodeEnvFileOptionArtifact(command[index], command[index + 1]);
+    if (artifact) artifacts.push(artifact);
+    if (sidecarNodeEnvFileOptionConsumesNext(command[index])) index += 1;
+  }
+  return artifacts;
+}
+
+function sidecarNodeEnvFileOptionArtifact(value, nextValue) {
+  if (value === '--env-file' || value === '--env-file-if-exists') return nextValue;
+  const separator = value.indexOf('=');
+  if (separator < 0) return null;
+  const option = value.slice(0, separator);
+  return option === '--env-file' || option === '--env-file-if-exists' ? value.slice(separator + 1) : null;
+}
+
+function sidecarNodeEnvFileOptionConsumesNext(value) {
+  return value === '--env-file' || value === '--env-file-if-exists';
+}
+
 function denoConfigExtendsArtifact(fromPath, extendsPath, covered) {
   if (!packRelativeConfigPath(extendsPath)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `Deno config extends must reference a pack-relative checksum-covered artifact: ${extendsPath}`);
@@ -1845,6 +1912,9 @@ function assertSafeSidecarCommandToken(command, index) {
   if (sidecarPackageExecBeforeArtifact(command, index)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command executes packages outside checksum coverage: ${command[0]} ${value}`);
   }
+  if (sidecarPackageRuntimeBeforeArtifact(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command wraps runtime execution outside checksum coverage: ${command[0]} ${value}`);
+  }
   if (sidecarDenoTaskBeforeArtifact(command, index)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command executes deno task outside checksum coverage: ${command[0]} ${value}`);
   }
@@ -2062,6 +2132,27 @@ function sidecarCorepackPackageExecBeforeArtifact(command, index) {
   if (!['bun', 'npm', 'pnpm', 'yarn'].includes(packageManager)) return false;
   for (let cursor = 1; cursor < index; cursor += 1) {
     if (sidecarCommandArtifact(command[cursor]) && !sidecarPackageManagerOptionValuePosition(command, cursor)) return false;
+  }
+  return true;
+}
+
+function sidecarPackageRuntimeBeforeArtifact(command, index) {
+  if (!SIDECAR_JS_RUNTIMES.has(commandBaseName(command[index]).toLowerCase())) return false;
+  if (sidecarCorepackPackageRuntimeBeforeArtifact(command, index)) return true;
+  if (index < 1 || !['bun', 'npm', 'pnpm', 'yarn'].includes(commandBaseName(command[0]).toLowerCase())) return false;
+  for (let cursor = 1; cursor < index; cursor += 1) {
+    if (sidecarCommandArtifact(command[cursor]) && !sidecarPackageManagerOptionValuePosition(command, cursor)) return false;
+  }
+  return true;
+}
+
+function sidecarCorepackPackageRuntimeBeforeArtifact(command, index) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'corepack') return false;
+  if (index < 2) return false;
+  const packageManager = String(command[1]).toLowerCase();
+  if (!['bun', 'npm', 'pnpm', 'yarn'].includes(packageManager)) return false;
+  for (let cursor = 2; cursor < index; cursor += 1) {
+    if (sidecarCommandArtifact(command[cursor])) return false;
   }
   return true;
 }
