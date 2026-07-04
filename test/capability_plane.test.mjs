@@ -360,6 +360,16 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': dottedRequireAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const escapedEvalAdapter = fromUtf8("const fs = globalThis.e\\u0076al('import(\"node:fs\")'); export const CapabilityDriver = fs;");
+    const escapedEvalAdapterChecksum = `sha256:${await sha256Hex(escapedEvalAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: escapedEvalAdapterChecksum }],
+      }, { 'adapter.mjs': escapedEvalAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const moduleRequireAdapter = fromUtf8("const fs = module.require('node:fs'); export const CapabilityDriver = fs;");
     const moduleRequireAdapterChecksum = `sha256:${await sha256Hex(moduleRequireAdapter)}`;
     await assert.rejects(
@@ -2675,6 +2685,18 @@ describe('Capability Plane v0.2 core contracts', () => {
     const fixtureWithDriverOverrides = await runCapabilityMode({ mode: 'fixture', driver: hostFieldOverrideFixtureDriver(), hostRequest: request });
     assert.equal(fixtureWithDriverOverrides.mode, 'fixture');
     assert.equal(fixtureWithDriverOverrides.submittedToWorld, true);
+    const deniedFixturePackFingerprint = 'sha256:'.concat('3'.repeat(64));
+    const deniedFixturePackDriver = localPolicyProbeDriver({ packFingerprint: deniedFixturePackFingerprint });
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'fixture',
+        driver: deniedFixturePackDriver,
+        hostRequest: request,
+        policy: { deniedCapabilityPacks: [deniedFixturePackFingerprint] },
+      }),
+      { code: 'ERR_CAPABILITY_PACK_DENIED' },
+    );
+    assert.equal(deniedFixturePackDriver.resolveCalled, false);
     assert.throws(
       () => assertCapabilityResolutionBoundary({ ...fixture, turnReceiptBytes: fromUtf8('receipt') }),
       { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
@@ -5251,9 +5273,13 @@ function policyProbeDriver({ packFingerprint } = {}) {
 
 function localPolicyProbeDriver({ packFingerprint } = {}) {
   let shadowCalled = false;
+  let resolveCalled = false;
   return {
     get shadowCalled() {
       return shadowCalled;
+    },
+    get resolveCalled() {
+      return resolveCalled;
     },
     manifest() {
       return {
@@ -5282,6 +5308,7 @@ function localPolicyProbeDriver({ packFingerprint } = {}) {
       return { liveInvoked: false, schemaAccepted: false };
     },
     async resolve() {
+      resolveCalled = true;
       const error = new Error('local policy bypassed');
       error.code = 'ERR_LOCAL_POLICY_BYPASS_EFFECT';
       throw error;

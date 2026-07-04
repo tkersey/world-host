@@ -616,15 +616,15 @@ function adapterHasImportCall(text) {
       previousSignificant = 'template';
       continue;
     }
-    if (!identifierStart(char)) {
+    if (!identifierStart(char) && !identifierEscapeStart(text, index)) {
       previousSignificant = char;
       index += 1;
       continue;
     }
-    const start = index;
-    index += 1;
-    while (index < text.length && identifierPart(text[index])) index += 1;
-    const identifier = text.slice(start, index);
+    const identifierName = readIdentifierName(text, index);
+    if (!identifierName || identifierName.invalid) return true;
+    index = identifierName.end;
+    const identifier = identifierName.value;
     const callStart = skipWhitespaceAndComments(text, index);
     if (identifier === 'Reflect' && reflectiveGetterAccess(text, callStart)) return true;
     if (identifier === 'eval' || identifier === 'Function' || identifier === 'getBuiltinModule' ||
@@ -701,10 +701,9 @@ function reflectiveGetterAccess(text, index) {
   index = skipWhitespaceAndComments(text, index);
   if (text[index] === '.') {
     index = skipWhitespaceAndComments(text, index + 1);
-    const start = index;
-    if (!identifierStart(text[index])) return false;
-    while (index < text.length && identifierPart(text[index])) index += 1;
-    return text.slice(start, index) === 'get';
+    const identifier = readIdentifierName(text, index);
+    if (!identifier || identifier.invalid) return true;
+    return identifier.value === 'get';
   }
   if (text[index] !== '[') return false;
   const afterBracket = skipBalancedBracket(text, index);
@@ -756,11 +755,11 @@ function globalReceiverExpressionSpan(text, start, end) {
     const closeParenthesis = skipBalancedParentheses(text, start);
     if (closeParenthesis === end + 1) return globalReceiverExpressionSpan(text, start + 1, end - 1);
   }
-  if (!identifierStart(text[start])) return false;
-  let index = start + 1;
-  while (index <= end && identifierPart(text[index])) index += 1;
+  const name = readIdentifierName(text, start);
+  if (!name || name.invalid) return false;
+  let index = name.end;
   if (skipWhitespaceAndComments(text, index) <= end) return false;
-  const identifier = text.slice(start, index);
+  const identifier = name.value;
   return identifier === 'globalThis' || identifier === 'global' || identifier === 'window' || identifier === 'self';
 }
 
@@ -1143,11 +1142,49 @@ function skipBalancedParentheses(text, index) {
 }
 
 function identifierStart(char) {
-  return /[A-Za-z_$]/.test(char);
+  return typeof char === 'string' && char.length === 1 && /[A-Za-z_$]/.test(char);
 }
 
 function identifierPart(char) {
-  return /[A-Za-z0-9_$]/.test(char);
+  return typeof char === 'string' && char.length === 1 && /[A-Za-z0-9_$]/.test(char);
+}
+
+function identifierEscapeStart(text, index) {
+  return text[index] === '\\' && text[index + 1] === 'u';
+}
+
+function readIdentifierName(text, index) {
+  let value = '';
+  let cursor = index;
+  let first = true;
+  for (;;) {
+    if (cursor >= text.length) break;
+    let part = null;
+    let end = cursor + 1;
+    if (identifierEscapeStart(text, cursor)) {
+      const escaped = readIdentifierEscape(text, cursor);
+      if (!escaped.value) return { value, end: escaped.end, invalid: true };
+      part = escaped.value;
+      end = escaped.end;
+    } else {
+      part = text[cursor];
+    }
+    if (first ? !identifierStart(part) : !identifierPart(part)) break;
+    value += part;
+    cursor = end;
+    first = false;
+  }
+  return first ? null : { value, end: cursor, invalid: false };
+}
+
+function readIdentifierEscape(text, index) {
+  if (!identifierEscapeStart(text, index)) return { value: null, end: index + 1 };
+  if (text[index + 2] === '{') {
+    const close = text.indexOf('}', index + 3);
+    if (close !== -1) return { value: stringEscapeCodePoint(text.slice(index + 3, close)), end: close + 1 };
+    return { value: null, end: text.length };
+  }
+  return { value: stringEscapeCodePoint(text.slice(index + 2, index + 6)), end: Math.min(index + 6, text.length) };
 }
 
 function assertReferencedArtifactsCovered(manifest, artifacts) {

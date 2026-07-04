@@ -33,6 +33,7 @@ export async function runCapabilityMode({
   if (mode === CapabilityExecutionMode.fixture) {
     assertManifestCoversHostRequest(manifest, hostRequest);
     assertFixtureModeAllowed(manifest, hostRequest);
+    assertLocalCapabilityPolicyAllows(manifest, hostRequest, livePolicy, 'fixture');
     assertCapabilityPreflightAccepted(await driver.preflight(context, hostRequest));
     const resolved = await driver.resolve(context, hostRequest);
     assertCapabilityResolutionBoundary(resolved);
