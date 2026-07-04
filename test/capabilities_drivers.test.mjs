@@ -79,6 +79,37 @@ describe('capability preflight and reference drivers', () => {
     }]);
   });
 
+  it('checks request-routed HTTP required actuators against declared request origins', () => {
+    const request = {
+      ...httpRequest('https://allowed.example/path', 'POST'),
+      requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/path', body: { prompt: 'hi' } })),
+    };
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [{ actuatorRef: 'http:json', descriptorFingerprint: 'descriptor:http-json' }],
+        requiredHostAuthorityLabels: ['network:http'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://fallback.example/decide',
+        allowEndpointFromRequest: true,
+        origins: ['https://allowed.example'],
+        methods: ['POST'],
+      })],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.everyRequiredActuatorCovered, true);
+    assert.equal(report.everyPendingRequestCovered, true);
+  });
+
   it('uses default HTTP methods for multi-method request URLs during preflight', () => {
     const request = {
       ...httpRequest('https://allowed.example/path'),

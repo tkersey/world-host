@@ -633,22 +633,38 @@ function policyBlockers(route, request, policy) {
   }
   if (isHumanRoute(route, request) && policy.allowHumanEffects !== true) blockers.push('ERR_CAPABILITY_HUMAN_DENIED');
   if (isHttpRoute(route, request)) {
-    const origin = requestOriginForRoute(request, route);
     const driverOrigins = Array.isArray(route.diagnostics?.origins) ? new Set(route.diagnostics.origins) : null;
-    if (driverOrigins && (!origin || !driverOrigins.has(origin))) blockers.push(`http-origin-driver-denied:${origin ?? 'unknown'}`);
-    if (!origin) blockers.push('http-origin-denied:unknown');
-    else if (!policy.allowedHttpOrigins.size) blockers.push('http-origin-allowlist-required');
-    else if (!policy.allowedHttpOrigins.has(origin)) blockers.push(`http-origin-denied:${origin}`);
-    const method = requestMethodForRoute(request, route);
     const driverMethods = Array.isArray(route.diagnostics?.methods)
       ? new Set(route.diagnostics.methods.map((item) => String(item).toUpperCase()))
       : null;
-    if (driverMethods && (!method || !driverMethods.has(method))) blockers.push(`http-method-driver-denied:${method ?? 'unknown'}`);
-    if (!method) blockers.push('http-method-denied:unknown');
-    else if (!policy.allowedHttpMethods.size) blockers.push('http-method-allowlist-required');
-    else if (!policy.allowedHttpMethods.has(method)) blockers.push(`http-method-denied:${method}`);
+    if (!request && requestRoutedEndpointRoute(route)) {
+      if (!driverOrigins?.size) blockers.push('http-origin-denied:unknown');
+      else if (!policy.allowedHttpOrigins.size) blockers.push('http-origin-allowlist-required');
+      else if (!setsIntersect(driverOrigins, policy.allowedHttpOrigins)) blockers.push(`http-origin-denied:${[...driverOrigins].join(',')}`);
+      if (!driverMethods?.size) blockers.push('http-method-denied:unknown');
+      else if (!policy.allowedHttpMethods.size) blockers.push('http-method-allowlist-required');
+      else if (!setsIntersect(driverMethods, policy.allowedHttpMethods)) blockers.push(`http-method-denied:${[...driverMethods].join(',')}`);
+    } else {
+      const origin = requestOriginForRoute(request, route);
+      if (driverOrigins && (!origin || !driverOrigins.has(origin))) blockers.push(`http-origin-driver-denied:${origin ?? 'unknown'}`);
+      if (!origin) blockers.push('http-origin-denied:unknown');
+      else if (!policy.allowedHttpOrigins.size) blockers.push('http-origin-allowlist-required');
+      else if (!policy.allowedHttpOrigins.has(origin)) blockers.push(`http-origin-denied:${origin}`);
+      const method = requestMethodForRoute(request, route);
+      if (driverMethods && (!method || !driverMethods.has(method))) blockers.push(`http-method-driver-denied:${method ?? 'unknown'}`);
+      if (!method) blockers.push('http-method-denied:unknown');
+      else if (!policy.allowedHttpMethods.size) blockers.push('http-method-allowlist-required');
+      else if (!policy.allowedHttpMethods.has(method)) blockers.push(`http-method-denied:${method}`);
+    }
   }
   return blockers;
+}
+
+function setsIntersect(left, right) {
+  for (const item of left) {
+    if (right.has(item)) return true;
+  }
+  return false;
 }
 
 function isFileRoute(route, request) {
@@ -792,6 +808,10 @@ function fixedConfiguredEndpointRoute(route) {
 
 function configuredEndpointRoute(route) {
   return route?.diagnostics?.endpointSource === 'config' || route?.diagnostics?.endpointSource === 'request-or-config';
+}
+
+function requestRoutedEndpointRoute(route) {
+  return route?.diagnostics?.endpointSource === 'request-or-config';
 }
 
 function configuredRouteOrigin(route) {
