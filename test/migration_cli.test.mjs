@@ -828,6 +828,26 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('rejects symlinked capability pack roots during CLI check-pack', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-root-symlink-'));
+    const pack = path.join(root, 'capability-pack-v0.2-fixture');
+    const link = path.join(root, 'linked-pack');
+    try {
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await symlink(pack, link);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', link, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ROOT_UNSAFE' },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('rejects symlinked capability pack conformance receipts during proof script', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-proof-symlink-'));
     const packs = path.join(root, 'capability-packs');
@@ -847,6 +867,28 @@ describe('migration, branching, and CLI diagnostics', () => {
 
       assert.notEqual(result.status, 0);
       assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ARTIFACT_UNSAFE:conformance\.json/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects symlinked capability pack roots during proof script', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-proof-root-symlink-'));
+    const packs = path.join(root, 'capability-packs');
+    const realPack = path.join(root, 'real-pack');
+    const linkedPack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), realPack, { recursive: true });
+      await symlink(realPack, linkedPack);
+
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ROOT_UNSAFE:/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

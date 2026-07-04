@@ -46,7 +46,7 @@ for (const name of names) {
 console.log(JSON.stringify({ capabilityPacks: results, status: 'passed' }, null, 2));
 
 async function readPackFile(packRoot, relativePath, encoding = null) {
-  const rootPath = await realpath(packRoot);
+  const rootPath = await safePackRoot(packRoot);
   const target = path.resolve(packRoot, relativePath);
   const info = await lstat(target);
   if (info.isSymbolicLink()) throw new Error(`ERR_CAPABILITY_PACK_ARTIFACT_UNSAFE:${relativePath}`);
@@ -54,6 +54,13 @@ async function readPackFile(packRoot, relativePath, encoding = null) {
   const actual = await realpath(target);
   if (!pathInside(rootPath, actual)) throw new Error(`ERR_CAPABILITY_PACK_ARTIFACT_UNSAFE:${relativePath}`);
   return encoding ? await readFile(actual, encoding) : await readFile(actual);
+}
+
+async function safePackRoot(packRoot) {
+  const info = await lstat(packRoot);
+  if (info.isSymbolicLink()) throw new Error(`ERR_CAPABILITY_PACK_ROOT_UNSAFE:${packRoot}`);
+  if (!info.isDirectory()) throw new Error(`ERR_CAPABILITY_PACK_ROOT_INVALID:${packRoot}`);
+  return await realpath(packRoot);
 }
 
 function pathInside(rootPath, target) {

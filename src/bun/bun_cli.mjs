@@ -120,7 +120,7 @@ async function runCapabilityCommand(args, io) {
 }
 
 async function readPackFile(packRoot, relativePath, encoding = null) {
-  const root = await realpath(packRoot).catch(() => fail('ERR_CAPABILITY_PACK_ROOT_INVALID', `pack root is not readable: ${packRoot}`));
+  const root = await safePackRoot(packRoot);
   const target = path.resolve(packRoot, relativePath);
   const info = await lstat(target).catch(() => fail('ERR_CAPABILITY_PACK_ARTIFACT_MISSING', `artifact missing: ${relativePath}`));
   if (info.isSymbolicLink()) fail('ERR_CAPABILITY_PACK_ARTIFACT_UNSAFE', `artifact is a symlink: ${relativePath}`);
@@ -128,6 +128,13 @@ async function readPackFile(packRoot, relativePath, encoding = null) {
   const actual = await realpath(target).catch(() => fail('ERR_CAPABILITY_PACK_ARTIFACT_MISSING', `artifact missing: ${relativePath}`));
   if (!pathInside(root, actual)) fail('ERR_CAPABILITY_PACK_ARTIFACT_UNSAFE', `artifact escapes pack root: ${relativePath}`);
   return encoding ? await readFile(actual, encoding) : await readFile(actual);
+}
+
+async function safePackRoot(packRoot) {
+  const info = await lstat(packRoot).catch(() => fail('ERR_CAPABILITY_PACK_ROOT_INVALID', `pack root is not readable: ${packRoot}`));
+  if (info.isSymbolicLink()) fail('ERR_CAPABILITY_PACK_ROOT_UNSAFE', `pack root is a symlink: ${packRoot}`);
+  if (!info.isDirectory()) fail('ERR_CAPABILITY_PACK_ROOT_INVALID', `pack root is not a directory: ${packRoot}`);
+  return await realpath(packRoot).catch(() => fail('ERR_CAPABILITY_PACK_ROOT_INVALID', `pack root is not readable: ${packRoot}`));
 }
 
 function pathInside(root, target) {
