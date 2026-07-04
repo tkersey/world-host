@@ -14,6 +14,7 @@ import { SandboxFileDriver } from '../src/drivers/sandbox_file_driver.mjs';
 import { HttpJsonDriver } from '../src/drivers/http_json_driver.mjs';
 import { GenericHttpJsonCapabilityDriver } from '../src/drivers/generic_http_json_capability_driver.mjs';
 import { GenericHttpJsonModelDriver } from '../src/drivers/model_capability_driver.mjs';
+import { agentActionValueImage } from '../src/drivers/fixture_agent_model_driver.mjs';
 import { HumanApprovalCapabilityDriver } from '../src/drivers/human_approval_capability_driver.mjs';
 import { fromUtf8, makeBlobRef, stableJson } from '../src/core/store.mjs';
 import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
@@ -835,13 +836,25 @@ describe('capability preflight and reference drivers', () => {
     const cachedResolutionInputBytes = encodeResolutionInputBytes({
       targetHostRequestFingerprint: 0xc03n,
       status: 0,
-      responseValueImageBytes: fromUtf8('cached policy response'),
+      responseValueImageBytes: agentActionValueImage({ variant: 'tool', toolId: 'write_file', payload: 'cached policy response' }),
       hostClaimBytes: fromUtf8('host-claim:cached-policy-response'),
       attemptNumber: 1,
       metadata: fromUtf8('cached-model-output-policy-resolution'),
     });
+    const forgedResolutionInputBytes = encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xc03n,
+      status: 0,
+      responseValueImageBytes: fromUtf8('forged model response'),
+      hostClaimBytes: fromUtf8('host-claim:forged-model-response'),
+      attemptNumber: 1,
+      metadata: fromUtf8('forged-model-output-policy-resolution'),
+    });
     const cachedResolutionInputRef = blobRefForBytes(cachedResolutionInputBytes);
-    const cachedResolutionInputs = new Map([[blobRefKey(cachedResolutionInputRef), cachedResolutionInputBytes]]);
+    const forgedResolutionInputRef = blobRefForBytes(forgedResolutionInputBytes);
+    const cachedResolutionInputs = new Map([
+      [blobRefKey(cachedResolutionInputRef), cachedResolutionInputBytes],
+      [blobRefKey(forgedResolutionInputRef), forgedResolutionInputBytes],
+    ]);
     const cachedEffect = {
       idempotencyKeyWorldFingerprint: modelRequest.idempotencyKeyWorldFingerprint,
       hostRequestFingerprint: modelRequest.hostRequestFingerprint,
@@ -879,9 +892,20 @@ describe('capability preflight and reference drivers', () => {
       effectRecords: [cachedEffect],
       effectResolutionInputs: cachedResolutionInputs,
     });
+    const forgedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [modelRequest],
+      drivers: [permissiveDriver],
+      policy,
+      effectRecords: [{ ...cachedEffect, resolutionInputRef: forgedResolutionInputRef }],
+      effectResolutionInputs: cachedResolutionInputs,
+    });
 
     assert.equal(permissiveReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'), false);
     assert.ok(strictReport.blockers.includes('ERR_EFFECT_IDEMPOTENCY_CONFLICT'));
+    assert.ok(forgedReport.blockers.includes('ERR_CAPABILITY_REUSABLE_EFFECT_OUTPUT_INVALID'));
+    assert.ok(forgedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
   });
 
   it('requires descriptor coverage for application-level actuator requirements', () => {

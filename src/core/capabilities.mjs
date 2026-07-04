@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { EffectRecoveryClass, ResponseStatusCode, assertDriverCanResolve, assertDriverManifest, assertDurableRecoveryAllowed } from './actuator.mjs';
 import { assertBytes, fail, fromUtf8, stableJson, toHex } from './store.mjs';
 import { decodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
+import { decodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
 
 const FIXTURE_MODEL_AUTHORITY_LABELS = new Set(['model:fixture', 'model:fixture-agent']);
 
@@ -363,6 +364,59 @@ function assertReusableResolutionAccepted(resolutionInputBytes, request, route, 
   )) {
     fail('ERR_CAPABILITY_REUSABLE_EFFECT_RESPONSE_TOO_LARGE', 'reusable effect ResolutionInput exceeds response policy');
   }
+  assertReusableModelOutputAccepted(resolution, route);
+}
+
+function assertReusableModelOutputAccepted(resolution, route) {
+  const validation = route?.diagnostics?.modelOutputValidation;
+  if (validation == null || resolution.status !== 0) return;
+  try {
+    assertModelOutputValidationSupported(validation);
+    validateAgentActionValueImage(resolution.responseValueImageBytes, validation);
+  } catch (error) {
+    fail('ERR_CAPABILITY_REUSABLE_EFFECT_OUTPUT_INVALID', 'reusable model effect output does not satisfy route validation', {
+      error: error?.code ?? String(error?.message ?? error),
+    });
+  }
+}
+
+function assertModelOutputValidationSupported(validation) {
+  if (validation?.outputSchema !== 'boundary.Agent.Action.v0') {
+    fail('ERR_CAPABILITY_REUSABLE_EFFECT_OUTPUT_VALIDATION_UNSUPPORTED');
+  }
+}
+
+function validateAgentActionValueImage(responseValueImageBytes, validation) {
+  let payload;
+  try {
+    const payloadBytes = decodeCanonicalValueImage(responseValueImageBytes).payload;
+    payload = JSON.parse(new TextDecoder().decode(payloadBytes));
+  } catch {
+    fail('ERR_AGENT_ACTION_MALFORMED');
+  }
+  const action = payload?.schema === 'boundary.Agent.Action.v0' ? payload.action : payload?.body;
+  validateAgentAction(action, validation);
+}
+
+function validateAgentAction(action, validation) {
+  const allowedToolIds = new Set(validation.allowedToolIds ?? []);
+  if (!action || typeof action !== 'object' || typeof action.variant !== 'string') {
+    fail('ERR_AGENT_ACTION_MALFORMED');
+  }
+  if (action.variant === 'final') {
+    if (typeof action.text !== 'string') fail('ERR_AGENT_ACTION_MALFORMED');
+    return;
+  }
+  if (action.variant === 'tool') {
+    if (typeof action.toolId !== 'string' || typeof action.payload !== 'string') fail('ERR_AGENT_ACTION_MALFORMED');
+    if (!allowedToolIds.has(action.toolId)) fail('ERR_AGENT_ACTION_TOOL_UNKNOWN');
+    return;
+  }
+  if (action.variant === 'defer') {
+    if (typeof action.reason !== 'string') fail('ERR_AGENT_ACTION_MALFORMED');
+    return;
+  }
+  fail('ERR_AGENT_ACTION_MALFORMED');
 }
 
 function assertReusableResolutionStatusAccepted(status, request, route) {

@@ -440,6 +440,16 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': reflectFunctionImportAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const reflectAliasFunctionImportAdapter = fromUtf8('const R = Reflect; const get = R.get; const F = get(globalThis, "Function"); const fs = F("s", "return import(s)")("node:fs"); export const CapabilityDriver = fs;');
+    const reflectAliasFunctionImportAdapterChecksum = `sha256:${await sha256Hex(reflectAliasFunctionImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: reflectAliasFunctionImportAdapterChecksum }],
+      }, { 'adapter.mjs': reflectAliasFunctionImportAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const aliasedComputedFunctionImportAdapter = fromUtf8('const F = globalThis["Function"]; const fs = F("s", "return import(s)")("node:fs"); export const CapabilityDriver = fs;');
     const aliasedComputedFunctionImportAdapterChecksum = `sha256:${await sha256Hex(aliasedComputedFunctionImportAdapter)}`;
     await assert.rejects(
@@ -1446,6 +1456,19 @@ describe('Capability Plane v0.2 core contracts', () => {
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
+        adapter: { kind: 'sidecar', command: ['deno', 'run', '--config', 'deno.json', '-P=full', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: 'deno.json', checksum: denoConfigExtendsBaseChecksum },
+          { path: 'base.json', checksum: denoBaseConfigChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, 'deno.json': denoConfigExtendsBase, 'base.json': denoBaseConfig }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
         adapter: { kind: 'sidecar', command: ['deno', 'run', '--config', 'configs/deno.json', 'sidecar.mjs'] },
         docs: [],
         checksums: [
@@ -1602,6 +1625,20 @@ describe('Capability Plane v0.2 core contracts', () => {
         { path: '.env.local', checksum: sidecarEnvFileChecksum },
       ],
     }, { 'sidecar.mjs': sidecar, '.env.local': sidecarEnvFile }), true);
+    const nodeConfigWithImport = fromUtf8(JSON.stringify({ nodeOptions: { import: 'evil-package' } }));
+    const nodeConfigWithImportChecksum = `sha256:${await sha256Hex(nodeConfigWithImport)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', '--experimental-config-file=./node.config.json', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: './node.config.json', checksum: nodeConfigWithImportChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, './node.config.json': nodeConfigWithImport }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
     const sidecarCertificate = fromUtf8('-----BEGIN CERTIFICATE-----\npublic\n-----END CERTIFICATE-----\n');
     const sidecarCertificateChecksum = `sha256:${await sha256Hex(sidecarCertificate)}`;
     await assert.rejects(
@@ -1964,6 +2001,15 @@ describe('Capability Plane v0.2 core contracts', () => {
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
+        adapter: { kind: 'sidecar', command: ['deno', 'run', '--no-config', '-A', './sidecar.ts'] },
+        docs: [],
+        checksums: [{ path: './sidecar.ts', checksum: sidecarChecksum }],
+      }, { './sidecar.ts': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
         adapter: { kind: 'sidecar', command: ['npm', 'create', 'unchecked-package'] },
         docs: [],
         checksums: [],
@@ -2004,6 +2050,15 @@ describe('Capability Plane v0.2 core contracts', () => {
         docs: [],
         checksums: [],
       }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['npm', 'explore', 'evil-package', '--', 'node', '-e', 'import("node:fs")', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+      }, { 'sidecar.mjs': sidecar }),
       { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
     await assert.rejects(

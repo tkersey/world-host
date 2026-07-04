@@ -16,6 +16,7 @@ import { BunWorldWorker } from '../src/bun/bun_worker.mjs';
 import { HttpJsonDriver } from '../src/drivers/http_json_driver.mjs';
 import { GenericHttpJsonCapabilityDriver } from '../src/drivers/generic_http_json_capability_driver.mjs';
 import { GenericHttpJsonModelDriver } from '../src/drivers/model_capability_driver.mjs';
+import { agentActionValueImage } from '../src/drivers/fixture_agent_model_driver.mjs';
 import { HumanApprovalCapabilityDriver } from '../src/drivers/human_approval_capability_driver.mjs';
 
 const FIXTURE_FILE_ROOT = '/fixture/sandbox';
@@ -2117,7 +2118,7 @@ describe('RunController and WorldWorker', () => {
     const resolutionInputRef = await store.putBlob(encodeResolutionInputBytes({
       targetHostRequestFingerprint: 0xa01n,
       status: 0,
-      responseValueImageBytes: fixtureResponseValueBytes('cached-model', 0xa01n),
+      responseValueImageBytes: agentActionValueImage({ variant: 'final', text: 'cached-model' }),
       hostClaimBytes: fromUtf8('claim'),
       attemptNumber: 1,
       metadata: fromUtf8('metadata'),
@@ -2223,7 +2224,7 @@ describe('RunController and WorldWorker', () => {
     const resolutionInputRef = await store.putBlob(encodeResolutionInputBytes({
       targetHostRequestFingerprint: 0xa01n,
       status: 0,
-      responseValueImageBytes: fixtureResponseValueBytes('cached-model', 0xa01n),
+      responseValueImageBytes: agentActionValueImage({ variant: 'final', text: 'cached-model' }),
       hostClaimBytes: fromUtf8('claim'),
       attemptNumber: 1,
       metadata: fromUtf8('metadata'),

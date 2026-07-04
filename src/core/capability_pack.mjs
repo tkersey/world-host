@@ -130,6 +130,7 @@ const SIDECAR_PACKAGE_MANAGER_SCRIPT_COMMANDS = new Set([
   'create',
   'dlx',
   'exec',
+  'explore',
   'i',
   'init',
   'install',
@@ -144,6 +145,15 @@ const SIDECAR_PACKAGE_MANAGER_SCRIPT_COMMANDS = new Set([
   'update',
   'upgrade',
   'x',
+]);
+const NODE_CONFIG_MODULE_OPTIONS = new Set([
+  'experimental-loader',
+  'experimentalLoader',
+  'import',
+  'loader',
+  'require',
+  'test-reporter',
+  'testReporter',
 ]);
 
 export class CapabilityManifest {
@@ -313,6 +323,7 @@ export async function assertCapabilityPackChecksums(manifestLike, artifacts = {}
     if (actual !== item.checksum) fail('ERR_CAPABILITY_PACK_CHECKSUM_MISMATCH', `artifact checksum mismatch: ${item.path}`, { expected: item.checksum, actual });
   }
   assertSidecarDenoConfigsDoNotDefineImportMaps(manifest, artifacts);
+  assertSidecarNodeConfigsDoNotLoadModules(manifest, artifacts);
   assertAdapterArtifactSelfContained(manifest, artifacts);
   assertSidecarAdapterArtifactsSelfContained(manifest, artifacts);
   return true;
@@ -381,6 +392,51 @@ function assertSidecarDenoConfigDoesNotDefineImportMaps(artifactPath, artifacts,
     const extendedArtifactPath = denoConfigExtendsArtifact(artifactPath, extendsPath, covered);
     assertSidecarDenoConfigDoesNotDefineImportMaps(extendedArtifactPath, artifacts, covered, seen);
   }
+}
+
+function assertSidecarNodeConfigsDoNotLoadModules(manifest, artifacts) {
+  if (manifest.adapter.kind !== 'sidecar') return;
+  const commands = [manifest.adapter.command];
+  const shebangCommand = sidecarShebangRuntimeCommand(manifest.adapter.command, artifacts);
+  if (shebangCommand) commands.push(shebangCommand);
+  for (const command of commands) {
+    for (const artifactPath of sidecarNodeConfigArtifacts(command)) {
+      assertSidecarNodeConfigDoesNotLoadModules(artifactPath, artifacts);
+    }
+  }
+}
+
+function assertSidecarNodeConfigDoesNotLoadModules(artifactPath, artifacts) {
+  const bytes = artifacts[artifactPath];
+  if (!(bytes instanceof Uint8Array)) return;
+  let config;
+  try {
+    config = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  } catch {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `Node sidecar config must be parseable JSON: ${artifactPath}`);
+  }
+  if (nodeConfigLoadsModules(config?.nodeOptions)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Node sidecar configs must not load modules outside checksum coverage');
+  }
+}
+
+function nodeConfigLoadsModules(nodeOptions) {
+  if (nodeOptions == null || nodeOptions === false) return false;
+  if (typeof nodeOptions === 'string') return nodeConfigOptionLoadsModule(nodeOptions);
+  if (Array.isArray(nodeOptions)) return nodeOptions.some(nodeConfigLoadsModules);
+  if (typeof nodeOptions !== 'object') return false;
+  for (const [key, value] of Object.entries(nodeOptions)) {
+    if (value == null || value === false) continue;
+    if (NODE_CONFIG_MODULE_OPTIONS.has(key) || NODE_CONFIG_MODULE_OPTIONS.has(key.replace(/^--?/, ''))) return true;
+  }
+  return false;
+}
+
+function nodeConfigOptionLoadsModule(value) {
+  if (typeof value !== 'string') return false;
+  const token = value.trim().split(/\s+/)[0] ?? '';
+  const option = token.includes('=') ? token.slice(0, token.indexOf('=')) : token;
+  return sidecarPreloadOption(option) || sidecarRuntimeModuleLoaderOption(['node', option], 1);
 }
 
 function checksumPathSet(manifest) {
@@ -572,6 +628,7 @@ function artifactCredentialSentinel(value) {
 
 function adapterHasImportCall(text) {
   if (adapterAliasesGlobalObject(text)) return true;
+  if (adapterAliasesReflectiveGetter(text)) return true;
   let previousSignificant = null;
   for (let index = 0; index < text.length;) {
     index = skipWhitespaceAndComments(text, index);
@@ -673,6 +730,27 @@ function adapterAliasesGlobalObject(text) {
   const globalObject = '(?:globalThis|global|window|self)';
   return new RegExp(`\\b(?:const|let|var)\\s+${identifier}\\s*=\\s*${globalObject}\\b`).test(text) ||
     new RegExp(`(?:^|[;{}(),\\n])\\s*${identifier}\\s*=\\s*${globalObject}\\b`).test(text);
+}
+
+function adapterAliasesReflectiveGetter(text) {
+  const identifier = '[A-Za-z_$][A-Za-z0-9_$]*';
+  const reflectAliases = new Set(['Reflect']);
+  const aliasDeclaration = new RegExp(`\\b(?:const|let|var)\\s+(${identifier})\\s*=\\s*(${identifier})\\b`, 'g');
+  for (let changed = true; changed;) {
+    changed = false;
+    aliasDeclaration.lastIndex = 0;
+    for (const match of text.matchAll(aliasDeclaration)) {
+      if (reflectAliases.has(match[2]) && !reflectAliases.has(match[1])) {
+        reflectAliases.add(match[1]);
+        changed = true;
+      }
+    }
+  }
+  const reflectAliasPattern = [...reflectAliases].join('|');
+  const getterAccess = `(?:\\.\\s*get|\\[\\s*(["'\`])get\\1\\s*\\])`;
+  const getterDeclaration = new RegExp(`\\b(?:const|let|var)\\s+${identifier}\\s*=\\s*(?:${reflectAliasPattern})\\s*${getterAccess}`);
+  const getterUse = new RegExp(`\\b(?:${reflectAliasPattern})\\s*${getterAccess}`);
+  return getterDeclaration.test(text) || getterUse.test(text);
 }
 
 function dangerousCallAt(text, index) {
@@ -1419,6 +1497,31 @@ function sidecarDenoConfigArtifacts(command) {
   return artifacts;
 }
 
+function sidecarNodeConfigArtifacts(command) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'node') return [];
+  const artifacts = [];
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  for (let index = 1; index < command.length; index += 1) {
+    if (!sidecarRuntimeOptionPosition(command, index)) continue;
+    if (entrypointIndex >= 0 && index > entrypointIndex) continue;
+    const artifact = sidecarNodeConfigOptionArtifact(command[index], command[index + 1]);
+    if (artifact) artifacts.push(artifact);
+    if (sidecarNodeConfigOptionConsumesNext(command[index])) index += 1;
+  }
+  return artifacts;
+}
+
+function sidecarNodeConfigOptionArtifact(value, nextValue) {
+  if (value === '--experimental-config-file') return nextValue;
+  const separator = value.indexOf('=');
+  if (separator < 0) return null;
+  return value.slice(0, separator) === '--experimental-config-file' ? value.slice(separator + 1) : null;
+}
+
+function sidecarNodeConfigOptionConsumesNext(value) {
+  return value === '--experimental-config-file';
+}
+
 function denoConfigExtendsArtifact(fromPath, extendsPath, covered) {
   if (!packRelativeConfigPath(extendsPath)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `Deno config extends must reference a pack-relative checksum-covered artifact: ${extendsPath}`);
@@ -1830,9 +1933,17 @@ function sidecarRuntimePermissionGrantOption(command, index) {
   if (commandBaseName(command[0]).toLowerCase() !== 'deno' || !sidecarRuntimeOptionPosition(command, index)) return false;
   const value = command[index];
   const option = value.includes('=') ? value.slice(0, value.indexOf('=')) : value;
-  if (!option.startsWith('--allow-')) return false;
+  if (!denoPermissionGrantOption(option)) return false;
   const entrypointIndex = sidecarEntrypointIndex(command);
   return entrypointIndex < 0 || index < entrypointIndex;
+}
+
+function denoPermissionGrantOption(option) {
+  return option === '-A' || option.startsWith('-A=') ||
+    option === '-P' || option.startsWith('-P=') ||
+    option === '--allow-all' || option === '--permission-set' ||
+    option.startsWith('--permission-set=') ||
+    option.startsWith('--allow-');
 }
 
 function sidecarRuntimeImportMapOption(command, index) {
