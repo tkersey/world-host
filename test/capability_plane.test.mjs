@@ -2793,6 +2793,9 @@ describe('Capability Plane v0.2 core contracts', () => {
     const redactedBytes = redactCapabilityDiagnostics({ diagnostics: { requestBytes: fromUtf8('sk-abcdefghijklmnop') } });
     assert.deepEqual(redactedBytes, { diagnostics: { requestBytes: '[bytes:19]' } });
     assert.equal(redactCapabilityDiagnostics({ message: 'sk-abcdefghijklmnop' }).message, '[redacted]');
+    const cyclicDiagnostics = { safe: true };
+    cyclicDiagnostics.self = cyclicDiagnostics;
+    assert.deepEqual(redactCapabilityDiagnostics(cyclicDiagnostics), { safe: true, self: '[Circular]' });
     assert.throws(() => assertNoSecretValuePersisted({ value: ['sk', 'local-secret'].join('-') }), { code: 'ERR_SECRET_PERSISTED' });
 
     const secretBase = await mkdtemp(path.join(tmpdir(), 'world-host-secret-'));

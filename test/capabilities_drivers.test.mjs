@@ -1794,6 +1794,13 @@ describe('capability preflight and reference drivers', () => {
       () => createRunPolicy({ maximumRequestBytes: Number.NaN }),
       { code: 'ERR_RUN_POLICY_LIMIT_INVALID' },
     );
+    assert.throws(
+      () => createRunPolicy({ maximumPromptBytes: Number.NaN }),
+      { code: 'ERR_RUN_POLICY_LIMIT_INVALID' },
+    );
+    const promptLimited = createRunPolicy({ maximumRequestBytes: 4096, maximumPromptBytes: 8 });
+    assert.equal(promptLimited.maximumRequestBytes, 4096);
+    assert.equal(promptLimited.maximumPromptBytes, 8);
   });
 
   it('keeps default HTTP driver response limits within the default policy', () => {

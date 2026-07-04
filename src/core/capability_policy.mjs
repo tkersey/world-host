@@ -134,29 +134,46 @@ export class ApprovalPolicy {
 }
 
 export function redactCapabilityDiagnostics(value) {
+  return redactCapabilityDiagnosticsValue(value, new WeakSet());
+}
+
+function redactCapabilityDiagnosticsValue(value, seen) {
   if (typeof value === 'string') return secretLike(value) ? '[redacted]' : value;
   if (value instanceof ArrayBuffer) return `[bytes:${value.byteLength}]`;
   if (ArrayBuffer.isView(value)) return `[bytes:${value.byteLength}]`;
-  if (Array.isArray(value)) return value.map(redactCapabilityDiagnostics);
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return '[Circular]';
+    seen.add(value);
+    const redacted = value.map((item) => redactCapabilityDiagnosticsValue(item, seen));
+    seen.delete(value);
+    return redacted;
+  }
   if (value instanceof Map) {
+    if (seen.has(value)) return '[Circular]';
+    seen.add(value);
     const redacted = {};
     let index = 0;
     for (const [key, child] of value.entries()) {
       if (typeof key === 'string' && concreteSecretKeyMaterial(key)) continue;
       Object.defineProperty(redacted, typeof key === 'string' ? key : `map:${index}`, {
-        value: typeof key === 'string' && secretLike(key) ? '[redacted]' : redactCapabilityDiagnostics(child),
+        value: typeof key === 'string' && secretLike(key) ? '[redacted]' : redactCapabilityDiagnosticsValue(child, seen),
         enumerable: true,
         configurable: true,
         writable: true,
       });
       index += 1;
     }
+    seen.delete(value);
     return redacted;
   }
   if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(Object.entries(value)
+  if (seen.has(value)) return '[Circular]';
+  seen.add(value);
+  const redacted = Object.fromEntries(Object.entries(value)
     .filter(([key]) => !concreteSecretKeyMaterial(key))
-    .map(([key, child]) => [key, secretLike(key) ? '[redacted]' : redactCapabilityDiagnostics(child)]));
+    .map(([key, child]) => [key, secretLike(key) ? '[redacted]' : redactCapabilityDiagnosticsValue(child, seen)]));
+  seen.delete(value);
+  return redacted;
 }
 
 function isNetwork(manifest, hostRequest) {

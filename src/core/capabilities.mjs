@@ -19,6 +19,8 @@ export class CapabilityReport {
 }
 
 export function createRunPolicy(input = {}) {
+  const maximumRequestBytes = positiveSafeInteger(input.maximumRequestBytes ?? 1024 * 1024, 'maximumRequestBytes');
+  const maximumPromptBytes = positiveSafeInteger(input.maximumPromptBytes ?? maximumRequestBytes, 'maximumPromptBytes');
   return Object.freeze({
     durableAutomatic: input.durableAutomatic !== false,
     allowBestEffort: input.allowBestEffort === true,
@@ -36,7 +38,8 @@ export function createRunPolicy(input = {}) {
     allowedHttpOrigins: new Set(iterable(input.allowedHttpOrigins)),
     allowedHttpMethods: new Set(iterable(input.allowedHttpMethods).map((item) => String(item).toUpperCase())),
     maximumConcurrentEffects: positiveSafeInteger(input.maximumConcurrentEffects ?? 1, 'maximumConcurrentEffects'),
-    maximumRequestBytes: positiveSafeInteger(input.maximumRequestBytes ?? 1024 * 1024, 'maximumRequestBytes'),
+    maximumRequestBytes,
+    maximumPromptBytes,
     maximumResponseBytes: positiveSafeInteger(input.maximumResponseBytes ?? 1024 * 1024, 'maximumResponseBytes'),
     acceptedSupervisionPolicies: new Set(input.acceptedSupervisionPolicies ?? ['default']),
   });
