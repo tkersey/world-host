@@ -2177,6 +2177,21 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.doesNotThrow(
       () => assertCapabilityManifest({
         ...manifest,
+        packageName: 'world-capability-tokenizer',
+        docs: ['secrets.md'],
+        metadata: {
+          docs: ['secrets.md'],
+          origin: 'https://example.test/tokenizer',
+        },
+      }),
+    );
+    assert.throws(
+      () => assertCapabilityManifest({ ...manifest, metadata: { usage: 'token=persisted-token-value' } }),
+      { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
+    );
+    assert.doesNotThrow(
+      () => assertCapabilityManifest({
+        ...manifest,
         requiredSecrets: [{ name: 'HTTP_AUTHORIZATION', class: 'header', purpose: 'optional authorization header' }],
       }),
     );
