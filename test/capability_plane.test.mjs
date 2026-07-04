@@ -1683,6 +1683,20 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'sidecar.mjs': sidecar, './node.config.json': nodeConfigWithImport }),
       { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
+    const nodeConfigWithStringImport = fromUtf8(JSON.stringify({ nodeOptions: '--no-warnings --import ./evil.mjs' }));
+    const nodeConfigWithStringImportChecksum = `sha256:${await sha256Hex(nodeConfigWithStringImport)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', '--experimental-config-file=./node.config.json', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: './node.config.json', checksum: nodeConfigWithStringImportChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, './node.config.json': nodeConfigWithStringImport }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
     const sidecarCertificate = fromUtf8('-----BEGIN CERTIFICATE-----\npublic\n-----END CERTIFICATE-----\n');
     const sidecarCertificateChecksum = `sha256:${await sha256Hex(sidecarCertificate)}`;
     await assert.rejects(

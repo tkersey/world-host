@@ -472,9 +472,11 @@ function nodeConfigLoadsModules(nodeOptions) {
 
 function nodeConfigOptionLoadsModule(value) {
   if (typeof value !== 'string') return false;
-  const token = value.trim().split(/\s+/)[0] ?? '';
-  const option = token.includes('=') ? token.slice(0, token.indexOf('=')) : token;
-  return sidecarPreloadOption(option) || sidecarRuntimeModuleLoaderOption(['node', option], 1);
+  const tokens = value.trim().split(/\s+/).filter(Boolean);
+  return tokens.some((token) => {
+    const option = token.includes('=') ? token.slice(0, token.indexOf('=')) : token;
+    return sidecarPreloadOption(option) || sidecarRuntimeModuleLoaderOption(['node', option], 1);
+  });
 }
 
 function checksumPathSet(manifest) {
