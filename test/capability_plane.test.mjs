@@ -441,6 +441,16 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': reflectFunctionImportAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const descriptorFunctionImportAdapter = fromUtf8('const F = Object.getOwnPropertyDescriptor(globalThis, "Function").value; const fs = F("s", "return import(s)")("node:fs"); export const CapabilityDriver = fs;');
+    const descriptorFunctionImportAdapterChecksum = `sha256:${await sha256Hex(descriptorFunctionImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: descriptorFunctionImportAdapterChecksum }],
+      }, { 'adapter.mjs': descriptorFunctionImportAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const reflectAliasFunctionImportAdapter = fromUtf8('const R = Reflect; const get = R.get; const F = get(globalThis, "Function"); const fs = F("s", "return import(s)")("node:fs"); export const CapabilityDriver = fs;');
     const reflectAliasFunctionImportAdapterChecksum = `sha256:${await sha256Hex(reflectAliasFunctionImportAdapter)}`;
     await assert.rejects(
@@ -3174,6 +3184,10 @@ describe('Capability Plane v0.2 core contracts', () => {
         { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
       );
       assert.throws(
+        () => new HttpJsonPackCapabilityDriver({ endpointUrl: 'https://allowed.example/decide?q=api_key=supersecret123' }),
+        { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
+      );
+      assert.throws(
         () => new HttpJsonPackCapabilityDriver({ endpointUrl: 'https://allowed.example/sk-configured-secret123456/decide' }),
         { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
       );
@@ -4782,6 +4796,9 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(driver.dryRun({}, genericHttpModelRequest('goal=invoke', 'model-dry-key')).wouldInvoke, true);
       assert.throws(() => new GenericHttpJsonModelDriver({
         endpointUrl: 'https://allowed.example/decide?api_key=secret',
+      }), { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' });
+      assert.throws(() => new GenericHttpJsonModelDriver({
+        endpointUrl: 'https://allowed.example/decide?q=api_key=supersecret123',
       }), { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' });
       const wrongModelRequestPreflight = driver.preflight(
         {

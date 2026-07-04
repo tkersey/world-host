@@ -349,7 +349,7 @@ function assertNoCredentialPathOrFragment(url) {
 
 function assertNoCredentialQuery(url) {
   for (const [key, value] of url.searchParams) {
-    if (credentialQueryKey(key) || credentialQueryValue(value)) fail('ERR_HTTP_URL_CREDENTIALS_FORBIDDEN');
+    if (credentialQueryKey(key) || credentialQueryValue(value) || credentialAssignmentText(value)) fail('ERR_HTTP_URL_CREDENTIALS_FORBIDDEN');
   }
 }
 

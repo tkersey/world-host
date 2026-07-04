@@ -684,7 +684,7 @@ function adapterHasImportCall(text) {
     const identifier = identifierName.value;
     const callStart = skipWhitespaceAndComments(text, index);
     if (identifier === 'Reflect' && reflectiveGetterAccess(text, callStart)) return true;
-    if (identifier === 'eval' || identifier === 'Function' || identifier === 'getBuiltinModule' ||
+    if (identifier === 'eval' || identifier === 'Function' || identifier === 'getBuiltinModule' || identifier === 'getOwnPropertyDescriptor' ||
       identifier === 'Worker' || identifier === 'SharedWorker') {
       return true;
     }
@@ -772,7 +772,7 @@ function computedMemberAccess(text, openBracket, afterBracket) {
 
 function dangerousMemberName(value) {
   return value === 'eval' || value === 'Function' || value === 'require' || value === 'constructor' ||
-    value === 'getBuiltinModule' || value === 'Worker' || value === 'SharedWorker';
+    value === 'getBuiltinModule' || value === 'getOwnPropertyDescriptor' || value === 'Worker' || value === 'SharedWorker';
 }
 
 function reflectiveGetterAccess(text, index) {
