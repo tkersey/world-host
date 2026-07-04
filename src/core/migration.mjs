@@ -259,6 +259,7 @@ function collectBlobRefs(required, ...values) {
     add(value.applianceManifestRef);
     add(value.turnClosureRef);
     add(value.requestBytesRef);
+    add(value.effectIdentityBytesRef);
     add(value.resolutionInputRef);
     add(value.hostClaimRef);
     add(value.receiverPolicyRef);

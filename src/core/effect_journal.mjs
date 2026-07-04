@@ -93,6 +93,9 @@ export class EffectJournal {
     assertDurableRecoveryAllowed(recoveryClass, this.policy);
     assertPreparedRequestWithinLimits(prepared, manifest, this.policy);
     const requestBytesRef = await this.store.putBlob(prepared.requestBytes);
+    const effectIdentityBytesRef = prepared.effectIdentityBytes === undefined
+      ? undefined
+      : await this.store.putBlob(prepared.effectIdentityBytes);
 
     const record = createEffectRecord({
       runId: this.runId,
@@ -106,6 +109,7 @@ export class EffectJournal {
       actuationClass: hostRequest.actuationClass,
       responseSchema: hostRequest.responseSchema,
       requestBytesRef,
+      effectIdentityBytesRef,
       requestBytesChecksum: prepared.requestBytesChecksum,
       requestIdentityChecksum: prepared.requestIdentityChecksum,
       state: EffectState.observed,
@@ -482,8 +486,12 @@ export class EffectJournal {
   }
 
   async #recordWithRequestBytes(record) {
-    if (!record.requestBytesRef) return record;
-    return { ...record, requestBytes: await this.store.getBlob(record.requestBytesRef) };
+    const withRequestBytes = record.requestBytesRef
+      ? { ...record, requestBytes: await this.store.getBlob(record.requestBytesRef) }
+      : record;
+    return record.effectIdentityBytesRef
+      ? { ...withRequestBytes, effectIdentityBytes: await this.store.getBlob(record.effectIdentityBytesRef) }
+      : withRequestBytes;
   }
 
   async #recordRecoveredResolution(record, recovered) {
@@ -516,6 +524,7 @@ export function journaledHostRequest(hostRequest, manifest) {
     return requestRendering === null && !hasModelOutputValidation(manifest?.diagnostics) ? hostRequest : {
       ...hostRequest,
       effectIdentityBytes: fromUtf8(stableJson(effectIdentityPayload(manifest?.diagnostics, parsed, null, requestRendering))),
+      effectIdentitySource: 'manifest',
     };
   }
   const configuredEndpoint = configuredEffectIdentityTarget(manifest, parsed);
@@ -523,6 +532,7 @@ export function journaledHostRequest(hostRequest, manifest) {
   return {
     ...hostRequest,
     effectIdentityBytes: fromUtf8(stableJson(effectIdentityPayload(manifest?.diagnostics, parsed, configuredEndpoint, requestRendering))),
+    effectIdentitySource: 'manifest',
   };
 }
 
@@ -643,6 +653,7 @@ export function createEffectRecord(record) {
     attemptCount: record.attemptCount ?? 0,
     driverRecoveryClass: record.driverRecoveryClass,
     requestBytesRef: record.requestBytesRef,
+    effectIdentityBytesRef: record.effectIdentityBytesRef,
     resolutionInputRef: record.resolutionInputRef,
     hostClaimRef: record.hostClaimRef,
     driverTransactionRef: record.driverTransactionRef,
@@ -676,6 +687,7 @@ export function assertEffectRecord(record) {
   if (!Number.isSafeInteger(record.attemptCount) || record.attemptCount < 0) fail('ERR_INVALID_EFFECT_RECORD', 'attemptCount must be non-negative');
   assertRecoveryClass(record.driverRecoveryClass);
   assertOptionalBlobRef(record.requestBytesRef, 'requestBytesRef');
+  assertOptionalBlobRef(record.effectIdentityBytesRef, 'effectIdentityBytesRef');
   assertOptionalBlobRef(record.resolutionInputRef, 'resolutionInputRef');
   assertOptionalBlobRef(record.hostClaimRef, 'hostClaimRef');
   if (record.state === EffectState.running && !record.requestBytesRef) {
@@ -703,6 +715,7 @@ export async function prepareHostRequest(hostRequest) {
   const effectIdentityBytes = hostRequest.effectIdentityBytes === undefined
     ? requestBytes
     : assertBytes(hostRequest.effectIdentityBytes, 'effectIdentityBytes');
+  const explicitEffectIdentityBytes = hostRequest.effectIdentityBytes !== undefined && hostRequest.effectIdentitySource !== 'manifest';
   if (hostRequest.shortIdempotencyKeyHash) fail('ERR_SHORT_IDEMPOTENCY_KEY_FORBIDDEN');
   const requestBytesChecksum = `sha256:${await sha256Hex(requestBytes)}`;
   const requestIdentityChecksum = `sha256:${await sha256Hex(effectIdentityBytes)}`;
@@ -722,6 +735,7 @@ export async function prepareHostRequest(hostRequest) {
     },
     idempotencyKeyWorldFingerprint: hostRequest.idempotencyKeyWorldFingerprint ?? `sha256:${await sha256Hex(idempotencyKeyBytes)}`,
     requestBytes,
+    effectIdentityBytes: explicitEffectIdentityBytes ? effectIdentityBytes : undefined,
     requestBytesChecksum,
     requestIdentityChecksum,
     hostRequestFingerprint,
@@ -766,7 +780,9 @@ async function assertRecoveredRequestWithinLimits(record, manifest, policy) {
 }
 
 async function assertRecoveredEffectIdentityMatchesManifest(record, manifest) {
-  const recoveredHostRequest = journaledHostRequest(record, manifest);
+  const recoveredHostRequest = record.effectIdentityBytes === undefined
+    ? journaledHostRequest(record, manifest)
+    : record;
   const effectIdentityBytes = recoveredHostRequest.effectIdentityBytes === undefined
     ? record.requestBytes
     : assertBytes(recoveredHostRequest.effectIdentityBytes, 'effectIdentityBytes');

@@ -640,6 +640,31 @@ describe('EffectJournal', () => {
     assert.equal(driver.recoverCalls, 1);
   });
 
+  it('preserves explicit effect identity bytes for running recovery', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const request = hostRequest({ effectIdentityBytes: fromUtf8('explicit-effect-identity') });
+    const observed = await journal.observe(request, { recoveryClass: EffectRecoveryClass.idempotent });
+    const running = await store.putEffectRecord({ ...observed, state: EffectState.running, attemptCount: 1 });
+    const recoveredRecords = [];
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+    driver.recover = async function recoverFn(_context, record) {
+      this.recoverCalls += 1;
+      recoveredRecords.push(record);
+      return {
+        resolutionInputBytes: fixtureResolutionInputBytes(record, fromUtf8('recovered:explicit-identity')),
+      };
+    };
+
+    const recovered = await journal.resolve({}, request, driver);
+
+    assert.equal(recovered.record.state, EffectState.resolved);
+    assert.equal(driver.calls, 0);
+    assert.equal(driver.recoverCalls, 1);
+    assert.deepEqual(recoveredRecords[0].effectIdentityBytes, fromUtf8('explicit-effect-identity'));
+    assert.deepEqual(await store.getBlob(running.effectIdentityBytesRef), fromUtf8('explicit-effect-identity'));
+  });
+
   it('serializes concurrent direct recovery for the same effect key', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
