@@ -236,6 +236,9 @@ function sidecarSpawnArgv(argv, cwd = undefined) {
   const emptyEnvFileArg = `--env-file=${EMPTY_BUN_ENV_FILE}`;
   const emptyConfigArg = `--config=${EMPTY_BUN_CONFIG_FILE}`;
   if (commandBaseName(argv[0]) !== 'bun') {
+    if (bunEnvWrapperCommand(argv)) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars must not run through env wrappers');
+    }
     const bunShebangArgs = bunShebangRuntimeArgs(commandInspectionPath(argv[0], cwd));
     if (bunShebangArgs) {
       const shebangArgv = ['bun', ...bunShebangArgs, ...argv];
@@ -252,6 +255,10 @@ function sidecarSpawnArgv(argv, cwd = undefined) {
   if (!bunEnvFileOptionPresent(argv)) isolationArgs.push(emptyEnvFileArg);
   if (!bunConfigOptionPresent(argv)) isolationArgs.push(emptyConfigArg);
   return [argv[0], ...isolationArgs, ...argv.slice(1)];
+}
+
+function bunEnvWrapperCommand(argv) {
+  return commandBaseName(argv[0]) === 'env' && argv.slice(1).some((value) => commandBaseName(value) === 'bun');
 }
 
 function commandInspectionPath(value, cwd = undefined) {

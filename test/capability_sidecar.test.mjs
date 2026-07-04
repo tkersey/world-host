@@ -123,6 +123,20 @@ describe('Capability sidecar transport', () => {
         const dotenvIsolated = await new CapabilitySidecar({ command: [process.execPath, dotenvPath], timeoutMs: 1000 }).manifest();
         assert.equal(dotenvIsolated.payload.dotenvSecret, null);
         assert.equal(dotenvIsolated.payload.bunfigPreload, false);
+        await assert.rejects(
+          () => new CapabilitySidecar({
+            command: ['env', 'bun', dotenvPath],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+        await assert.rejects(
+          () => new CapabilitySidecar({
+            command: ['/usr/bin/env', 'bun', dotenvPath],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
         const explicitDotenv = await new CapabilitySidecar({
           command: [process.execPath, '--env-file', path.join(root, '.env'), dotenvPath],
           timeoutMs: 1000,
