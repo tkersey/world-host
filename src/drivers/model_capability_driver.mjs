@@ -54,7 +54,7 @@ export class GenericHttpJsonModelDriver {
       supportedActuatorRefs: ['model:decision'],
       supportedDescriptorFingerprints: ['descriptor:agent-decision-prompt'],
       supportedActuationClasses: ['model'],
-      supportedResponseStatuses: ['ok', 'failed', 'deferred'],
+      supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
       recoveryClass: EffectRecoveryClass.idempotent,
       authorityLabels: ['model:http-json', 'network:http'],
       diagnostics: {
@@ -88,7 +88,7 @@ export class GenericHttpJsonModelDriver {
     const result = await this.http.resolve(transportContext(context), transportHostRequest(hostRequest));
     const resolution = decodeResolutionInputBytes(result.resolutionInputBytes);
     if (resolution.status !== 0) {
-      return modelResolutionFromTransport(result, resolution, { status: resolution.status === 4 ? 'deferred' : 'failed' });
+      return modelResolutionFromTransport(result, resolution, { status: modelStatusForTransportStatus(resolution.status, hostRequest.responseSchema) });
     }
     let action;
     try {
@@ -255,7 +255,7 @@ function modelResolutionFromTransport(result, resolution, { status, responseValu
     hostClaimBytes,
     resolutionInputBytes: encodeResolutionInputBytes({
       ...resolution,
-      status: status === 'ok' ? 0 : status === 'deferred' ? 4 : 2,
+      status: modelWireStatus(status),
       responseValueImageBytes,
       hostClaimBytes,
       metadata: fromUtf8(stableJson({
@@ -279,4 +279,18 @@ function modelResolutionFromTransport(result, resolution, { status, responseValu
       failureCode,
     },
   };
+}
+
+function modelStatusForTransportStatus(status, responseSchema = null) {
+  if (status === 1 && responseSchema?.status === 'failed') return 'failed';
+  if (status === 1) return 'http_error';
+  if (status === 4) return 'deferred';
+  return 'failed';
+}
+
+function modelWireStatus(status) {
+  if (status === 'ok') return 0;
+  if (status === 'http_error') return 1;
+  if (status === 'deferred') return 4;
+  return 2;
 }

@@ -1,7 +1,7 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -55,6 +55,14 @@ describe('Capability sidecar transport', () => {
           process.exit(2);
         }
       `);
+      assert.throws(
+        () => new CapabilitySidecar({ command: ['sidecar.mjs'] }),
+        { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+      );
+      assert.throws(
+        () => new CapabilitySidecar({ command: [sidecarPath] }),
+        { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+      );
       const sidecar = new CapabilitySidecar({ command: [process.execPath, sidecarPath], timeoutMs: 1000 });
       assert.equal((await sidecar.manifest()).payload.driverId, 'fixture-sidecar');
       assert.equal((await sidecar.resolve({ request: 'ok' })).payload.ok, true);
@@ -91,6 +99,198 @@ describe('Capability sidecar transport', () => {
         } else {
           process.env.WORLD_HOST_SIDECAR_AMBIENT_SECRET = originalAmbient;
         }
+      }
+
+      const dotenvPath = path.join(root, 'dotenv.mjs');
+      await writeFile(path.join(root, '.env'), 'WORLD_HOST_SIDECAR_DOTENV_SECRET=dotenv-secret\n');
+      await writeFile(dotenvPath, `
+        await new Response(Bun.stdin.stream()).text();
+        process.stdout.write(JSON.stringify({
+          command: 'manifest',
+          payload: {
+            dotenvSecret: process.env.WORLD_HOST_SIDECAR_DOTENV_SECRET ?? null,
+            bunfigPreload: globalThis.__worldHostAmbientBunfigPreload === true
+          }
+        }) + '\\n');
+      `);
+      const originalCwd = process.cwd();
+      process.chdir(root);
+      try {
+        await writeFile(path.join(root, 'preload.mjs'), 'globalThis.__worldHostAmbientBunfigPreload = true;\n');
+        await writeFile(path.join(root, 'bunfig.toml'), 'preload = ["./preload.mjs"]\n');
+        await writeFile(path.join(root, 'run'), '');
+        const dotenvIsolated = await new CapabilitySidecar({ command: [process.execPath, dotenvPath], timeoutMs: 1000 }).manifest();
+        assert.equal(dotenvIsolated.payload.dotenvSecret, null);
+        assert.equal(dotenvIsolated.payload.bunfigPreload, false);
+        const explicitDotenv = await new CapabilitySidecar({
+          command: [process.execPath, '--env-file', path.join(root, '.env'), dotenvPath],
+          timeoutMs: 1000,
+        }).manifest();
+        assert.equal(explicitDotenv.payload.dotenvSecret, 'dotenv-secret');
+        assert.equal(explicitDotenv.payload.bunfigPreload, false);
+        const runtimeOptionDotenv = await new CapabilitySidecar({
+          command: [process.execPath, '--smol', dotenvPath, '--env-file', path.join(root, '.env')],
+          timeoutMs: 1000,
+        }).manifest();
+        assert.equal(runtimeOptionDotenv.payload.dotenvSecret, null);
+        assert.equal(runtimeOptionDotenv.payload.bunfigPreload, false);
+        await assert.rejects(
+          () => new CapabilitySidecar({
+            command: [process.execPath, '--env-file-if-exists=missing.env', dotenvPath],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+        await assert.rejects(
+          () => new CapabilitySidecar({
+            command: [process.execPath, '--import', './preload.mjs', '--env-file-if-exists=missing.env', dotenvPath],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+        await assert.rejects(
+          () => new CapabilitySidecar({
+            command: [process.execPath, '-c', './bunfig.toml', '--env-file-if-exists=missing.env', dotenvPath],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+        await assert.rejects(
+          () => new CapabilitySidecar({
+            command: [process.execPath, 'run', '--env-file-if-exists=missing.env', 'show'],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+        await assert.rejects(
+          () => new CapabilitySidecar({
+            command: [process.execPath, 'run', 'show'],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+        await assert.rejects(
+          () => new CapabilitySidecar({
+            command: [process.execPath, '--config', 'run', dotenvPath],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+        await assert.rejects(
+          () => new CapabilitySidecar({
+            command: [process.execPath, '--config-file=./bunfig.toml', dotenvPath],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+        await assert.rejects(
+          () => new CapabilitySidecar({
+            command: [process.execPath, '-c=./bunfig.toml', dotenvPath],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+        await assert.rejects(
+          () => new CapabilitySidecar({
+            command: [process.execPath, '--cwd', 'run', dotenvPath],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+        await assert.rejects(
+          () => new CapabilitySidecar({
+            command: [process.execPath, '--conditions', 'prod', '--cwd', 'run', dotenvPath],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+        await assert.rejects(
+          () => new CapabilitySidecar({
+            command: [process.execPath, '--no-config', dotenvPath],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+        const shebangPath = path.join(root, 'dotenv-sidecar');
+        await writeFile(shebangPath, `#!/usr/bin/env bun
+          await new Response(Bun.stdin.stream()).text();
+          process.stdout.write(JSON.stringify({
+            command: 'manifest',
+            payload: { dotenvSecret: process.env.WORLD_HOST_SIDECAR_DOTENV_SECRET ?? null }
+          }) + '\\n');
+        `);
+        await chmod(shebangPath, 0o755);
+        const shebangDotenvIsolated = await new CapabilitySidecar({
+          command: [shebangPath],
+          timeoutMs: 1000,
+        }).manifest();
+        assert.equal(shebangDotenvIsolated.payload.dotenvSecret, null);
+        await writeFile(path.join(root, 'shebang-preload.mjs'), 'globalThis.__worldHostShebangPreload = true;\n');
+        const shebangWithArgsPath = path.join(root, 'preloaded-sidecar');
+        await writeFile(shebangWithArgsPath, `#!/usr/bin/env -S bun --preload ./shebang-preload.mjs
+          await new Response(Bun.stdin.stream()).text();
+          process.stdout.write(JSON.stringify({
+            command: 'manifest',
+            payload: {
+              preloaded: globalThis.__worldHostShebangPreload === true,
+              dotenvSecret: process.env.WORLD_HOST_SIDECAR_DOTENV_SECRET ?? null
+            }
+          }) + '\\n');
+        `);
+        await chmod(shebangWithArgsPath, 0o755);
+        const shebangArgsPreserved = await new CapabilitySidecar({
+          command: [shebangWithArgsPath],
+          timeoutMs: 1000,
+        }).manifest();
+        assert.equal(shebangArgsPreserved.payload.preloaded, true);
+        assert.equal(shebangArgsPreserved.payload.dotenvSecret, null);
+        const quotedShebangWithArgsPath = path.join(root, 'quoted-preloaded-sidecar');
+        await writeFile(quotedShebangWithArgsPath, `#!/usr/bin/env -S bun --preload "./shebang-preload.mjs"
+          await new Response(Bun.stdin.stream()).text();
+          process.stdout.write(JSON.stringify({ command: 'manifest', payload: {} }) + '\\n');
+        `);
+        await chmod(quotedShebangWithArgsPath, 0o755);
+        await assert.rejects(
+          () => new CapabilitySidecar({
+            command: [quotedShebangWithArgsPath],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+        assert.throws(
+          () => new CapabilitySidecar({
+            command: ['dotenv-sidecar'],
+            env: { PATH: `${root}${path.delimiter}${process.env.PATH ?? ''}` },
+            timeoutMs: 1000,
+          }),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+        await assert.rejects(
+          () => new CapabilitySidecar({
+            command: [process.execPath, '-r', './preload.mjs', '--env-file-if-exists=missing.env', dotenvPath],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+        await assert.rejects(
+          () => new CapabilitySidecar({
+            command: [process.execPath, '--require', './preload.mjs', '--env-file-if-exists=missing.env', dotenvPath],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+        const scriptArgEnvFile = await new CapabilitySidecar({
+          command: [process.execPath, dotenvPath, '--env-file', path.join(root, '.env')],
+          timeoutMs: 1000,
+        }).manifest();
+        assert.equal(scriptArgEnvFile.payload.dotenvSecret, null);
+        const scriptArgEnvFileIfExists = await new CapabilitySidecar({
+          command: [process.execPath, dotenvPath, '--env-file-if-exists=.env'],
+          timeoutMs: 1000,
+        }).manifest();
+        assert.equal(scriptArgEnvFileIfExists.payload.dotenvSecret, null);
+      } finally {
+        process.chdir(originalCwd);
       }
 
       const mismatchPath = path.join(root, 'mismatch.mjs');

@@ -16,7 +16,7 @@ import { BunStoreLock } from '../src/bun/bun_lock.mjs';
 import { agentWorldHostRequestToEffectRequest, agentWorldRequestDriver, redact, runBunCli } from '../src/bun/bun_cli.mjs';
 import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
 import { encodeCanonicalValueImage, wyhash64 } from '../src/protocol/world_loaded_value_codec.mjs';
-import { summarizeTurnClosureForRunHead } from '../src/protocol/world_universal_appliance_codec.mjs';
+import { inspectTurnOutput, summarizeTurnClosureForRunHead } from '../src/protocol/world_universal_appliance_codec.mjs';
 import { DirectoryStore } from '../src/stores/directory_store.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
 import { FixtureAgentModelDriver } from '../src/drivers/fixture_agent_model_driver.mjs';
@@ -732,6 +732,56 @@ describe('migration, branching, and CLI diagnostics', () => {
     await assertImportsReject(duplicateEffect, 'ERR_IMPORT_EFFECT_DUPLICATE');
   });
 
+  it('imports terminal ref-only reusable effect blobs already present in the receiver store', async () => {
+    const sourceRoot = await mkdtemp(path.join(tmpdir(), 'world-host-ref-only-import-source-'));
+    const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-ref-only-import-receiver-'));
+    const packagePath = path.join(sourceRoot, 'ref-only-export.json');
+    try {
+      const { run } = await fixtureDirectoryStore(sourceRoot);
+      const sourceStore = new DirectoryStore(sourceRoot);
+      const carrierExport = await exportCarrierRun(sourceStore, run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
+      const resolutionEffect = carrierExport.bundle.effects.find((effect) => effect.resolutionInputRef);
+      const resolutionRef = resolutionEffect?.resolutionInputRef;
+      const resolutionBlob = carrierExport.bundle.blobs.find((blob) =>
+        blob.checksum === resolutionRef?.checksum && blob.byteLength === resolutionRef?.byteLength);
+      assert.ok(Array.isArray(resolutionBlob?.bytes));
+
+      const receiverStore = new DirectoryStore(receiverRoot);
+      await receiverStore.acquireLock();
+      try {
+        await receiverStore.putBlob(Uint8Array.from(resolutionBlob.bytes));
+      } finally {
+        await receiverStore.releaseLock();
+      }
+
+      const refOnlyExport = JSON.parse(JSON.stringify(carrierExport));
+      const refOnlyResolutionBlob = refOnlyExport.bundle.blobs.find((blob) =>
+        blob.checksum === resolutionRef.checksum && blob.byteLength === resolutionRef.byteLength);
+      refOnlyResolutionBlob.algorithm = 'sha256';
+      delete refOnlyResolutionBlob.bytes;
+      await writeFile(packagePath, JSON.stringify(refOnlyExport));
+
+      let output = '';
+      const importCode = await runBunCli([
+        'import',
+        '--json',
+        '--store', receiverRoot,
+        '--package', packagePath,
+        '--run', 'receiver-ref-only-run',
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      });
+      const imported = JSON.parse(output);
+      assert.equal(importCode, 0);
+      assert.equal(imported.runId, 'receiver-ref-only-run');
+      assert.equal(imported.receiverPolicyApplied, true);
+    } finally {
+      await rm(sourceRoot, { recursive: true, force: true });
+      await rm(receiverRoot, { recursive: true, force: true });
+    }
+  });
+
   it('redacts credentials from CLI-shaped diagnostics', async () => {
     assert.equal(redact({ nested: { bearerToken: 'secret' } }).nested.bearerToken, '[redacted]');
     assert.equal(redact({ diagnostics: { apiKey: 'secret' } }).diagnostics.apiKey, '[redacted]');
@@ -950,6 +1000,59 @@ describe('migration, branching, and CLI diagnostics', () => {
         stdout: { write() {} },
         stderr: { write() {} },
       }), 0);
+      const helperBytes = fromUtf8(`
+        export function fixtureManifest(packFingerprint) {
+          return {
+            driverId: 'fixture-agent-model',
+            packFingerprint,
+            supportedActuatorRefs: ['fixture:agent-model'],
+            supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+            supportedActuationClasses: ['model'],
+            supportedResponseStatuses: ['ok', 'final'],
+            maximumRequestBytes: 1048576,
+            maximumResponseBytes: 1048576,
+            recoveryClass: 'pure',
+            concurrencyLimit: 1,
+            authorityLabels: ['model:fixture-agent']
+          };
+        }
+      `);
+      const importedAdapterBytes = fromUtf8(`
+        import { fixtureManifest } from './helper.mjs';
+        export class CapabilityDriver {
+          constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
+          manifest() { return fixtureManifest(this.packFingerprint); }
+          preflight() { return { accepted: true }; }
+          dryRun() { return { wouldInvoke: false }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          resolve() { return { resolutionInputBytes: new Uint8Array() }; }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      await writeFile(path.join(pack, 'helper.mjs'), helperBytes);
+      await writeFile(path.join(pack, 'adapter.mjs'), importedAdapterBytes);
+      let manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.checksums = [
+        ...manifest.checksums
+          .filter((item) => item.path !== 'helper.mjs')
+          .map((item) => item.path === 'adapter.mjs'
+            ? { ...item, checksum: `sha256:${createHash('sha256').update(importedAdapterBytes).digest('hex')}` }
+            : item),
+        { path: 'helper.mjs', checksum: `sha256:${createHash('sha256').update(helperBytes).digest('hex')}` },
+      ];
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      let receipt = JSON.parse(await readFile(path.join(pack, 'conformance.json'), 'utf8'));
+      receipt.packFingerprint = manifest.packFingerprint;
+      let receiptBytes = fromUtf8(`${JSON.stringify(receipt, null, 2)}\n`);
+      await writeFile(path.join(pack, 'conformance.json'), receiptBytes);
+      manifest.checksums = manifest.checksums.map((item) => item.path === 'conformance.json'
+        ? { ...item, checksum: `sha256:${createHash('sha256').update(receiptBytes).digest('hex')}` }
+        : item);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+      assert.equal(await runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      }), 0);
       const adapterBytes = fromUtf8(`
         export class CapabilityDriver {
           manifest() {
@@ -973,14 +1076,14 @@ describe('migration, branching, and CLI diagnostics', () => {
         }
       `);
       await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
-      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
       manifest.checksums = manifest.checksums.map((item) => item.path === 'adapter.mjs'
         ? { ...item, checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` }
         : item);
       manifest.packFingerprint = await capabilityPackFingerprint(manifest);
-      const receipt = JSON.parse(await readFile(path.join(pack, 'conformance.json'), 'utf8'));
+      receipt = JSON.parse(await readFile(path.join(pack, 'conformance.json'), 'utf8'));
       receipt.packFingerprint = manifest.packFingerprint;
-      const receiptBytes = fromUtf8(`${JSON.stringify(receipt, null, 2)}\n`);
+      receiptBytes = fromUtf8(`${JSON.stringify(receipt, null, 2)}\n`);
       await writeFile(path.join(pack, 'conformance.json'), receiptBytes);
       manifest.checksums = manifest.checksums.map((item) => item.path === 'conformance.json'
         ? { ...item, checksum: `sha256:${createHash('sha256').update(receiptBytes).digest('hex')}` }
@@ -1766,8 +1869,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       const completedBytes = fixtureTurnClosureBytes({ status: 2, turnSequenceNumber: 9n, closureFingerprint: 0x919n });
       const completedSummary = summarizeTurnClosureForRunHead(completedBytes);
       const completedBlob = blobEntryForBytes(completedBytes);
-      const highLimitCompletedPackagePath = path.join(receiverRoot, 'agent-completed-high-limits-export.json');
-      await writeFile(highLimitCompletedPackagePath, JSON.stringify({
+      const highLimitCompletedPackage = {
         ...packageJson,
         bundle: {
           ...packageJson.bundle,
@@ -1796,7 +1898,9 @@ describe('migration, branching, and CLI diagnostics', () => {
           },
           blobs: [...packageJson.bundle.blobs, completedBlob],
         },
-      }));
+      };
+      const highLimitCompletedPackagePath = path.join(receiverRoot, 'agent-completed-high-limits-export.json');
+      await writeFile(highLimitCompletedPackagePath, JSON.stringify(highLimitCompletedPackage));
       let highLimitCompletedOutput = '';
       const highLimitCompletedImportCode = await runBunCli([
         'agent',
@@ -1952,6 +2056,72 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(imported.runId, 'receiver-agent-import');
       assert.equal(imported.receiverPolicyApplied, true);
       assert.equal(imported.diagnostics.workerExecuted, false);
+
+      const malformedResolutionBytes = fromUtf8('not a ResolutionInput');
+      const malformedResolutionBlob = blobEntryForBytes(malformedResolutionBytes);
+      const pendingRequest = agentWorldHostRequestToEffectRequest(inspectTurnOutput(pendingClosureBytes).hostRequests[0], { scenario: 'skeleton', sandboxRoot });
+      const pendingRequestBytesBlob = blobEntryForBytes(pendingRequest.requestBytes);
+      const malformedResolutionPackagePath = path.join(receiverRoot, 'agent-malformed-resolution-export.json');
+      const pendingPackageJson = JSON.parse(await readFile(pendingPackagePath, 'utf8'));
+      const malformedResolutionPackage = {
+        ...pendingPackageJson,
+        bundle: {
+          ...pendingPackageJson.bundle,
+        },
+      };
+      malformedResolutionPackage.bundle.effects = [{
+        runId: malformedResolutionPackage.bundle.run.runId,
+        branchId: 'main',
+        parentTurnClosureFingerprint: 'world:closure:parent',
+        hostRequestFingerprint: pendingRequest.hostRequestFingerprint,
+        idempotencyKey: {
+          format: 'world-idempotency-key-bytes.hex',
+          bytesHex: Buffer.from(pendingRequest.idempotencyKeyBytes).toString('hex'),
+        },
+        idempotencyKeyWorldFingerprint: pendingRequest.idempotencyKeyWorldFingerprint,
+        actuatorRef: pendingRequest.actuatorRef,
+        descriptorFingerprint: pendingRequest.descriptorFingerprint,
+        actuationClass: pendingRequest.actuationClass,
+        responseSchema: pendingRequest.responseSchema,
+        requestBytesChecksum: `sha256:${pendingRequestBytesBlob.checksum}`,
+        requestBytesRef: {
+          algorithm: 'sha256',
+          checksum: pendingRequestBytesBlob.checksum,
+          byteLength: pendingRequestBytesBlob.byteLength,
+        },
+        state: 'resolved',
+        attemptCount: 1,
+        driverRecoveryClass: 'pure',
+        resolutionInputRef: {
+          algorithm: 'sha256',
+          checksum: malformedResolutionBlob.checksum,
+          byteLength: malformedResolutionBlob.byteLength,
+        },
+        diagnostics: {},
+      }];
+      malformedResolutionPackage.bundle.blobs = [
+        ...malformedResolutionPackage.bundle.blobs.filter((blob) =>
+          blob.checksum !== malformedResolutionBlob.checksum && blob.checksum !== pendingRequestBytesBlob.checksum),
+        pendingRequestBytesBlob,
+        malformedResolutionBlob,
+      ];
+      await writeFile(malformedResolutionPackagePath, JSON.stringify(malformedResolutionPackage));
+      let malformedResolutionOutput = '';
+      const malformedResolutionImportCode = await runBunCli([
+        'agent',
+        'import',
+        '--store', receiverRoot,
+        '--package', malformedResolutionPackagePath,
+        '--run', 'receiver-agent-import-malformed-resolution',
+        '--sandbox-root', sandboxRoot,
+      ], {
+        stdout: { write: (text) => { malformedResolutionOutput += text; } },
+        stderr: { write() {} },
+      });
+      const malformedResolutionImported = JSON.parse(malformedResolutionOutput);
+      assert.equal(malformedResolutionImportCode, 0);
+      assert.equal(malformedResolutionImported.runId, 'receiver-agent-import-malformed-resolution');
+      assert.equal(malformedResolutionImported.receiverPolicyApplied, true);
 
       const receiverStore = new DirectoryStore(receiverRoot);
       await receiverStore.acquireLock();

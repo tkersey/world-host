@@ -28,6 +28,67 @@ describe('EffectJournal', () => {
     assert.deepEqual(decodeResolutionInputBytes(second.resolutionInputBytes).responseValueImageBytes, fromUtf8('resolution:one'));
   });
 
+  it('reruns safely recoverable effects when a terminal reusable outcome is invalid', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const observed = await journal.observe(hostRequest(), { recoveryClass: EffectRecoveryClass.idempotent });
+    const badResolutionInputRef = await store.putBlob(encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xbadn,
+      status: 0,
+      responseValueImageBytes: fromUtf8('stale response'),
+      hostClaimBytes: new Uint8Array(),
+      attemptNumber: 1,
+      metadata: new Uint8Array(),
+    }));
+    await store.putEffectRecord({
+      ...observed,
+      state: EffectState.resolved,
+      attemptCount: 1,
+      resolutionInputRef: badResolutionInputRef,
+    });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent, response: 'resolution:fresh' });
+
+    const resolved = await journal.resolve({}, hostRequest(), driver);
+    const records = await store.listEffectRecords('run');
+
+    assert.equal(resolved.reused, false);
+    assert.equal(driver.calls, 1);
+    assert.deepEqual(decodeResolutionInputBytes(resolved.resolutionInputBytes).responseValueImageBytes, fromUtf8('resolution:fresh'));
+    assert.equal(records.length, 1);
+    assert.equal(records[0].state, EffectState.resolved);
+    assert.equal(records[0].diagnostics.invalidReusableResolution, 'ERR_EFFECT_RESOLUTION_TARGET_MISMATCH');
+  });
+
+  it('does not rerun submitted reusable outcomes when validation fails', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const observed = await journal.observe(hostRequest(), { recoveryClass: EffectRecoveryClass.idempotent });
+    const badResolutionInputRef = await store.putBlob(encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xbadn,
+      status: 0,
+      responseValueImageBytes: fromUtf8('submitted response'),
+      hostClaimBytes: new Uint8Array(),
+      attemptNumber: 1,
+      metadata: new Uint8Array(),
+    }));
+    await store.putEffectRecord({
+      ...observed,
+      state: EffectState.submitted,
+      attemptCount: 1,
+      resolutionInputRef: badResolutionInputRef,
+    });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent, response: 'resolution:fresh' });
+
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest(), driver),
+      { code: 'ERR_EFFECT_RESOLUTION_TARGET_MISMATCH' },
+    );
+    const records = await store.listEffectRecords('run');
+    assert.equal(driver.calls, 0);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].state, EffectState.submitted);
+  });
+
   it('serializes concurrent same-key resolutions before driver execution', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
@@ -443,6 +504,34 @@ describe('EffectJournal', () => {
       () => resumed.resolve({}, hostRequest(), fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent })),
       { code: 'ERR_EFFECT_RESPONSE_TOO_LARGE' },
     );
+  });
+
+  it('reruns oversized reusable outcomes when the selected route remains within receiver policy', async () => {
+    const store = new MemoryStore();
+    const first = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    await first.resolve({}, hostRequest(), fixtureDriver({
+      recoveryClass: EffectRecoveryClass.idempotent,
+      response: 'x'.repeat(512),
+      maximumResponseBytes: 2048,
+    }));
+    const resumed = new EffectJournal({
+      store,
+      runId: 'run',
+      branchId: 'main',
+      parentTurnClosureFingerprint: 'turn:0',
+      policy: { maximumResponseBytes: 256 },
+    });
+    const driver = fixtureDriver({
+      recoveryClass: EffectRecoveryClass.idempotent,
+      response: 'fresh',
+      maximumResponseBytes: 256,
+    });
+
+    const resolved = await resumed.resolve({}, hostRequest(), driver);
+
+    assert.equal(resolved.reused, false);
+    assert.equal(driver.calls, 1);
+    assert.deepEqual(decodeResolutionInputBytes(resolved.resolutionInputBytes).responseValueImageBytes, fromUtf8('fresh'));
   });
 
   it('normalizes direct journal policies before accepting driver response limits', async () => {

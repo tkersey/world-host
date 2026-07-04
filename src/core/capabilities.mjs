@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 
-import { EffectRecoveryClass, assertDriverCanResolve, assertDriverManifest, assertDurableRecoveryAllowed } from './actuator.mjs';
+import { EffectRecoveryClass, ResponseStatusCode, assertDriverCanResolve, assertDriverManifest, assertDurableRecoveryAllowed } from './actuator.mjs';
 import { assertBytes, fail, fromUtf8, stableJson, toHex } from './store.mjs';
+import { decodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
 
 export class CapabilityReport {
   constructor(fields) {
@@ -64,7 +65,17 @@ export function createHostCapabilityManifest(input = {}) {
   });
 }
 
-export function preflightCapabilities({ application, applianceManifest = {}, currentHead = null, currentBranchId = null, pendingRequests = [], drivers = [], policy: policyInput = createRunPolicy(), effectRecords = [] }) {
+export function preflightCapabilities({
+  application,
+  applianceManifest = {},
+  currentHead = null,
+  currentBranchId = null,
+  pendingRequests = [],
+  drivers = [],
+  policy: policyInput = createRunPolicy(),
+  effectRecords = [],
+  effectResolutionInputs = new Map(),
+}) {
   const policy = createRunPolicy(policyInput);
   const blockers = [];
   const warnings = [];
@@ -73,6 +84,9 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
   const selectedRequiredActuatorRoutes = [];
   const selectedPendingRequestRoutes = [];
   let selectedLiveModelRequestCount = 0;
+  const reusableEffectBlockers = [];
+  const nonRerunnableReusableEffectBlockers = [];
+  const currentParentTurnClosureFingerprint = currentHeadParentTurnClosureFingerprint(currentHead);
   const hasPendingRequestContext = pendingRequests.length > 0;
   const requiredAuthorityLabels = application?.requiredHostAuthorityLabels ?? [];
   const requiredActuatorOptions = [];
@@ -123,10 +137,41 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
     const preferredAuthorityLabels = requiredOption
       ? preferredAuthorityLabelsForRequirement(requiredOption, requiredActuatorOptions, requiredAuthorityLabels)
       : preferredAuthorityLabelsWithoutRequirement(requiredAuthorityLabels);
-    const route = selectPendingRequestRoute(candidates, preferredAuthorityLabels, request, policy, effectRecords, selectedLiveModelRequestCount, currentBranchId);
+    const route = selectPendingRequestRoute(
+      candidates,
+      preferredAuthorityLabels,
+      request,
+      policy,
+      effectRecords,
+      selectedLiveModelRequestCount,
+      currentBranchId,
+      currentParentTurnClosureFingerprint,
+      effectResolutionInputs,
+    );
+    hasReusableEffectOutcome(
+      request,
+      effectRecords,
+      route,
+      currentBranchId,
+      currentParentTurnClosureFingerprint,
+      effectResolutionInputs,
+      policy,
+      reusableEffectBlockers,
+      nonRerunnableReusableEffectBlockers,
+    );
     coveredRequests.push({ actuatorRef: request.actuatorRef, descriptorFingerprint: request.descriptorFingerprint, driverId: route.driverId });
     selectedPendingRequestRoutes.push({ manifest: route, request });
-    if (chargesLiveModelBudget(route, request, effectRecords, currentBranchId)) selectedLiveModelRequestCount += 1;
+    if (chargesLiveModelBudget(
+      route,
+      request,
+      effectRecords,
+      currentBranchId,
+      currentParentTurnClosureFingerprint,
+      effectResolutionInputs,
+      policy,
+      reusableEffectBlockers,
+      nonRerunnableReusableEffectBlockers,
+    )) selectedLiveModelRequestCount += 1;
   }
 
   for (const label of requiredAuthorityLabels) {
@@ -151,7 +196,12 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
   }
 
   const runtimeLimits = application?.requiredRuntimeLimits ?? {};
-  if (selectedLiveModelRequestCount > policy.maximumLiveModelCalls) blockers.push('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED');
+  const liveModelBudgetExceeded = selectedLiveModelRequestCount > policy.maximumLiveModelCalls;
+  blockers.push(...nonRerunnableReusableEffectBlockers);
+  if (liveModelBudgetExceeded) {
+    blockers.push(...reusableEffectBlockers);
+    blockers.push('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED');
+  }
   if (runtimeLimits.maximumConcurrentEffects > policy.maximumConcurrentEffects) blockers.push('runtime-concurrency-limit-exceeds-policy');
   if (runtimeLimits.maximumRequestBytes > policy.maximumRequestBytes) blockers.push('runtime-request-limit-exceeds-policy');
   if (runtimeLimits.maximumResponseBytes > policy.maximumResponseBytes) blockers.push('runtime-response-limit-exceeds-policy');
@@ -163,8 +213,8 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
     runtimeCompatible: !blockers.some((item) => item.startsWith('runtime-') || item === 'supervision-policy-rejected'),
     everyRequiredActuatorCovered: !blockers.some((item) => item.startsWith('required-actuator') || item.startsWith('required-authority')),
     everyPendingRequestCovered: !blockers.some((item) => item.startsWith('pending-request')),
-    responseStatusesSupported: !blockers.some((item) => item.includes('RESPONSE_STATUS')),
-    valueSizeLimitsSupported: !blockers.some((item) => item.startsWith('runtime-') || item === 'request-limit-exceeds-policy' || item === 'response-limit-exceeds-policy'),
+    responseStatusesSupported: !blockers.some(responseStatusBlocker),
+    valueSizeLimitsSupported: !blockers.some(sizeLimitBlocker),
     recoveryClassSufficient: !blockers.includes('ERR_BEST_EFFORT_REQUIRES_OPERATOR_OPT_IN'),
     fileNetworkAuthoritiesAllowed: !blockers.some((item) => item.startsWith('authority-denied') || item === 'http-origin-allowlist-required' || item.startsWith('http-origin-denied') || item.startsWith('http-origin-driver-denied') || item === 'http-method-allowlist-required' || item.startsWith('http-method-denied') || item.startsWith('http-method-driver-denied') || item === 'file-root-allowlist-required' || item.startsWith('file-root-denied')),
     supervisionPolicyAccepted: !blockers.includes('supervision-policy-rejected'),
@@ -178,6 +228,19 @@ export function preflightCapabilities({ application, applianceManifest = {}, cur
     blockers,
     warnings,
   });
+}
+
+function sizeLimitBlocker(item) {
+  return item.startsWith('runtime-') ||
+    item === 'request-limit-exceeds-policy' ||
+    item === 'response-limit-exceeds-policy' ||
+    item === 'ERR_CAPABILITY_REUSABLE_EFFECT_RESPONSE_TOO_LARGE';
+}
+
+function responseStatusBlocker(item) {
+  return item.includes('RESPONSE_STATUS') ||
+    item === 'ERR_CAPABILITY_REUSABLE_EFFECT_STATUS_UNSUPPORTED' ||
+    item === 'ERR_CAPABILITY_REUSABLE_EFFECT_STATUS_MISMATCH';
 }
 
 function normalizeDriverManifest(raw) {
@@ -199,29 +262,165 @@ function normalizeRequiredActuator(required) {
   };
 }
 
-function hasReusableEffectOutcome(request, effectRecords, route, currentBranchId = null) {
+function hasReusableEffectOutcome(
+  request,
+  effectRecords,
+  route,
+  currentBranchId = null,
+  currentParentTurnClosureFingerprint = null,
+  effectResolutionInputs = new Map(),
+  policy = createRunPolicy(),
+  reusableEffectBlockers = [],
+  nonRerunnableReusableEffectBlockers = [],
+) {
   if (!request?.idempotencyKeyWorldFingerprint || !request?.hostRequestFingerprint) return false;
   const identity = reusableRequestIdentity(request, route);
   if (!identity) return false;
-  const matchingRecords = effectRecords.filter((record) => (
+  const sameKeyRecords = effectRecords.filter((record) => (
     record?.idempotencyKeyWorldFingerprint === request.idempotencyKeyWorldFingerprint &&
-    record?.hostRequestFingerprint === request.hostRequestFingerprint &&
     record?.idempotencyKey?.format === 'world-idempotency-key-bytes.hex' &&
-    record.idempotencyKey.bytesHex === identity.idempotencyKeyBytesHex &&
+    record.idempotencyKey.bytesHex === identity.idempotencyKeyBytesHex
+  ));
+  if (sameKeyRecords.some((record) => record.hostRequestFingerprint !== request.hostRequestFingerprint ||
+    (record.requestIdentityChecksum ?? record.requestBytesChecksum) !== identity.requestIdentityChecksum)) {
+    addUniqueBlocker(nonRerunnableReusableEffectBlockers, 'ERR_EFFECT_IDEMPOTENCY_CONFLICT');
+    return false;
+  }
+  const matchingRecords = sameKeyRecords.filter((record) => (
+    record.hostRequestFingerprint === request.hostRequestFingerprint &&
     (record.requestIdentityChecksum ?? record.requestBytesChecksum) === identity.requestIdentityChecksum
   ));
   if (currentBranchId) {
     const currentBranchRecord = matchingRecords.find((record) => record?.branchId === currentBranchId);
-    if (currentBranchRecord) return reusableOutcomeRecord(currentBranchRecord);
+    if (currentBranchRecord) {
+      return reusableOutcomeRecord(
+        currentBranchRecord,
+        request,
+        route,
+        effectResolutionInputs,
+        policy,
+        reusableEffectBlockers,
+        nonRerunnableReusableEffectBlockers,
+        currentBranchId,
+        currentParentTurnClosureFingerprint,
+      );
+    }
   }
-  return matchingRecords.some(reusableOutcomeRecord);
+  return matchingRecords.some((record) => reusableOutcomeRecord(
+    record,
+    request,
+    route,
+    effectResolutionInputs,
+    policy,
+    reusableEffectBlockers,
+    nonRerunnableReusableEffectBlockers,
+    currentBranchId,
+    currentParentTurnClosureFingerprint,
+  ));
 }
 
-function reusableOutcomeRecord(record) {
-  return Boolean(
-    record?.resolutionInputRef &&
-    (record.state === 'resolved' || record.state === 'submitted' || record.state === 'closure_committed'),
-  );
+function reusableOutcomeRecord(record, request, route, effectResolutionInputs, policy, reusableEffectBlockers, nonRerunnableReusableEffectBlockers, currentBranchId = null, currentParentTurnClosureFingerprint = null) {
+  if (!record?.resolutionInputRef || !['resolved', 'submitted', 'closure_committed'].includes(record.state)) return false;
+  const resolutionInputBytes = effectResolutionInputs.get(blobRefKey(record.resolutionInputRef));
+  if (!resolutionInputBytes) return false;
+  try {
+    assertReusableResolutionAccepted(resolutionInputBytes, request, route, policy);
+  } catch (error) {
+    const blockers = reusableRecordCanRerun(record, route, currentBranchId, currentParentTurnClosureFingerprint)
+      ? reusableEffectBlockers
+      : nonRerunnableReusableEffectBlockers;
+    addUniqueBlocker(blockers, error?.code ?? 'ERR_CAPABILITY_REUSABLE_EFFECT_INVALID');
+    return false;
+  }
+  return true;
+}
+
+function assertReusableResolutionAccepted(resolutionInputBytes, request, route, policy) {
+  let resolution;
+  try {
+    resolution = decodeResolutionInputBytes(resolutionInputBytes);
+  } catch (error) {
+    fail('ERR_CAPABILITY_REUSABLE_EFFECT_INVALID', 'reusable effect ResolutionInput is invalid', { error: String(error?.message ?? error) });
+  }
+  if (resolution.targetHostRequestFingerprint !== hostRequestTargetFingerprint(request)) {
+    fail('ERR_CAPABILITY_REUSABLE_EFFECT_TARGET_MISMATCH', 'reusable effect ResolutionInput targets a different HostRequest');
+  }
+  assertReusableResolutionStatusAccepted(resolution.status, request, route);
+  if (resolution.status === 0 && resolution.responseValueImageBytes.byteLength === 0) {
+    fail('ERR_CAPABILITY_REUSABLE_EFFECT_RESPONSE_REQUIRED', 'reusable effect response is empty');
+  }
+  if (resolution.status !== 0 && resolution.responseValueImageBytes.byteLength !== 0) {
+    fail('ERR_CAPABILITY_REUSABLE_EFFECT_RESPONSE_FORBIDDEN', 'non-responded reusable effect carries response bytes');
+  }
+  const maximumResponseBytes = Math.min(route.maximumResponseBytes ?? Number.MAX_SAFE_INTEGER, policy.maximumResponseBytes);
+  if (maximumResponseBytes !== Number.MAX_SAFE_INTEGER && (
+    resolutionInputBytes.byteLength > maximumResponseBytes ||
+    resolution.responseValueImageBytes.byteLength > maximumResponseBytes ||
+    resolution.hostClaimBytes.byteLength > maximumResponseBytes ||
+    resolution.metadata.byteLength > maximumResponseBytes
+  )) {
+    fail('ERR_CAPABILITY_REUSABLE_EFFECT_RESPONSE_TOO_LARGE', 'reusable effect ResolutionInput exceeds response policy');
+  }
+}
+
+function assertReusableResolutionStatusAccepted(status, request, route) {
+  const expectedStatus = request.responseSchema?.status;
+  if (expectedStatus === undefined) {
+    const manifestStatuses = new Set((route.supportedResponseStatuses ?? []).map((item) => ResponseStatusCode[item]));
+    if (!manifestStatuses.has(status)) fail('ERR_CAPABILITY_REUSABLE_EFFECT_STATUS_UNSUPPORTED', 'reusable effect status is not supported by the selected route');
+    return;
+  }
+  const expectedWireStatus = ResponseStatusCode[expectedStatus];
+  if (expectedWireStatus === undefined || status !== expectedWireStatus) {
+    fail('ERR_CAPABILITY_REUSABLE_EFFECT_STATUS_MISMATCH', 'reusable effect status does not match the pending request schema');
+  }
+}
+
+function hostRequestTargetFingerprint(request) {
+  const value = request.hostRequestFingerprint;
+  if (typeof value === 'bigint' || typeof value === 'number') return BigInt(value);
+  const match = String(value ?? '').match(/^(?:world:host-request:|0x)([0-9a-f]+)$/i);
+  if (!match) fail('ERR_HOST_REQUEST_FINGERPRINT_REQUIRED');
+  return BigInt(`0x${match[1]}`);
+}
+
+function blobRefKey(ref) {
+  return `${ref?.algorithm}:${ref?.checksum}:${ref?.byteLength}`;
+}
+
+function addUniqueBlocker(blockers, code) {
+  if (!blockers.includes(code)) blockers.push(code);
+}
+
+function reusableRecordCanRerun(record, route, currentBranchId = null, currentParentTurnClosureFingerprint = null) {
+  const effectiveState = reusableRecordEffectiveState(record, currentBranchId, currentParentTurnClosureFingerprint);
+  if (effectiveState !== 'resolved') return false;
+  if (!record?.requestBytesRef) return false;
+  if (record.driverRecoveryClass && route?.recoveryClass && record.driverRecoveryClass !== route.recoveryClass) return false;
+  const recoveryClass = record.driverRecoveryClass ?? route?.recoveryClass;
+  return recoveryClass === EffectRecoveryClass.pure || recoveryClass === EffectRecoveryClass.idempotent;
+}
+
+function reusableRecordEffectiveState(record, currentBranchId = null, currentParentTurnClosureFingerprint = null) {
+  return (
+    ['submitted', 'closure_committed'].includes(record?.state) &&
+    (
+      (currentBranchId && record?.branchId !== currentBranchId) ||
+      (currentBranchId && currentParentTurnClosureFingerprint &&
+        record?.branchId === currentBranchId &&
+        record?.parentTurnClosureFingerprint !== currentParentTurnClosureFingerprint)
+    )
+  )
+    ? 'resolved'
+    : record?.state;
+}
+
+function currentHeadParentTurnClosureFingerprint(currentHead) {
+  if (typeof currentHead?.turnClosureWorldFingerprint === 'string' && currentHead.turnClosureWorldFingerprint.length > 0) {
+    return currentHead.turnClosureWorldFingerprint;
+  }
+  const updateParent = currentHead?.updateDiagnostics?.parentTurnClosureFingerprint;
+  return typeof updateParent === 'string' && updateParent.length > 0 ? updateParent : null;
 }
 
 function reusableRequestIdentity(request, route) {
@@ -441,11 +640,12 @@ function selectPreferredAuthorityManifest(manifests, preferredAuthorityLabels) {
   return selected;
 }
 
-function selectPendingRequestRoute(candidates, preferredAuthorityLabels, request, policy, effectRecords, selectedLiveModelRequestCount, currentBranchId = null) {
+function selectPendingRequestRoute(candidates, preferredAuthorityLabels, request, policy, effectRecords, selectedLiveModelRequestCount, currentBranchId = null, currentParentTurnClosureFingerprint = null, effectResolutionInputs = new Map()) {
   const selected = selectPreferredAuthorityManifest(candidates, preferredAuthorityLabels);
-  if (!chargesLiveModelBudget(selected, request, effectRecords, currentBranchId)) return selected;
+  if (!chargesLiveModelBudget(selected, request, effectRecords, currentBranchId, currentParentTurnClosureFingerprint, effectResolutionInputs, policy)) return selected;
 
-  const nonChargingCandidates = candidates.filter((manifest) => !chargesLiveModelBudget(manifest, request, effectRecords, currentBranchId));
+  const nonChargingCandidates = candidates.filter((manifest) =>
+    !chargesLiveModelBudget(manifest, request, effectRecords, currentBranchId, currentParentTurnClosureFingerprint, effectResolutionInputs, policy));
   if (!nonChargingCandidates.length) return selected;
   if (selectedLiveModelRequestCount >= policy.maximumLiveModelCalls) {
     return selectPreferredAuthorityManifest(nonChargingCandidates, preferredAuthorityLabels);
@@ -540,6 +740,26 @@ function isLiveModelRoute(route, request) {
   return false;
 }
 
-function chargesLiveModelBudget(route, request, effectRecords, currentBranchId = null) {
-  return isLiveModelRoute(route, request) && !hasReusableEffectOutcome(request, effectRecords, route, currentBranchId);
+function chargesLiveModelBudget(
+  route,
+  request,
+  effectRecords,
+  currentBranchId = null,
+  currentParentTurnClosureFingerprint = null,
+  effectResolutionInputs = new Map(),
+  policy = createRunPolicy(),
+  reusableEffectBlockers = [],
+  nonRerunnableReusableEffectBlockers = [],
+) {
+  return isLiveModelRoute(route, request) && !hasReusableEffectOutcome(
+    request,
+    effectRecords,
+    route,
+    currentBranchId,
+    currentParentTurnClosureFingerprint,
+    effectResolutionInputs,
+    policy,
+    reusableEffectBlockers,
+    nonRerunnableReusableEffectBlockers,
+  );
 }

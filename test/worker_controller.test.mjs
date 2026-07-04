@@ -635,8 +635,104 @@ describe('RunController and WorldWorker', () => {
 
     await assert.rejects(
       () => controller.advance(runId, branchId),
-      { code: 'ERR_EFFECT_RESOLUTION_TARGET_MISMATCH' },
+      (error) => {
+        assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+        assert.ok(error.details?.blockers?.includes('ERR_CAPABILITY_REUSABLE_EFFECT_TARGET_MISMATCH'));
+        return true;
+      },
     );
+  });
+
+  it('does not load unrelated historical ResolutionInput blobs during pending preflight', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'idempotency-key:1', idempotencyKeyFingerprint: 0xa09n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const missingResolutionInputRef = {
+      algorithm: 'sha256',
+      checksum: 'f'.repeat(64),
+      byteLength: 123,
+    };
+    await store.putEffectRecord(createEffectRecord({
+      runId,
+      branchId,
+      parentTurnClosureFingerprint: 'world:closure:0',
+      hostRequestFingerprint: 'world:host-request:0000000000000a02',
+      idempotencyKey: {
+        format: 'world-idempotency-key-bytes.hex',
+        bytesHex: Buffer.from('idempotency-key:unrelated').toString('hex'),
+      },
+      idempotencyKeyWorldFingerprint: 'world:idempotency-key:0000000000000a19',
+      actuatorRef: 'world:actuator-ref:0000000000000a05',
+      descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+      actuationClass: 'world:actuation-class:1',
+      responseSchema: { status: 'responded' },
+      requestBytesChecksum: `sha256:${sha256Hex(fromUtf8('unrelated'))}`,
+      state: EffectState.resolved,
+      driverRecoveryClass: EffectRecoveryClass.pure,
+      resolutionInputRef: missingResolutionInputRef,
+    }));
+    const driver = fixtureEffectDriver();
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [driver],
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(driver.invocationCount, 1);
+  });
+
+  it('does not load non-terminal historical ResolutionInput blobs during pending preflight', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'idempotency-key:1', idempotencyKeyFingerprint: 0xa09n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const missingResolutionInputRef = {
+      algorithm: 'sha256',
+      checksum: 'e'.repeat(64),
+      byteLength: 321,
+    };
+    const requestBytesRef = await store.putBlob(requests[0]);
+    await store.putEffectRecord(createEffectRecord({
+      runId,
+      branchId,
+      parentTurnClosureFingerprint: 'world:closure:0',
+      hostRequestFingerprint: 'world:host-request:0000000000000a01',
+      idempotencyKey: {
+        format: 'world-idempotency-key-bytes.hex',
+        bytesHex: Buffer.from('idempotency-key:1').toString('hex'),
+      },
+      idempotencyKeyWorldFingerprint: 'world:idempotency-key:0000000000000a09',
+      actuatorRef: 'world:actuator-ref:0000000000000a05',
+      descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+      actuationClass: 'world:actuation-class:1',
+      responseSchema: { status: 'responded' },
+      requestBytesChecksum: `sha256:${sha256Hex(requests[0])}`,
+      requestBytesRef,
+      state: EffectState.observed,
+      driverRecoveryClass: EffectRecoveryClass.pure,
+      resolutionInputRef: missingResolutionInputRef,
+    }));
+    const driver = fixtureEffectDriver();
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [driver],
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(driver.invocationCount, 1);
   });
 
   it('surfaces parked best-effort effects before decoding resolutions', async () => {
@@ -1496,7 +1592,11 @@ describe('RunController and WorldWorker', () => {
 
       await assert.rejects(
         () => secondController.advance(runId, branchId),
-        { code: 'ERR_EFFECT_IDEMPOTENCY_CONFLICT' },
+        (error) => {
+          assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+          assert.deepEqual(error.details?.blockers, ['ERR_EFFECT_IDEMPOTENCY_CONFLICT']);
+          return true;
+        },
       );
       assert.equal(fetchCount, 1);
     } finally {

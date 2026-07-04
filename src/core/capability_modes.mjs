@@ -39,6 +39,7 @@ export async function runCapabilityMode({
   }
   if (mode === CapabilityExecutionMode.dryRun) {
     assertManifestCoversHostRequest(manifest, hostRequest);
+    assertLocalCapabilityPolicyAllows(manifest, hostRequest, livePolicy, 'dry-run');
     return { mode, submittedToWorld: false, dryRun: await driver.dryRun(context, hostRequest) };
   }
   if (mode === CapabilityExecutionMode.shadow) {
@@ -56,11 +57,14 @@ export async function runCapabilityMode({
         enforceNetworkTarget: shouldEnforceNetworkTarget(hostRequest, manifest),
       });
       assertCapabilityPreflightAccepted(await driver.preflight(shadowContext, hostRequest));
+    } else {
+      assertLocalCapabilityPolicyAllows(manifest, hostRequest, livePolicy, 'shadow');
     }
     return { mode, submittedToWorld: false, shadow: await driver.shadow(shadowContext, hostRequest, recordedResolution) };
   }
   if (mode === CapabilityExecutionMode.approval) {
     assertManifestCoversHostRequest(manifest, hostRequest);
+    assertLocalCapabilityPolicyAllows(manifest, hostRequest, livePolicy, 'approval');
     const proposed = await driver.dryRun(context, hostRequest);
     const decision = await approvalDecision(approval, { manifest, hostRequest, proposed });
     if (decision.approved !== true) return { mode, submittedToWorld: false, approved: false, proposed };
@@ -112,6 +116,22 @@ export async function runCapabilityMode({
 
 function liveContext(context, policy, action = null) {
   return { ...context, mode: 'live', policy, action };
+}
+
+function assertLocalCapabilityPolicyAllows(manifest, hostRequest, policy, mode) {
+  const localPolicy = createCapabilityPolicy(policy);
+  assertCapabilityPolicyAllows({
+    manifest,
+    hostRequest: networkPolicyHostRequest(hostRequest, manifest),
+    policy: localPolicy,
+    mode,
+    enforceNetworkTarget: shouldEnforceNetworkTarget(hostRequest, manifest),
+    requireEffectOptIn: false,
+    checkNetworkTarget: localPolicy.allowedOrigins.size > 0 || localPolicy.allowedMethods.size > 0,
+    checkFileRoot: mode !== 'dry-run' || localPolicy.allowedFileRoots.size > 0,
+    checkRecoveryClass: mode !== 'dry-run',
+    enforceApprovalRequirements: false,
+  });
 }
 
 function submittedResolutionToWorld(resolved) {

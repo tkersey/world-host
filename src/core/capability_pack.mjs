@@ -38,7 +38,12 @@ const SEMANTIC_FIELDS = Object.freeze([
 ]);
 const SECRET_PATTERN = /credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key/i;
 const CONFORMANCE_RECEIPT_PATH = 'conformance.json';
-const ADAPTER_IMPORT_SCANNER = globalThis.Bun?.Transpiler ? new globalThis.Bun.Transpiler({ loader: 'js' }) : null;
+const ADAPTER_IMPORT_SCANNERS = globalThis.Bun?.Transpiler ? Object.freeze({
+  js: new globalThis.Bun.Transpiler({ loader: 'js' }),
+  jsx: new globalThis.Bun.Transpiler({ loader: 'jsx' }),
+  ts: new globalThis.Bun.Transpiler({ loader: 'ts' }),
+  tsx: new globalThis.Bun.Transpiler({ loader: 'tsx' }),
+}) : null;
 const SIDECAR_RUNTIME_WRAPPERS = new Set([
   'bash',
   'cmd',
@@ -89,10 +94,14 @@ const SIDECAR_RUNTIME_VALUE_OPTIONS = new Set([
   '--watch-path',
   '--cert',
 ]);
+const SIDECAR_MODULE_LOADER_OPTIONS = new Set([
+  '--test-reporter',
+]);
 const SIDECAR_RUNTIME_FLAG_ONLY_OPTIONS = new Set([
   '--no-warnings',
   '--trace-warnings',
 ]);
+const DENO_CONFIG_IMPORT_MAP_KEYS = new Set(['imports', 'importMap', 'scopes']);
 const SIDECAR_PACKAGE_MANAGER_VALUE_OPTIONS = new Set([
   '--cache',
   '--cache-folder',
@@ -293,7 +302,7 @@ export function assertCapabilityConformanceReceipt(input) {
 
 export async function assertCapabilityPackChecksums(manifestLike, artifacts = {}) {
   const manifest = assertCapabilityManifest(manifestLike);
-  assertReferencedArtifactsCovered(manifest);
+  assertReferencedArtifactsCovered(manifest, artifacts);
   for (const item of manifest.checksums) {
     const bytes = artifacts[item.path];
     if (!(bytes instanceof Uint8Array)) fail('ERR_CAPABILITY_PACK_ARTIFACT_MISSING', `artifact missing: ${item.path}`);
@@ -301,6 +310,7 @@ export async function assertCapabilityPackChecksums(manifestLike, artifacts = {}
     const actual = `sha256:${await sha256Hex(bytes)}`;
     if (actual !== item.checksum) fail('ERR_CAPABILITY_PACK_CHECKSUM_MISMATCH', `artifact checksum mismatch: ${item.path}`, { expected: item.checksum, actual });
   }
+  assertSidecarDenoConfigsDoNotDefineImportMaps(manifest, artifacts);
   assertAdapterArtifactSelfContained(manifest, artifacts);
   assertSidecarAdapterArtifactsSelfContained(manifest, artifacts);
   return true;
@@ -315,36 +325,108 @@ function semanticArtifactChecksums(manifest) {
 
 function assertAdapterArtifactSelfContained(manifest, artifacts) {
   if (manifest.adapter.kind !== 'in_process' || !manifest.adapter.module) return;
-  assertJavaScriptAdapterArtifactSelfContained(manifest.adapter.module, artifacts, 'adapter');
+  assertJavaScriptAdapterArtifactSelfContained(manifest.adapter.module, artifacts, 'adapter', checksumPathSet(manifest), new Set(), {
+    bunResolutionAliases: true,
+    typeScriptCapableRuntime: true,
+  });
 }
 
 function assertSidecarAdapterArtifactsSelfContained(manifest, artifacts) {
   if (manifest.adapter.kind !== 'sidecar') return;
-  const runtimeEntrypoint = sidecarRuntimeEntrypointArtifact(manifest.adapter.command);
-  for (const artifactPath of sidecarCommandArtifacts(manifest.adapter.command)) {
-    if (!javascriptArtifactPath(artifactPath) && artifactPath !== runtimeEntrypoint) continue;
-    assertJavaScriptAdapterArtifactSelfContained(artifactPath, artifacts, 'sidecar adapter');
+  const covered = checksumPathSet(manifest);
+  const shebangCommand = sidecarShebangRuntimeCommand(manifest.adapter.command, artifacts);
+  const scannerOptions = {
+    bunResolutionAliases: sidecarUsesBunResolution(manifest.adapter.command, artifacts),
+    typeScriptCapableRuntime: sidecarTypeScriptCapableRuntime(manifest.adapter.command) ||
+      (shebangCommand ? sidecarTypeScriptCapableRuntime(shebangCommand) : false),
+  };
+  for (const artifactPath of sidecarScannedJavaScriptArtifacts(manifest.adapter.command, artifacts)) {
+    if (!covered.has(artifactPath)) {
+      fail('ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED', `referenced artifact is not checksum-covered: ${artifactPath}`);
+    }
+    assertJavaScriptAdapterArtifactSelfContained(artifactPath, artifacts, 'sidecar adapter', covered, new Set(), scannerOptions);
   }
 }
 
-function assertJavaScriptAdapterArtifactSelfContained(artifactPath, artifacts, label) {
+function assertSidecarDenoConfigsDoNotDefineImportMaps(manifest, artifacts) {
+  if (manifest.adapter.kind !== 'sidecar') return;
+  const covered = checksumPathSet(manifest);
+  const commands = [manifest.adapter.command];
+  const shebangCommand = sidecarShebangRuntimeCommand(manifest.adapter.command, artifacts);
+  if (shebangCommand) commands.push(shebangCommand);
+  for (const command of commands) {
+    for (const artifactPath of sidecarDenoConfigArtifacts(command)) {
+      assertSidecarDenoConfigDoesNotDefineImportMaps(artifactPath, artifacts, covered, new Set());
+    }
+  }
+}
+
+function assertSidecarDenoConfigDoesNotDefineImportMaps(artifactPath, artifacts, covered, seen) {
+  if (seen.has(artifactPath)) return;
+  seen.add(artifactPath);
   const bytes = artifacts[artifactPath];
   if (!(bytes instanceof Uint8Array)) return;
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return;
+  }
+  if (jsonLikeObjectHasTopLevelKey(text, DENO_CONFIG_IMPORT_MAP_KEYS)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Deno sidecar configs must not define import maps');
+  }
+  for (const extendsPath of jsonLikeObjectTopLevelStringValues(text, 'extends')) {
+    const extendedArtifactPath = denoConfigExtendsArtifact(artifactPath, extendsPath, covered);
+    assertSidecarDenoConfigDoesNotDefineImportMaps(extendedArtifactPath, artifacts, covered, seen);
+  }
+}
+
+function checksumPathSet(manifest) {
+  return new Set(manifest.checksums.map((item) => item.path));
+}
+
+function assertJavaScriptAdapterArtifactSelfContained(artifactPath, artifacts, label, covered, seen = new Set(), options = {}) {
+  const bytes = artifacts[artifactPath];
+  if (!(bytes instanceof Uint8Array)) return;
+  if (seen.has(artifactPath)) return;
+  seen.add(artifactPath);
   const text = new TextDecoder().decode(bytes);
-  if (!ADAPTER_IMPORT_SCANNER) fail('ERR_CAPABILITY_PACK_ADAPTER_IMPORT_SCAN_UNAVAILABLE', 'adapter import scanning requires Bun.Transpiler');
+  const scannedText = stripJavaScriptShebang(text);
+  const scannerOptions = options.typeScriptCapableRuntime || typeScriptCapableRuntimeShebang(text) || typeScriptArtifactPath(artifactPath)
+    ? { ...options, typeScriptCapableRuntime: true }
+    : options;
+  const importScanner = adapterImportScanner(artifactPath, text, scannerOptions);
+  if (!importScanner) fail('ERR_CAPABILITY_PACK_ADAPTER_IMPORT_SCAN_UNAVAILABLE', 'adapter import scanning requires Bun.Transpiler');
   let imports;
   try {
-    imports = ADAPTER_IMPORT_SCANNER.scanImports(text);
+    imports = importScanner.scanImports(scannedText);
   } catch (error) {
     fail('ERR_CAPABILITY_PACK_ADAPTER_IMPORT_SCAN_FAILED', `adapter import scan failed for ${artifactPath}`, { error: String(error?.message ?? error) });
   }
-  if (imports.length || adapterHasImportCall(text)) {
+  if (adapterHasImportCall(scannedText)) {
     fail('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT', `${label} imports code outside its checksum-covered entry module: ${artifactPath}`);
+  }
+  for (const item of imports) {
+    const imported = localImportArtifact(artifactPath, item.path, covered, scannerOptions);
+    if (!imported) {
+      fail('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT', `${label} imports code outside its checksum-covered entry module: ${artifactPath}`);
+    }
+    if (!covered.has(imported)) {
+      fail('ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED', `referenced artifact is not checksum-covered: ${imported}`);
+    }
+    if (!javascriptArtifactPath(imported)) {
+      fail('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT', `${label} imports unscanned code outside its JavaScript artifact set: ${imported}`);
+    }
+    assertJavaScriptAdapterArtifactSelfContained(imported, artifacts, label, covered, seen, scannerOptions);
   }
 }
 
+function stripJavaScriptShebang(text) {
+  return text.startsWith('#!') ? text.replace(/^#![^\r\n]*(?:\r\n|\n|\r)?/, '') : text;
+}
+
 function assertNoArtifactCredentialMaterial(artifactPath, bytes) {
-  if (!textArtifactPath(artifactPath)) return;
+  if (!textArtifactPath(artifactPath) && !extensionlessArtifactPath(artifactPath)) return;
   let text;
   try {
     text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
@@ -355,12 +437,117 @@ function assertNoArtifactCredentialMaterial(artifactPath, bytes) {
 }
 
 function textArtifactPath(artifactPath) {
-  return /\.(?:c?m?js|json|md|txt|ya?ml|toml|ini|conf|cfg|env|pem|crt|cer|key|sh|bash|zsh|fish|py|rb|pl)$/i.test(artifactPath) ||
+  return /\.(?:c?m?js|[cm]?ts|tsx|jsx|jsonc?|md|txt|ya?ml|toml|ini|conf|cfg|env|pem|crt|cer|key|sh|bash|zsh|fish|py|rb|pl)$/i.test(artifactPath) ||
     /(?:^|[/\\])\.env(?:\.[A-Za-z0-9._-]+)?$/i.test(artifactPath);
 }
 
 function javascriptArtifactPath(artifactPath) {
-  return /\.c?m?js$/i.test(artifactPath);
+  return explicitJavaScriptArtifactPath(artifactPath) || extensionlessArtifactPath(artifactPath);
+}
+
+function explicitJavaScriptArtifactPath(artifactPath) {
+  return /\.(?:c?m?js|[cm]?ts|tsx|jsx)$/i.test(artifactPath);
+}
+
+function typeScriptArtifactPath(artifactPath) {
+  return /\.(?:[cm]?ts|tsx)$/i.test(artifactPath);
+}
+
+function adapterImportScanner(artifactPath, text = '', options = {}) {
+  if (!ADAPTER_IMPORT_SCANNERS) return null;
+  if (/\.tsx$/i.test(artifactPath)) return ADAPTER_IMPORT_SCANNERS.tsx;
+  if (/\.[cm]?ts$/i.test(artifactPath)) return ADAPTER_IMPORT_SCANNERS.ts;
+  if (/\.jsx$/i.test(artifactPath)) return ADAPTER_IMPORT_SCANNERS.jsx;
+  if (extensionlessArtifactPath(artifactPath) && (options.typeScriptCapableRuntime || typeScriptCapableRuntimeShebang(text))) return ADAPTER_IMPORT_SCANNERS.ts;
+  return ADAPTER_IMPORT_SCANNERS.js;
+}
+
+function typeScriptCapableRuntimeShebang(text) {
+  if (typeof text !== 'string' || !text.startsWith('#!')) return false;
+  const lineEnd = text.search(/\r|\n/);
+  const firstLine = lineEnd < 0 ? text : text.slice(0, lineEnd);
+  return /(?:^|[/\s])(?:bun|deno)(?:\s|$)/i.test(firstLine);
+}
+
+function extensionlessArtifactPath(artifactPath) {
+  return !/[.][^/\\.]+$/.test(commandBaseName(artifactPath));
+}
+
+function localImportArtifact(fromPath, specifier, covered, options = {}) {
+  if (typeof specifier !== 'string' || (!specifier.startsWith('./') && !specifier.startsWith('../'))) return null;
+  if (specifier.endsWith('/') || specifier.endsWith('\\')) return null;
+  const candidates = localImportArtifactCandidates(fromPath, specifier, options);
+  return candidates.find((candidate) => covered.has(candidate)) ?? candidates[0] ?? null;
+}
+
+function localImportArtifactCandidates(fromPath, specifier, options = {}) {
+  const normalizedFrom = normalizeArtifactPath(fromPath);
+  const base = normalizedFrom.includes('/') ? normalizedFrom.slice(0, normalizedFrom.lastIndexOf('/')) : '';
+  const resolved = normalizeArtifactPath(base ? `${base}/${specifier}` : specifier);
+  if (!resolved) return [];
+  const aliases = [resolved];
+  if (!resolved.startsWith('./')) {
+    aliases.push(`./${resolved}`);
+  }
+  if (!base && specifier.startsWith('./')) {
+    aliases.push(specifier);
+  }
+  if (fromPath.startsWith('./')) {
+    aliases.push(`./${resolved}`);
+  }
+  return interleavedLocalImportCandidates(aliases, normalizedFrom, options);
+}
+
+function extensionedLocalImportCandidates(value, fromPath, options = {}) {
+  if (!options.bunResolutionAliases) return [value];
+  const typeScriptAliases = typeScriptExplicitJavaScriptImportCandidates(value, fromPath);
+  if (typeScriptAliases) return typeScriptAliases;
+  if (!extensionlessArtifactPath(value)) return [value];
+  return [
+    value,
+    `${value}.tsx`,
+    `${value}.jsx`,
+    `${value}.mts`,
+    `${value}.ts`,
+    `${value}.mjs`,
+    `${value}.js`,
+    `${value}.cts`,
+    `${value}.cjs`,
+  ];
+}
+
+function typeScriptExplicitJavaScriptImportCandidates(value, fromPath) {
+  if (!typeScriptArtifactPath(fromPath)) return null;
+  if (/\.js$/i.test(value)) return [value, value.replace(/\.js$/i, '.ts'), value.replace(/\.js$/i, '.tsx'), value.replace(/\.js$/i, '.mts')];
+  if (/\.jsx$/i.test(value)) return [value, value.replace(/\.jsx$/i, '.tsx')];
+  if (/\.mjs$/i.test(value)) return [value, value.replace(/\.mjs$/i, '.mts')];
+  return null;
+}
+
+function interleavedLocalImportCandidates(values, fromPath, options = {}) {
+  const groups = [...new Set(values)].map((value) => extensionedLocalImportCandidates(value, fromPath, options));
+  const candidates = [];
+  const width = Math.max(...groups.map((group) => group.length));
+  for (let index = 0; index < width; index += 1) {
+    for (const group of groups) {
+      if (group[index]) candidates.push(group[index]);
+    }
+  }
+  return [...new Set(candidates)];
+}
+
+function normalizeArtifactPath(value) {
+  const parts = [];
+  for (const part of String(value).replaceAll('\\', '/').split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      if (!parts.length) return null;
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return parts.join('/');
 }
 
 function artifactCredentialText(text) {
@@ -462,10 +649,21 @@ function adapterHasImportCall(text) {
       continue;
     }
     const callEnd = skipBalancedParentheses(text, callStart);
-    const afterCall = skipWhitespaceAndComments(text, callEnd);
-    return true;
+    if (!staticImportCallLiteral(text, callStart, callEnd)) return true;
+    previousSignificant = 'identifier';
+    index = callEnd;
   }
   return false;
+}
+
+function staticImportCallLiteral(text, callStart, callEnd) {
+  let index = skipWhitespaceAndComments(text, callStart + 1);
+  const quote = text[index];
+  if (quote !== '\'' && quote !== '"' && quote !== '`') return false;
+  const literal = quote === '`' ? readTemplateString(text, index) : readQuotedString(text, index, quote);
+  if (literal.value === null) return false;
+  index = skipWhitespaceAndComments(text, literal.end);
+  return text[index] === ')' && index + 1 === callEnd;
 }
 
 function adapterAliasesGlobalObject(text) {
@@ -592,6 +790,151 @@ function skipWhitespaceAndComments(text, index) {
     }
     return index;
   }
+}
+
+function jsonLikeObjectHasTopLevelKey(text, keys) {
+  let depth = 0;
+  let index = text.charCodeAt(0) === 0xfeff ? 1 : 0;
+  while (index < text.length) {
+    const skipped = skipWhitespaceAndComments(text, index);
+    if (skipped !== index) {
+      index = skipped;
+      continue;
+    }
+    const char = text[index];
+    if (char === '"') {
+      const literal = readQuotedString(text, index, char);
+      const next = skipWhitespaceAndComments(text, literal.end);
+      if (depth === 1 && text[next] === ':' && keys.has(literal.value)) return true;
+      index = literal.end;
+      continue;
+    }
+    if (char === '\'') {
+      index = skipQuotedString(text, index, char);
+      continue;
+    }
+    if (char === '{') {
+      depth += 1;
+      index += 1;
+      continue;
+    }
+    if (char === '}') {
+      depth -= 1;
+      if (depth <= 0) return false;
+      index += 1;
+      continue;
+    }
+    if (char === '[') {
+      index = skipBalancedBracket(text, index);
+      continue;
+    }
+    index += 1;
+  }
+  return false;
+}
+
+function jsonLikeObjectTopLevelStringValues(text, keyName) {
+  const entries = [];
+  let depth = 0;
+  let index = text.charCodeAt(0) === 0xfeff ? 1 : 0;
+  while (index < text.length) {
+    const skipped = skipWhitespaceAndComments(text, index);
+    if (skipped !== index) {
+      index = skipped;
+      continue;
+    }
+    const char = text[index];
+    if (char === '"') {
+      const literal = readQuotedString(text, index, char);
+      const next = skipWhitespaceAndComments(text, literal.end);
+      if (depth === 1 && text[next] === ':' && literal.value === keyName) {
+        const value = jsonLikeStringValueSpan(text, next + 1);
+        entries.push(...value.entries);
+        index = Math.max(index + 1, value.end);
+        continue;
+      }
+      index = literal.end;
+      continue;
+    }
+    if (char === '\'') {
+      index = skipQuotedString(text, index, char);
+      continue;
+    }
+    if (char === '{') {
+      depth += 1;
+      index += 1;
+      continue;
+    }
+    if (char === '}') {
+      depth -= 1;
+      if (depth <= 0) return entries;
+      index += 1;
+      continue;
+    }
+    if (char === '[') {
+      index = skipBalancedBracket(text, index);
+      continue;
+    }
+    index += 1;
+  }
+  return entries;
+}
+
+function jsonLikeStringValueSpan(text, index) {
+  index = skipWhitespaceAndComments(text, index);
+  if (text[index] === '"') {
+    const literal = readQuotedString(text, index, text[index]);
+    return { entries: literal.value === null ? [] : [literal.value], end: literal.end };
+  }
+  if (text[index] === '[') return jsonLikeArrayStringSpan(text, index);
+  return { entries: [], end: skipJsonLikeValue(text, index) };
+}
+
+function jsonLikeArrayStringSpan(text, index) {
+  const entries = [];
+  let depth = 0;
+  while (index < text.length) {
+    const skipped = skipWhitespaceAndComments(text, index);
+    if (skipped !== index) {
+      index = skipped;
+      continue;
+    }
+    const char = text[index];
+    if (char === '"') {
+      const literal = readQuotedString(text, index, char);
+      const next = skipWhitespaceAndComments(text, literal.end);
+      if (depth === 1 && (text[next] === ',' || text[next] === ']') && literal.value !== null) entries.push(literal.value);
+      index = literal.end;
+      continue;
+    }
+    if (char === '\'') {
+      index = skipQuotedString(text, index, char);
+      continue;
+    }
+    if (char === '[') {
+      depth += 1;
+      index += 1;
+      continue;
+    }
+    if (char === ']') {
+      depth -= 1;
+      index += 1;
+      if (depth <= 0) return { entries, end: index };
+      continue;
+    }
+    index += 1;
+  }
+  return { entries, end: index };
+}
+
+function skipJsonLikeValue(text, index) {
+  index = skipWhitespaceAndComments(text, index);
+  if (text[index] === '"') return readQuotedString(text, index, text[index]).end;
+  if (text[index] === '\'') return skipQuotedString(text, index, text[index]);
+  if (text[index] === '[') return skipBalancedBracket(text, index);
+  if (text[index] === '{') return skipBalancedBrace(text, index);
+  while (index < text.length && text[index] !== ',' && text[index] !== '}') index += 1;
+  return index;
 }
 
 function skipWhitespaceAndCommentsBackward(text, index) {
@@ -805,7 +1148,7 @@ function identifierPart(char) {
   return /[A-Za-z0-9_$]/.test(char);
 }
 
-function assertReferencedArtifactsCovered(manifest) {
+function assertReferencedArtifactsCovered(manifest, artifacts) {
   const covered = new Set(manifest.checksums.map((item) => item.path));
   const required = new Set([
     ...manifest.docs,
@@ -813,16 +1156,17 @@ function assertReferencedArtifactsCovered(manifest) {
   ]);
   if (manifest.adapter.kind === 'in_process' && manifest.adapter.module) required.add(manifest.adapter.module);
   if (manifest.adapter.kind === 'sidecar') {
-    for (const artifactPath of sidecarCommandArtifacts(manifest.adapter.command)) required.add(artifactPath);
+    for (const artifactPath of sidecarCommandArtifacts(manifest.adapter.command, artifacts)) required.add(artifactPath);
   }
   for (const path of required) {
     if (!covered.has(path)) fail('ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED', `referenced artifact is not checksum-covered: ${path}`);
   }
 }
 
-function sidecarCommandArtifacts(command) {
+function sidecarCommandArtifacts(command, packArtifacts = null) {
   const artifacts = [];
   let entrypointSeen = false;
+  assertDenoConfigIsolated(command);
   for (let index = 0; index < command.length; index += 1) {
     const value = command[index];
     assertSafeSidecarCommandToken(command, index);
@@ -832,6 +1176,28 @@ function sidecarCommandArtifacts(command) {
       continue;
     }
     if (sidecarRuntimeOptionPosition(command, index)) {
+      if (!entrypointSeen && commandBaseName(command[0]).toLowerCase() === 'bun') {
+        const bunConfigArtifact = sidecarBunConfigOptionArtifact(value, command[index + 1]);
+        if (bunConfigArtifact) {
+          if (!sidecarCommandArtifact(bunConfigArtifact)) {
+            fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar runtime option must reference a pack-relative checksum-covered artifact: ${value}`);
+          }
+          artifacts.push(bunConfigArtifact);
+          if (sidecarBunConfigOptionConsumesNext(value)) index += 1;
+          continue;
+        }
+      }
+      if (!entrypointSeen && commandBaseName(command[0]).toLowerCase() === 'deno') {
+        const denoConfigArtifact = sidecarDenoConfigOptionArtifact(value, command[index + 1]);
+        if (denoConfigArtifact) {
+          if (!sidecarCommandArtifact(denoConfigArtifact)) {
+            fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar runtime option must reference a pack-relative checksum-covered artifact: ${value}`);
+          }
+          artifacts.push(denoConfigArtifact);
+          if (sidecarDenoConfigOptionConsumesNext(value)) index += 1;
+          continue;
+        }
+      }
       const optionArtifact = sidecarOptionArtifact(value, { allowPreload: !entrypointSeen });
       if (optionArtifact) {
         artifacts.push(optionArtifact);
@@ -859,11 +1225,397 @@ function sidecarCommandArtifacts(command) {
   if (!entrypointSeen) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'sidecar command must reference a pack-relative checksum-covered entrypoint');
   }
+  const shebangCommand = packArtifacts ? sidecarShebangRuntimeCommand(command, packArtifacts) : null;
+  if (shebangCommand) artifacts.push(...sidecarCommandArtifacts(shebangCommand));
+  return [...new Set(artifacts)];
+}
+
+function sidecarScannedJavaScriptArtifacts(command, packArtifacts) {
+  const artifacts = new Set();
+  const runtimeEntrypoint = sidecarRuntimeEntrypointArtifact(command);
+  if (runtimeEntrypoint) artifacts.add(runtimeEntrypoint);
+  const commandEntrypoint = sidecarCommandEntrypointArtifact(command);
+  if (commandEntrypoint && sidecarCommandEntrypointNeedsJavaScriptScan(commandEntrypoint, packArtifacts)) {
+    artifacts.add(commandEntrypoint);
+  }
+  for (const artifactPath of sidecarPreloadArtifacts(command)) artifacts.add(artifactPath);
+  for (const artifactPath of sidecarBunConfigPreloadArtifacts(command, packArtifacts)) artifacts.add(artifactPath);
+  const shebangCommand = sidecarShebangRuntimeCommand(command, packArtifacts);
+  if (shebangCommand) {
+    for (const artifactPath of sidecarPreloadArtifacts(shebangCommand)) artifacts.add(artifactPath);
+    for (const artifactPath of sidecarBunConfigPreloadArtifacts(shebangCommand, packArtifacts)) artifacts.add(artifactPath);
+  }
+  for (const artifactPath of sidecarCommandArtifacts(command, packArtifacts)) {
+    if (explicitJavaScriptArtifactPath(artifactPath) && !runtimeOptionDataArtifact(artifactPath)) artifacts.add(artifactPath);
+  }
   return artifacts;
+}
+
+function sidecarCommandEntrypointNeedsJavaScriptScan(artifactPath, packArtifacts) {
+  if (explicitJavaScriptArtifactPath(artifactPath)) return !runtimeOptionDataArtifact(artifactPath);
+  if (!extensionlessArtifactPath(artifactPath) || runtimeOptionDataArtifact(artifactPath)) return false;
+  return artifactHasJavaScriptShebang(artifactPath, packArtifacts);
+}
+
+function artifactHasJavaScriptShebang(artifactPath, packArtifacts) {
+  const bytes = packArtifacts[artifactPath];
+  if (!(bytes instanceof Uint8Array)) return false;
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return false;
+  }
+  if (!text.startsWith('#!')) return false;
+  const lineEnd = text.search(/\r|\n/);
+  const firstLine = lineEnd < 0 ? text : text.slice(0, lineEnd);
+  return /(?:^|[/\s])(?:bun|node|deno)(?:\s|$)/i.test(firstLine);
+}
+
+function artifactHasBunShebang(artifactPath, packArtifacts) {
+  const firstLine = artifactShebangFirstLine(artifactPath, packArtifacts);
+  return firstLine ? /(?:^|[/\s])bun(?:\s|$)/i.test(firstLine) : false;
+}
+
+function sidecarShebangRuntimeCommand(command, packArtifacts) {
+  if (sidecarRuntimeCommandPosition(command, 0)) return null;
+  const entrypoint = sidecarCommandEntrypointArtifact(command);
+  if (!entrypoint) return null;
+  const firstLine = artifactShebangFirstLine(entrypoint, packArtifacts);
+  if (!firstLine) return null;
+  const tokens = sidecarShebangTokens(firstLine);
+  const runtimeIndex = tokens.findIndex((token) => SIDECAR_JS_RUNTIMES.has(commandBaseName(token).toLowerCase()));
+  if (runtimeIndex < 0) return null;
+  assertSafeShebangRuntimePrefix(tokens, runtimeIndex);
+  return [tokens[runtimeIndex], ...tokens.slice(runtimeIndex + 1), entrypoint, ...command.slice(1)];
+}
+
+function assertSafeShebangRuntimePrefix(tokens, runtimeIndex) {
+  const prefix = tokens.slice(0, runtimeIndex);
+  if (!prefix.length) return;
+  const envWrapper = commandBaseName(prefix[0]).toLowerCase() === 'env';
+  if (envWrapper && (prefix.length === 1 || (prefix.length === 2 && prefix[1] === '-S'))) return;
+  fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'sidecar shebang runtime wrappers must not set environment or options before the runtime');
+}
+
+function sidecarShebangTokens(firstLine) {
+  const body = firstLine.slice(2).trim();
+  if (/["'\\]/.test(body)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'sidecar shebang arguments must not use quotes or escapes');
+  }
+  return body.split(/\s+/).filter(Boolean);
+}
+
+function artifactShebangFirstLine(artifactPath, packArtifacts) {
+  const bytes = packArtifacts[artifactPath];
+  if (!(bytes instanceof Uint8Array)) return false;
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return false;
+  }
+  if (!text.startsWith('#!')) return false;
+  const lineEnd = text.search(/\r|\n/);
+  return lineEnd < 0 ? text : text.slice(0, lineEnd);
+}
+
+function sidecarBunConfigPreloadArtifacts(command, packArtifacts) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'bun') return [];
+  const artifacts = [];
+  for (const configPath of sidecarBunConfigArtifacts(command)) {
+    const bytes = packArtifacts[configPath];
+    if (!(bytes instanceof Uint8Array)) continue;
+    let text;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch {
+      continue;
+    }
+    for (const preload of bunConfigPreloadEntries(text)) {
+      if (!sidecarPreloadArtifact(preload)) {
+        fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `bun config preload must reference a pack-relative checksum-covered artifact: ${preload}`);
+      }
+      artifacts.push(preload);
+    }
+  }
+  return artifacts;
+}
+
+function sidecarBunConfigArtifacts(command) {
+  const artifacts = [];
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  for (let index = 1; index < command.length; index += 1) {
+    if (!sidecarRuntimeOptionPosition(command, index)) continue;
+    if (entrypointIndex >= 0 && index > entrypointIndex) continue;
+    const artifact = sidecarBunConfigOptionArtifact(command[index], command[index + 1]);
+    if (artifact) artifacts.push(artifact);
+    if (sidecarBunConfigOptionConsumesNext(command[index])) index += 1;
+  }
+  return artifacts;
+}
+
+function sidecarBunConfigOptionArtifact(value, nextValue) {
+  const separator = value.indexOf('=');
+  if (separator < 0) return null;
+  const option = value.slice(0, separator);
+  return option === '--config' ? value.slice(separator + 1) : null;
+}
+
+function sidecarBunConfigOptionConsumesNext(value) {
+  return false;
+}
+
+function sidecarDenoConfigArtifacts(command) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'deno') return [];
+  const artifacts = [];
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  for (let index = 1; index < command.length; index += 1) {
+    if (!sidecarRuntimeOptionPosition(command, index)) continue;
+    if (entrypointIndex >= 0 && index > entrypointIndex) continue;
+    const artifact = sidecarDenoConfigOptionArtifact(command[index], command[index + 1]);
+    if (artifact) artifacts.push(artifact);
+    if (sidecarDenoConfigOptionConsumesNext(command[index])) index += 1;
+  }
+  return artifacts;
+}
+
+function denoConfigExtendsArtifact(fromPath, extendsPath, covered) {
+  if (!packRelativeConfigPath(extendsPath)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `Deno config extends must reference a pack-relative checksum-covered artifact: ${extendsPath}`);
+  }
+  const candidates = denoConfigExtendsArtifactCandidates(fromPath, extendsPath);
+  const artifactPath = candidates.find((candidate) => covered.has(candidate));
+  if (!artifactPath) {
+    fail('ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED', `referenced artifact is not checksum-covered: ${candidates[0] ?? extendsPath}`);
+  }
+  return artifactPath;
+}
+
+function denoConfigExtendsArtifactCandidates(fromPath, extendsPath) {
+  const from = normalizeArtifactPath(fromPath);
+  const base = from && from.includes('/') ? from.slice(0, from.lastIndexOf('/')) : '';
+  const resolved = normalizeArtifactPath(base ? `${base}/${extendsPath}` : extendsPath);
+  if (!resolved) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `Deno config extends must reference a pack-relative checksum-covered artifact: ${extendsPath}`);
+  }
+  return [...new Set([resolved, `./${resolved}`])];
+}
+
+function packRelativeConfigPath(value) {
+  if (typeof value !== 'string' || !value.length) return false;
+  if (value.startsWith('/') || value.startsWith('\\')) return false;
+  if (/^[A-Za-z]:[\\/]/.test(value)) return false;
+  return sidecarCommandArtifact(value);
+}
+
+function assertDenoConfigIsolated(command) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'deno') return;
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  for (let index = 1; index < command.length; index += 1) {
+    if (!sidecarRuntimeOptionPosition(command, index)) continue;
+    if (entrypointIndex >= 0 && index > entrypointIndex) continue;
+    if (command[index] === '--no-config') return;
+    if (sidecarDenoConfigOptionArtifact(command[index], command[index + 1])) return;
+    if (sidecarDenoConfigOptionConsumesNext(command[index])) index += 1;
+  }
+  fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Deno sidecars must disable ambient config or use a checksum-covered config artifact');
+}
+
+function sidecarDenoConfigOptionArtifact(value, nextValue) {
+  if (value === '--config' || value === '--config-file' || value === '-c') return nextValue;
+  if (value.startsWith('-c=')) return value.slice(3);
+  if (value.startsWith('-c') && !value.startsWith('--')) return value.slice(2);
+  const separator = value.indexOf('=');
+  if (separator < 0) return null;
+  const option = value.slice(0, separator);
+  return option === '--config' || option === '--config-file' ? value.slice(separator + 1) : null;
+}
+
+function sidecarDenoConfigOptionConsumesNext(value) {
+  return value === '--config' || value === '--config-file' || value === '-c';
+}
+
+function bunConfigPreloadEntries(text) {
+  const parsedEntries = bunTomlPreloadEntries(text);
+  if (parsedEntries) return parsedEntries;
+  const entries = [];
+  const topLevelText = text.slice(0, tomlFirstTableOffset(text));
+  let offset = 0;
+  for (const line of topLevelText.matchAll(/[^\r\n]*(?:\r\n|\r|\n|$)/g)) {
+    if (!line[0]) break;
+    const content = tomlLineWithoutComment(line[0]);
+    const leading = content.match(/^\s*/)[0].length;
+    if (leading < content.length) {
+      const key = readTomlKey(topLevelText, offset + leading);
+      const separator = key ? skipTomlInlineWhitespace(topLevelText, key.end) : -1;
+      if (key?.value === 'preload' && topLevelText[separator] === '=') {
+        entries.push(...tomlPreloadValueEntries(topLevelText, separator + 1));
+      }
+    }
+    offset += line[0].length;
+  }
+  return entries;
+}
+
+function bunTomlPreloadEntries(text) {
+  const parse = globalThis.Bun?.TOML?.parse;
+  if (typeof parse !== 'function') return null;
+  let config;
+  try {
+    config = parse(text);
+  } catch {
+    return [];
+  }
+  const preload = config?.preload;
+  if (Array.isArray(preload)) return preload.filter((item) => typeof item === 'string');
+  return typeof preload === 'string' ? [preload] : [];
+}
+
+function readTomlKey(text, index) {
+  const quote = text[index];
+  if (quote === '\'' || quote === '"') return readQuotedString(text, index, quote);
+  const match = /^[A-Za-z0-9_-]+/.exec(text.slice(index));
+  return match ? { value: match[0], end: index + match[0].length } : null;
+}
+
+function tomlPreloadValueEntries(text, index) {
+  const cursor = skipTomlInlineWhitespace(text, index);
+  const char = text[cursor];
+  if (char === '[') {
+    const closeBracket = findTomlArrayClose(text, cursor);
+    return tomlQuotedStringEntries(text.slice(cursor + 1, closeBracket));
+  }
+  if (char === '\'' || char === '"') {
+    const literal = readQuotedString(text, cursor, char);
+    return literal.value === null ? [] : [literal.value];
+  }
+  return [];
+}
+
+function skipTomlInlineWhitespace(text, index) {
+  while (index < text.length && (text[index] === ' ' || text[index] === '\t')) index += 1;
+  return index;
+}
+
+function tomlFirstTableOffset(text) {
+  let offset = 0;
+  for (const line of text.matchAll(/[^\r\n]*(?:\r\n|\r|\n|$)/g)) {
+    if (!line[0]) break;
+    const content = tomlLineWithoutComment(line[0]).trimStart();
+    if (content.startsWith('[')) return offset;
+    offset += line[0].length;
+  }
+  return text.length;
+}
+
+function tomlLineWithoutComment(line) {
+  let index = 0;
+  while (index < line.length) {
+    const char = line[index];
+    if (char === '\'' || char === '"') {
+      index = readQuotedString(line, index, char).end;
+      continue;
+    }
+    if (char === '#') return line.slice(0, index);
+    index += 1;
+  }
+  return line;
+}
+
+function findTomlArrayClose(text, openBracket) {
+  let depth = 0;
+  let index = openBracket;
+  while (index < text.length) {
+    const char = text[index];
+    if (char === '#') {
+      index = skipTomlComment(text, index);
+      continue;
+    }
+    if (char === '\'' || char === '"') {
+      index = readQuotedString(text, index, char).end;
+      continue;
+    }
+    if (char === '[') {
+      depth += 1;
+      index += 1;
+      continue;
+    }
+    if (char === ']') {
+      depth -= 1;
+      if (depth === 0) return index;
+      index += 1;
+      continue;
+    }
+    index += 1;
+  }
+  return text.length;
+}
+
+function tomlQuotedStringEntries(text) {
+  const entries = [];
+  let index = 0;
+  while (index < text.length) {
+    const char = text[index];
+    if (char === '#') {
+      index = skipTomlComment(text, index);
+      continue;
+    }
+    if (char === '\'' || char === '"') {
+      const literal = readQuotedString(text, index, char);
+      if (literal.value !== null) entries.push(literal.value);
+      index = Math.max(index + 1, literal.end);
+      continue;
+    }
+    index += 1;
+  }
+  return entries;
+}
+
+function skipTomlComment(text, index) {
+  while (index < text.length && text[index] !== '\n' && text[index] !== '\r') index += 1;
+  return index;
+}
+
+function sidecarPreloadArtifacts(command) {
+  const artifacts = [];
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  for (let index = 1; index < command.length; index += 1) {
+    const value = command[index];
+    if (!sidecarRuntimeOptionPosition(command, index) || !sidecarPreloadOption(value)) continue;
+    if (entrypointIndex >= 0 && index > entrypointIndex) continue;
+    const artifact = sidecarPreloadOptionArtifact(value, command[index + 1]);
+    if (artifact) artifacts.push(artifact);
+    if (sidecarPreloadOptionConsumesNext(value)) index += 1;
+  }
+  return artifacts;
+}
+
+function sidecarPreloadOptionArtifact(value, nextValue) {
+  if (value.startsWith('-r') && value !== '-r') return value.slice(2);
+  const separator = value.indexOf('=');
+  if (separator >= 0) return value.slice(separator + 1);
+  return nextValue;
+}
+
+function runtimeOptionDataArtifact(artifactPath) {
+  return /\.(?:jsonc?|ya?ml|toml|ini|conf|cfg|env|pem|crt|cer|key)$/i.test(artifactPath) ||
+    /(?:^|[/\\])\.env(?:\.[A-Za-z0-9._-]+)?$/i.test(artifactPath);
 }
 
 function sidecarRuntimeCommandPosition(command, index) {
   return index === 0 && SIDECAR_JS_RUNTIMES.has(commandBaseName(command[0]).toLowerCase());
+}
+
+function sidecarTypeScriptCapableRuntime(command) {
+  return ['bun', 'deno'].includes(commandBaseName(command[0]).toLowerCase());
+}
+
+function sidecarUsesBunResolution(command, packArtifacts) {
+  if (commandBaseName(command[0]).toLowerCase() === 'bun') return true;
+  if (sidecarRuntimeCommandPosition(command, 0)) return false;
+  const entrypoint = sidecarCommandEntrypointArtifact(command);
+  return entrypoint ? artifactHasBunShebang(entrypoint, packArtifacts) : false;
 }
 
 function sidecarRuntimeOptionPosition(command, index) {
@@ -924,8 +1676,26 @@ function sidecarPreloadArtifact(value) {
 function assertSafeSidecarCommandToken(command, index) {
   const value = command[index];
   const executable = commandBaseName(value).toLowerCase();
+  if (sidecarUnsupportedBunEnvFileIfExistsOption(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Bun sidecars do not support --env-file-if-exists');
+  }
+  if (sidecarUnsupportedBunCwdOption(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Bun sidecars do not support --cwd');
+  }
+  if (sidecarUnsupportedBunNoConfigOption(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Bun sidecars do not support --no-config');
+  }
+  if (sidecarUnsupportedBunConfigOption(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Bun sidecars only support --config=... for config isolation');
+  }
   if (index === 0 && SIDECAR_RUNTIME_WRAPPERS.has(executable)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command wraps runtime execution outside checksum coverage: ${value}`);
+  }
+  if (index === 0 && bareScriptEntrypoint(value)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'sidecar script entrypoints must be path-qualified');
+  }
+  if (index === 0 && pathQualifiedJavaScriptEntrypoint(value)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'sidecar JavaScript entrypoints must use an explicit runtime command');
   }
   if (index === 0 && ['bunx', 'npx', 'pnpx'].includes(executable)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command executes packages outside checksum coverage: ${value}`);
@@ -933,12 +1703,54 @@ function assertSafeSidecarCommandToken(command, index) {
   if (sidecarPackageExecBeforeArtifact(command, index)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command executes packages outside checksum coverage: ${command[0]} ${value}`);
   }
+  if (sidecarDenoTaskBeforeArtifact(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command executes deno task outside checksum coverage: ${command[0]} ${value}`);
+  }
   if (sidecarRuntimeEvalFlag(command, index)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command evaluates inline code outside checksum coverage: ${value}`);
+  }
+  if (sidecarRuntimeModuleLoaderOption(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command loads runtime modules outside checksum coverage: ${value}`);
+  }
+  if (sidecarRuntimeImportMapOption(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'sidecar command import maps are not supported');
   }
   if (sidecarRuntimeRemoteEntrypoint(command, index)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command uses a remote runtime entrypoint outside checksum coverage: ${value}`);
   }
+}
+
+function sidecarUnsupportedBunEnvFileIfExistsOption(command, index) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'bun' || !sidecarRuntimeOptionPosition(command, index)) return false;
+  const value = command[index];
+  if (value !== '--env-file-if-exists' && !value.startsWith('--env-file-if-exists=')) return false;
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  return entrypointIndex < 0 || index < entrypointIndex;
+}
+
+function sidecarUnsupportedBunCwdOption(command, index) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'bun' || !sidecarRuntimeOptionPosition(command, index)) return false;
+  const value = command[index];
+  if (value !== '--cwd' && !value.startsWith('--cwd=')) return false;
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  return entrypointIndex < 0 || index < entrypointIndex;
+}
+
+function sidecarUnsupportedBunNoConfigOption(command, index) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'bun' || !sidecarRuntimeOptionPosition(command, index)) return false;
+  const value = command[index];
+  if (value !== '--no-config' && !value.startsWith('--no-config=')) return false;
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  return entrypointIndex < 0 || index < entrypointIndex;
+}
+
+function sidecarUnsupportedBunConfigOption(command, index) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'bun' || !sidecarRuntimeOptionPosition(command, index)) return false;
+  const value = command[index];
+  if (!(value === '--config' || value === '--config-file' || value.startsWith('--config-file=') ||
+    value === '-c' || value.startsWith('-c=') || (value.startsWith('-c') && value !== '-c'))) return false;
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  return entrypointIndex < 0 || index < entrypointIndex;
 }
 
 function sidecarRuntimeEvalFlag(command, index) {
@@ -948,6 +1760,24 @@ function sidecarRuntimeEvalFlag(command, index) {
   const value = command[index];
   const evalFlag = sidecarInlineEvalFlag(runtime, value);
   if (!evalFlag) return false;
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  return entrypointIndex < 0 || index < entrypointIndex;
+}
+
+function sidecarRuntimeModuleLoaderOption(command, index) {
+  if (!sidecarRuntimeOptionPosition(command, index)) return false;
+  const value = command[index];
+  const option = value.includes('=') ? value.slice(0, value.indexOf('=')) : value;
+  if (!SIDECAR_MODULE_LOADER_OPTIONS.has(option)) return false;
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  return entrypointIndex < 0 || index < entrypointIndex;
+}
+
+function sidecarRuntimeImportMapOption(command, index) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'deno' || !sidecarRuntimeOptionPosition(command, index)) return false;
+  const value = command[index];
+  const option = value.includes('=') ? value.slice(0, value.indexOf('=')) : value;
+  if (option !== '--import-map') return false;
   const entrypointIndex = sidecarEntrypointIndex(command);
   return entrypointIndex < 0 || index < entrypointIndex;
 }
@@ -984,6 +1814,11 @@ function sidecarRuntimeEntrypointArtifact(command) {
   return entrypointIndex < 0 ? null : command[entrypointIndex];
 }
 
+function sidecarCommandEntrypointArtifact(command) {
+  if (sidecarRuntimeCommandPosition(command, 0)) return sidecarRuntimeEntrypointArtifact(command);
+  return sidecarCommandArtifact(command[0]) ? command[0] : null;
+}
+
 function sidecarEntrypointIndex(command) {
   for (let index = 1; index < command.length; index += 1) {
     const value = command[index];
@@ -1001,6 +1836,16 @@ function sidecarEntrypointIndex(command) {
 function sidecarRuntimeOptionValuePosition(command, index) {
   if (!sidecarRuntimeOptionPosition(command, index)) return false;
   const previous = command[index - 1];
+  const runtime = commandBaseName(command[0]).toLowerCase();
+  if (runtime === 'bun') {
+    if (sidecarBunConfigOptionConsumesNext(previous)) return true;
+    if (sidecarBunConfigOptionArtifact(previous, undefined)) return false;
+  }
+  if (runtime === 'deno') {
+    if (previous === '--no-config') return false;
+    if (sidecarDenoConfigOptionConsumesNext(previous)) return true;
+    if (sidecarDenoConfigOptionArtifact(previous, undefined)) return false;
+  }
   return sidecarOptionConsumesNextValue(previous) || sidecarUnknownRuntimeOptionValuePosition(command, index);
 }
 
@@ -1036,6 +1881,13 @@ function sidecarPackageExecBeforeArtifact(command, index) {
   return true;
 }
 
+function sidecarDenoTaskBeforeArtifact(command, index) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'deno') return false;
+  if (String(command[index]).toLowerCase() !== 'task') return false;
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  return entrypointIndex < 0 || index < entrypointIndex;
+}
+
 function sidecarPackageManagerOptionValuePosition(command, index) {
   if (index < 2 || !['bun', 'npm', 'pnpm', 'yarn'].includes(commandBaseName(command[0]).toLowerCase())) return false;
   const previous = command[index - 1];
@@ -1045,6 +1897,16 @@ function sidecarPackageManagerOptionValuePosition(command, index) {
 
 function commandBaseName(value) {
   return String(value).split(/[\\/]/).at(-1);
+}
+
+function bareScriptEntrypoint(value) {
+  if (typeof value !== 'string' || value.includes('/') || value.includes('\\')) return false;
+  return /\.(?:cjs|cts|js|jsx|mjs|mts|py|rb|sh|ts|tsx)$/i.test(value);
+}
+
+function pathQualifiedJavaScriptEntrypoint(value) {
+  if (typeof value !== 'string' || (!value.includes('/') && !value.includes('\\'))) return false;
+  return /\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/i.test(value);
 }
 
 function sidecarCommandArtifact(value) {
@@ -1149,7 +2011,10 @@ function assertNoCredentialMaterial(value, path = []) {
     return;
   }
   if (typeof value === 'object') {
-    for (const [key, child] of Object.entries(value)) assertNoCredentialMaterial(child, [...path, key]);
+    for (const [key, child] of Object.entries(value)) {
+      assertNoCredentialKeyMaterial(key);
+      assertNoCredentialMaterial(child, [...path, key]);
+    }
   }
 }
 
@@ -1196,7 +2061,16 @@ function assertNoConformanceCredentialMaterial(value, path = []) {
     return;
   }
   if (typeof value === 'object') {
-    for (const [key, child] of Object.entries(value)) assertNoConformanceCredentialMaterial(child, [...path, key]);
+    for (const [key, child] of Object.entries(value)) {
+      assertNoCredentialKeyMaterial(key);
+      assertNoConformanceCredentialMaterial(child, [...path, key]);
+    }
+  }
+}
+
+function assertNoCredentialKeyMaterial(key) {
+  if (concreteSecretValue(key) || /sk-[A-Za-z0-9_-]{8,}/.test(key)) {
+    fail('ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN', 'credential-like key forbidden');
   }
 }
 

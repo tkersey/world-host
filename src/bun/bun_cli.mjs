@@ -1,4 +1,4 @@
-import { lstat, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
@@ -163,12 +163,16 @@ async function assertCapabilityPackAdapterAbi(packManifest, artifacts) {
 async function capabilityPackAdapterImportUrl(packManifest, artifacts) {
   const checksum = packManifest.checksums.find((item) => item.path === packManifest.adapter.module)?.checksum;
   if (!checksum) fail('ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED', `referenced artifact is not checksum-covered: ${packManifest.adapter.module}`);
-  const bytes = artifacts[packManifest.adapter.module];
-  if (!(bytes instanceof Uint8Array)) fail('ERR_CAPABILITY_PACK_ARTIFACT_MISSING', `artifact missing: ${packManifest.adapter.module}`);
   const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-adapter-imports-'));
-  const target = path.join(root, `${checksum.slice('sha256:'.length)}.mjs`);
-  await writeFile(target, bytes, { flag: 'wx' });
-  return pathToFileURL(target).href;
+  for (const item of packManifest.checksums) {
+    const bytes = artifacts[item.path];
+    if (!(bytes instanceof Uint8Array)) fail('ERR_CAPABILITY_PACK_ARTIFACT_MISSING', `artifact missing: ${item.path}`);
+    const target = path.resolve(root, item.path);
+    if (!pathInside(root, target)) fail('ERR_CAPABILITY_HOST_PATH_FORBIDDEN', `checksum path escapes adapter import root: ${item.path}`);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, bytes, { flag: 'wx' });
+  }
+  return pathToFileURL(path.resolve(root, packManifest.adapter.module)).href;
 }
 
 function capabilityPackAdapterOptions(packManifest) {
@@ -642,6 +646,9 @@ async function runImport(args, io, storePath, options = {}) {
       preflight: async (candidate) => {
         const pendingRequests = pendingRequestsForImportedHead(candidate);
         const mayBypassPreflightRequirements = importedHeadCanBypassPreflightRequirements(candidate.bundle.head);
+        const effectResolutionInputs = pendingRequests.length > 0
+          ? await importedEffectResolutionInputs(candidate.bundle, store)
+          : new Map();
         const preflightOptions = !mayBypassPreflightRequirements && options.agentRuntimeOptionsArgs
           ? agentRuntimeRunOptions(options.agentRuntimeOptionsArgs, options)
           : options;
@@ -654,10 +661,12 @@ async function runImport(args, io, storePath, options = {}) {
         return preflightCapabilities({
           application,
           currentHead: candidate.bundle.head,
+          currentBranchId: candidate.selectedBranchId,
           pendingRequests: pendingRequests.map(preflightOptions.hostRequestMapper ?? worldHostRequestToEffectRequest),
           drivers: preflightOptions.effectDrivers ?? [],
           policy: preflightOptions.effectPolicy ?? createRunPolicy(),
           effectRecords: candidate.bundle.effects ?? [],
+          effectResolutionInputs,
         });
       },
     });
@@ -684,6 +693,20 @@ async function runImport(args, io, storePath, options = {}) {
 
 function importedHeadCanBypassPreflightRequirements(head) {
   return ['genesis', 'completed', 'failed', 'cancelled', 'inspected'].includes(head?.status);
+}
+
+async function importedEffectResolutionInputs(bundle, store) {
+  const inputs = new Map();
+  for (const effect of bundle?.effects ?? []) {
+    if (!effect?.resolutionInputRef || !['resolved', 'submitted', 'closure_committed'].includes(effect.state)) continue;
+    const bytes = carrierBundleBlobBytesOptional(bundle, effect.resolutionInputRef, 'effect resolution') ??
+      await storedCarrierBlobBytes(store, effect.resolutionInputRef);
+    if (!bytes) {
+      fail('ERR_IMPORT_PREFLIGHT_EFFECT_RESOLUTION_MISSING', 'receiver preflight requires exported reusable effect ResolutionInput bytes');
+    }
+    inputs.set(blobRefKey(effect.resolutionInputRef), bytes);
+  }
+  return inputs;
 }
 
 function pendingRequestsForImportedHead(candidate) {
@@ -760,17 +783,45 @@ function assertImportedHeadMatchesClosure(head, summary) {
   }
 }
 
-function carrierBundleBlobBytes(bundle, ref) {
+function carrierBundleBlobBytes(bundle, ref, kind = 'closure') {
+  const bytes = carrierBundleBlobBytesOptional(bundle, ref, kind);
+  if (bytes) return bytes;
+  fail(
+    kind === 'effect resolution' ? 'ERR_IMPORT_PREFLIGHT_EFFECT_RESOLUTION_MISSING' : 'ERR_IMPORT_PREFLIGHT_CLOSURE_BLOB_MISSING',
+    kind === 'effect resolution'
+      ? 'receiver preflight requires exported reusable effect ResolutionInput bytes'
+      : 'receiver preflight requires exported needs_host closure bytes',
+  );
+}
+
+function carrierBundleBlobBytesOptional(bundle, ref, kind = 'closure') {
   const expected = assertBlobRef(ref);
   const blob = (bundle?.blobs ?? []).find((candidate) => candidate.checksum === expected.checksum && candidate.byteLength === expected.byteLength);
-  if (!blob || !Array.isArray(blob.bytes)) {
-    fail('ERR_IMPORT_PREFLIGHT_CLOSURE_BLOB_MISSING', 'receiver preflight requires exported needs_host closure bytes');
-  }
+  if (!blob || !Array.isArray(blob.bytes)) return null;
   const bytes = Uint8Array.from(blob.bytes);
   if (bytes.byteLength !== expected.byteLength || createHash('sha256').update(bytes).digest('hex') !== expected.checksum) {
-    fail('ERR_IMPORT_PREFLIGHT_CLOSURE_BLOB_MISMATCH', 'receiver preflight closure bytes do not match the selected head ref');
+    fail(
+      kind === 'effect resolution' ? 'ERR_IMPORT_PREFLIGHT_EFFECT_RESOLUTION_MISMATCH' : 'ERR_IMPORT_PREFLIGHT_CLOSURE_BLOB_MISMATCH',
+      kind === 'effect resolution'
+        ? 'receiver preflight reusable effect ResolutionInput bytes do not match the effect ref'
+        : 'receiver preflight closure bytes do not match the selected head ref',
+    );
   }
   return bytes;
+}
+
+async function storedCarrierBlobBytes(store, ref) {
+  try {
+    return await store.getBlob(ref);
+  } catch (error) {
+    if (error?.code === 'ERR_BLOB_NOT_FOUND') return null;
+    throw error;
+  }
+}
+
+function blobRefKey(ref) {
+  const expected = assertBlobRef(ref);
+  return `${expected.algorithm}:${expected.checksum}:${expected.byteLength}`;
 }
 
 function importClosureStatusLabel(status) {

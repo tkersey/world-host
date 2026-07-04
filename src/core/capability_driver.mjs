@@ -129,14 +129,34 @@ export function assertCapabilityResolutionBoundary(value) {
   return true;
 }
 
-export function assertNoWorldEvidenceKeys(value, path = []) {
+export function assertNoWorldEvidenceKeys(value, path = [], seen = new WeakSet()) {
   if (value == null || typeof value !== 'object') return true;
   if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return true;
+  if (seen.has(value)) return true;
+  seen.add(value);
+  if (value instanceof Map) {
+    let index = 0;
+    for (const [key, child] of value.entries()) {
+      const entryPath = [...path, `map:${index}`];
+      if (typeof key === 'string' && FORBIDDEN_WORLD_EVIDENCE_KEYS.has(key)) {
+        fail('ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN', `capability driver must not author ${key}`, { path: [...path, key].join('.') });
+      }
+      assertNoWorldEvidenceKeys(key, [...entryPath, 'key'], seen);
+      assertNoWorldEvidenceKeys(child, typeof key === 'string' ? [...path, key] : [...entryPath, 'value'], seen);
+      index += 1;
+    }
+  } else if (value instanceof Set) {
+    let index = 0;
+    for (const child of value.values()) {
+      assertNoWorldEvidenceKeys(child, [...path, `set:${index}`], seen);
+      index += 1;
+    }
+  }
   for (const [key, child] of Object.entries(value)) {
     if (FORBIDDEN_WORLD_EVIDENCE_KEYS.has(key)) {
       fail('ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN', `capability driver must not author ${key}`, { path: [...path, key].join('.') });
     }
-    assertNoWorldEvidenceKeys(child, [...path, key]);
+    assertNoWorldEvidenceKeys(child, [...path, key], seen);
   }
   return true;
 }

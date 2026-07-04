@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { lstat, mkdtemp, readdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
@@ -89,12 +89,16 @@ async function assertAdapterManifestMatchesPack(packManifest, artifacts, name) {
 async function adapterImportUrl(packManifest, artifacts) {
   const checksum = packManifest.checksums.find((item) => item.path === packManifest.adapter.module)?.checksum;
   if (!checksum) throw new Error(`ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED:${packManifest.adapter.module}`);
-  const bytes = artifacts[packManifest.adapter.module];
-  if (!(bytes instanceof Uint8Array)) throw new Error(`ERR_CAPABILITY_PACK_ARTIFACT_MISSING:${packManifest.adapter.module}`);
   const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-adapter-imports-'));
-  const target = path.join(root, `${checksum.slice('sha256:'.length)}.mjs`);
-  await writeFile(target, bytes, { flag: 'wx' });
-  return pathToFileURL(target).href;
+  for (const item of packManifest.checksums) {
+    const bytes = artifacts[item.path];
+    if (!(bytes instanceof Uint8Array)) throw new Error(`ERR_CAPABILITY_PACK_ARTIFACT_MISSING:${item.path}`);
+    const target = path.resolve(root, item.path);
+    if (!pathInside(root, target)) throw new Error(`ERR_CAPABILITY_HOST_PATH_FORBIDDEN:${item.path}`);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, bytes, { flag: 'wx' });
+  }
+  return pathToFileURL(path.resolve(root, packManifest.adapter.module)).href;
 }
 
 function adapterOptions(packManifest) {

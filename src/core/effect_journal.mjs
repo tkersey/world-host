@@ -121,11 +121,19 @@ export class EffectJournal {
     return await withEffectKeyLock(this.store, effectLockKey(this.runId, prepared.idempotencyKey), async () => {
       let observed = await this.#observePrepared(journalHostRequest, prepared, { manifest, createIfMissing: false });
       const existingOutcome = observed ? await this.#nonInvokingResolution(observed, normalizedHostRequest, manifest) : null;
-      if (existingOutcome) return existingOutcome;
+      if (existingOutcome?.retryRequired) {
+        observed = existingOutcome.record;
+      } else if (existingOutcome) {
+        return existingOutcome;
+      }
       if (typeof options.beforeInvoke === 'function') await options.beforeInvoke(context, normalizedHostRequest);
       if (!observed) observed = await this.#observePrepared(journalHostRequest, prepared, { manifest });
       const observedOutcome = await this.#nonInvokingResolution(observed, normalizedHostRequest, manifest);
-      if (observedOutcome) return observedOutcome;
+      if (observedOutcome?.retryRequired) {
+        observed = observedOutcome.record;
+      } else if (observedOutcome) {
+        return observedOutcome;
+      }
       if (observed.state === EffectState.running) return await this.#recoverLocked(context, observed, driver);
       assertManifestResponseWithinPolicy(manifest, this.policy);
 
@@ -133,6 +141,9 @@ export class EffectJournal {
         ...observed,
         state: EffectState.running,
         attemptCount: observed.attemptCount + 1,
+        resolutionInputRef: undefined,
+        hostClaimRef: undefined,
+        driverTransactionRef: undefined,
         diagnostics: { ...observed.diagnostics, driverId: manifest.driverId },
       });
 
@@ -285,7 +296,30 @@ export class EffectJournal {
     assertEffectRecoveryClassMatchesManifest(manifest, observed);
     const reused = await this.#resolutionFromRecord(observed);
     if (!reused) return null;
-    assertResolutionAccepted(reused.resolutionInputBytes, normalizedHostRequest, manifest, this.policy);
+    try {
+      assertResolutionAccepted(reused.resolutionInputBytes, normalizedHostRequest, manifest, this.policy);
+    } catch (error) {
+      if (
+        observed.state !== EffectState.resolved ||
+        !observed.requestBytesRef ||
+        !canSafelyReResolve(observed.driverRecoveryClass) ||
+        !retryableReusableResolutionError(error, manifest, this.policy)
+      ) {
+        throw error;
+      }
+      const retryRecord = await this.#put({
+        ...observed,
+        state: EffectState.observed,
+        resolutionInputRef: undefined,
+        hostClaimRef: undefined,
+        driverTransactionRef: undefined,
+        diagnostics: {
+          ...observed.diagnostics,
+          invalidReusableResolution: error.code ?? 'ERR_EFFECT_RESOLUTION_INVALID',
+        },
+      });
+      return { record: retryRecord, resolutionInputBytes: null, reused: false, retryRequired: true };
+    }
     return reused;
   }
 
@@ -539,6 +573,20 @@ function persistenceFailureDiagnostics(failureState, recoveryClass) {
 
 function canSafelyReResolve(recoveryClass) {
   return recoveryClass === EffectRecoveryClass.pure || recoveryClass === EffectRecoveryClass.idempotent;
+}
+
+function retryableReusableResolutionError(error, manifest, policy) {
+  if (!error?.code) return true;
+  if (error.code === 'ERR_EFFECT_RESPONSE_TOO_LARGE') {
+    return policy.maximumResponseBytes === undefined || manifest.maximumResponseBytes <= policy.maximumResponseBytes;
+  }
+  return new Set([
+    'ERR_EFFECT_RESOLUTION_TARGET_MISMATCH',
+    'ERR_RESPONSE_STATUS_NOT_SUPPORTED',
+    'ERR_EFFECT_RESPONSE_STATUS_MISMATCH',
+    'ERR_EFFECT_RESPONSE_REQUIRED',
+    'ERR_EFFECT_RESPONSE_FORBIDDEN',
+  ]).has(error.code);
 }
 
 function assertDriverRecoveryHookSufficient(manifest, driver) {

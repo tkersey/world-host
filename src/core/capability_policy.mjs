@@ -45,7 +45,19 @@ export class LiveRunPolicy extends CapabilityPolicy {
   }
 }
 
-export function assertCapabilityPolicyAllows({ manifest, hostRequest = null, policy: inputPolicy = {}, mode = 'live', action = null, enforceNetworkTarget = true }) {
+export function assertCapabilityPolicyAllows({
+  manifest,
+  hostRequest = null,
+  policy: inputPolicy = {},
+  mode = 'live',
+  action = null,
+  enforceNetworkTarget = true,
+  requireEffectOptIn = true,
+  checkNetworkTarget = true,
+  checkFileRoot = true,
+  checkRecoveryClass = true,
+  enforceApprovalRequirements = true,
+}) {
   const policy = createCapabilityPolicy(inputPolicy);
   if (mode === 'live' && policy.auditOnly === true) fail('ERR_CAPABILITY_AUDIT_ONLY_DENIED');
   if (mode === 'live' && policy.allowLiveEffects !== true) fail('ERR_CAPABILITY_LIVE_DENIED');
@@ -62,26 +74,26 @@ export function assertCapabilityPolicyAllows({ manifest, hostRequest = null, pol
   const authorityLabels = manifest?.authorityLabels ?? [];
   const deniedAuthorityLabels = authorityLabels.filter((label) => policy.allowedAuthorityLabels.size && !policy.allowedAuthorityLabels.has(label));
   if (deniedAuthorityLabels.length) fail('ERR_CAPABILITY_AUTHORITY_DENIED', 'authority label denied', { labels: deniedAuthorityLabels });
-  if (isNetwork(manifest, hostRequest) && policy.allowNetworkEffects !== true) fail('ERR_CAPABILITY_NETWORK_DENIED');
-  if (isFile(manifest, hostRequest) && policy.allowFileEffects !== true) fail('ERR_CAPABILITY_FILE_DENIED');
-  if (isHuman(manifest, hostRequest) && policy.allowHumanEffects !== true) fail('ERR_CAPABILITY_HUMAN_DENIED');
+  if (requireEffectOptIn && isNetwork(manifest, hostRequest) && policy.allowNetworkEffects !== true) fail('ERR_CAPABILITY_NETWORK_DENIED');
+  if (requireEffectOptIn && isFile(manifest, hostRequest) && policy.allowFileEffects !== true) fail('ERR_CAPABILITY_FILE_DENIED');
+  if (requireEffectOptIn && isHuman(manifest, hostRequest) && policy.allowHumanEffects !== true) fail('ERR_CAPABILITY_HUMAN_DENIED');
   if (mode === 'live' && isLiveModelCall(manifest, hostRequest) && policy.maximumLiveModelCalls < 1) fail('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED');
-  if (manifest?.recoveryClass === EffectRecoveryClass.bestEffort && policy.allowBestEffort !== true) fail('ERR_BEST_EFFORT_REQUIRES_OPERATOR_OPT_IN');
+  if (checkRecoveryClass && manifest?.recoveryClass === EffectRecoveryClass.bestEffort && policy.allowBestEffort !== true) fail('ERR_BEST_EFFORT_REQUIRES_OPERATOR_OPT_IN');
   if (hostRequest?.requestBytes?.byteLength > policy.maximumRequestBytes) fail('ERR_CAPABILITY_PROMPT_TOO_LARGE');
   if (hostRequest?.policyRequestBytes?.byteLength > policy.maximumPromptBytes) fail('ERR_CAPABILITY_PROMPT_TOO_LARGE');
   if (manifest?.maximumResponseBytes > policy.maximumResponseBytes) fail('ERR_CAPABILITY_RESPONSE_LIMIT_EXCEEDS_POLICY');
-  if (isNetwork(manifest, hostRequest)) {
+  if (checkNetworkTarget && isNetwork(manifest, hostRequest)) {
     if (enforceNetworkTarget) {
       assertOriginAndMethodAllowed(hostRequest, policy);
     } else {
       assertNetworkAllowlistsPresent(policy);
     }
   }
-  assertFileRootAllowed(manifest, hostRequest, policy);
+  if (checkFileRoot) assertFileRootAllowed(manifest, hostRequest, policy);
   const approved = action?.approved === true;
-  if ((action?.destructive === true || isDestructiveHostRequest(manifest, hostRequest)) && policy.requireApprovalForDestructiveEffects && !approved) fail('ERR_CAPABILITY_APPROVAL_REQUIRED');
-  if (isNetwork(manifest, hostRequest) && policy.requireApprovalForNetworkEffects && !approved) fail('ERR_CAPABILITY_APPROVAL_REQUIRED');
-  if (manifest?.recoveryClass === EffectRecoveryClass.bestEffort && policy.requireApprovalForBestEffort && !approved) fail('ERR_CAPABILITY_APPROVAL_REQUIRED');
+  if (enforceApprovalRequirements && (action?.destructive === true || isDestructiveHostRequest(manifest, hostRequest)) && policy.requireApprovalForDestructiveEffects && !approved) fail('ERR_CAPABILITY_APPROVAL_REQUIRED');
+  if (enforceApprovalRequirements && isNetwork(manifest, hostRequest) && policy.requireApprovalForNetworkEffects && !approved) fail('ERR_CAPABILITY_APPROVAL_REQUIRED');
+  if (enforceApprovalRequirements && manifest?.recoveryClass === EffectRecoveryClass.bestEffort && policy.requireApprovalForBestEffort && !approved) fail('ERR_CAPABILITY_APPROVAL_REQUIRED');
   return true;
 }
 
@@ -121,11 +133,25 @@ export class ApprovalPolicy {
 export function redactCapabilityDiagnostics(value) {
   if (typeof value === 'string') return secretLike(value) ? '[redacted]' : value;
   if (Array.isArray(value)) return value.map(redactCapabilityDiagnostics);
+  if (value instanceof Map) {
+    const redacted = {};
+    let index = 0;
+    for (const [key, child] of value.entries()) {
+      if (typeof key === 'string' && concreteSecretKeyMaterial(key)) continue;
+      Object.defineProperty(redacted, typeof key === 'string' ? key : `map:${index}`, {
+        value: typeof key === 'string' && secretLike(key) ? '[redacted]' : redactCapabilityDiagnostics(child),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+      index += 1;
+    }
+    return redacted;
+  }
   if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(Object.entries(value).map(([key, child]) => [
-    key,
-    secretLike(key) ? '[redacted]' : redactCapabilityDiagnostics(child),
-  ]));
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => !concreteSecretKeyMaterial(key))
+    .map(([key, child]) => [key, secretLike(key) ? '[redacted]' : redactCapabilityDiagnostics(child)]));
 }
 
 function isNetwork(manifest, hostRequest) {
@@ -216,6 +242,12 @@ function nonNegativeSafeInteger(value, field) {
 
 function secretLike(value) {
   return /credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key|sk-[A-Za-z0-9_-]{8,}/i.test(value);
+}
+
+function concreteSecretKeyMaterial(value) {
+  return /\b(?:bearer|basic)\s+\S+/i.test(value) ||
+    /sk-[A-Za-z0-9_-]{8,}/.test(value) ||
+    /(?:^|[?&;,\s{])(?:credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key)\s*[:=]\s*\S+/i.test(value);
 }
 
 function iterable(value) {

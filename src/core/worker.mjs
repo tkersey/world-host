@@ -1,17 +1,22 @@
-import { EffectJournal } from './effect_journal.mjs';
+import { EffectJournal, EffectState } from './effect_journal.mjs';
 import { assertDurableRecoveryAllowed } from './actuator.mjs';
 import { assertCapabilityReportAccepted, createRunPolicy, preflightCapabilities } from './capabilities.mjs';
 import { defineCapabilityDriver } from './capability_driver.mjs';
 import { assertCapabilityPreflightAccepted, journaledHostRequest, networkPolicyHostRequest } from './capability_modes.mjs';
 import { assertCapabilityPolicyAllows } from './capability_policy.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from './run.mjs';
-import { assertBytes, fail, fromUtf8, toHex } from './store.mjs';
+import { assertBlobRef, assertBytes, fail, fromUtf8, toHex } from './store.mjs';
 import { decodeApplianceManifest, decodeResolutionInputBytes, encodeRestoreTurnInput, resolutionResponded } from '../protocol/world_appliance_wire_codec.mjs';
 import { inspectTurnOutput, summarizeTurnClosureForRunHead } from '../protocol/world_universal_appliance_codec.mjs';
 import { wyhash64 } from '../protocol/world_loaded_value_codec.mjs';
 
 const runMetadataLocksByStore = new WeakMap();
 const runMetadataLocksByKey = new Map();
+const EFFECT_OUTCOME_STATES = new Set([
+  EffectState.resolved,
+  EffectState.submitted,
+  EffectState.closureCommitted,
+]);
 
 export class WorldWorker {
   constructor() {
@@ -144,14 +149,17 @@ export class RunController {
     );
     if (needsHostEffectPlan?.pending.length > 0) {
       const effectRecords = await this.store.listEffectRecords(runId);
+      const pendingRequests = needsHostEffectPlan.pending.map((item) => item.hostRequest);
+      const effectResolutionInputs = await loadEffectResolutionInputs(this.store, effectRecords, pendingRequests);
       const preflightReport = preflightCapabilities({
         application,
         currentHead: parentHead,
         currentBranchId: branchId,
-        pendingRequests: needsHostEffectPlan.pending.map((item) => item.hostRequest),
+        pendingRequests,
         drivers: this.effectDrivers,
         policy,
         effectRecords,
+        effectResolutionInputs,
       });
       assertCapabilityReportAccepted(preflightReport);
       needsHostEffectPlan = bindEffectPlanToPreflightReport(needsHostEffectPlan, preflightReport, this.effectDrivers, policy);
@@ -371,6 +379,32 @@ export class RunController {
     });
     return effects;
   }
+}
+
+async function loadEffectResolutionInputs(store, effectRecords, pendingRequests = []) {
+  const pendingKeys = pendingRequestReusableKeys(pendingRequests);
+  if (pendingKeys.size === 0) return new Map();
+  const inputs = new Map();
+  for (const record of effectRecords) {
+    if (!record?.resolutionInputRef) continue;
+    if (!EFFECT_OUTCOME_STATES.has(record.state)) continue;
+    if (!pendingKeys.has(record.idempotencyKeyWorldFingerprint)) continue;
+    const ref = assertBlobRef(record.resolutionInputRef);
+    const key = `${ref.algorithm}:${ref.checksum}:${ref.byteLength}`;
+    if (inputs.has(key)) continue;
+    inputs.set(key, await store.getBlob(ref));
+  }
+  return inputs;
+}
+
+function pendingRequestReusableKeys(pendingRequests) {
+  const keys = new Set();
+  for (const request of pendingRequests ?? []) {
+    if (typeof request?.idempotencyKeyWorldFingerprint === 'string' && request.idempotencyKeyWorldFingerprint.length > 0) {
+      keys.add(request.idempotencyKeyWorldFingerprint);
+    }
+  }
+  return keys;
 }
 
 function controllerResolveDriver(driver) {

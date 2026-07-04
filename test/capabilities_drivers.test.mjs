@@ -15,8 +15,8 @@ import { HttpJsonDriver } from '../src/drivers/http_json_driver.mjs';
 import { GenericHttpJsonCapabilityDriver } from '../src/drivers/generic_http_json_capability_driver.mjs';
 import { GenericHttpJsonModelDriver } from '../src/drivers/model_capability_driver.mjs';
 import { HumanApprovalCapabilityDriver } from '../src/drivers/human_approval_capability_driver.mjs';
-import { fromUtf8, stableJson } from '../src/core/store.mjs';
-import { decodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
+import { fromUtf8, makeBlobRef, stableJson } from '../src/core/store.mjs';
+import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
 
 const FIXTURE_FILE_ROOT = path.resolve('/tmp/world-host-fixture-file-root');
@@ -381,6 +381,16 @@ describe('capability preflight and reference drivers', () => {
       hostRequestFingerprint: 'world:host-request:0000000000000c02',
     };
     const cachedModelRequestChecksum = `sha256:${createHash('sha256').update(cachedModelRequest.requestBytes).digest('hex')}`;
+    const cachedModelResolutionInputBytes = encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xc01n,
+      status: 0,
+      responseValueImageBytes: fromUtf8('cached model response'),
+      hostClaimBytes: fromUtf8('host-claim:cached-model-response'),
+      attemptNumber: 1,
+      metadata: fromUtf8('cached-model-resolution'),
+    });
+    const cachedModelResolutionInputRef = blobRefForBytes(cachedModelResolutionInputBytes);
+    const cachedModelResolutionInputs = new Map([[blobRefKey(cachedModelResolutionInputRef), cachedModelResolutionInputBytes]]);
     const cachedModelEffect = {
       branchId: 'main',
       idempotencyKeyWorldFingerprint: cachedModelRequest.idempotencyKeyWorldFingerprint,
@@ -389,10 +399,149 @@ describe('capability preflight and reference drivers', () => {
         format: 'world-idempotency-key-bytes.hex',
         bytesHex: Buffer.from('model-budget-cached-key').toString('hex'),
       },
+      requestBytesRef: blobRefForBytes(cachedModelRequest.requestBytes),
       requestBytesChecksum: cachedModelRequestChecksum,
       state: EffectState.resolved,
-      resolutionInputRef: { checksum: 'sha256:cached-model-resolution' },
+      driverRecoveryClass: EffectRecoveryClass.idempotent,
+      resolutionInputRef: cachedModelResolutionInputRef,
     };
+    const { requestBytesRef: _requestBytesRef, ...cachedModelEffectWithoutRequestBytes } = cachedModelEffect;
+    const mismatchedResolutionInputBytes = encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xbadn,
+      status: 0,
+      responseValueImageBytes: fromUtf8('cached model response'),
+      hostClaimBytes: fromUtf8('host-claim:cached-model-response'),
+      attemptNumber: 1,
+      metadata: fromUtf8('mismatched-resolution-target'),
+    });
+    const mismatchedResolutionInputRef = blobRefForBytes(mismatchedResolutionInputBytes);
+    const oversizedResolutionInputBytes = encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xc01n,
+      status: 0,
+      responseValueImageBytes: fromUtf8('oversized'),
+      hostClaimBytes: fromUtf8('host-claim:oversized'),
+      attemptNumber: 1,
+      metadata: new Uint8Array(),
+    });
+    const oversizedResolutionInputRef = blobRefForBytes(oversizedResolutionInputBytes);
+    const unsupportedStatusResolutionInputBytes = encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xc01n,
+      status: 2,
+      responseValueImageBytes: new Uint8Array(),
+      hostClaimBytes: fromUtf8('host-claim:unsupported-status'),
+      attemptNumber: 1,
+      metadata: fromUtf8('unsupported-status-resolution'),
+    });
+    const unsupportedStatusResolutionInputRef = blobRefForBytes(unsupportedStatusResolutionInputBytes);
+    const smallResponseDriver = fixtureDriverWithAuthority(['model:live'], {
+      driverId: 'live-model-small-response',
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClasses: ['model'],
+      maximumResponseBytes: 8,
+    });
+    const mismatchedResolutionReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 0 }),
+      effectRecords: [{ ...cachedModelEffect, resolutionInputRef: mismatchedResolutionInputRef }],
+      effectResolutionInputs: new Map([[blobRefKey(mismatchedResolutionInputRef), mismatchedResolutionInputBytes]]),
+    });
+    const mismatchedResolutionRerunReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
+      effectRecords: [{ ...cachedModelEffect, driverRecoveryClass: EffectRecoveryClass.pure, resolutionInputRef: mismatchedResolutionInputRef }],
+      effectResolutionInputs: new Map([[blobRefKey(mismatchedResolutionInputRef), mismatchedResolutionInputBytes]]),
+    });
+    const mismatchedResolutionWithoutRequestBytesReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
+      effectRecords: [{ ...cachedModelEffectWithoutRequestBytes, resolutionInputRef: mismatchedResolutionInputRef }],
+      effectResolutionInputs: new Map([[blobRefKey(mismatchedResolutionInputRef), mismatchedResolutionInputBytes]]),
+    });
+    const mismatchedSubmittedResolutionReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
+      effectRecords: [{ ...cachedModelEffect, state: EffectState.submitted, resolutionInputRef: mismatchedResolutionInputRef }],
+      effectResolutionInputs: new Map([[blobRefKey(mismatchedResolutionInputRef), mismatchedResolutionInputBytes]]),
+    });
+    const mismatchedSameBranchOldParentSubmittedResolutionReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 1, turnClosureWorldFingerprint: 'turn:1' },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
+      effectRecords: [{
+        ...cachedModelEffect,
+        parentTurnClosureFingerprint: 'turn:0',
+        state: EffectState.submitted,
+        driverRecoveryClass: EffectRecoveryClass.pure,
+        resolutionInputRef: mismatchedResolutionInputRef,
+      }],
+      effectResolutionInputs: new Map([[blobRefKey(mismatchedResolutionInputRef), mismatchedResolutionInputBytes]]),
+    });
+    const mismatchedSameBranchOldParentCommittedResolutionReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 1, turnClosureWorldFingerprint: 'turn:1' },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
+      effectRecords: [{
+        ...cachedModelEffect,
+        parentTurnClosureFingerprint: 'turn:0',
+        state: EffectState.closureCommitted,
+        driverRecoveryClass: EffectRecoveryClass.pure,
+        resolutionInputRef: mismatchedResolutionInputRef,
+      }],
+      effectResolutionInputs: new Map([[blobRefKey(mismatchedResolutionInputRef), mismatchedResolutionInputBytes]]),
+    });
+    const oversizedSubmittedResolutionReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [smallResponseDriver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
+      effectRecords: [{ ...cachedModelEffect, state: EffectState.submitted, resolutionInputRef: oversizedResolutionInputRef }],
+      effectResolutionInputs: new Map([[blobRefKey(oversizedResolutionInputRef), oversizedResolutionInputBytes]]),
+    });
+    const unsupportedStatusSubmittedResolutionReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
+      effectRecords: [{ ...cachedModelEffect, state: EffectState.submitted, resolutionInputRef: unsupportedStatusResolutionInputRef }],
+      effectResolutionInputs: new Map([[blobRefKey(unsupportedStatusResolutionInputRef), unsupportedStatusResolutionInputBytes]]),
+    });
+    const mismatchedCrossBranchSubmittedResolutionReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
+      effectRecords: [{ ...cachedModelEffect, branchId: 'cached-branch', state: EffectState.submitted, driverRecoveryClass: EffectRecoveryClass.pure, resolutionInputRef: mismatchedResolutionInputRef }],
+      effectResolutionInputs: new Map([[blobRefKey(mismatchedResolutionInputRef), mismatchedResolutionInputBytes]]),
+    });
     const shadowedCachedEffects = [
       { ...cachedModelEffect, branchId: 'cached-branch' },
       { ...cachedModelEffect, state: EffectState.observed, resolutionInputRef: undefined },
@@ -405,6 +554,7 @@ describe('capability preflight and reference drivers', () => {
       drivers: [driver],
       policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 0 }),
       effectRecords: [cachedModelEffect],
+      effectResolutionInputs: cachedModelResolutionInputs,
     });
     const oneNewWithCachedReport = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },
@@ -414,6 +564,7 @@ describe('capability preflight and reference drivers', () => {
       drivers: [driver],
       policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
       effectRecords: [cachedModelEffect],
+      effectResolutionInputs: cachedModelResolutionInputs,
     });
     const shadowedReplayReport = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },
@@ -471,6 +622,61 @@ describe('capability preflight and reference drivers', () => {
       descriptorFingerprint: 'descriptor:agent-live-only',
       actuationClasses: ['model'],
     });
+    const fallbackWithInvalidReusableReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver, nonLiveDriver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:live', 'model:fixture'],
+        maximumLiveModelCalls: 0,
+      }),
+      effectRecords: [{ ...cachedModelEffect, resolutionInputRef: mismatchedResolutionInputRef }],
+      effectResolutionInputs: new Map([[blobRefKey(mismatchedResolutionInputRef), mismatchedResolutionInputBytes]]),
+    });
+    const fallbackWithSubmittedInvalidReusableReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver, nonLiveDriver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:live', 'model:fixture'],
+        maximumLiveModelCalls: 0,
+      }),
+      effectRecords: [{ ...cachedModelEffect, state: EffectState.submitted, resolutionInputRef: mismatchedResolutionInputRef }],
+      effectResolutionInputs: new Map([[blobRefKey(mismatchedResolutionInputRef), mismatchedResolutionInputBytes]]),
+    });
+    const routeSpecificLiveDriver = fixtureDriverWithAuthority(['model:live'], {
+      driverId: 'route-specific-live-model',
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClasses: ['model'],
+      diagnostics: {
+        endpointSource: 'request-or-config',
+        modelOutputValidation: { schema: 'strict-agent-action' },
+      },
+    });
+    const routeSpecificLiveIdentityBytes = journaledHostRequest(cachedModelRequest, routeSpecificLiveDriver.manifest()).effectIdentityBytes;
+    const fallbackWithRouteSpecificConflictReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [routeSpecificLiveDriver, nonLiveDriver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:live', 'model:fixture'],
+        maximumLiveModelCalls: 0,
+      }),
+      effectRecords: [{
+        ...cachedModelEffect,
+        state: EffectState.submitted,
+        resolutionInputRef: mismatchedResolutionInputRef,
+        requestIdentityChecksum: `sha256:${createHash('sha256').update(routeSpecificLiveIdentityBytes).digest('hex')}`,
+      }],
+      effectResolutionInputs: new Map([[blobRefKey(mismatchedResolutionInputRef), mismatchedResolutionInputBytes]]),
+    });
     const liveFirstWithFixtureFallbackReport = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },
       currentHead: { generation: 0 },
@@ -501,6 +707,36 @@ describe('capability preflight and reference drivers', () => {
     assert.ok(shadowedMixedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
     assert.ok(mismatchedCachedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
     assert.ok(wrongFullKeyReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+    assert.ok(mismatchedResolutionReport.blockers.includes('ERR_CAPABILITY_REUSABLE_EFFECT_TARGET_MISMATCH'));
+    assert.ok(mismatchedResolutionReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+    assert.deepEqual(mismatchedResolutionRerunReport.blockers, []);
+    assert.deepEqual(mismatchedResolutionWithoutRequestBytesReport.blockers, ['ERR_CAPABILITY_REUSABLE_EFFECT_TARGET_MISMATCH']);
+    assert.deepEqual(mismatchedSubmittedResolutionReport.blockers, ['ERR_CAPABILITY_REUSABLE_EFFECT_TARGET_MISMATCH']);
+    assert.deepEqual(mismatchedSameBranchOldParentSubmittedResolutionReport.blockers, []);
+    assert.deepEqual(mismatchedSameBranchOldParentCommittedResolutionReport.blockers, []);
+    assert.deepEqual(oversizedSubmittedResolutionReport.blockers, ['ERR_CAPABILITY_REUSABLE_EFFECT_RESPONSE_TOO_LARGE']);
+    assert.equal(oversizedSubmittedResolutionReport.valueSizeLimitsSupported, false);
+    assert.deepEqual(unsupportedStatusSubmittedResolutionReport.blockers, ['ERR_CAPABILITY_REUSABLE_EFFECT_STATUS_MISMATCH']);
+    assert.equal(unsupportedStatusSubmittedResolutionReport.responseStatusesSupported, false);
+    assert.deepEqual(mismatchedCrossBranchSubmittedResolutionReport.blockers, []);
+    assert.deepEqual(fallbackWithInvalidReusableReport.blockers, ['ERR_CAPABILITY_REUSABLE_EFFECT_TARGET_MISMATCH']);
+    assert.deepEqual(fallbackWithInvalidReusableReport.coveredRequests, [{
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      driverId: 'fixture-model-budget',
+    }]);
+    assert.deepEqual(fallbackWithSubmittedInvalidReusableReport.blockers, ['ERR_CAPABILITY_REUSABLE_EFFECT_TARGET_MISMATCH']);
+    assert.deepEqual(fallbackWithSubmittedInvalidReusableReport.coveredRequests, [{
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      driverId: 'fixture-model-budget',
+    }]);
+    assert.deepEqual(fallbackWithRouteSpecificConflictReport.blockers, ['ERR_EFFECT_IDEMPOTENCY_CONFLICT']);
+    assert.deepEqual(fallbackWithRouteSpecificConflictReport.coveredRequests, [{
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      driverId: 'fixture-model-budget',
+    }]);
     assert.deepEqual(liveFirstWithFixtureFallbackReport.blockers, []);
     assert.deepEqual(liveFirstWithFixtureFallbackReport.coveredRequests, [{
       actuatorRef: 'model:decision',
@@ -595,6 +831,16 @@ describe('capability preflight and reference drivers', () => {
       allowedToolIds: ['actuate'],
     });
     const cachedIdentityBytes = journaledHostRequest(modelRequest, permissiveDriver.manifest()).effectIdentityBytes;
+    const cachedResolutionInputBytes = encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xc03n,
+      status: 0,
+      responseValueImageBytes: fromUtf8('cached policy response'),
+      hostClaimBytes: fromUtf8('host-claim:cached-policy-response'),
+      attemptNumber: 1,
+      metadata: fromUtf8('cached-model-output-policy-resolution'),
+    });
+    const cachedResolutionInputRef = blobRefForBytes(cachedResolutionInputBytes);
+    const cachedResolutionInputs = new Map([[blobRefKey(cachedResolutionInputRef), cachedResolutionInputBytes]]);
     const cachedEffect = {
       idempotencyKeyWorldFingerprint: modelRequest.idempotencyKeyWorldFingerprint,
       hostRequestFingerprint: modelRequest.hostRequestFingerprint,
@@ -605,7 +851,7 @@ describe('capability preflight and reference drivers', () => {
       requestBytesChecksum: `sha256:${createHash('sha256').update(modelRequest.requestBytes).digest('hex')}`,
       requestIdentityChecksum: `sha256:${createHash('sha256').update(cachedIdentityBytes).digest('hex')}`,
       state: EffectState.resolved,
-      resolutionInputRef: { checksum: 'sha256:cached-model-output-policy-resolution' },
+      resolutionInputRef: cachedResolutionInputRef,
     };
     const policy = createRunPolicy({
       allowedAuthorityLabels: ['model:http-json', 'network:http'],
@@ -621,6 +867,7 @@ describe('capability preflight and reference drivers', () => {
       drivers: [permissiveDriver],
       policy,
       effectRecords: [cachedEffect],
+      effectResolutionInputs: cachedResolutionInputs,
     });
     const strictReport = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },
@@ -629,10 +876,11 @@ describe('capability preflight and reference drivers', () => {
       drivers: [strictDriver],
       policy,
       effectRecords: [cachedEffect],
+      effectResolutionInputs: cachedResolutionInputs,
     });
 
     assert.equal(permissiveReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'), false);
-    assert.ok(strictReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+    assert.ok(strictReport.blockers.includes('ERR_EFFECT_IDEMPOTENCY_CONFLICT'));
   });
 
   it('requires descriptor coverage for application-level actuator requirements', () => {
@@ -1582,7 +1830,7 @@ function fixtureDriverWithAuthority(authorityLabels, options = {}) {
         supportedActuationClasses: options.actuationClasses ?? ['fixture'],
         supportedResponseStatuses: ['ok'],
         maximumRequestBytes: 1024 * 1024,
-        maximumResponseBytes: 1024 * 1024,
+        maximumResponseBytes: options.maximumResponseBytes ?? 1024 * 1024,
         recoveryClass: EffectRecoveryClass.pure,
         concurrencyLimit: 1,
         authorityLabels,
@@ -1590,6 +1838,14 @@ function fixtureDriverWithAuthority(authorityLabels, options = {}) {
       };
     },
   };
+}
+
+function blobRefForBytes(bytes) {
+  return makeBlobRef(createHash('sha256').update(bytes).digest('hex'), bytes.byteLength);
+}
+
+function blobRefKey(ref) {
+  return `${ref.algorithm}:${ref.checksum}:${ref.byteLength}`;
 }
 
 function fixtureRequest() {
