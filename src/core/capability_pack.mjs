@@ -1970,7 +1970,13 @@ function sidecarPackageManagerOptionValuePosition(command, index) {
 }
 
 function commandBaseName(value) {
-  return String(value).split(/[\\/]/).at(-1);
+  return String(value).split(/[\\/]/).at(-1).replace(/\.exe$/i, '');
+}
+
+function bareSidecarRuntimeExecutable(value) {
+  if (typeof value !== 'string' || !value.length) return false;
+  if (value.includes('/') || value.includes('\\')) return false;
+  return SIDECAR_JS_RUNTIMES.has(commandBaseName(value).toLowerCase());
 }
 
 function bareScriptEntrypoint(value) {
@@ -1989,6 +1995,7 @@ function sidecarCommandArtifact(value) {
   if (value.startsWith('@') && !value.includes('/') && !sidecarArtifactPath(value)) return false;
   if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)) return false;
   if (sidecarEnvAssignment(value) && !sidecarArtifactPath(value)) return false;
+  if (bareSidecarRuntimeExecutable(value)) return false;
   return value.startsWith('./') || value.startsWith('../') || value.includes('/') || sidecarArtifactPath(value);
 }
 

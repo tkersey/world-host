@@ -1856,6 +1856,12 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, {}),
       { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      adapter: { kind: 'sidecar', command: ['node.exe', 'sidecar.mjs'] },
+      docs: [],
+      checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+    }, { 'sidecar.mjs': sidecar }), true);
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
@@ -4399,6 +4405,14 @@ describe('Capability Plane v0.2 core contracts', () => {
   });
 
   it('honors driver preflight before live and approved live resolution', async () => {
+    const fixtureDriver = new FixtureAgentModelCapabilityDriver();
+    const malformedFixturePreflight = fixtureDriver.preflight({}, {
+      ...modelRequest('goal=invoke', 'malformed-fixture-preflight-key'),
+      requestBytes: fromUtf8(stableJson({ schema: 'not-boundary.Agent.DecisionPrompt.v0' })),
+    });
+    assert.equal(malformedFixturePreflight.accepted, false);
+    assert.deepEqual(malformedFixturePreflight.blockers, ['ERR_AGENT_DECISION_PROMPT_SCHEMA']);
+
     const liveDriver = preflightBlockedDriver();
     await assert.rejects(
       () => runCapabilityMode({
