@@ -294,6 +294,26 @@ describe('Capability sidecar transport', () => {
         process.chdir(originalCwd);
       }
 
+      const cwdShebangPath = path.join(root, 'cwd-sidecar');
+      await writeFile(cwdShebangPath, `#!/usr/bin/env bun
+        await new Response(Bun.stdin.stream()).text();
+        process.stdout.write(JSON.stringify({
+          command: 'manifest',
+          payload: {
+            dotenvSecret: process.env.WORLD_HOST_SIDECAR_DOTENV_SECRET ?? null,
+            bunfigPreload: globalThis.__worldHostAmbientBunfigPreload === true
+          }
+        }) + '\\n');
+      `);
+      await chmod(cwdShebangPath, 0o755);
+      const cwdShebangIsolated = await new CapabilitySidecar({
+        command: ['./cwd-sidecar'],
+        cwd: root,
+        timeoutMs: 1000,
+      }).manifest();
+      assert.equal(cwdShebangIsolated.payload.dotenvSecret, null);
+      assert.equal(cwdShebangIsolated.payload.bunfigPreload, false);
+
       const mismatchPath = path.join(root, 'mismatch.mjs');
       await writeFile(mismatchPath, `
         await new Response(Bun.stdin.stream()).text();

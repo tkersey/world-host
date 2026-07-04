@@ -151,7 +151,7 @@ export function decodeSidecarFrame(bytes, maximumFrameBytes = 1024 * 1024) {
 
 async function runSidecarCommand({ argv, input, timeoutMs, maximumFrameBytes, env, cwd }) {
   return await new Promise((resolve, reject) => {
-    const spawnArgv = sidecarSpawnArgv(argv);
+    const spawnArgv = sidecarSpawnArgv(argv, cwd);
     const child = spawn(spawnArgv[0], spawnArgv.slice(1), {
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: false,
@@ -232,11 +232,11 @@ async function runSidecarCommand({ argv, input, timeoutMs, maximumFrameBytes, en
   });
 }
 
-function sidecarSpawnArgv(argv) {
+function sidecarSpawnArgv(argv, cwd = undefined) {
   const emptyEnvFileArg = `--env-file=${EMPTY_BUN_ENV_FILE}`;
   const emptyConfigArg = `--config=${EMPTY_BUN_CONFIG_FILE}`;
   if (commandBaseName(argv[0]) !== 'bun') {
-    const bunShebangArgs = bunShebangRuntimeArgs(argv[0]);
+    const bunShebangArgs = bunShebangRuntimeArgs(commandInspectionPath(argv[0], cwd));
     if (bunShebangArgs) {
       const shebangArgv = ['bun', ...bunShebangArgs, ...argv];
       assertSupportedBunEnvFileOptions(shebangArgv);
@@ -252,6 +252,12 @@ function sidecarSpawnArgv(argv) {
   if (!bunEnvFileOptionPresent(argv)) isolationArgs.push(emptyEnvFileArg);
   if (!bunConfigOptionPresent(argv)) isolationArgs.push(emptyConfigArg);
   return [argv[0], ...isolationArgs, ...argv.slice(1)];
+}
+
+function commandInspectionPath(value, cwd = undefined) {
+  if (!value.includes('/') && !value.includes('\\')) return value;
+  if (path.isAbsolute(value)) return value;
+  return path.resolve(cwd ?? process.cwd(), value);
 }
 
 function assertSupportedBunEnvFileOptions(argv) {
