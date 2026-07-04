@@ -1141,7 +1141,7 @@ class HumanApprovalCapabilityDriver {
       supportedActuatorRefs: ["human:approval"],
       supportedDescriptorFingerprints: ["descriptor:human-approval"],
       supportedActuationClasses: ["human"],
-      supportedResponseStatuses: ["ok", "rejected"],
+      supportedResponseStatuses: humanApprovalResponseStatuses(this.mode),
       maximumRequestBytes: 64 * 1024,
       maximumResponseBytes: 64 * 1024,
       recoveryClass: EffectRecoveryClass.transactional,
@@ -1289,6 +1289,13 @@ function assertFixedModeSupportsResponseSchema(mode, hostRequest = {}) {
     fail("ERR_HUMAN_APPROVAL_RESPONSE_SCHEMA_UNSUPPORTED", "noninteractive allow can only emit ok approvals");
   if (mode === "noninteractive-deny" && status !== "rejected")
     fail("ERR_HUMAN_APPROVAL_RESPONSE_SCHEMA_UNSUPPORTED", "noninteractive deny can only emit rejected approvals");
+}
+function humanApprovalResponseStatuses(mode) {
+  if (mode === "noninteractive-allow")
+    return ["ok"];
+  if (mode === "noninteractive-deny")
+    return ["rejected"];
+  return ["ok", "rejected"];
 }
 export {
   HumanApprovalCapabilityDriver as CapabilityDriver

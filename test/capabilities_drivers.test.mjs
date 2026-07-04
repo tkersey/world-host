@@ -782,6 +782,30 @@ describe('capability preflight and reference drivers', () => {
 
     assert.ok(deniedReport.blockers.includes('ERR_CAPABILITY_HUMAN_DENIED'));
     assert.deepEqual(allowedReport.blockers, []);
+
+    const denyDriverForOkRequest = new HumanApprovalCapabilityDriver({ mode: 'noninteractive-deny' });
+    const denyDriverOkReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [humanRequest],
+      drivers: [denyDriverForOkRequest],
+      policy: createRunPolicy({
+        allowHumanEffects: true,
+        allowedAuthorityLabels: ['human:approval'],
+      }),
+    });
+    const allowDriverRejectedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [{ ...humanRequest, responseSchema: { status: 'rejected' } }],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowHumanEffects: true,
+        allowedAuthorityLabels: ['human:approval'],
+      }),
+    });
+    assert.ok(denyDriverOkReport.blockers.includes('ERR_RESPONSE_STATUS_NOT_SUPPORTED'));
+    assert.ok(allowDriverRejectedReport.blockers.includes('ERR_RESPONSE_STATUS_NOT_SUPPORTED'));
   });
 
   it('rejects invalid human approval modes during driver preflight', async () => {

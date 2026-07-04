@@ -20,7 +20,7 @@ export class HumanApprovalCapabilityDriver {
       supportedActuatorRefs: ['human:approval'],
       supportedDescriptorFingerprints: ['descriptor:human-approval'],
       supportedActuationClasses: ['human'],
-      supportedResponseStatuses: ['ok', 'rejected'],
+      supportedResponseStatuses: humanApprovalResponseStatuses(this.mode),
       maximumRequestBytes: 64 * 1024,
       maximumResponseBytes: 64 * 1024,
       recoveryClass: EffectRecoveryClass.transactional,
@@ -133,6 +133,12 @@ function assertHumanApprovalModeReady(mode, prompt) {
   if (mode === 'interactive-terminal' && typeof prompt !== 'function') {
     fail('ERR_HUMAN_APPROVAL_PROMPT_REQUIRED', 'interactive human approval requires a prompt');
   }
+}
+
+function humanApprovalResponseStatuses(mode) {
+  if (mode === 'noninteractive-allow') return ['ok'];
+  if (mode === 'noninteractive-deny') return ['rejected'];
+  return ['ok', 'rejected'];
 }
 
 function resolutionTarget(hostRequest = {}) {

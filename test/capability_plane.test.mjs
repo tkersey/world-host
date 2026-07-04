@@ -4325,9 +4325,11 @@ describe('Capability Plane v0.2 core contracts', () => {
     }
 
     const approval = new HumanApprovalCapabilityDriver({ mode: 'noninteractive-allow' });
-    assert.deepEqual(approval.manifest().supportedResponseStatuses, ['ok', 'rejected']);
+    assert.deepEqual(approval.manifest().supportedResponseStatuses, ['ok']);
+    assert.deepEqual(new HumanApprovalCapabilityDriver({ mode: 'noninteractive-deny' }).manifest().supportedResponseStatuses, ['rejected']);
     const packApproval = new HumanApprovalPackCapabilityDriver({ mode: 'noninteractive-allow' });
-    assert.deepEqual(packApproval.manifest().supportedResponseStatuses, ['ok', 'rejected']);
+    assert.deepEqual(packApproval.manifest().supportedResponseStatuses, ['ok']);
+    assert.deepEqual(new HumanApprovalPackCapabilityDriver({ mode: 'noninteractive-deny' }).manifest().supportedResponseStatuses, ['rejected']);
     assert.equal(packApproval.preflight({}, approvalRequest()).accepted, false);
     const pinnedApprovalPackFingerprint = 'sha256:'.concat('6'.repeat(64));
     const pinnedPackApproval = new HumanApprovalPackCapabilityDriver({

@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "packFingerprint": "sha256:b448f2b21a2b87e15de462929f0f077430080c15cd16a4d37ba582c0d71638c8",
+  "packFingerprint": "sha256:5a4fb971aeae13c33b19bba4e07fb6b6230986af05b317644306faf362234b29",
   "packageName": "world-capability-human-approval",
   "packageVersion": "0.2.0",
   "driverId": "human-approval",
@@ -18,7 +18,6 @@
     "human"
   ],
   "supportedResponseStatuses": [
-    "ok",
     "rejected"
   ],
   "recoveryClass": "transactional",
@@ -48,7 +47,7 @@
   "checksums": [
     {
       "path": "adapter.mjs",
-      "checksum": "sha256:d20d6cd416ac57722809a3ccb276b8865cfd4f042603f00211697136b77d3e13"
+      "checksum": "sha256:f78974637dd752ee0adaa3629b8a684d39e22fffe5330ac480f65bef612c0bc7"
     },
     {
       "path": "README.md",
@@ -60,7 +59,7 @@
     },
     {
       "path": "conformance.json",
-      "checksum": "sha256:c69045eb8c6517da61d1c11a592eaaa1028e2fbffa36690a8f64d6c2b9835fa0"
+      "checksum": "sha256:08a9ae8a507f12590fae8b648b41f427a3e59e9c0ab823ddfbd0e9c14f0bd415"
     }
   ],
   "docs": [
