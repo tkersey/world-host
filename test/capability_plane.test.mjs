@@ -711,6 +711,26 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': computedAliasedBuiltinModuleAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const computedProcessBuiltinModuleAdapter = fromUtf8("const k = 'get'; const load = process[k + 'BuiltinModule']; const fs = load('node:fs'); export const CapabilityDriver = fs;");
+    const computedProcessBuiltinModuleAdapterChecksum = `sha256:${await sha256Hex(computedProcessBuiltinModuleAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: computedProcessBuiltinModuleAdapterChecksum }],
+      }, { 'adapter.mjs': computedProcessBuiltinModuleAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const indirectGlobalFunctionAdapter = fromUtf8("const name = ['Fun', 'ction'].join(''); const F = (0, globalThis)[name]; const fs = F('s', 'return import(s)')('node:fs'); export const CapabilityDriver = fs;");
+    const indirectGlobalFunctionAdapterChecksum = `sha256:${await sha256Hex(indirectGlobalFunctionAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: indirectGlobalFunctionAdapterChecksum }],
+      }, { 'adapter.mjs': indirectGlobalFunctionAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const optionalBuiltinModuleAdapter = fromUtf8("const fs = process.getBuiltinModule?.('node:fs'); export const CapabilityDriver = fs;");
     const optionalBuiltinModuleAdapterChecksum = `sha256:${await sha256Hex(optionalBuiltinModuleAdapter)}`;
     await assert.rejects(
@@ -3199,6 +3219,29 @@ describe('Capability Plane v0.2 core contracts', () => {
         { code: 'ERR_HTTP_IDEMPOTENCY_KEY_REQUIRED' },
       );
       assert.equal(observedHeaders, null);
+
+      let packPromptLimitedFetchCalled = false;
+      globalThis.fetch = async () => {
+        packPromptLimitedFetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      await assert.rejects(
+        () => new HttpJsonPackCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          requestTemplate: { prompt: 'x'.repeat(128) },
+        }).resolve({
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            maximumRequestBytes: 4096,
+            maximumPromptBytes: 8,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }, { ...httpRequest(), requestBytes: fromUtf8(stableJson({ body: 'x' })) }),
+        { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+      );
+      assert.equal(packPromptLimitedFetchCalled, false);
 
       let packMalformedExplicitUrlFetchCalled = false;
       globalThis.fetch = async () => {

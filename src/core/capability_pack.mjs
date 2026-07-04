@@ -918,12 +918,41 @@ function globalReceiverExpressionSpan(text, start, end) {
     const closeParenthesis = skipBalancedParentheses(text, start);
     if (closeParenthesis === end + 1) return globalReceiverExpressionSpan(text, start + 1, end - 1);
   }
+  const comma = lastTopLevelComma(text, start, end);
+  if (comma >= 0) return globalReceiverExpressionSpan(text, comma + 1, end);
   const name = readIdentifierName(text, start);
   if (!name || name.invalid) return false;
   let index = name.end;
   if (skipWhitespaceAndComments(text, index) <= end) return false;
   const identifier = name.value;
-  return identifier === 'globalThis' || identifier === 'global' || identifier === 'window' || identifier === 'self';
+  return identifier === 'globalThis' || identifier === 'global' || identifier === 'window' || identifier === 'self' || identifier === 'process';
+}
+
+function lastTopLevelComma(text, start, end) {
+  let comma = -1;
+  for (let index = start; index <= end;) {
+    index = skipWhitespaceAndComments(text, index);
+    const char = text[index];
+    if (char === '\'' || char === '"' || char === '`') {
+      index = skipQuotedString(text, index, char);
+      continue;
+    }
+    if (char === '(') {
+      index = skipBalancedParentheses(text, index);
+      continue;
+    }
+    if (char === '[') {
+      index = skipBalancedBracket(text, index);
+      continue;
+    }
+    if (char === '{') {
+      index = skipBalancedBrace(text, index);
+      continue;
+    }
+    if (char === ',') comma = index;
+    index += 1;
+  }
+  return comma;
 }
 
 function matchingOpenParenthesisBackward(text, closeParenthesis) {
