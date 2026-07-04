@@ -31,6 +31,7 @@ import {
 } from '../src/drivers/model_capability_driver.mjs';
 import { GenericHttpJsonCapabilityDriver } from '../src/drivers/generic_http_json_capability_driver.mjs';
 import { HumanApprovalCapabilityDriver } from '../src/drivers/human_approval_capability_driver.mjs';
+import { CapabilityDriver as FixturePackCapabilityDriver } from '../capability-packs/capability-pack-v0.2-fixture/adapter.mjs';
 import { CapabilityDriver as HttpJsonPackCapabilityDriver } from '../capability-packs/capability-pack-v0.2-http-json/adapter.mjs';
 import { CapabilityDriver as HumanApprovalPackCapabilityDriver } from '../capability-packs/capability-pack-v0.2-human-approval/adapter.mjs';
 import { fromUtf8, stableJson, toHex } from '../src/core/store.mjs';
@@ -4467,6 +4468,13 @@ describe('Capability Plane v0.2 core contracts', () => {
     });
     assert.equal(malformedFixturePreflight.accepted, false);
     assert.deepEqual(malformedFixturePreflight.blockers, ['ERR_AGENT_DECISION_PROMPT_SCHEMA']);
+    const fixturePackDriver = new FixturePackCapabilityDriver();
+    const malformedFixturePackPreflight = fixturePackDriver.preflight({}, {
+      ...modelRequest('goal=invoke', 'malformed-fixture-pack-preflight-key'),
+      requestBytes: fromUtf8(stableJson({ schema: 'not-boundary.Agent.DecisionPrompt.v0' })),
+    });
+    assert.equal(malformedFixturePackPreflight.accepted, false);
+    assert.deepEqual(malformedFixturePackPreflight.blockers, ['ERR_AGENT_DECISION_PROMPT_SCHEMA']);
 
     const liveDriver = preflightBlockedDriver();
     await assert.rejects(

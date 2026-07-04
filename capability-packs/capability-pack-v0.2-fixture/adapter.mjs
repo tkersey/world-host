@@ -1876,7 +1876,18 @@ var textDecoder = new TextDecoder;
 
 class FixtureAgentModelCapabilityDriver extends FixtureAgentModelDriver {
   preflight(context, hostRequest) {
-    return defaultCapabilityPreflight(this.manifest(), hostRequest);
+    const structural = defaultCapabilityPreflight(this.manifest(), hostRequest);
+    const blockers = [...structural.blockers];
+    if (!blockers.length) {
+      try {
+        parseDecisionPrompt(hostRequest.requestBytes);
+      } catch (error) {
+        blockers.push(error.code ?? "ERR_AGENT_DECISION_PROMPT_INVALID");
+      }
+    }
+    if (blockers.length)
+      return new CapabilityPreflightReport({ accepted: false, blockers });
+    return structural;
   }
   dryRun(context, hostRequest) {
     const prompt = parseDecisionPrompt(hostRequest.requestBytes);
