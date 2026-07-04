@@ -2391,6 +2391,10 @@ function assertNoMetadataCredentialMaterial(value) {
     assertNoMetadataBytesCredentialMaterial(value);
     return;
   }
+  if (typeof value === 'string') {
+    assertNoMetadataBytesCredentialMaterial(fromUtf8(value));
+    return;
+  }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return;
   if (value.format !== 'base64' || typeof value.bytes !== 'string') return;
   let binary;

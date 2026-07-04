@@ -2380,6 +2380,13 @@ describe('Capability Plane v0.2 core contracts', () => {
       () => assertCapabilityManifest({ ...manifest, metadataBytes: 'Bearer persisted-token-value' }),
       { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
     );
+    assert.throws(
+      () => assertCapabilityManifest({
+        ...manifest,
+        metadataBytes: '-----BEGIN PRIVATE KEY-----\nredacted\n-----END PRIVATE KEY-----\n',
+      }),
+      { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
+    );
     assert.doesNotThrow(
       () => assertCapabilityManifest({
         ...manifest,
