@@ -1349,6 +1349,36 @@ describe('EffectJournal', () => {
     assert.equal(records.filter((record) => record.branchId === 'alternate').length, 1);
   });
 
+  it('does not let branch-local placeholders shadow cross-branch outcomes before preflight', async () => {
+    const store = new MemoryStore();
+    const mainJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const alternateJournal = new EffectJournal({ store, runId: 'run', branchId: 'alternate', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+
+    const main = await mainJournal.resolve({}, hostRequest(), driver);
+    await store.putEffectRecord({
+      ...main.record,
+      branchId: 'alternate',
+      state: EffectState.observed,
+      resolutionInputRef: undefined,
+      diagnostics: { branchLocalPlaceholderFixture: true },
+    });
+    let preflightCalled = false;
+    const alternate = await alternateJournal.resolve({}, hostRequest(), driver, {
+      beforeInvoke() {
+        preflightCalled = true;
+        const error = new Error('preflight blocked');
+        error.code = 'ERR_TEST_PREFLIGHT_BLOCKED';
+        throw error;
+      },
+    });
+
+    assert.equal(alternate.reused, true);
+    assert.equal(alternate.record.state, EffectState.resolved);
+    assert.equal(preflightCalled, false);
+    assert.equal(driver.calls, 1);
+  });
+
   it('does not rebind cross-branch running effects before preflight', async () => {
     const store = new MemoryStore();
     const mainJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });

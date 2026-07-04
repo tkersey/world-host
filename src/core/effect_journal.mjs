@@ -72,7 +72,14 @@ export class EffectJournal {
 
   async #observePrepared(hostRequest, prepared, options = {}) {
     const existing = await this.store.getEffectRecord(this.runId, prepared.idempotencyKey, this.branchId);
-    if (existing) return await this.#reuseOrConflict(existing, prepared);
+    if (existing) {
+      const current = await this.#reuseOrConflict(existing, prepared);
+      if (options.createIfMissing === false && reusablePlaceholderCanYieldToOutcome(current)) {
+        const reusable = await this.#branchLocalReusableRecord(prepared, { outcomesOnly: true });
+        if (reusable) return reusable;
+      }
+      return current;
+    }
     if (options.createIfMissing === false) {
       return await this.#branchLocalReusableRecord(prepared, { outcomesOnly: true });
     }
@@ -589,6 +596,10 @@ function retryableReusableResolutionError(error, manifest, policy) {
     'ERR_EFFECT_RESPONSE_FORBIDDEN',
     'ERR_EFFECT_MODEL_OUTPUT_INVALID',
   ]).has(error.code);
+}
+
+function reusablePlaceholderCanYieldToOutcome(record) {
+  return record?.state === EffectState.observed || record?.state === EffectState.running;
 }
 
 function assertDriverRecoveryHookSufficient(manifest, driver) {

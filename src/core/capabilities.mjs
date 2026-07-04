@@ -293,33 +293,29 @@ function hasReusableEffectOutcome(
     record.hostRequestFingerprint === request.hostRequestFingerprint &&
     (record.requestIdentityChecksum ?? record.requestBytesChecksum) === identity.requestIdentityChecksum
   ));
-  if (currentBranchId) {
-    const currentBranchRecord = matchingRecords.find((record) => record?.branchId === currentBranchId);
-    if (currentBranchRecord) {
-      return reusableOutcomeRecord(
-        currentBranchRecord,
-        request,
-        route,
-        effectResolutionInputs,
-        policy,
-        reusableEffectBlockers,
-        nonRerunnableReusableEffectBlockers,
-        currentBranchId,
-        currentParentTurnClosureFingerprint,
-      );
-    }
-  }
-  return matchingRecords.some((record) => reusableOutcomeRecord(
+  const orderedRecords = currentBranchId
+    ? [
+        ...matchingRecords.filter((record) => record?.branchId === currentBranchId),
+        ...matchingRecords.filter((record) => record?.branchId !== currentBranchId),
+      ]
+    : matchingRecords;
+  const candidateReusableEffectBlockers = [];
+  const candidateNonRerunnableReusableEffectBlockers = [];
+  const reusable = orderedRecords.some((record) => reusableOutcomeRecord(
     record,
     request,
     route,
     effectResolutionInputs,
     policy,
-    reusableEffectBlockers,
-    nonRerunnableReusableEffectBlockers,
+    candidateReusableEffectBlockers,
+    candidateNonRerunnableReusableEffectBlockers,
     currentBranchId,
     currentParentTurnClosureFingerprint,
   ));
+  if (reusable) return true;
+  addUniqueBlockers(reusableEffectBlockers, candidateReusableEffectBlockers);
+  addUniqueBlockers(nonRerunnableReusableEffectBlockers, candidateNonRerunnableReusableEffectBlockers);
+  return false;
 }
 
 function reusableOutcomeRecord(record, request, route, effectResolutionInputs, policy, reusableEffectBlockers, nonRerunnableReusableEffectBlockers, currentBranchId = null, currentParentTurnClosureFingerprint = null) {
@@ -453,6 +449,10 @@ function blobRefKey(ref) {
 
 function addUniqueBlocker(blockers, code) {
   if (!blockers.includes(code)) blockers.push(code);
+}
+
+function addUniqueBlockers(blockers, codes) {
+  for (const code of codes) addUniqueBlocker(blockers, code);
 }
 
 function reusableRecordCanRerun(record, route, currentBranchId = null, currentParentTurnClosureFingerprint = null) {

@@ -625,6 +625,16 @@ describe('capability preflight and reference drivers', () => {
       policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 0 }),
       effectRecords: shadowedCachedEffects,
     });
+    const shadowedReplayWithResolutionReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 0 }),
+      effectRecords: shadowedCachedEffects,
+      effectResolutionInputs: cachedModelResolutionInputs,
+    });
     const shadowedMixedReport = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },
       currentHead: { generation: 0 },
@@ -774,6 +784,7 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(replayOnlyReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'), false);
     assert.equal(oneNewWithCachedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'), false);
     assert.ok(shadowedReplayReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+    assert.deepEqual(shadowedReplayWithResolutionReport.blockers, []);
     assert.ok(shadowedMixedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
     assert.ok(mismatchedCachedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
     assert.ok(wrongFullKeyReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));

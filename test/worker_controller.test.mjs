@@ -2184,7 +2184,7 @@ describe('RunController and WorldWorker', () => {
     }
   });
 
-  it('preserves zero live model budgets when cached preflight routes cannot be reused', async () => {
+  it('does not let branch-local observed effects shadow cached model replays', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
       closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
@@ -2272,14 +2272,9 @@ describe('RunController and WorldWorker', () => {
         }),
       });
 
-      await assert.rejects(
-        () => controller.advance(runId, branchId),
-        (error) => {
-          assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
-          assert.ok(error.details?.blockers?.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
-          return true;
-        },
-      );
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
       assert.equal(fetchCalled, false);
     } finally {
       globalThis.fetch = originalFetch;
