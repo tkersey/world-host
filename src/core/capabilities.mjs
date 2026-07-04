@@ -780,8 +780,8 @@ function requestOriginForRoute(request, route) {
     if (!request) return configuredRouteOrigin(route);
     const text = new TextDecoder().decode(request.requestBytes);
     const value = JSON.parse(text);
-    if (fixedConfiguredEndpointRoute(route)) return route.diagnostics.configuredOrigin;
-    if (value.url === undefined && configuredEndpointRoute(route)) return route.diagnostics.configuredOrigin;
+    if (fixedConfiguredEndpointRoute(route)) return configuredRouteOrigin(route);
+    if (value.url === undefined && configuredEndpointRoute(route)) return configuredRouteOrigin(route);
     return new URL(value.url).origin;
   } catch {
     return null;
@@ -793,8 +793,8 @@ function requestMethodForRoute(request, route) {
     if (!request) return configuredRouteMethod(route);
     const text = new TextDecoder().decode(request.requestBytes);
     const value = JSON.parse(text);
-    if (fixedConfiguredEndpointRoute(route)) return String(value.method ?? route.diagnostics.defaultMethod ?? 'POST').toUpperCase();
-    if (value.url === undefined && configuredEndpointRoute(route)) return String(value.method ?? route.diagnostics.defaultMethod ?? 'POST').toUpperCase();
+    if (fixedConfiguredEndpointRoute(route)) return String(value.method ?? configuredRouteMethod(route) ?? 'POST').toUpperCase();
+    if (value.url === undefined && configuredEndpointRoute(route)) return String(value.method ?? configuredRouteMethod(route) ?? 'POST').toUpperCase();
     const methods = Array.isArray(route?.diagnostics?.methods) ? route.diagnostics.methods : [];
     return String(value.method ?? route?.diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : 'GET')).toUpperCase();
   } catch {
@@ -816,6 +816,13 @@ function requestRoutedEndpointRoute(route) {
 
 function configuredRouteOrigin(route) {
   if (route?.diagnostics?.configuredOrigin) return route.diagnostics.configuredOrigin;
+  if (route?.diagnostics?.configuredEndpointUrl) {
+    try {
+      return new URL(route.diagnostics.configuredEndpointUrl).origin;
+    } catch {
+      return null;
+    }
+  }
   const origins = Array.isArray(route?.diagnostics?.origins) ? route.diagnostics.origins : [];
   return origins.length === 1 ? origins[0] : null;
 }

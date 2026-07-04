@@ -867,8 +867,8 @@ function policyUpperSet(value) {
 function requestOriginForManifest(hostRequest, manifest) {
   try {
     const request = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
-    if (fixedConfiguredEndpointManifest(manifest)) return manifest.diagnostics.configuredOrigin;
-    if (request.url === undefined && configuredEndpointManifest(manifest)) return manifest.diagnostics.configuredOrigin;
+    if (fixedConfiguredEndpointManifest(manifest)) return configuredManifestOrigin(manifest);
+    if (request.url === undefined && configuredEndpointManifest(manifest)) return configuredManifestOrigin(manifest);
     return new URL(request.url).origin;
   } catch {
     return null;
@@ -878,8 +878,8 @@ function requestOriginForManifest(hostRequest, manifest) {
 function requestMethodForManifest(hostRequest, manifest) {
   try {
     const request = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
-    if (fixedConfiguredEndpointManifest(manifest)) return String(request.method ?? manifest.diagnostics.defaultMethod ?? 'POST').toUpperCase();
-    if (request.url === undefined && configuredEndpointManifest(manifest)) return String(request.method ?? manifest.diagnostics.defaultMethod ?? 'POST').toUpperCase();
+    if (fixedConfiguredEndpointManifest(manifest)) return String(request.method ?? configuredManifestMethod(manifest) ?? 'POST').toUpperCase();
+    if (request.url === undefined && configuredEndpointManifest(manifest)) return String(request.method ?? configuredManifestMethod(manifest) ?? 'POST').toUpperCase();
     const methods = Array.isArray(manifest?.diagnostics?.methods) ? manifest.diagnostics.methods : [];
     return String(request.method ?? manifest?.diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : 'GET')).toUpperCase();
   } catch {
@@ -893,6 +893,25 @@ function fixedConfiguredEndpointManifest(manifest) {
 
 function configuredEndpointManifest(manifest) {
   return manifest?.diagnostics?.endpointSource === 'config' || manifest?.diagnostics?.endpointSource === 'request-or-config';
+}
+
+function configuredManifestOrigin(manifest) {
+  if (manifest?.diagnostics?.configuredOrigin) return manifest.diagnostics.configuredOrigin;
+  if (manifest?.diagnostics?.configuredEndpointUrl) {
+    try {
+      return new URL(manifest.diagnostics.configuredEndpointUrl).origin;
+    } catch {
+      return null;
+    }
+  }
+  const origins = Array.isArray(manifest?.diagnostics?.origins) ? manifest.diagnostics.origins : [];
+  return origins.length === 1 ? origins[0] : null;
+}
+
+function configuredManifestMethod(manifest) {
+  if (manifest?.diagnostics?.defaultMethod) return String(manifest.diagnostics.defaultMethod).toUpperCase();
+  const methods = Array.isArray(manifest?.diagnostics?.methods) ? manifest.diagnostics.methods : [];
+  return methods.length === 1 ? String(methods[0]).toUpperCase() : null;
 }
 
 function unresolvedHostRequestDiagnostic(index, hostRequest) {

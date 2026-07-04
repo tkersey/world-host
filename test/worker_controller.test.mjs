@@ -1327,6 +1327,73 @@ describe('RunController and WorldWorker', () => {
     }
   });
 
+  it('derives configured HTTP endpoint origins and singleton methods before policy guard', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    let invocationCount = 0;
+    const configuredPutDriver = {
+      manifest() {
+        return {
+          driverId: 'configured-url-only-put',
+          supportedActuatorRefs: ['http:json'],
+          supportedDescriptorFingerprints: ['descriptor:http-json'],
+          supportedActuationClasses: ['http'],
+          supportedResponseStatuses: ['ok'],
+          maximumRequestBytes: 4096,
+          maximumResponseBytes: 4096,
+          recoveryClass: EffectRecoveryClass.idempotent,
+          concurrencyLimit: 1,
+          authorityLabels: ['network:http'],
+          diagnostics: {
+            endpointSource: 'config',
+            configuredEndpointUrl: 'https://allowed.example/put',
+            methods: ['PUT'],
+          },
+        };
+      },
+      async resolve() {
+        invocationCount += 1;
+        return {
+          resolutionInputBytes: encodeResolutionInputBytes({
+            targetHostRequestFingerprint: 0xa01n,
+            status: 0,
+            responseValueImageBytes: fixtureResponseValueBytes('response', 0xa01n),
+            hostClaimBytes: fromUtf8('claim'),
+            attemptNumber: 1,
+            metadata: fromUtf8('metadata'),
+          }),
+        };
+      },
+    };
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [configuredPutDriver],
+      effectPolicy: {
+        allowedAuthorityLabels: new Set(['network:http']),
+        allowedHttpOrigins: new Set(['https://allowed.example']),
+        allowedHttpMethods: new Set(['PUT']),
+      },
+      hostRequestMapper: () => ({
+        actuatorRef: 'http:json',
+        descriptorFingerprint: 'descriptor:http-json',
+        actuationClass: 'http',
+        responseSchema: { status: 'ok' },
+        idempotencyKeyBytes: fromUtf8('configured-url-only-put-key'),
+        idempotencyKeyWorldFingerprint: 'world:key:configured-url-only-put',
+        requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'hi' } })),
+        hostRequestFingerprint: 'world:host-request:0000000000000a01',
+      }),
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(invocationCount, 1);
+  });
+
   it('preserves raw HTTP driver default methods before policy guard', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',

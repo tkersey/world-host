@@ -188,6 +188,53 @@ describe('capability preflight and reference drivers', () => {
     }]);
   });
 
+  it('derives configured HTTP endpoint origins and singleton methods during preflight', () => {
+    const request = {
+      ...httpRequest('https://payload.example/not-target'),
+      requestBytes: fromUtf8(stableJson({ body: { prompt: 'hi' } })),
+    };
+    const driver = {
+      manifest() {
+        return {
+          driverId: 'configured-url-only-put',
+          supportedActuatorRefs: ['http:json'],
+          supportedDescriptorFingerprints: ['descriptor:http-json'],
+          supportedActuationClasses: ['http'],
+          supportedResponseStatuses: ['ok'],
+          maximumRequestBytes: 4096,
+          maximumResponseBytes: 4096,
+          recoveryClass: EffectRecoveryClass.idempotent,
+          concurrencyLimit: 1,
+          authorityLabels: ['network:http'],
+          diagnostics: {
+            endpointSource: 'config',
+            configuredEndpointUrl: 'https://allowed.example/put',
+            methods: ['PUT'],
+          },
+        };
+      },
+    };
+
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['PUT'],
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.deepEqual(report.coveredRequests, [{
+      actuatorRef: 'http:json',
+      descriptorFingerprint: 'descriptor:http-json',
+      driverId: 'configured-url-only-put',
+    }]);
+  });
+
   it('checks configured HTTP endpoint method coverage against explicit payload methods', () => {
     const request = {
       ...httpRequest('https://payload.example/not-target'),
