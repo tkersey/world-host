@@ -812,7 +812,6 @@ function isLiveModelRoute(route, request) {
     (route?.supportedActuationClasses ?? []).includes('model') ||
     liveModelLabels.length > 0;
   if (!modelCapable) return false;
-  if (route?.driverId === 'fixture-agent-model') return false;
   if (!liveModelLabels.length && hasDeterministicFixtureModelAuthority(route, modelLabels)) return false;
   return true;
 }

@@ -624,6 +624,13 @@ describe('capability preflight and reference drivers', () => {
       descriptorFingerprint: 'descriptor:agent-live-only',
       actuationClasses: ['model'],
     });
+    const spoofedFixtureIdLiveDriver = fixtureDriverWithAuthority(['model:live'], {
+      driverId: 'fixture-agent-model',
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-live-only',
+      actuationClasses: ['model'],
+      diagnostics: { deterministic: true },
+    });
     const fallbackWithInvalidReusableReport = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },
       currentHead: { generation: 0 },
@@ -699,6 +706,16 @@ describe('capability preflight and reference drivers', () => {
         maximumLiveModelCalls: 1,
       }),
     });
+    const spoofedFixtureIdLiveReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [liveOnlyRequest],
+      drivers: [spoofedFixtureIdLiveDriver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:live'],
+        maximumLiveModelCalls: 0,
+      }),
+    });
 
     assert.ok(zeroBudgetReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
     assert.ok(overBudgetReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
@@ -750,6 +767,7 @@ describe('capability preflight and reference drivers', () => {
       'fixture-model-budget',
       'live-model-only',
     ]);
+    assert.ok(spoofedFixtureIdLiveReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
   });
 
   it('requires human-effect opt-in during receiver preflight', () => {

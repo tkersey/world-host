@@ -2473,6 +2473,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       manifest: {
         driverId: 'fixture-agent-model',
         authorityLabels: ['model:fixture'],
+        diagnostics: { deterministic: true },
         recoveryClass: EffectRecoveryClass.idempotent,
         maximumResponseBytes: 1024,
       },
@@ -2480,6 +2481,18 @@ describe('Capability Plane v0.2 core contracts', () => {
       policy: { allowLiveEffects: true, allowedOrigins: ['https://other.example'], allowedMethods: ['POST'] },
       mode: 'live',
     }), true);
+    assert.throws(() => assertCapabilityPolicyAllows({
+      manifest: {
+        driverId: 'fixture-agent-model',
+        authorityLabels: ['model:live'],
+        diagnostics: { deterministic: true },
+        recoveryClass: EffectRecoveryClass.idempotent,
+        maximumResponseBytes: 1024,
+      },
+      hostRequest: { ...genericHttpModelRequest('goal=policy-spoofed-fixture-id', 'model-policy-spoofed-fixture-id-key') },
+      policy: { allowLiveEffects: true },
+      mode: 'live',
+    }), { code: 'ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED' });
     assert.throws(() => assertCapabilityPolicyAllows({
       manifest: {
         driverId: 'spoofed-fixture-model',

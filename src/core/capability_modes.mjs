@@ -156,7 +156,6 @@ function isLiveModelCall(manifest, hostRequest) {
     (manifest?.supportedActuationClasses ?? []).includes('model') ||
     liveModelLabels.length > 0;
   if (!modelCapable) return false;
-  if (manifest?.driverId === 'fixture-agent-model') return false;
   if (!liveModelLabels.length && hasDeterministicFixtureModelAuthority(manifest, modelLabels)) return false;
   return true;
 }
