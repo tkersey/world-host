@@ -751,6 +751,7 @@ function capabilityPolicyForSelectedEffect(policy = {}, manifest = {}, hostReque
     requireApprovalForBestEffort: policy.requireApprovalForBestEffort !== false,
     maximumLiveModelCalls: modelLiveBudget(policy, model, options),
     maximumRequestBytes: policy.maximumRequestBytes,
+    maximumPromptBytes: policy.maximumPromptBytes,
     maximumResponseBytes: policy.maximumResponseBytes,
     allowedOrigins: [...allowedHttpOrigins],
     allowedMethods: [...allowedHttpMethods],

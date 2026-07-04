@@ -2521,6 +2521,57 @@ describe('RunController and WorldWorker', () => {
     assert.equal((await store.listEffectRecords(runId)).length, 0);
   });
 
+  it('preserves selected effect prompt byte limits before resolving effects', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const driver = fixtureEffectDriver({
+      driverId: 'prompt-limited-http-driver',
+      actuatorRef: 'http:json',
+      descriptorFingerprint: 'descriptor:http-json',
+      actuationClasses: ['http'],
+      responseStatuses: ['ok'],
+      authorityLabels: ['network:http'],
+      diagnostics: {
+        endpointSource: 'config',
+        configuredEndpointUrl: 'https://allowed.example/decide',
+        origins: ['https://allowed.example'],
+        methods: ['POST'],
+      },
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [driver],
+      effectPolicy: {
+        maximumRequestBytes: 4096,
+        maximumPromptBytes: 4,
+        maximumResponseBytes: 4096,
+        allowedAuthorityLabels: new Set(['network:http']),
+        allowedHttpOrigins: new Set(['https://allowed.example']),
+        allowedHttpMethods: new Set(['POST']),
+      },
+      hostRequestMapper: () => ({
+        actuatorRef: 'http:json',
+        descriptorFingerprint: 'descriptor:http-json',
+        actuationClass: 'http',
+        responseSchema: { status: 'ok' },
+        idempotencyKeyBytes: fromUtf8('prompt-limit-key'),
+        idempotencyKeyWorldFingerprint: 'world:key:prompt-limit',
+        requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'larger-prompt' } })),
+        hostRequestFingerprint: 'world:host-request:0000000000000a01',
+      }),
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+    );
+    assert.equal(driver.invocationCount, 0);
+    assert.equal((await store.listEffectRecords(runId)).length, 0);
+  });
+
   it('rejects file-capable drivers outside receiver root policy before resolving effects', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
