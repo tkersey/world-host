@@ -135,6 +135,8 @@ export class ApprovalPolicy {
 
 export function redactCapabilityDiagnostics(value) {
   if (typeof value === 'string') return secretLike(value) ? '[redacted]' : value;
+  if (value instanceof ArrayBuffer) return `[bytes:${value.byteLength}]`;
+  if (ArrayBuffer.isView(value)) return `[bytes:${value.byteLength}]`;
   if (Array.isArray(value)) return value.map(redactCapabilityDiagnostics);
   if (value instanceof Map) {
     const redacted = {};

@@ -20,7 +20,7 @@ export class CapabilityPreflightReport {
     this.accepted = fields.accepted === true;
     this.blockers = Object.freeze([...(fields.blockers ?? [])]);
     this.warnings = Object.freeze([...(fields.warnings ?? [])]);
-    this.diagnostics = Object.freeze(fields.diagnostics ?? {});
+    this.diagnostics = cloneReportPayload(fields.diagnostics ?? {});
     Object.freeze(this);
   }
 }
@@ -28,9 +28,9 @@ export class CapabilityPreflightReport {
 export class DryRunReport {
   constructor(fields = {}) {
     this.wouldInvoke = fields.wouldInvoke === true;
-    this.proposedAction = fields.proposedAction ?? null;
+    this.proposedAction = cloneReportPayload(fields.proposedAction ?? null);
     this.resolutionPolicy = fields.resolutionPolicy ?? 'not-submitted';
-    this.diagnostics = Object.freeze(fields.diagnostics ?? {});
+    this.diagnostics = cloneReportPayload(fields.diagnostics ?? {});
     Object.freeze(this);
   }
 }
@@ -40,7 +40,7 @@ export class ShadowReport {
     this.liveInvoked = fields.liveInvoked === true;
     this.submittedToWorld = false;
     this.schemaAccepted = fields.schemaAccepted === true;
-    this.diagnostics = Object.freeze(fields.diagnostics ?? {});
+    this.diagnostics = cloneReportPayload(fields.diagnostics ?? {});
     Object.freeze(this);
   }
 }
@@ -102,24 +102,36 @@ export function defaultCapabilityPreflight(manifestLike, hostRequest) {
 }
 
 export function assertCapabilityPreflightReport(value) {
-  assertNoWorldEvidenceKeys(value);
-  if (value instanceof CapabilityPreflightReport) return value;
+  if (value instanceof CapabilityPreflightReport) {
+    assertNoWorldEvidenceKeys(value);
+    return value;
+  }
   if (!value || typeof value !== 'object') fail('ERR_CAPABILITY_PREFLIGHT_REPORT_INVALID');
-  return new CapabilityPreflightReport(value);
+  const report = new CapabilityPreflightReport(value);
+  assertNoWorldEvidenceKeys(report);
+  return report;
 }
 
 export function assertDryRunReport(value) {
-  assertNoWorldEvidenceKeys(value);
-  if (value instanceof DryRunReport) return value;
+  if (value instanceof DryRunReport) {
+    assertNoWorldEvidenceKeys(value);
+    return value;
+  }
   if (!value || typeof value !== 'object') fail('ERR_CAPABILITY_DRY_RUN_REPORT_INVALID');
-  return new DryRunReport(value);
+  const report = new DryRunReport(value);
+  assertNoWorldEvidenceKeys(report);
+  return report;
 }
 
 export function assertShadowReport(value) {
-  assertNoWorldEvidenceKeys(value);
-  if (value instanceof ShadowReport) return value;
+  if (value instanceof ShadowReport) {
+    assertNoWorldEvidenceKeys(value);
+    return value;
+  }
   if (!value || typeof value !== 'object') fail('ERR_CAPABILITY_SHADOW_REPORT_INVALID');
-  return new ShadowReport(value);
+  const report = new ShadowReport(value);
+  assertNoWorldEvidenceKeys(report);
+  return report;
 }
 
 export function assertCapabilityResolutionBoundary(value) {
@@ -127,6 +139,59 @@ export function assertCapabilityResolutionBoundary(value) {
   assertNoWorldEvidenceKeys(value);
   decodeResolutionInputBytes(assertBytes(value.resolutionInputBytes, 'resolutionInputBytes'));
   return true;
+}
+
+function cloneReportPayload(value, seen = new WeakMap()) {
+  if (value == null || typeof value !== 'object') return value;
+  if (value instanceof ArrayBuffer) return value.slice(0);
+  if (ArrayBuffer.isView(value)) return cloneArrayBufferView(value);
+  if (seen.has(value)) return seen.get(value);
+  if (Array.isArray(value)) {
+    const clone = [];
+    seen.set(value, clone);
+    for (const item of value) clone.push(cloneReportPayload(item, seen));
+    return Object.freeze(clone);
+  }
+  if (value instanceof Map) {
+    const clone = {};
+    seen.set(value, clone);
+    let index = 0;
+    for (const [key, child] of value.entries()) {
+      const property = typeof key === 'string' ? key : `map:${index}`;
+      Object.defineProperty(clone, property, {
+        value: cloneReportPayload(child, seen),
+        enumerable: true,
+        configurable: false,
+        writable: false,
+      });
+      index += 1;
+    }
+    return Object.freeze(clone);
+  }
+  if (value instanceof Set) {
+    const clone = [];
+    seen.set(value, clone);
+    for (const item of value.values()) clone.push(cloneReportPayload(item, seen));
+    return Object.freeze(clone);
+  }
+  const clone = {};
+  seen.set(value, clone);
+  for (const [key, child] of Object.entries(value)) {
+    Object.defineProperty(clone, key, {
+      value: cloneReportPayload(child, seen),
+      enumerable: true,
+      configurable: false,
+      writable: false,
+    });
+  }
+  return Object.freeze(clone);
+}
+
+function cloneArrayBufferView(value) {
+  if (value instanceof DataView) {
+    return new DataView(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+  }
+  return new value.constructor(value);
 }
 
 export function assertNoWorldEvidenceKeys(value, path = [], seen = new WeakSet()) {

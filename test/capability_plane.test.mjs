@@ -1587,6 +1587,15 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'config.json': sidecar }),
       { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', '--inspect=0.0.0.0:9229', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+      }, { 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
     const sidecarEnvFile = fromUtf8('SETTING=value\n');
     const sidecarEnvFileChecksum = `sha256:${await sha256Hex(sidecarEnvFile)}`;
     await assert.rejects(
@@ -2114,6 +2123,15 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'sidecar.mjs': sidecar }),
       { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['nice', 'node', '-e', 'import("node:fs")', './sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: './sidecar.mjs', checksum: sidecarChecksum }],
+      }, { './sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
     for (const command of [
       ['pnpm', 'node', '-e', 'import("node:fs")', './sidecar.mjs'],
       ['yarn', 'node', '-e', 'import("node:fs")', './sidecar.mjs'],
@@ -2154,6 +2172,18 @@ describe('Capability Plane v0.2 core contracts', () => {
         docs: [],
         checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
       }, { 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', '--import=./helper.mjs?covered', './sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: './helper.mjs?covered', checksum: sidecarChecksum },
+          { path: './sidecar.mjs', checksum: sidecarChecksum },
+        ],
+      }, { './helper.mjs?covered': sidecar, './sidecar.mjs': sidecar }),
       { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
     await assert.rejects(
@@ -2709,6 +2739,8 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.equal(Object.hasOwn(redactedPrototypeKey, '__proto__'), true);
     assert.equal(redactedPrototypeKey.polluted, undefined);
     assert.deepEqual(redactedPrototypeKey.__proto__, { polluted: true });
+    const redactedBytes = redactCapabilityDiagnostics({ diagnostics: { requestBytes: fromUtf8('sk-abcdefghijklmnop') } });
+    assert.deepEqual(redactedBytes, { diagnostics: { requestBytes: '[bytes:19]' } });
     assert.equal(redactCapabilityDiagnostics({ message: 'sk-abcdefghijklmnop' }).message, '[redacted]');
     assert.throws(() => assertNoSecretValuePersisted({ value: ['sk', 'local-secret'].join('-') }), { code: 'ERR_SECRET_PERSISTED' });
 
@@ -2968,6 +3000,14 @@ describe('Capability Plane v0.2 core contracts', () => {
       }),
       { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
     );
+    const mutableDiagnostics = { nested: {} };
+    const mutableReportDriver = defineCapabilityDriver(worldEvidenceReportDriver({
+      preflightReport: { accepted: true, diagnostics: mutableDiagnostics },
+    }));
+    const acceptedReport = await mutableReportDriver.preflight({}, request);
+    mutableDiagnostics.nested.runHead = { generation: 1 };
+    assert.equal(acceptedReport.diagnostics.nested.runHead, undefined);
+    assert.equal(Object.isFrozen(acceptedReport.diagnostics.nested), true);
     const bytesWithEnumerableGetter = new Uint8Array([1, 2, 3]);
     Object.defineProperty(bytesWithEnumerableGetter, 'expensive', {
       enumerable: true,

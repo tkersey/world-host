@@ -54,6 +54,7 @@ const SIDECAR_RUNTIME_WRAPPERS = new Set([
   'env',
   'fish',
   'ksh',
+  'nice',
   'nohup',
   'powershell',
   'powershell.exe',
@@ -1882,6 +1883,14 @@ function sidecarPreloadArtifact(value) {
   return sidecarCommandArtifact(value) && (value.startsWith('./') || value.startsWith('../'));
 }
 
+function sidecarRuntimeInspectorOption(command, index) {
+  if (!sidecarRuntimeOptionPosition(command, index)) return false;
+  const value = command[index];
+  if (typeof value !== 'string') return false;
+  const option = value.includes('=') ? value.slice(0, value.indexOf('=')) : value;
+  return option.startsWith('--inspect') || option === '--debug-port';
+}
+
 function assertSafeSidecarCommandToken(command, index) {
   const value = command[index];
   const executable = commandBaseName(value).toLowerCase();
@@ -1920,6 +1929,9 @@ function assertSafeSidecarCommandToken(command, index) {
   }
   if (sidecarRuntimeEvalFlag(command, index)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command evaluates inline code outside checksum coverage: ${value}`);
+  }
+  if (sidecarRuntimeInspectorOption(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command opens runtime inspector outside receiver policy: ${value}`);
   }
   if (sidecarRuntimeModuleLoaderOption(command, index)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command loads runtime modules outside checksum coverage: ${value}`);
@@ -2194,6 +2206,7 @@ function pathQualifiedJavaScriptEntrypoint(value) {
 function sidecarCommandArtifact(value) {
   if (typeof value !== 'string' || !value.length) return false;
   if (value.startsWith('-')) return false;
+  if (/[?#]/.test(value)) return false;
   if (value.startsWith('@') && !value.includes('/') && !sidecarArtifactPath(value)) return false;
   if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)) return false;
   if (sidecarEnvAssignment(value) && !sidecarArtifactPath(value)) return false;
