@@ -149,6 +149,32 @@ describe('capability preflight and reference drivers', () => {
     }]);
   });
 
+  it('uses raw HTTP driver configured default methods when request URLs omit methods during preflight', () => {
+    const request = {
+      ...httpRequest('https://allowed.example/path'),
+      requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/path', body: { prompt: 'hi' } })),
+    };
+    const driver = new HttpJsonDriver({
+      origins: ['https://allowed.example'],
+      methods: ['POST'],
+    });
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.equal(driver.manifest().diagnostics.defaultMethod, 'POST');
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.everyPendingRequestCovered, true);
+  });
+
   it('checks request-routed HTTP required actuators against declared request origins', () => {
     const request = {
       ...httpRequest('https://allowed.example/path', 'POST'),
@@ -2186,6 +2212,29 @@ describe('capability preflight and reference drivers', () => {
         () => small.resolve({}, httpRequest('https://allowed.example/large')),
         { code: 'ERR_HTTP_RESPONSE_TOO_LARGE' },
       );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('uses raw HTTP driver configured default methods when request URLs omit methods during resolve', async () => {
+    const driver = new HttpJsonDriver({ origins: ['https://allowed.example'], methods: ['POST'] });
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    try {
+      globalThis.fetch = async (url, options) => {
+        fetchCount += 1;
+        assert.equal(url.href, 'https://allowed.example/path');
+        assert.equal(options.method, 'POST');
+        return new Response('{"ok":true}', { status: 200 });
+      };
+
+      await driver.resolve({}, {
+        ...httpRequest('https://allowed.example/path'),
+        requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/path', body: { prompt: 'hi' } })),
+      });
+
+      assert.equal(fetchCount, 1);
     } finally {
       globalThis.fetch = originalFetch;
     }

@@ -26,7 +26,7 @@ export class HttpJsonDriver {
       recoveryClass: EffectRecoveryClass.idempotent,
       concurrencyLimit: 4,
       authorityLabels: ['network:http'],
-      diagnostics: { origins: [...this.origins], methods: [...this.methods], defaultMethod: 'GET' },
+      diagnostics: { origins: [...this.origins], methods: [...this.methods], defaultMethod: defaultHttpJsonMethod(this.methods) },
     };
   }
 
@@ -34,7 +34,7 @@ export class HttpJsonDriver {
     const request = parseJsonBytes(hostRequest.requestBytes);
     const url = new URL(request.url);
     if (!this.origins.has(url.origin)) fail('ERR_HTTP_ORIGIN_REJECTED');
-    const method = String(request.method ?? 'GET').toUpperCase();
+    const method = String(request.method ?? defaultHttpJsonMethod(this.methods)).toUpperCase();
     if (!this.methods.has(method)) fail('ERR_HTTP_METHOD_REJECTED');
     const body = request.body === undefined ? undefined : JSON.stringify(request.body);
     if (body && fromUtf8(body).byteLength > this.maximumRequestBytes) fail('ERR_HTTP_REQUEST_TOO_LARGE');
@@ -83,6 +83,10 @@ export class HttpJsonDriver {
       hostRequestFingerprint: effectRecord.hostRequestFingerprint,
     });
   }
+}
+
+function defaultHttpJsonMethod(methods) {
+  return methods.has('GET') ? 'GET' : [...methods][0] ?? 'GET';
 }
 
 async function discardResponseBody(response) {
