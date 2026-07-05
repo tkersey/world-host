@@ -325,6 +325,46 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': optionalComputedBunFileAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const aliasedProcessEnvAdapter = fromUtf8("const p = process; export function CapabilityDriver() { return p.env; }\n");
+    const aliasedProcessEnvAdapterChecksum = `sha256:${await sha256Hex(aliasedProcessEnvAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: aliasedProcessEnvAdapterChecksum }],
+      }, { 'adapter.mjs': aliasedProcessEnvAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const aliasedBunSpawnAdapter = fromUtf8("const b = Bun; export function CapabilityDriver() { return b.spawn(['echo', 'unsafe']); }\n");
+    const aliasedBunSpawnAdapterChecksum = `sha256:${await sha256Hex(aliasedBunSpawnAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: aliasedBunSpawnAdapterChecksum }],
+      }, { 'adapter.mjs': aliasedBunSpawnAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const parenthesizedAliasedBunSpawnAdapter = fromUtf8("const b = (Bun); export function CapabilityDriver() { return (b).spawn(['echo', 'unsafe']); }\n");
+    const parenthesizedAliasedBunSpawnAdapterChecksum = `sha256:${await sha256Hex(parenthesizedAliasedBunSpawnAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: parenthesizedAliasedBunSpawnAdapterChecksum }],
+      }, { 'adapter.mjs': parenthesizedAliasedBunSpawnAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const aliasedGlobalFetchAdapter = fromUtf8("const g = globalThis; export function CapabilityDriver() { return g['fetch']('https://example.test'); }\n");
+    const aliasedGlobalFetchAdapterChecksum = `sha256:${await sha256Hex(aliasedGlobalFetchAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: aliasedGlobalFetchAdapterChecksum }],
+      }, { 'adapter.mjs': aliasedGlobalFetchAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const localImportAdapter = fromUtf8("import helper from './helper.mjs'; export const CapabilityDriver = helper;");
     const localImportAdapterChecksum = `sha256:${await sha256Hex(localImportAdapter)}`;
     await assert.rejects(

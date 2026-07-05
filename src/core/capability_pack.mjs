@@ -610,19 +610,23 @@ function computedHostMemberAccess(text, openBracket) {
 }
 
 function adapterAliasesHostApiAccess(text, options = {}) {
-  if (options.allowHostNetwork) return null;
-  const aliases = new Set();
+  const aliases = new Map();
   let previousSize;
   do {
     previousSize = aliases.size;
     scanAdapterAliasIdentifiers(text, (identifier, index, previousSignificant) => {
-      if (previousSignificant !== '.' && fetchAliasAssignmentAt(text, index, aliases)) aliases.add(identifier);
+      const target = previousSignificant !== '.' ? hostAliasAssignmentAt(text, index, aliases) : null;
+      if (target) aliases.set(identifier, target);
       return null;
     });
   } while (aliases.size !== previousSize);
   if (!aliases.size) return null;
   return scanAdapterAliasIdentifiers(text, (identifier, index) => {
-    return aliases.has(identifier) && fetchAliasInvocationAt(text, index) ? 'fetch' : null;
+    const target = aliases.get(identifier);
+    if (!target) return null;
+    if (target === 'fetch') return !options.allowHostNetwork && fetchAliasInvocationAt(text, index) ? 'fetch' : null;
+    const member = directHostMemberAccess(text, index) ?? directHostMemberAccess(text, skipClosingCalleeParens(text, index));
+    return member && unsafeHostGlobalMember(target, member.name, options) ? `${target}.${member.name}` : null;
   });
 }
 
@@ -687,13 +691,13 @@ function skipClosingCalleeParens(text, index) {
   return cursor;
 }
 
-function fetchAliasAssignmentAt(text, index, aliases) {
+function hostAliasAssignmentAt(text, index, aliases) {
   const assignmentEnd = fetchAliasAssignmentEnd(text, skipWhitespaceAndComments(text, index));
-  if (assignmentEnd < 0) return false;
-  return fetchAliasAssignmentValueAt(text, assignmentEnd, aliases);
+  if (assignmentEnd < 0) return null;
+  return hostAliasAssignmentValueAt(text, assignmentEnd, aliases);
 }
 
-function fetchAliasAssignmentValueAt(text, index, aliases) {
+function hostAliasAssignmentValueAt(text, index, aliases) {
   let value = skipWhitespaceAndComments(text, index);
   while (true) {
     const prefix = readIdentifierName(text, value);
@@ -701,12 +705,12 @@ function fetchAliasAssignmentValueAt(text, index, aliases) {
     value = skipWhitespaceAndComments(text, prefix.end);
   }
   const identifier = readIdentifierName(text, value);
-  if (identifier) return !identifier.invalid && (identifier.value === 'fetch' || aliases.has(identifier.value));
+  if (identifier) return !identifier.invalid ? hostAliasTarget(identifier.value, aliases) : 'fetch';
   if (text[value] === '(') {
     const end = skipBalancedParentheses(text, value);
-    return executableIdentifierInSpan(text, value + 1, end - 1, (name) => name === 'fetch' || aliases.has(name));
+    return hostAliasTargetInSpan(text, value + 1, end - 1, aliases);
   }
-  return false;
+  return null;
 }
 
 function fetchAliasAssignmentEnd(text, index) {
@@ -719,7 +723,12 @@ function fetchAliasAssignmentEnd(text, index) {
   return -1;
 }
 
-function executableIdentifierInSpan(text, start, end, predicate) {
+function hostAliasTarget(identifier, aliases) {
+  if (identifier === 'fetch' || identifier === 'process' || identifier === 'Bun' || ['globalThis', 'global', 'window', 'self'].includes(identifier)) return identifier;
+  return aliases.get(identifier) ?? null;
+}
+
+function hostAliasTargetInSpan(text, start, end, aliases) {
   for (let index = start, previousSignificant = null; index <= end;) {
     index = skipWhitespaceAndComments(text, index);
     if (index > end) break;
@@ -756,12 +765,13 @@ function executableIdentifierInSpan(text, start, end, predicate) {
       continue;
     }
     const identifier = readIdentifierName(text, index);
-    if (!identifier || identifier.invalid) return true;
-    if (predicate(identifier.value)) return true;
+    if (!identifier || identifier.invalid) return 'fetch';
+    const target = hostAliasTarget(identifier.value, aliases);
+    if (target) return target;
     index = identifier.end;
     previousSignificant = identifierSignificance(identifier.value);
   }
-  return false;
+  return null;
 }
 
 function identifierSignificance(identifier) {
