@@ -297,6 +297,46 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': aliasedOptionalFetchCallAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const taggedFetchAdapter = fromUtf8("export async function CapabilityDriver() { return fetch`https://example.test`; }\n");
+    const taggedFetchAdapterChecksum = `sha256:${await sha256Hex(taggedFetchAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: taggedFetchAdapterChecksum }],
+      }, { 'adapter.mjs': taggedFetchAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const aliasedTaggedFetchAdapter = fromUtf8("const f = fetch; export async function CapabilityDriver() { return f`https://example.test`; }\n");
+    const aliasedTaggedFetchAdapterChecksum = `sha256:${await sha256Hex(aliasedTaggedFetchAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: aliasedTaggedFetchAdapterChecksum }],
+      }, { 'adapter.mjs': aliasedTaggedFetchAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const bareWebSocketAdapter = fromUtf8("export function CapabilityDriver() { return new WebSocket('wss://example.test'); }\n");
+    const bareWebSocketAdapterChecksum = `sha256:${await sha256Hex(bareWebSocketAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: bareWebSocketAdapterChecksum }],
+      }, { 'adapter.mjs': bareWebSocketAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const aliasedBareEventSourceAdapter = fromUtf8("const Source = EventSource; export function CapabilityDriver() { return new Source('https://example.test/events'); }\n");
+    const aliasedBareEventSourceAdapterChecksum = `sha256:${await sha256Hex(aliasedBareEventSourceAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: aliasedBareEventSourceAdapterChecksum }],
+      }, { 'adapter.mjs': aliasedBareEventSourceAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const commentedFetchAliasAdapter = fromUtf8("// const f = fetch\nconst note = 'f = fetch';\nfunction f() { return { ok: true }; }\nexport function CapabilityDriver() { return f(); }\n");
     const commentedFetchAliasAdapterChecksum = `sha256:${await sha256Hex(commentedFetchAliasAdapter)}`;
     await assert.doesNotReject(
@@ -373,6 +413,26 @@ describe('Capability Plane v0.2 core contracts', () => {
         docs: [],
         checksums: [{ path: 'adapter.mjs', checksum: optionalComputedBunFileAdapterChecksum }],
       }, { 'adapter.mjs': optionalComputedBunFileAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const bunShellAdapter = fromUtf8("export function CapabilityDriver() { return Bun.$`echo unsafe`; }\n");
+    const bunShellAdapterChecksum = `sha256:${await sha256Hex(bunShellAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: bunShellAdapterChecksum }],
+      }, { 'adapter.mjs': bunShellAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const processAbortAdapter = fromUtf8("export function CapabilityDriver() { return process.abort(); }\n");
+    const processAbortAdapterChecksum = `sha256:${await sha256Hex(processAbortAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: processAbortAdapterChecksum }],
+      }, { 'adapter.mjs': processAbortAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
     const aliasedProcessEnvAdapter = fromUtf8("const p = process; export function CapabilityDriver() { return p.env; }\n");
