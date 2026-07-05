@@ -2158,6 +2158,17 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, {}),
       { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
+    const packageShebangSidecar = fromUtf8('#!/usr/bin/env -S bunx unchecked-package\n');
+    const packageShebangChecksum = `sha256:${await sha256Hex(packageShebangSidecar)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['./bin/adapter'] },
+        docs: [],
+        checksums: [{ path: './bin/adapter', checksum: packageShebangChecksum }],
+      }, { './bin/adapter': packageShebangSidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,

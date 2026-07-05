@@ -1516,9 +1516,31 @@ function sidecarShebangRuntimeCommand(command, packArtifacts) {
   if (!firstLine) return null;
   const tokens = sidecarShebangTokens(firstLine);
   const runtimeIndex = tokens.findIndex((token) => SIDECAR_JS_RUNTIMES.has(commandBaseName(token).toLowerCase()));
-  if (runtimeIndex < 0) return null;
+  if (runtimeIndex < 0) {
+    assertSafePackageManagerShebang(tokens, entrypoint, command.slice(1));
+    return null;
+  }
   assertSafeShebangRuntimePrefix(tokens, runtimeIndex);
   return [tokens[runtimeIndex], ...tokens.slice(runtimeIndex + 1), entrypoint, ...command.slice(1)];
+}
+
+function assertSafePackageManagerShebang(tokens, entrypoint, tail) {
+  const command = sidecarPackageManagerShebangCommand(tokens, entrypoint, tail);
+  if (!command) return;
+  for (let index = 0; index < command.length; index += 1) assertSafeSidecarCommandToken(command, index);
+}
+
+function sidecarPackageManagerShebangCommand(tokens, entrypoint, tail) {
+  const commandTokens = sidecarShebangCommandTokens(tokens);
+  const executable = commandBaseName(commandTokens[0]).toLowerCase();
+  if (!['bunx', 'corepack', 'npm', 'npx', 'pnpm', 'pnpx', 'yarn'].includes(executable)) return null;
+  return [...commandTokens, entrypoint, ...tail];
+}
+
+function sidecarShebangCommandTokens(tokens) {
+  if (commandBaseName(tokens[0]).toLowerCase() !== 'env') return tokens;
+  if (tokens[1] === '-S') return tokens.slice(2);
+  return tokens.slice(1);
 }
 
 function assertSafeShebangRuntimePrefix(tokens, runtimeIndex) {
