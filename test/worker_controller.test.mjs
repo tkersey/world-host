@@ -129,6 +129,76 @@ describe('RunController and WorldWorker', () => {
     assert.equal(workerCreated, false);
   });
 
+  it('preflights stored appliance supervision fingerprints before worker execution', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      manifestBytes: fixtureApplianceManifestBytes({ supervisionPolicyFingerprint: 0x901n }),
+    });
+    let workerCreated = false;
+    const controller = new RunController({
+      store,
+      effectPolicy: { acceptedSupervisionPolicies: [0x902n] },
+      workerFactory: async () => {
+        workerCreated = true;
+        return new ScriptedWorker();
+      },
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_CAPABILITY_PREFLIGHT_BLOCKED' },
+    );
+    assert.equal(workerCreated, false);
+  });
+
+  it('rejects undecodable operator-supplied appliance manifests before worker execution', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      manifestBytes: fromUtf8('not-an-appliance-manifest'),
+      applicationOverrides: {
+        installationDiagnostics: { manifestSource: 'operator-supplied' },
+      },
+    });
+    let workerCreated = false;
+    const controller = new RunController({
+      store,
+      workerFactory: async () => {
+        workerCreated = true;
+        return new ScriptedWorker();
+      },
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_APPLICATION_MANIFEST_INVALID' },
+    );
+    assert.equal(workerCreated, false);
+  });
+
+  it('checks generated-install worker appliance manifests before turn submission', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      manifestBytes: fromUtf8('world-host install summary'),
+      applicationOverrides: {
+        installationDiagnostics: { manifestSource: 'host-generated-install-summary' },
+      },
+    });
+    const worker = new ManifestCheckingWorker(fixtureTurnClosureBytes(), 0x211n, { supervisionPolicyFingerprint: 0x901n });
+    let submitted = false;
+    worker.submitTurn = async () => {
+      submitted = true;
+      return { status: 'completed', turnClosureBytes: fixtureTurnClosureBytes() };
+    };
+    const controller = new RunController({
+      store,
+      effectPolicy: { acceptedSupervisionPolicies: [0x902n] },
+      workerFactory: async () => worker,
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_CAPABILITY_PREFLIGHT_BLOCKED' },
+    );
+    assert.equal(submitted, false);
+  });
+
   it('rejects terminal branch heads before creating a worker', async () => {
     const { store, runId, branchId } = await fixtureStore({
       closureBytes: fixtureTurnClosureBytes({ status: 2, turnSequenceNumber: 0n }),
@@ -3356,15 +3426,17 @@ class ClosureOnlyWorker extends WorldWorker {
 }
 
 class ManifestCheckingWorker extends ClosureOnlyWorker {
-  constructor(closureBytes, manifestFingerprint) {
+  constructor(closureBytes, manifestFingerprint, manifestOverrides = {}) {
     super(closureBytes);
     this.manifestFingerprint = manifestFingerprint;
+    this.manifestOverrides = manifestOverrides;
   }
 
   readApplianceManifest() {
     return {
       decoded: {
         manifestFingerprint: this.manifestFingerprint,
+        ...this.manifestOverrides,
       },
     };
   }
@@ -3490,7 +3562,7 @@ function fixtureApplianceManifestBytes(options = {}) {
     u64Slice([]),
     u8Slice([]),
     u8Slice([]),
-    u64(0n),
+    u64(options.supervisionPolicyFingerprint ?? 0n),
     u64Slice([]),
     u64(0n),
     u64(0n),

@@ -35,6 +35,29 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.everyPendingRequestCovered, true);
   });
 
+  it('checks decoded appliance supervision fingerprints against receiver policy', () => {
+    const deniedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      applianceManifest: { supervisionPolicyFingerprint: 0x123n },
+      currentHead: { generation: 0 },
+      policy: createRunPolicy({ acceptedSupervisionPolicies: [0x456n] }),
+    });
+
+    assert.ok(deniedReport.blockers.includes('supervision-policy-rejected'));
+    assert.equal(deniedReport.runtimeCompatible, false);
+    assert.equal(deniedReport.supervisionPolicyAccepted, false);
+
+    const allowedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      applianceManifest: { supervisionPolicyFingerprint: 0x123n },
+      currentHead: { generation: 0 },
+      policy: createRunPolicy({ acceptedSupervisionPolicies: 0x123n }),
+    });
+
+    assert.deepEqual(allowedReport.blockers, []);
+    assert.equal(allowedReport.supervisionPolicyAccepted, true);
+  });
+
   it('rejects sender-style uncovered authority and HTTP origins outside local policy', () => {
     const report = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },

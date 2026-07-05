@@ -536,6 +536,8 @@ function adapterScannerOptionsForManifest(manifest) {
 }
 
 function adapterHostApiAccess(text, options = {}) {
+  const aliasAccess = adapterAliasesHostApiAccess(text, options);
+  if (aliasAccess) return aliasAccess;
   for (let index = 0, previousSignificant = null; index < text.length;) {
     index = skipWhitespaceAndComments(text, index);
     if (index >= text.length) break;
@@ -548,6 +550,22 @@ function adapterHostApiAccess(text, options = {}) {
     if (char === '`') {
       index = readTemplateString(text, index).end;
       previousSignificant = 'template';
+      continue;
+    }
+    if (updateOperatorAt(text, index)) {
+      const postfix = !regexLiteralCanStartAfter(previousSignificant);
+      previousSignificant = postfix ? 'literal' : char;
+      index += 2;
+      continue;
+    }
+    if (numericLiteralStart(char)) {
+      index = skipNumericLiteral(text, index);
+      previousSignificant = 'literal';
+      continue;
+    }
+    if (char === '/' && regexLiteralCanStartAfter(previousSignificant)) {
+      index = skipRegexLiteral(text, index);
+      previousSignificant = 'literal';
       continue;
     }
     if (!identifierStart(char) && !identifierEscapeStart(text, index)) {
@@ -563,7 +581,7 @@ function adapterHostApiAccess(text, options = {}) {
     if (identifier === 'fetch' && previousSignificant !== '.' && dangerousCallAt(text, callStart) && !options.allowHostNetwork) return 'fetch';
     const member = directHostMemberAccess(text, index);
     if (member && unsafeHostGlobalMember(identifier, member.name, options)) return `${identifier}.${member.name}`;
-    previousSignificant = identifier === 'new' ? 'new' : 'identifier';
+    previousSignificant = identifierSignificance(identifier);
   }
   return null;
 }
@@ -573,13 +591,238 @@ function directHostMemberAccess(text, index) {
   if (text[cursor] === '.') {
     cursor += 1;
   } else if (text[cursor] === '?' && text[cursor + 1] === '.') {
-    cursor += 2;
+    cursor = skipWhitespaceAndComments(text, cursor + 2);
+    if (text[cursor] === '[') return computedHostMemberAccess(text, cursor);
+  } else if (text[cursor] === '[') {
+    return computedHostMemberAccess(text, cursor);
   } else {
     return null;
   }
   cursor = skipWhitespaceAndComments(text, cursor);
   const member = readIdentifierName(text, cursor);
   return member && !member.invalid ? { name: member.value, end: member.end } : null;
+}
+
+function computedHostMemberAccess(text, openBracket) {
+  const afterBracket = skipBalancedBracket(text, openBracket);
+  const name = readComputedMemberName(text, openBracket + 1, afterBracket - 1);
+  return name.static ? { name: name.value, end: afterBracket } : null;
+}
+
+function adapterAliasesHostApiAccess(text, options = {}) {
+  if (options.allowHostNetwork) return null;
+  const aliases = new Set();
+  let previousSize;
+  do {
+    previousSize = aliases.size;
+    scanAdapterAliasIdentifiers(text, (identifier, index, previousSignificant) => {
+      if (previousSignificant !== '.' && fetchAliasAssignmentAt(text, index, aliases)) aliases.add(identifier);
+      return null;
+    });
+  } while (aliases.size !== previousSize);
+  if (!aliases.size) return null;
+  return scanAdapterAliasIdentifiers(text, (identifier, index) => {
+    return aliases.has(identifier) && fetchAliasInvocationAt(text, index) ? 'fetch' : null;
+  });
+}
+
+function scanAdapterAliasIdentifiers(text, visitor) {
+  for (let index = 0, previousSignificant = null; index < text.length;) {
+    index = skipWhitespaceAndComments(text, index);
+    if (index >= text.length) break;
+    const char = text[index];
+    if (char === '\'' || char === '"') {
+      index = readQuotedString(text, index, char).end;
+      previousSignificant = 'literal';
+      continue;
+    }
+    if (char === '`') {
+      index = readTemplateString(text, index).end;
+      previousSignificant = 'template';
+      continue;
+    }
+    if (updateOperatorAt(text, index)) {
+      const postfix = !regexLiteralCanStartAfter(previousSignificant);
+      previousSignificant = postfix ? 'literal' : char;
+      index += 2;
+      continue;
+    }
+    if (numericLiteralStart(char)) {
+      index = skipNumericLiteral(text, index);
+      previousSignificant = 'literal';
+      continue;
+    }
+    if (char === '/' && regexLiteralCanStartAfter(previousSignificant)) {
+      index = skipRegexLiteral(text, index);
+      previousSignificant = 'literal';
+      continue;
+    }
+    if (!identifierStart(char) && !identifierEscapeStart(text, index)) {
+      previousSignificant = char;
+      index += 1;
+      continue;
+    }
+    const identifierName = readIdentifierName(text, index);
+    if (!identifierName || identifierName.invalid) return 'fetch';
+    index = identifierName.end;
+    const identifier = identifierName.value;
+    const result = visitor(identifier, index, previousSignificant);
+    if (result) return result;
+    previousSignificant = identifierSignificance(identifier);
+  }
+  return null;
+}
+
+function fetchAliasInvocationAt(text, index) {
+  const callStart = skipWhitespaceAndComments(text, index);
+  if (dangerousCallAt(text, callStart)) return true;
+  if (dangerousCallAfterCallee(text, index)) return true;
+  const member = directHostMemberAccess(text, index) ?? directHostMemberAccess(text, skipClosingCalleeParens(text, index));
+  return Boolean(member && ['call', 'apply', 'bind'].includes(member.name));
+}
+
+function skipClosingCalleeParens(text, index) {
+  let cursor = skipWhitespaceAndComments(text, index);
+  while (text[cursor] === ')') cursor = skipWhitespaceAndComments(text, cursor + 1);
+  return cursor;
+}
+
+function fetchAliasAssignmentAt(text, index, aliases) {
+  const assignmentEnd = fetchAliasAssignmentEnd(text, skipWhitespaceAndComments(text, index));
+  if (assignmentEnd < 0) return false;
+  return fetchAliasAssignmentValueAt(text, assignmentEnd, aliases);
+}
+
+function fetchAliasAssignmentValueAt(text, index, aliases) {
+  let value = skipWhitespaceAndComments(text, index);
+  while (true) {
+    const prefix = readIdentifierName(text, value);
+    if (!prefix || prefix.invalid || prefix.value !== 'await') break;
+    value = skipWhitespaceAndComments(text, prefix.end);
+  }
+  const identifier = readIdentifierName(text, value);
+  if (identifier) return !identifier.invalid && (identifier.value === 'fetch' || aliases.has(identifier.value));
+  if (text[value] === '(') {
+    const end = skipBalancedParentheses(text, value);
+    return executableIdentifierInSpan(text, value + 1, end - 1, (name) => name === 'fetch' || aliases.has(name));
+  }
+  return false;
+}
+
+function fetchAliasAssignmentEnd(text, index) {
+  if (text[index] === '=' && text[index + 1] !== '=' && text[index + 1] !== '>') return index + 1;
+  if (text[index + 2] === '=' && (
+    (text[index] === '|' && text[index + 1] === '|') ||
+    (text[index] === '&' && text[index + 1] === '&') ||
+    (text[index] === '?' && text[index + 1] === '?')
+  )) return index + 3;
+  return -1;
+}
+
+function executableIdentifierInSpan(text, start, end, predicate) {
+  for (let index = start, previousSignificant = null; index <= end;) {
+    index = skipWhitespaceAndComments(text, index);
+    if (index > end) break;
+    const char = text[index];
+    if (char === '\'' || char === '"') {
+      index = readQuotedString(text, index, char).end;
+      previousSignificant = 'literal';
+      continue;
+    }
+    if (char === '`') {
+      index = readTemplateString(text, index).end;
+      previousSignificant = 'template';
+      continue;
+    }
+    if (updateOperatorAt(text, index)) {
+      const postfix = !regexLiteralCanStartAfter(previousSignificant);
+      previousSignificant = postfix ? 'literal' : char;
+      index += 2;
+      continue;
+    }
+    if (numericLiteralStart(char)) {
+      index = skipNumericLiteral(text, index);
+      previousSignificant = 'literal';
+      continue;
+    }
+    if (char === '/' && regexLiteralCanStartAfter(previousSignificant)) {
+      index = skipRegexLiteral(text, index);
+      previousSignificant = 'literal';
+      continue;
+    }
+    if (!identifierStart(char) && !identifierEscapeStart(text, index)) {
+      previousSignificant = char;
+      index += 1;
+      continue;
+    }
+    const identifier = readIdentifierName(text, index);
+    if (!identifier || identifier.invalid) return true;
+    if (predicate(identifier.value)) return true;
+    index = identifier.end;
+    previousSignificant = identifierSignificance(identifier.value);
+  }
+  return false;
+}
+
+function identifierSignificance(identifier) {
+  return ['return', 'throw', 'case', 'yield', 'await', 'typeof', 'void', 'delete'].includes(identifier) ? identifier : 'identifier';
+}
+
+function updateOperatorAt(text, index) {
+  return (text[index] === '+' || text[index] === '-') && text[index + 1] === text[index];
+}
+
+function regexLiteralCanStartAfter(previousSignificant) {
+  return previousSignificant == null || !['identifier', 'literal', 'template', ')', ']', '}'].includes(previousSignificant);
+}
+
+function numericLiteralStart(char) {
+  return typeof char === 'string' && /^[0-9]$/.test(char);
+}
+
+function skipNumericLiteral(text, index) {
+  index += 1;
+  let previous = text[index - 1];
+  while (index < text.length) {
+    const char = text[index];
+    if (/[_0-9.]/.test(char) || /[A-Fa-fBbEeNnOoXx]/.test(char) || ((char === '+' || char === '-') && (previous === 'e' || previous === 'E'))) {
+      previous = char;
+      index += 1;
+      continue;
+    }
+    return index;
+  }
+  return index;
+}
+
+function skipRegexLiteral(text, index) {
+  index += 1;
+  let inCharacterClass = false;
+  while (index < text.length) {
+    const char = text[index];
+    if (char === '\\') {
+      index += 2;
+      continue;
+    }
+    if (char === '\n' || char === '\r') return index;
+    if (inCharacterClass) {
+      if (char === ']') inCharacterClass = false;
+      index += 1;
+      continue;
+    }
+    if (char === '[') {
+      inCharacterClass = true;
+      index += 1;
+      continue;
+    }
+    if (char === '/') {
+      index += 1;
+      while (identifierPart(text[index])) index += 1;
+      return index;
+    }
+    index += 1;
+  }
+  return index;
 }
 
 function unsafeHostGlobalMember(identifier, member, options = {}) {
@@ -653,8 +896,13 @@ function extensionlessArtifactPath(artifactPath) {
 function localImportArtifact(fromPath, specifier, covered, options = {}) {
   if (typeof specifier !== 'string' || (!specifier.startsWith('./') && !specifier.startsWith('../'))) return null;
   if (specifier.endsWith('/') || specifier.endsWith('\\')) return null;
+  if (percentEncodedLocalSpecifier(specifier)) return null;
   const candidates = localImportArtifactCandidates(fromPath, specifier, options);
   return candidates.find((candidate) => covered.has(candidate)) ?? candidates[0] ?? null;
+}
+
+function percentEncodedLocalSpecifier(specifier) {
+  return /%[0-9a-fA-F]{2}/.test(specifier);
 }
 
 function localImportArtifactCandidates(fromPath, specifier, options = {}) {
@@ -918,7 +1166,9 @@ function escapeRegExp(value) {
 }
 
 function dangerousCallAt(text, index) {
-  return text[index] === '(' || (text[index] === '?' && text[index + 1] === '.' && text[index + 2] === '(');
+  if (text[index] === '(') return true;
+  if (text[index] !== '?' || text[index + 1] !== '.') return false;
+  return text[skipWhitespaceAndComments(text, index + 2)] === '(';
 }
 
 function dangerousCallAfterCallee(text, index) {

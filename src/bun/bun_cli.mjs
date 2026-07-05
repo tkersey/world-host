@@ -10,7 +10,7 @@ import { createBranchRecord, createRunHead, createRunRecord } from '../core/run.
 import { assertBlobRef, fail, fromUtf8, makeBlobRef, stableJson } from '../core/store.mjs';
 import { RunController, effectRecordHostReplyFingerprint, worldHostRequestToEffectRequest } from '../core/worker.mjs';
 import { createRunPolicy, preflightCapabilities } from '../core/capabilities.mjs';
-import { decodeResolutionInputBytes, encodeBootTurnInput, encodeResolutionInputBytes, encodeRestoreTurnInput, encodeTurnInput, operationBoot } from '../protocol/world_appliance_wire_codec.mjs';
+import { decodeApplianceManifest, decodeResolutionInputBytes, encodeBootTurnInput, encodeResolutionInputBytes, encodeRestoreTurnInput, encodeTurnInput, operationBoot } from '../protocol/world_appliance_wire_codec.mjs';
 import { encodeCanonicalValueImage, fingerprintValueImage } from '../protocol/world_loaded_value_codec.mjs';
 import { inspectTurnOutput, summarizeTurnClosureForRunHead } from '../protocol/world_universal_appliance_codec.mjs';
 import { carrierVersionSummary } from '../protocol/world_manifest.mjs';
@@ -651,7 +651,8 @@ async function runImport(args, io, storePath, options = {}) {
     const imported = await importCarrierRun(store, carrierExport, {
       runId: receiverRunId,
       preflight: async (candidate) => {
-        const pendingRequests = pendingRequestsForImportedHead(candidate);
+        const headPreflight = importedHeadPreflight(candidate);
+        const pendingRequests = headPreflight.pendingRequests;
         const mayBypassPreflightRequirements = importedHeadCanBypassPreflightRequirements(candidate.bundle.head);
         const effectResolutionInputs = pendingRequests.length > 0
           ? await importedEffectResolutionInputs(candidate.bundle, store)
@@ -662,11 +663,16 @@ async function runImport(args, io, storePath, options = {}) {
         if (candidate.bundle.head?.status === 'needs_host' && pendingRequests.length === 0) {
           fail('ERR_IMPORT_PREFLIGHT_NEEDS_HOST_REQUESTS_EMPTY', 'receiver preflight rejects needs_host imports with no pending HostRequests');
         }
-        const application = mayBypassPreflightRequirements && pendingRequests.length === 0
+        const bypassesPreflightRequirements = mayBypassPreflightRequirements && pendingRequests.length === 0;
+        const application = bypassesPreflightRequirements
           ? { ...candidate.bundle.application, requiredActuators: [], requiredHostAuthorityLabels: [], requiredRuntimeLimits: {} }
           : candidate.bundle.application;
+        const applianceManifest = await importedApplianceManifest(candidate.bundle, application, store, headPreflight.manifestFingerprint, {
+          required: !bypassesPreflightRequirements,
+        });
         return preflightCapabilities({
           application,
+          applianceManifest,
           currentHead: candidate.bundle.head,
           currentBranchId: candidate.selectedBranchId,
           pendingRequests: pendingRequests.map(preflightOptions.hostRequestMapper ?? worldHostRequestToEffectRequest),
@@ -716,12 +722,12 @@ async function importedEffectResolutionInputs(bundle, store) {
   return inputs;
 }
 
-function pendingRequestsForImportedHead(candidate) {
+function importedHeadPreflight(candidate) {
   const head = candidate.bundle?.head;
   const closureBytes = carrierBundleBlobBytes(candidate.bundle, head.turnClosureRef);
   if (head.status === 'genesis') {
     assertImportedGenesisHead(head, closureBytes);
-    return [];
+    return { pendingRequests: [], manifestFingerprint: null };
   }
   let summary;
   let headSummary;
@@ -736,7 +742,61 @@ function pendingRequestsForImportedHead(candidate) {
     fail('ERR_IMPORT_PREFLIGHT_HEAD_STATUS_MISMATCH', 'receiver preflight requires imported head status to match selected closure', { headStatus: head.status, decodedStatus });
   }
   assertImportedHeadMatchesClosure(head, headSummary);
-  return decodedStatus === 'needs_host' ? summary.hostRequests : [];
+  return {
+    pendingRequests: decodedStatus === 'needs_host' ? summary.hostRequests : [],
+    manifestFingerprint: summary.manifestFingerprint,
+  };
+}
+
+async function importedApplianceManifest(bundle, application, store, expectedManifestFingerprint, options = {}) {
+  const required = options.required !== false;
+  const ref = application.applianceManifestRef;
+  if (!ref) {
+    if (required) {
+      fail('ERR_IMPORT_PREFLIGHT_APPLIANCE_MANIFEST_MISSING', 'receiver preflight requires exported ApplianceManifest bytes');
+    }
+    return null;
+  }
+  const bytes = carrierBundleBlobBytesOptional(bundle, ref, 'appliance manifest') ??
+    await storedCarrierBlobBytes(store, ref);
+  if (!bytes) {
+    if (required) {
+      fail('ERR_IMPORT_PREFLIGHT_APPLIANCE_MANIFEST_MISSING', 'receiver preflight requires exported ApplianceManifest bytes');
+    }
+    return null;
+  }
+  if (!required && isHostGeneratedInstallSummaryBytes(bytes)) return null;
+  try {
+    const manifest = decodeApplianceManifest(bytes);
+    if (expectedManifestFingerprint != null && manifest.manifestFingerprint !== expectedManifestFingerprint) {
+      fail('ERR_IMPORT_PREFLIGHT_APPLIANCE_MANIFEST_MISMATCH', 'receiver preflight requires ApplianceManifest fingerprint to match the selected closure', {
+        expectedManifestFingerprint: manifestFingerprintDiagnostic(expectedManifestFingerprint),
+        actualManifestFingerprint: manifestFingerprintDiagnostic(manifest.manifestFingerprint),
+      });
+    }
+    return manifest;
+  } catch (error) {
+    if (error?.code === 'ERR_IMPORT_PREFLIGHT_APPLIANCE_MANIFEST_MISMATCH') throw error;
+    fail('ERR_IMPORT_PREFLIGHT_APPLIANCE_MANIFEST_INVALID', 'receiver preflight could not decode ApplianceManifest bytes', {
+      cause: error.message,
+    });
+  }
+}
+
+function isHostGeneratedInstallSummaryBytes(bytes) {
+  let parsed;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return false;
+  }
+  return parsed?.kind === 'world-host.install-summary' &&
+    parsed?.source === 'host-generated-install-summary' &&
+    parsed?.worldAuthoredEvidence === false;
+}
+
+function manifestFingerprintDiagnostic(value) {
+  return `world:manifest:${BigInt(value).toString(16).padStart(16, '0')}`;
 }
 
 function assertImportedGenesisHead(head, closureBytes) {
@@ -803,18 +863,27 @@ function carrierBundleBlobBytes(bundle, ref, kind = 'closure') {
 
 function carrierBundleBlobBytesOptional(bundle, ref, kind = 'closure') {
   const expected = assertBlobRef(ref);
-  const blob = (bundle?.blobs ?? []).find((candidate) => candidate.checksum === expected.checksum && candidate.byteLength === expected.byteLength);
+  const blob = (bundle?.blobs ?? [])
+    .filter((candidate) => candidate.checksum === expected.checksum && candidate.byteLength === expected.byteLength)
+    .find((candidate) => Array.isArray(candidate.bytes));
   if (!blob || !Array.isArray(blob.bytes)) return null;
   const bytes = Uint8Array.from(blob.bytes);
   if (bytes.byteLength !== expected.byteLength || createHash('sha256').update(bytes).digest('hex') !== expected.checksum) {
-    fail(
-      kind === 'effect resolution' ? 'ERR_IMPORT_PREFLIGHT_EFFECT_RESOLUTION_MISMATCH' : 'ERR_IMPORT_PREFLIGHT_CLOSURE_BLOB_MISMATCH',
-      kind === 'effect resolution'
-        ? 'receiver preflight reusable effect ResolutionInput bytes do not match the effect ref'
-        : 'receiver preflight closure bytes do not match the selected head ref',
-    );
+    fail(importBlobMismatchCode(kind), importBlobMismatchMessage(kind));
   }
   return bytes;
+}
+
+function importBlobMismatchCode(kind) {
+  if (kind === 'effect resolution') return 'ERR_IMPORT_PREFLIGHT_EFFECT_RESOLUTION_MISMATCH';
+  if (kind === 'appliance manifest') return 'ERR_IMPORT_PREFLIGHT_APPLIANCE_MANIFEST_MISMATCH';
+  return 'ERR_IMPORT_PREFLIGHT_CLOSURE_BLOB_MISMATCH';
+}
+
+function importBlobMismatchMessage(kind) {
+  if (kind === 'effect resolution') return 'receiver preflight reusable effect ResolutionInput bytes do not match the effect ref';
+  if (kind === 'appliance manifest') return 'receiver preflight ApplianceManifest bytes do not match the application manifest ref';
+  return 'receiver preflight closure bytes do not match the selected head ref';
 }
 
 async function storedCarrierBlobBytes(store, ref) {

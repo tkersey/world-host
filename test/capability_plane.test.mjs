@@ -117,6 +117,36 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': fetchAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const dividedFetchAdapter = fromUtf8("export function CapabilityDriver() { return ({} / fetch('https://example.test') / 1); }\n");
+    const dividedFetchAdapterChecksum = `sha256:${await sha256Hex(dividedFetchAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: dividedFetchAdapterChecksum }],
+      }, { 'adapter.mjs': dividedFetchAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const numericDividedFetchAdapter = fromUtf8("export function CapabilityDriver() { return 1 / fetch('https://example.test'); }\n");
+    const numericDividedFetchAdapterChecksum = `sha256:${await sha256Hex(numericDividedFetchAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: numericDividedFetchAdapterChecksum }],
+      }, { 'adapter.mjs': numericDividedFetchAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const postfixDividedFetchAdapter = fromUtf8("export function CapabilityDriver() { let x = 0; return x++ / fetch('https://example.test'); }\n");
+    const postfixDividedFetchAdapterChecksum = `sha256:${await sha256Hex(postfixDividedFetchAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: postfixDividedFetchAdapterChecksum }],
+      }, { 'adapter.mjs': postfixDividedFetchAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const bunFileAdapter = fromUtf8("export function CapabilityDriver() { return Bun.file('/etc/passwd'); }\n");
     const bunFileAdapterChecksum = `sha256:${await sha256Hex(bunFileAdapter)}`;
     await assert.rejects(
@@ -125,6 +155,174 @@ describe('Capability Plane v0.2 core contracts', () => {
         docs: [],
         checksums: [{ path: 'adapter.mjs', checksum: bunFileAdapterChecksum }],
       }, { 'adapter.mjs': bunFileAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const aliasedFetchAdapter = fromUtf8("const f = fetch; export async function CapabilityDriver() { return await f('https://example.test'); }\n");
+    const aliasedFetchAdapterChecksum = `sha256:${await sha256Hex(aliasedFetchAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: aliasedFetchAdapterChecksum }],
+      }, { 'adapter.mjs': aliasedFetchAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const logicalFetchAliasAdapter = fromUtf8("let f; f ||= fetch; export async function CapabilityDriver() { return await f('https://example.test'); }\n");
+    const logicalFetchAliasAdapterChecksum = `sha256:${await sha256Hex(logicalFetchAliasAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: logicalFetchAliasAdapterChecksum }],
+      }, { 'adapter.mjs': logicalFetchAliasAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const nullishFetchAliasAdapter = fromUtf8("let f; f ??= fetch; export async function CapabilityDriver() { return await f('https://example.test'); }\n");
+    const nullishFetchAliasAdapterChecksum = `sha256:${await sha256Hex(nullishFetchAliasAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: nullishFetchAliasAdapterChecksum }],
+      }, { 'adapter.mjs': nullishFetchAliasAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const awaitedFetchAliasAdapter = fromUtf8("const f = await fetch; export async function CapabilityDriver() { return await f('https://example.test'); }\n");
+    const awaitedFetchAliasAdapterChecksum = `sha256:${await sha256Hex(awaitedFetchAliasAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: awaitedFetchAliasAdapterChecksum }],
+      }, { 'adapter.mjs': awaitedFetchAliasAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const parenthesizedFetchAliasAdapter = fromUtf8("const f = (fetch); export async function CapabilityDriver() { return await f('https://example.test'); }\n");
+    const parenthesizedFetchAliasAdapterChecksum = `sha256:${await sha256Hex(parenthesizedFetchAliasAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: parenthesizedFetchAliasAdapterChecksum }],
+      }, { 'adapter.mjs': parenthesizedFetchAliasAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const propagatedFetchAliasAdapter = fromUtf8("const f = fetch; const g = f; export async function CapabilityDriver() { return await g('https://example.test'); }\n");
+    const propagatedFetchAliasAdapterChecksum = `sha256:${await sha256Hex(propagatedFetchAliasAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: propagatedFetchAliasAdapterChecksum }],
+      }, { 'adapter.mjs': propagatedFetchAliasAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const lateDeclaredFetchAliasAdapter = fromUtf8("export async function CapabilityDriver() { return await f('https://example.test'); }\nconst f = fetch;\n");
+    const lateDeclaredFetchAliasAdapterChecksum = `sha256:${await sha256Hex(lateDeclaredFetchAliasAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: lateDeclaredFetchAliasAdapterChecksum }],
+      }, { 'adapter.mjs': lateDeclaredFetchAliasAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const parenthesizedFetchAliasCallAdapter = fromUtf8("const f = fetch; export async function CapabilityDriver() { return await (f)('https://example.test'); }\n");
+    const parenthesizedFetchAliasCallAdapterChecksum = `sha256:${await sha256Hex(parenthesizedFetchAliasCallAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: parenthesizedFetchAliasCallAdapterChecksum }],
+      }, { 'adapter.mjs': parenthesizedFetchAliasCallAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const aliasedFetchCallAdapter = fromUtf8("const f = fetch; export async function CapabilityDriver() { return await f.call(globalThis, 'https://example.test'); }\n");
+    const aliasedFetchCallAdapterChecksum = `sha256:${await sha256Hex(aliasedFetchCallAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: aliasedFetchCallAdapterChecksum }],
+      }, { 'adapter.mjs': aliasedFetchCallAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const parenthesizedAliasedFetchCallAdapter = fromUtf8("const f = fetch; export async function CapabilityDriver() { return await (f).call(globalThis, 'https://example.test'); }\n");
+    const parenthesizedAliasedFetchCallAdapterChecksum = `sha256:${await sha256Hex(parenthesizedAliasedFetchCallAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: parenthesizedAliasedFetchCallAdapterChecksum }],
+      }, { 'adapter.mjs': parenthesizedAliasedFetchCallAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const aliasedOptionalFetchCallAdapter = fromUtf8("const f = fetch; export async function CapabilityDriver() { return await f?. ('https://example.test'); }\n");
+    const aliasedOptionalFetchCallAdapterChecksum = `sha256:${await sha256Hex(aliasedOptionalFetchCallAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: aliasedOptionalFetchCallAdapterChecksum }],
+      }, { 'adapter.mjs': aliasedOptionalFetchCallAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const commentedFetchAliasAdapter = fromUtf8("// const f = fetch\nconst note = 'f = fetch';\nfunction f() { return { ok: true }; }\nexport function CapabilityDriver() { return f(); }\n");
+    const commentedFetchAliasAdapterChecksum = `sha256:${await sha256Hex(commentedFetchAliasAdapter)}`;
+    await assert.doesNotReject(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: commentedFetchAliasAdapterChecksum }],
+      }, { 'adapter.mjs': commentedFetchAliasAdapter }),
+    );
+    const regexFetchAliasAdapter = fromUtf8("const pattern = /f = fetch/;\nfunction f() { return pattern.test('safe'); }\nexport function CapabilityDriver() { return f(); }\n");
+    const regexFetchAliasAdapterChecksum = `sha256:${await sha256Hex(regexFetchAliasAdapter)}`;
+    await assert.doesNotReject(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: regexFetchAliasAdapterChecksum }],
+      }, { 'adapter.mjs': regexFetchAliasAdapter }),
+    );
+    const computedGlobalFetchAdapter = fromUtf8("export function CapabilityDriver() { return globalThis['fetch']('https://example.test'); }\n");
+    const computedGlobalFetchAdapterChecksum = `sha256:${await sha256Hex(computedGlobalFetchAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: computedGlobalFetchAdapterChecksum }],
+      }, { 'adapter.mjs': computedGlobalFetchAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const optionalComputedGlobalFetchAdapter = fromUtf8("export function CapabilityDriver() { return globalThis?. ['fetch']('https://example.test'); }\n");
+    const optionalComputedGlobalFetchAdapterChecksum = `sha256:${await sha256Hex(optionalComputedGlobalFetchAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: optionalComputedGlobalFetchAdapterChecksum }],
+      }, { 'adapter.mjs': optionalComputedGlobalFetchAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const computedBunFileAdapter = fromUtf8("export function CapabilityDriver() { return Bun['file']('/etc/passwd'); }\n");
+    const computedBunFileAdapterChecksum = `sha256:${await sha256Hex(computedBunFileAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: computedBunFileAdapterChecksum }],
+      }, { 'adapter.mjs': computedBunFileAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const optionalComputedBunFileAdapter = fromUtf8("export function CapabilityDriver() { return Bun?. ['file']('/etc/passwd'); }\n");
+    const optionalComputedBunFileAdapterChecksum = `sha256:${await sha256Hex(optionalComputedBunFileAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: optionalComputedBunFileAdapterChecksum }],
+      }, { 'adapter.mjs': optionalComputedBunFileAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
     const localImportAdapter = fromUtf8("import helper from './helper.mjs'; export const CapabilityDriver = helper;");
@@ -147,6 +345,19 @@ describe('Capability Plane v0.2 core contracts', () => {
         { path: 'helper.mjs', checksum: localHelperChecksum },
       ],
     }, { 'adapter.mjs': localImportAdapter, 'helper.mjs': localHelper }), true);
+    const percentEncodedLocalImportAdapter = fromUtf8("import helper from './helper%2Emjs'; export const CapabilityDriver = helper;");
+    const percentEncodedLocalImportAdapterChecksum = `sha256:${await sha256Hex(percentEncodedLocalImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [
+          { path: 'adapter.mjs', checksum: percentEncodedLocalImportAdapterChecksum },
+          { path: 'helper%2Emjs', checksum: localHelperChecksum },
+        ],
+      }, { 'adapter.mjs': percentEncodedLocalImportAdapter, 'helper%2Emjs': localHelper }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const extensionlessLocalImportAdapter = fromUtf8("import helper from './helper'; export const CapabilityDriver = helper;");
     const extensionlessLocalImportAdapterChecksum = `sha256:${await sha256Hex(extensionlessLocalImportAdapter)}`;
     assert.equal(await assertCapabilityPackChecksums({
@@ -4728,6 +4939,12 @@ describe('Capability Plane v0.2 core contracts', () => {
     });
     assert.equal(malformedFixturePackPreflight.accepted, false);
     assert.deepEqual(malformedFixturePackPreflight.blockers, ['ERR_AGENT_DECISION_PROMPT_SCHEMA']);
+    const fixturePackResolution = await defineCapabilityDriver(fixturePackDriver).resolve({}, modelRequest('goal=invoke', 'fixture-pack-wire-key'));
+    assert.equal(decodeResolutionInputBytes(fixturePackResolution.resolutionInputBytes).status, 0);
+    assert.deepEqual(
+      decodeAgentActionFromResolutionInput(fixturePackResolution.resolutionInputBytes),
+      { variant: 'tool', toolId: 'actuate', payload: '' },
+    );
 
     const liveDriver = preflightBlockedDriver();
     await assert.rejects(

@@ -131,8 +131,10 @@ export class RunController {
     const parentHead = await this.store.readHead(runId, branchId);
     assertHeadContinuable(parentHead);
     const policy = createRunPolicy(options.effectPolicy ?? this.effectPolicy);
+    const applianceManifest = await decodeStoredApplicationManifestForPreflight(this.store, application);
     assertCapabilityReportAccepted(preflightCapabilities({
       application,
+      applianceManifest,
       currentHead: parentHead,
       drivers: this.effectDrivers,
       policy,
@@ -153,6 +155,7 @@ export class RunController {
       const effectResolutionInputs = await loadEffectResolutionInputs(this.store, effectRecords, pendingRequests);
       const preflightReport = preflightCapabilities({
         application,
+        applianceManifest,
         currentHead: parentHead,
         currentBranchId: branchId,
         pendingRequests,
@@ -180,6 +183,7 @@ export class RunController {
         workerMayBeDirty = true;
         await worker.loadExecutable(imageBytes);
       }
+      assertLoadedApplianceManifestAccepted(worker, application, parentHead, policy);
       await assertStoredApplicationManifestMatchesWorker(worker, this.store, application);
       assertParentClosureManifestMatchesWorker(worker, parentHead, parentClosureBytes);
       if (!workerReused && parentHead.status !== 'genesis' && typeof worker.restoreFromTurnClosure === 'function') {
@@ -1069,6 +1073,30 @@ function assertParentClosureManifestMatchesWorker(worker, parentHead, parentClos
       loadedValue: `world:manifest:${loadedManifestFingerprint.toString(16).padStart(16, '0')}`,
     });
   }
+}
+
+async function decodeStoredApplicationManifestForPreflight(store, application) {
+  try {
+    return decodeApplianceManifest(await store.getBlob(application.applianceManifestRef));
+  } catch (error) {
+    if (application.installationDiagnostics?.manifestSource === 'host-generated-install-summary') return null;
+    fail('ERR_APPLICATION_MANIFEST_INVALID', 'stored appliance manifest is not decodable', {
+      cause: error?.message ?? String(error),
+    });
+  }
+}
+
+function assertLoadedApplianceManifestAccepted(worker, application, parentHead, policy) {
+  if (typeof worker.readApplianceManifest !== 'function') return;
+  const applianceManifest = worker.readApplianceManifest()?.decoded;
+  if (!applianceManifest) return;
+  assertCapabilityReportAccepted(preflightCapabilities({
+    application: { ...application, requiredActuators: [], requiredHostAuthorityLabels: [], requiredRuntimeLimits: {} },
+    applianceManifest,
+    currentHead: parentHead,
+    drivers: [],
+    policy,
+  }));
 }
 
 async function assertStoredApplicationManifestMatchesWorker(worker, store, application) {

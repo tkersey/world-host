@@ -41,7 +41,7 @@ export function createRunPolicy(input = {}) {
     maximumRequestBytes,
     maximumPromptBytes,
     maximumResponseBytes: positiveSafeInteger(input.maximumResponseBytes ?? 1024 * 1024, 'maximumResponseBytes'),
-    acceptedSupervisionPolicies: new Set(input.acceptedSupervisionPolicies ?? ['default']),
+    acceptedSupervisionPolicies: new Set(iterable(input.acceptedSupervisionPolicies ?? ['default'])),
   });
 }
 
@@ -211,7 +211,8 @@ export function preflightCapabilities({
   if (runtimeLimits.maximumConcurrentEffects > policy.maximumConcurrentEffects) blockers.push('runtime-concurrency-limit-exceeds-policy');
   if (runtimeLimits.maximumRequestBytes > policy.maximumRequestBytes) blockers.push('runtime-request-limit-exceeds-policy');
   if (runtimeLimits.maximumResponseBytes > policy.maximumResponseBytes) blockers.push('runtime-response-limit-exceeds-policy');
-  if (applianceManifest.supervisionPolicy && !policy.acceptedSupervisionPolicies.has(applianceManifest.supervisionPolicy)) blockers.push('supervision-policy-rejected');
+  const supervisionPolicy = applianceSupervisionPolicy(applianceManifest);
+  if (supervisionPolicy != null && !policy.acceptedSupervisionPolicies.has(supervisionPolicy)) blockers.push('supervision-policy-rejected');
   if (!currentHead) warnings.push('current-head-not-provided');
 
   return new CapabilityReport({
@@ -247,6 +248,15 @@ function responseStatusBlocker(item) {
   return item.includes('RESPONSE_STATUS') ||
     item === 'ERR_CAPABILITY_REUSABLE_EFFECT_STATUS_UNSUPPORTED' ||
     item === 'ERR_CAPABILITY_REUSABLE_EFFECT_STATUS_MISMATCH';
+}
+
+function applianceSupervisionPolicy(applianceManifest) {
+  if (applianceManifest?.supervisionPolicyFingerprint != null) {
+    const fingerprint = applianceManifest.supervisionPolicyFingerprint;
+    return fingerprint === 0n || fingerprint === 0 ? null : fingerprint;
+  }
+  const supervisionPolicy = applianceManifest?.supervisionPolicy;
+  return supervisionPolicy ? supervisionPolicy : null;
 }
 
 function normalizeDriverManifest(raw) {

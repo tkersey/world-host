@@ -14,7 +14,7 @@ import { fromUtf8, stableJson } from '../src/core/store.mjs';
 import { RunController, WorldWorker } from '../src/core/worker.mjs';
 import { BunStoreLock } from '../src/bun/bun_lock.mjs';
 import { agentWorldHostRequestToEffectRequest, agentWorldRequestDriver, redact, runBunCli } from '../src/bun/bun_cli.mjs';
-import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
+import { decodeApplianceManifest, decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
 import { encodeCanonicalValueImage, wyhash64 } from '../src/protocol/world_loaded_value_codec.mjs';
 import { inspectTurnOutput, summarizeTurnClosureForRunHead } from '../src/protocol/world_universal_appliance_codec.mjs';
 import { DirectoryStore } from '../src/stores/directory_store.mjs';
@@ -277,7 +277,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       const store = new DirectoryStore(root);
       const imageRef = await store.putBlob(fromUtf8('image'));
       const wasmRef = await store.putBlob(fromUtf8('wasm'));
-      const manifestRef = await store.putBlob(fromUtf8('manifest'));
+      const manifestRef = await store.putBlob(fixtureApplianceManifestBytes({ manifestFingerprint: 0x211n }));
       const genesisRef = await store.putBlob(fromUtf8('genesis'));
       const app = createApplicationRecord({
         applicationId: 'sequence-zero-app',
@@ -290,6 +290,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         applianceManifestRef: manifestRef,
         requiredActuators: [],
         requiredRuntimeLimits: {},
+        installationDiagnostics: { manifestSource: 'host-generated-install-summary' },
       });
       await store.createApplication(app);
       const genesisHead = createRunHead({
@@ -732,7 +733,240 @@ describe('migration, branching, and CLI diagnostics', () => {
     await assertImportsReject(duplicateEffect, 'ERR_IMPORT_EFFECT_DUPLICATE');
   });
 
-  it('imports terminal ref-only reusable effect blobs already present in the receiver store', async () => {
+  it('applies receiver supervision policy during CLI import preflight', async () => {
+    const manifestBytes = fixtureApplianceManifestBytes({ supervisionPolicyFingerprint: 0x901n });
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-supervision-import-'));
+    const sourceRoot = path.join(root, 'source');
+    const receiverRoot = path.join(root, 'receiver');
+    const packagePath = path.join(root, 'carrier-export.json');
+    try {
+      const { run } = await fixtureDirectoryStore(sourceRoot, { closureOptions: { status: 1 } });
+      const sourceStore = new DirectoryStore(sourceRoot);
+      const carrierExport = await exportCarrierRun(sourceStore, run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
+      const manifestBlob = blobEntryForBytes(manifestBytes);
+      carrierExport.bundle.application.applianceManifestRef = {
+        algorithm: 'sha256',
+        checksum: manifestBlob.checksum,
+        byteLength: manifestBlob.byteLength,
+      };
+      carrierExport.bundle.application.installationDiagnostics = { manifestSource: 'operator-supplied' };
+      carrierExport.bundle.blobs.push({
+        algorithm: 'sha256',
+        checksum: manifestBlob.checksum,
+        byteLength: manifestBlob.byteLength,
+      }, manifestBlob);
+      await writeFile(packagePath, `${JSON.stringify(carrierExport, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli([
+          'import',
+          '--store', receiverRoot,
+          '--package', packagePath,
+          '--run', 'receiver-run',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        (error) => {
+          assert.equal(error.code, 'ERR_IMPORT_PREFLIGHT_BLOCKED');
+          assert.deepEqual(error.details?.blockers, ['supervision-policy-rejected']);
+          return true;
+        },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not trust imported host-generated diagnostics to skip manifest preflight', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-untrusted-import-diagnostics-'));
+    const sourceRoot = path.join(root, 'source');
+    const receiverRoot = path.join(root, 'receiver');
+    const packagePath = path.join(root, 'carrier-export.json');
+    try {
+      const { run } = await fixtureDirectoryStore(sourceRoot, { closureOptions: { status: 1 } });
+      const sourceStore = new DirectoryStore(sourceRoot);
+      const carrierExport = await exportCarrierRun(sourceStore, run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
+      const manifestBlob = blobEntryForBytes(fromUtf8('not an ApplianceManifest'));
+      carrierExport.bundle.application.applianceManifestRef = {
+        algorithm: 'sha256',
+        checksum: manifestBlob.checksum,
+        byteLength: manifestBlob.byteLength,
+      };
+      carrierExport.bundle.application.installationDiagnostics = { manifestSource: 'host-generated-install-summary' };
+      carrierExport.bundle.blobs.push(manifestBlob);
+      await writeFile(packagePath, `${JSON.stringify(carrierExport, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli([
+          'import',
+          '--store', receiverRoot,
+          '--package', packagePath,
+          '--run', 'receiver-run',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_IMPORT_PREFLIGHT_APPLIANCE_MANIFEST_INVALID' },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports imported appliance manifest blob mismatches as manifest preflight errors', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-manifest-mismatch-import-'));
+    const sourceRoot = path.join(root, 'source');
+    const receiverRoot = path.join(root, 'receiver');
+    const packagePath = path.join(root, 'carrier-export.json');
+    try {
+      const { run } = await fixtureDirectoryStore(sourceRoot, { closureOptions: { status: 1 } });
+      const sourceStore = new DirectoryStore(sourceRoot);
+      const carrierExport = await exportCarrierRun(sourceStore, run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
+      const manifestRef = carrierExport.bundle.application.applianceManifestRef;
+      const manifestBlob = carrierExport.bundle.blobs.find((blob) =>
+        blob.checksum === manifestRef.checksum && blob.byteLength === manifestRef.byteLength);
+      assert.ok(Array.isArray(manifestBlob?.bytes));
+      manifestBlob.bytes = manifestBlob.bytes.map((byte, index) => index === 0 ? byte ^ 0xff : byte);
+      await writeFile(packagePath, `${JSON.stringify(carrierExport, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli([
+          'import',
+          '--store', receiverRoot,
+          '--package', packagePath,
+          '--run', 'receiver-run',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_IMPORT_PREFLIGHT_APPLIANCE_MANIFEST_MISMATCH' },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('binds imported appliance manifest preflight to the selected closure manifest', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-manifest-fingerprint-import-'));
+    const sourceRoot = path.join(root, 'source');
+    const receiverRoot = path.join(root, 'receiver');
+    const packagePath = path.join(root, 'carrier-export.json');
+    try {
+      const { run } = await fixtureDirectoryStore(sourceRoot, { closureOptions: { status: 1 } });
+      const sourceStore = new DirectoryStore(sourceRoot);
+      const carrierExport = await exportCarrierRun(sourceStore, run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
+      const manifestBlob = blobEntryForBytes(fixtureApplianceManifestBytes({ manifestFingerprint: 0x999n }));
+      carrierExport.bundle.application.applianceManifestRef = {
+        algorithm: 'sha256',
+        checksum: manifestBlob.checksum,
+        byteLength: manifestBlob.byteLength,
+      };
+      carrierExport.bundle.application.installationDiagnostics = { manifestSource: 'operator-supplied' };
+      carrierExport.bundle.blobs.push(manifestBlob);
+      await writeFile(packagePath, `${JSON.stringify(carrierExport, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli([
+          'import',
+          '--store', receiverRoot,
+          '--package', packagePath,
+          '--run', 'receiver-run',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_IMPORT_PREFLIGHT_APPLIANCE_MANIFEST_MISMATCH' },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('checks declared appliance manifests on terminal imports before bypassing app requirements', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-terminal-manifest-import-'));
+    const sourceRoot = path.join(root, 'source');
+    const receiverRoot = path.join(root, 'receiver');
+    const packagePath = path.join(root, 'carrier-export.json');
+    try {
+      const { run } = await fixtureDirectoryStore(sourceRoot);
+      const sourceStore = new DirectoryStore(sourceRoot);
+      const carrierExport = await exportCarrierRun(sourceStore, run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
+      const manifestBlob = blobEntryForBytes(fixtureApplianceManifestBytes({ supervisionPolicyFingerprint: 0x901n }));
+      carrierExport.bundle.application.applianceManifestRef = {
+        algorithm: 'sha256',
+        checksum: manifestBlob.checksum,
+        byteLength: manifestBlob.byteLength,
+      };
+      carrierExport.bundle.application.installationDiagnostics = { manifestSource: 'operator-supplied' };
+      carrierExport.bundle.blobs.push(manifestBlob);
+      await writeFile(packagePath, `${JSON.stringify(carrierExport, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli([
+          'import',
+          '--store', receiverRoot,
+          '--package', packagePath,
+          '--run', 'receiver-terminal-run',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        (error) => {
+          assert.equal(error.code, 'ERR_IMPORT_PREFLIGHT_BLOCKED');
+          assert.deepEqual(error.details?.blockers, ['supervision-policy-rejected']);
+          return true;
+        },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('imports terminal host-generated install summaries without requiring appliance manifest bytes', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-terminal-summary-import-'));
+    const sourceRoot = path.join(root, 'source');
+    const receiverRoot = path.join(root, 'receiver');
+    const packagePath = path.join(root, 'carrier-export.json');
+    try {
+      const { run } = await fixtureDirectoryStore(sourceRoot);
+      const sourceStore = new DirectoryStore(sourceRoot);
+      const carrierExport = await exportCarrierRun(sourceStore, run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
+      const summaryBlob = blobEntryForBytes(fromUtf8(stableJson({
+        kind: 'world-host.install-summary',
+        source: 'host-generated-install-summary',
+        worldAuthoredEvidence: false,
+      })));
+      carrierExport.bundle.application.applianceManifestRef = {
+        algorithm: 'sha256',
+        checksum: summaryBlob.checksum,
+        byteLength: summaryBlob.byteLength,
+      };
+      carrierExport.bundle.application.installationDiagnostics = { manifestSource: 'host-generated-install-summary' };
+      carrierExport.bundle.blobs.push(summaryBlob);
+      await writeFile(packagePath, `${JSON.stringify(carrierExport, null, 2)}\n`);
+
+      let output = '';
+      const importCode = await runBunCli([
+        'import',
+        '--json',
+        '--store', receiverRoot,
+        '--package', packagePath,
+        '--run', 'receiver-terminal-summary-run',
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      });
+      const imported = JSON.parse(output);
+      assert.equal(importCode, 0);
+      assert.equal(imported.runId, 'receiver-terminal-summary-run');
+      assert.equal(imported.receiverPolicyApplied, true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('imports terminal ref-only reusable effect and manifest blobs already present in the receiver store', async () => {
     const sourceRoot = await mkdtemp(path.join(tmpdir(), 'world-host-ref-only-import-source-'));
     const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-ref-only-import-receiver-'));
     const packagePath = path.join(sourceRoot, 'ref-only-export.json');
@@ -744,12 +978,17 @@ describe('migration, branching, and CLI diagnostics', () => {
       const resolutionRef = resolutionEffect?.resolutionInputRef;
       const resolutionBlob = carrierExport.bundle.blobs.find((blob) =>
         blob.checksum === resolutionRef?.checksum && blob.byteLength === resolutionRef?.byteLength);
+      const manifestRef = carrierExport.bundle.application.applianceManifestRef;
+      const manifestBlob = carrierExport.bundle.blobs.find((blob) =>
+        blob.checksum === manifestRef.checksum && blob.byteLength === manifestRef.byteLength);
       assert.ok(Array.isArray(resolutionBlob?.bytes));
+      assert.ok(Array.isArray(manifestBlob?.bytes));
 
       const receiverStore = new DirectoryStore(receiverRoot);
       await receiverStore.acquireLock();
       try {
         await receiverStore.putBlob(Uint8Array.from(resolutionBlob.bytes));
+        await receiverStore.putBlob(Uint8Array.from(manifestBlob.bytes));
       } finally {
         await receiverStore.releaseLock();
       }
@@ -757,8 +996,12 @@ describe('migration, branching, and CLI diagnostics', () => {
       const refOnlyExport = JSON.parse(JSON.stringify(carrierExport));
       const refOnlyResolutionBlob = refOnlyExport.bundle.blobs.find((blob) =>
         blob.checksum === resolutionRef.checksum && blob.byteLength === resolutionRef.byteLength);
+      const refOnlyManifestBlob = refOnlyExport.bundle.blobs.find((blob) =>
+        blob.checksum === manifestRef.checksum && blob.byteLength === manifestRef.byteLength);
       refOnlyResolutionBlob.algorithm = 'sha256';
+      refOnlyManifestBlob.algorithm = 'sha256';
       delete refOnlyResolutionBlob.bytes;
+      delete refOnlyManifestBlob.bytes;
       await writeFile(packagePath, JSON.stringify(refOnlyExport));
 
       let output = '';
@@ -1880,6 +2123,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(exportCode, 0);
 
       const packageJson = JSON.parse(await readFile(packagePath, 'utf8'));
+      const packageManifestFingerprint = carrierBundleApplianceManifest(packageJson.bundle).manifestFingerprint;
       let noPendingOutput = '';
       const noPendingImportCode = await runBunCli([
         'agent',
@@ -1911,7 +2155,12 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(genericNoPendingImported.runId, 'generic-agent-import-no-pending');
       assert.equal(genericNoPendingImported.receiverPolicyApplied, true);
 
-      const completedBytes = fixtureTurnClosureBytes({ status: 2, turnSequenceNumber: 9n, closureFingerprint: 0x919n });
+      const completedBytes = fixtureTurnClosureBytes({
+        status: 2,
+        turnSequenceNumber: 9n,
+        closureFingerprint: 0x919n,
+        manifestFingerprint: packageManifestFingerprint,
+      });
       const completedSummary = summarizeTurnClosureForRunHead(completedBytes);
       const completedBlob = blobEntryForBytes(completedBytes);
       const highLimitCompletedPackage = {
@@ -1961,7 +2210,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(highLimitCompletedImportCode, 0);
       assert.equal(highLimitCompletedImported.runId, 'receiver-agent-import-high-limit-completed');
 
-      const pendingClosureBytes = fixtureNeedsHostTurnClosureBytes([agentModelHostRequestBytes()]);
+      const pendingClosureBytes = fixtureNeedsHostTurnClosureBytes([agentModelHostRequestBytes()], 0, { manifestFingerprint: packageManifestFingerprint });
       const pendingClosureSummary = summarizeTurnClosureForRunHead(pendingClosureBytes);
       const pendingClosureBlob = blobEntryForBytes(pendingClosureBytes);
       const pendingPackagePath = path.join(receiverRoot, 'agent-pending-export.json');
@@ -2002,7 +2251,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       );
 
       const sandboxRoot = path.join(receiverRoot, 'sandbox');
-      const requestlessNeedsHostBytes = fixtureNeedsHostTurnClosureBytes([]);
+      const requestlessNeedsHostBytes = fixtureNeedsHostTurnClosureBytes([], 0, { manifestFingerprint: packageManifestFingerprint });
       const requestlessNeedsHostSummary = summarizeTurnClosureForRunHead(requestlessNeedsHostBytes);
       const requestlessNeedsHostBlob = blobEntryForBytes(requestlessNeedsHostBytes);
       const requestlessNeedsHostPackagePath = path.join(receiverRoot, 'agent-requestless-needs-host-export.json');
@@ -2043,7 +2292,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         { code: 'ERR_IMPORT_PREFLIGHT_NEEDS_HOST_REQUESTS_EMPTY' },
       );
 
-      const yieldedBudgetBytes = fixtureNeedsHostTurnClosureBytes([], 1);
+      const yieldedBudgetBytes = fixtureNeedsHostTurnClosureBytes([], 1, { manifestFingerprint: packageManifestFingerprint });
       const yieldedBudgetSummary = summarizeTurnClosureForRunHead(yieldedBudgetBytes);
       const yieldedBudgetBlob = blobEntryForBytes(yieldedBudgetBytes);
       const yieldedBudgetPackagePath = path.join(receiverRoot, 'agent-yielded-budget-export.json');
@@ -2380,8 +2629,10 @@ describe('migration, branching, and CLI diagnostics', () => {
     try {
       const wasmPath = path.join(root, 'world_universal_appliance.wasm');
       const imagePath = path.join(root, 'file-agent.world-executable');
+      const manifestPath = path.join(root, 'appliance-manifest.bin');
       await writeFile(wasmPath, fromUtf8('wasm:cli-run'));
       await writeFile(imagePath, fromUtf8('image:cli-run'));
+      await writeFile(manifestPath, fixtureApplianceManifestBytes({ manifestFingerprint: 0x211n }));
       await runBunCli([
         'install',
         '--json',
@@ -2390,6 +2641,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         '--wasm', wasmPath,
         '--image', imagePath,
         '--image-fingerprint', 'world:image:run-app',
+        '--manifest', manifestPath,
       ], {
         stdout: { write() {} },
         stderr: { write() {} },
@@ -3521,13 +3773,14 @@ async function bytesToUtf8(bytes) {
 
 function fixtureTurnClosureBytes(options = {}) {
   const closureStatus = options.status ?? 2;
+  const manifestFingerprint = options.manifestFingerprint ?? 0x211n;
   const rootResultBytes = rootResultValueBytes(options.rootResultValueFingerprint ?? 0xb01n);
   const rootResultRef = rootResultObjectRef(rootResultBytes);
   const turnReceiptBytes = concat([
     u32(1),
     u32(1),
     u64(0x701n),
-    u64(0x211n),
+    u64(manifestFingerprint),
     u64(options.turnSequenceNumber ?? 1n),
     u64(0x301n),
     optionalU64(null),
@@ -3550,7 +3803,7 @@ function fixtureTurnClosureBytes(options = {}) {
     u32(1),
     u64(options.closureFingerprint ?? 0x111n),
     u64(0x112n),
-    u64(0x211n),
+    u64(manifestFingerprint),
     optionalU64(null),
     u64(options.turnSequenceNumber ?? 1n),
     u64(0x301n),
@@ -3598,12 +3851,13 @@ function receiptStatusForClosureStatus(status) {
   return status;
 }
 
-function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()], status = 0) {
+function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()], status = 0, options = {}) {
+  const manifestFingerprint = options.manifestFingerprint ?? 0x211n;
   const turnReceiptBytes = concat([
     u32(1),
     u32(1),
     u64(0x701n),
-    u64(0x211n),
+    u64(manifestFingerprint),
     u64(0n),
     u64(0x301n),
     optionalU64(null),
@@ -3627,7 +3881,7 @@ function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()]
     u32(1),
     u64(0x111n),
     u64(0x112n),
-    u64(0x211n),
+    u64(manifestFingerprint),
     optionalU64(null),
     u64(0n),
     u64(0x301n),
@@ -3775,6 +4029,14 @@ function blobEntryForBytes(value) {
   };
 }
 
+function carrierBundleApplianceManifest(bundle) {
+  const manifestRef = bundle.application.applianceManifestRef;
+  const manifestBlob = bundle.blobs.find((blob) =>
+    blob.checksum === manifestRef.checksum && blob.byteLength === manifestRef.byteLength);
+  assert.ok(Array.isArray(manifestBlob?.bytes));
+  return decodeApplianceManifest(Uint8Array.from(manifestBlob.bytes));
+}
+
 function u8(value) {
   return Uint8Array.of(value);
 }
@@ -3782,6 +4044,12 @@ function u8(value) {
 function u32(value) {
   const out = new Uint8Array(4);
   new DataView(out.buffer).setUint32(0, value, true);
+  return out;
+}
+
+function u16(value) {
+  const out = new Uint8Array(2);
+  new DataView(out.buffer).setUint16(0, value, true);
   return out;
 }
 
@@ -3801,6 +4069,46 @@ function bytes(value) {
 
 function u64Slice(values) {
   return concat([u64(values.length), ...values.map(u64)]);
+}
+
+function u8Slice(values) {
+  return concat([u64(values.length), Uint8Array.from(values)]);
+}
+
+function fixtureApplianceManifestBytes(options = {}) {
+  return concat([
+    u32(3),
+    u32(3),
+    u64(options.manifestFingerprint ?? 0x211n),
+    u32(4),
+    u64(0x102n),
+    u64(0x103n),
+    u64(0x104n),
+    u64(0n),
+    u64(0n),
+    u64(0n),
+    u64Slice([]),
+    u64Slice([]),
+    u64(0n),
+    u64Slice([]),
+    u64Slice([]),
+    u64Slice([]),
+    u64Slice([]),
+    u64Slice([]),
+    u64Slice([]),
+    u8Slice([]),
+    u8Slice([]),
+    u64(options.supervisionPolicyFingerprint ?? 0n),
+    u64Slice([]),
+    u64(0n),
+    u64(0n),
+    u8(0),
+    u16(0),
+    u64(0x105n),
+    u64(0x106n),
+    u8(0),
+    bytes(new Uint8Array()),
+  ]);
 }
 
 function fixtureHostReplyFingerprint(binding, resolutionInputBytes) {
@@ -3922,6 +4230,7 @@ async function fixtureStore() {
     applianceManifestRef: manifestRef,
     requiredActuators: [],
     requiredRuntimeLimits: {},
+    installationDiagnostics: { manifestSource: 'host-generated-install-summary' },
   });
   await store.createApplication(app);
   const head = createRunHead({
@@ -3945,7 +4254,7 @@ async function fixtureDirectoryStore(root, options = {}) {
   try {
     const imageRef = await store.putBlob(fromUtf8('image'));
     const wasmRef = await store.putBlob(fromUtf8('wasm'));
-    const manifestRef = await store.putBlob(fromUtf8('manifest'));
+    const manifestRef = await store.putBlob(options.manifestBytes ?? fixtureApplianceManifestBytes({ manifestFingerprint: 0x211n }));
     const closureBytes = fixtureTurnClosureBytes(options.closureOptions);
     const closureSummary = summarizeTurnClosureForRunHead(closureBytes);
     const closureRef = await store.putBlob(closureBytes);
@@ -3960,7 +4269,7 @@ async function fixtureDirectoryStore(root, options = {}) {
       applianceManifestRef: manifestRef,
       requiredActuators: [],
       requiredRuntimeLimits: {},
-      installationDiagnostics: {},
+      installationDiagnostics: { manifestSource: 'host-generated-install-summary' },
     });
     await store.createApplication(app);
     const head = createRunHead({
