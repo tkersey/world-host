@@ -574,11 +574,14 @@ function adapterHostApiAccess(text, options = {}) {
       index += 1;
       continue;
     }
+    const identifierOffset = index;
     const identifierName = readIdentifierName(text, index);
     if (!identifierName || identifierName.invalid) return true;
     index = identifierName.end;
     const identifier = identifierName.value;
     if (identifier === 'fetch' && previousSignificant !== '.' && !options.allowHostNetwork && fetchAliasInvocationAt(text, index)) return 'fetch';
+    const destructuredMember = destructuredHostGlobalAccess(text, identifierOffset, identifier, options);
+    if (destructuredMember) return destructuredMember;
     const member = directHostMemberAccess(text, index);
     if (member && unsafeHostGlobalMember(identifier, member.name, options)) return `${identifier}.${member.name}`;
     previousSignificant = identifierSignificance(identifier);
@@ -621,9 +624,11 @@ function adapterAliasesHostApiAccess(text, options = {}) {
     });
   } while (aliases.size !== previousSize);
   if (!aliases.size) return null;
-  return scanAdapterAliasIdentifiers(text, (identifier, index) => {
+  return scanAdapterAliasIdentifiers(text, (identifier, index, _previousSignificant, identifierOffset) => {
     const target = aliases.get(identifier);
     if (!target) return null;
+    const destructuredMember = destructuredHostGlobalAccess(text, identifierOffset, target, options);
+    if (destructuredMember) return destructuredMember;
     if (target === 'fetch') return !options.allowHostNetwork && fetchAliasInvocationAt(text, index) ? 'fetch' : null;
     const member = directHostMemberAccess(text, index) ?? directHostMemberAccess(text, skipClosingCalleeParens(text, index));
     return member && unsafeHostGlobalMember(target, member.name, options) ? `${target}.${member.name}` : null;
@@ -666,11 +671,12 @@ function scanAdapterAliasIdentifiers(text, visitor) {
       index += 1;
       continue;
     }
+    const identifierOffset = index;
     const identifierName = readIdentifierName(text, index);
     if (!identifierName || identifierName.invalid) return 'fetch';
     index = identifierName.end;
     const identifier = identifierName.value;
-    const result = visitor(identifier, index, previousSignificant);
+    const result = visitor(identifier, index, previousSignificant, identifierOffset);
     if (result) return result;
     previousSignificant = identifierSignificance(identifier);
   }
@@ -689,6 +695,121 @@ function skipClosingCalleeParens(text, index) {
   let cursor = skipWhitespaceAndComments(text, index);
   while (text[cursor] === ')') cursor = skipWhitespaceAndComments(text, cursor + 1);
   return cursor;
+}
+
+function destructuredHostGlobalAccess(text, identifierStart, target, options = {}) {
+  const assignmentIndex = destructuredHostAssignmentIndex(text, identifierStart);
+  if (!hostValueAssignmentOperator(text, assignmentIndex)) return null;
+  const patternEnd = skipWhitespaceBackward(text, assignmentIndex - 1);
+  if (text[patternEnd] !== '}') return null;
+  const patternStart = findMatchingOpenBraceBackward(text, patternEnd);
+  if (patternStart < 0) return target;
+  const member = unsafeDestructuredHostMember(text, patternStart + 1, patternEnd, target, options);
+  return member ? `${target}.${member}` : null;
+}
+
+function destructuredHostAssignmentIndex(text, identifierStart) {
+  let cursor = skipWhitespaceBackward(text, identifierStart - 1);
+  while (text[cursor] === '(') cursor = skipWhitespaceBackward(text, cursor - 1);
+  return cursor;
+}
+
+function hostValueAssignmentOperator(text, index) {
+  if (text[index] !== '=') return false;
+  if (text[index + 1] === '>' || text[index + 1] === '=') return false;
+  return !['=', '!', '<', '>'].includes(text[index - 1]);
+}
+
+function skipWhitespaceBackward(text, index) {
+  while (index >= 0 && /\s/.test(text[index])) index -= 1;
+  return index;
+}
+
+function findMatchingOpenBraceBackward(text, closeBrace) {
+  let depth = 0;
+  for (let index = closeBrace; index >= 0; index -= 1) {
+    if (text[index] === '}') {
+      depth += 1;
+      continue;
+    }
+    if (text[index] === '{') {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+    if (depth === 0 && text[index] === ';') break;
+  }
+  return -1;
+}
+
+function unsafeDestructuredHostMember(text, start, end, target, options = {}) {
+  for (let index = start; index < end;) {
+    index = skipWhitespaceAndComments(text, index);
+    if (index >= end) break;
+    const char = text[index];
+    if (char === ',') {
+      index += 1;
+      continue;
+    }
+    if (char === '\'' || char === '"' || char === '`') {
+      const literal = char === '`' ? readTemplateString(text, index) : readQuotedString(text, index, char);
+      const afterLiteral = skipWhitespaceAndComments(text, literal.end);
+      if (literal.value !== null && destructuredKeyFollower(text, afterLiteral, end) && unsafeHostGlobalMember(target, literal.value, options)) return literal.value;
+      index = text[afterLiteral] === ':' ? skipDestructuredValue(text, afterLiteral + 1, end) : literal.end;
+      continue;
+    }
+    if (char === '[') {
+      const afterBracket = skipBalancedBracket(text, index);
+      const name = readComputedMemberName(text, index + 1, afterBracket - 1);
+      const afterName = skipWhitespaceAndComments(text, afterBracket);
+      if (name.static && destructuredKeyFollower(text, afterName, end) && unsafeHostGlobalMember(target, name.value, options)) return name.value;
+      index = text[afterName] === ':' ? skipDestructuredValue(text, afterName + 1, end) : afterBracket;
+      continue;
+    }
+    if (!identifierStart(char) && !identifierEscapeStart(text, index)) {
+      index += 1;
+      continue;
+    }
+    const identifier = readIdentifierName(text, index);
+    if (!identifier || identifier.invalid) return target;
+    const afterIdentifier = skipWhitespaceAndComments(text, identifier.end);
+    if (destructuredKeyFollower(text, afterIdentifier, end) && unsafeHostGlobalMember(target, identifier.value, options)) return identifier.value;
+    index = text[afterIdentifier] === ':' || text[afterIdentifier] === '=' ? skipDestructuredValue(text, afterIdentifier + 1, end) : identifier.end;
+  }
+  return null;
+}
+
+function destructuredKeyFollower(text, index, end) {
+  return index >= end || text[index] === ':' || text[index] === ',' || text[index] === '=';
+}
+
+function skipDestructuredValue(text, index, end) {
+  while (index < end) {
+    index = skipWhitespaceAndComments(text, index);
+    if (index >= end || text[index] === ',') return index + 1;
+    const char = text[index];
+    if (char === '\'' || char === '"') {
+      index = readQuotedString(text, index, char).end;
+      continue;
+    }
+    if (char === '`') {
+      index = readTemplateString(text, index).end;
+      continue;
+    }
+    if (char === '{') {
+      index = skipBalancedBrace(text, index);
+      continue;
+    }
+    if (char === '[') {
+      index = skipBalancedBracket(text, index);
+      continue;
+    }
+    if (char === '(') {
+      index = skipBalancedParentheses(text, index);
+      continue;
+    }
+    index += 1;
+  }
+  return index;
 }
 
 function hostAliasAssignmentAt(text, index, aliases) {

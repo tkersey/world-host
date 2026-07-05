@@ -395,6 +395,46 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': aliasedGlobalFetchAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const destructuredProcessEnvAdapter = fromUtf8("const { env } = process; export function CapabilityDriver() { return env.PATH; }\n");
+    const destructuredProcessEnvAdapterChecksum = `sha256:${await sha256Hex(destructuredProcessEnvAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: destructuredProcessEnvAdapterChecksum }],
+      }, { 'adapter.mjs': destructuredProcessEnvAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const parenthesizedDestructuredProcessEnvAdapter = fromUtf8("const { env } = (process); export function CapabilityDriver() { return env.PATH; }\n");
+    const parenthesizedDestructuredProcessEnvAdapterChecksum = `sha256:${await sha256Hex(parenthesizedDestructuredProcessEnvAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: parenthesizedDestructuredProcessEnvAdapterChecksum }],
+      }, { 'adapter.mjs': parenthesizedDestructuredProcessEnvAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const renamedDestructuredGlobalFetchAdapter = fromUtf8("const { fetch: hostFetch } = globalThis; export function CapabilityDriver() { return hostFetch('https://example.test'); }\n");
+    const renamedDestructuredGlobalFetchAdapterChecksum = `sha256:${await sha256Hex(renamedDestructuredGlobalFetchAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: renamedDestructuredGlobalFetchAdapterChecksum }],
+      }, { 'adapter.mjs': renamedDestructuredGlobalFetchAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const aliasedDestructuredProcessEnvAdapter = fromUtf8("const p = process; const { env } = p; export function CapabilityDriver() { return env.PATH; }\n");
+    const aliasedDestructuredProcessEnvAdapterChecksum = `sha256:${await sha256Hex(aliasedDestructuredProcessEnvAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: aliasedDestructuredProcessEnvAdapterChecksum }],
+      }, { 'adapter.mjs': aliasedDestructuredProcessEnvAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const localImportAdapter = fromUtf8("import helper from './helper.mjs'; export const CapabilityDriver = helper;");
     const localImportAdapterChecksum = `sha256:${await sha256Hex(localImportAdapter)}`;
     await assert.rejects(
