@@ -205,6 +205,7 @@ export function preflightCapabilities({
   const runtimeLimits = application?.requiredRuntimeLimits ?? {};
   const liveModelBudgetExceeded = selectedLiveModelRequestCount > policy.maximumLiveModelCalls;
   blockers.push(...nonRerunnableReusableEffectBlockers);
+  if (policy.auditOnly && hasPendingRequestContext) blockers.push('ERR_CAPABILITY_AUDIT_ONLY_DENIED');
   if (liveModelBudgetExceeded) {
     blockers.push(...reusableEffectBlockers);
     blockers.push('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED');
@@ -803,6 +804,9 @@ function authorityLabelsPresent(manifests, requiredAuthorityLabels) {
 
 export function assertCapabilityReportAccepted(report) {
   if (!(report instanceof CapabilityReport)) fail('ERR_INVALID_CAPABILITY_REPORT');
+  if (report.blockers.length === 1 && report.blockers[0] === 'ERR_CAPABILITY_AUDIT_ONLY_DENIED') {
+    fail('ERR_CAPABILITY_AUDIT_ONLY_DENIED', 'capability preflight audit-only denied', { blockers: report.blockers });
+  }
   if (report.blockers.length) fail('ERR_CAPABILITY_PREFLIGHT_BLOCKED', 'capability preflight blocked', { blockers: report.blockers });
   return true;
 }

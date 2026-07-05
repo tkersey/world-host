@@ -762,6 +762,14 @@ describe('capability preflight and reference drivers', () => {
       }],
       effectResolutionInputs: cachedModelResolutionInputs,
     });
+    const auditOnlyPendingReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], auditOnly: true, maximumLiveModelCalls: 1 }),
+    });
     const oneNewWithCachedReport = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },
       currentHead: { generation: 0 },
@@ -955,6 +963,7 @@ describe('capability preflight and reference drivers', () => {
     assert.ok(wrappedOverBudgetReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
     assert.equal(replayOnlyReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'), false);
     assert.deepEqual(divergentFingerprintReplayReport.blockers, []);
+    assert.deepEqual(auditOnlyPendingReport.blockers, ['ERR_CAPABILITY_AUDIT_ONLY_DENIED']);
     assert.equal(oneNewWithCachedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'), false);
     assert.ok(shadowedReplayReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
     assert.deepEqual(shadowedReplayWithResolutionReport.blockers, []);
