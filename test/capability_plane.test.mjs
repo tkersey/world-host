@@ -117,6 +117,36 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': fetchAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const fetchCallAdapter = fromUtf8("export async function CapabilityDriver() { return await fetch.call(globalThis, 'https://example.test'); }\n");
+    const fetchCallAdapterChecksum = `sha256:${await sha256Hex(fetchCallAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: fetchCallAdapterChecksum }],
+      }, { 'adapter.mjs': fetchCallAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const fetchApplyAdapter = fromUtf8("export async function CapabilityDriver() { return await fetch.apply(globalThis, ['https://example.test']); }\n");
+    const fetchApplyAdapterChecksum = `sha256:${await sha256Hex(fetchApplyAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: fetchApplyAdapterChecksum }],
+      }, { 'adapter.mjs': fetchApplyAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const fetchBindAdapter = fromUtf8("const f = fetch.bind(globalThis); export async function CapabilityDriver() { return await f('https://example.test'); }\n");
+    const fetchBindAdapterChecksum = `sha256:${await sha256Hex(fetchBindAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: fetchBindAdapterChecksum }],
+      }, { 'adapter.mjs': fetchBindAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const dividedFetchAdapter = fromUtf8("export function CapabilityDriver() { return ({} / fetch('https://example.test') / 1); }\n");
     const dividedFetchAdapterChecksum = `sha256:${await sha256Hex(dividedFetchAdapter)}`;
     await assert.rejects(

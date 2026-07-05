@@ -577,8 +577,7 @@ function adapterHostApiAccess(text, options = {}) {
     if (!identifierName || identifierName.invalid) return true;
     index = identifierName.end;
     const identifier = identifierName.value;
-    const callStart = skipWhitespaceAndComments(text, index);
-    if (identifier === 'fetch' && previousSignificant !== '.' && dangerousCallAt(text, callStart) && !options.allowHostNetwork) return 'fetch';
+    if (identifier === 'fetch' && previousSignificant !== '.' && !options.allowHostNetwork && fetchAliasInvocationAt(text, index)) return 'fetch';
     const member = directHostMemberAccess(text, index);
     if (member && unsafeHostGlobalMember(identifier, member.name, options)) return `${identifier}.${member.name}`;
     previousSignificant = identifierSignificance(identifier);
