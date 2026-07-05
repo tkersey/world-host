@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { closeSync, openSync, readSync } from 'node:fs';
 import path from 'node:path';
@@ -91,29 +91,60 @@ export class CapabilitySidecar {
     return response;
   }
 
+  requestSync(command, payload = {}) {
+    if (!COMMANDS.has(command)) fail('ERR_CAPABILITY_SIDECAR_COMMAND_UNSUPPORTED');
+    const frame = encodeSidecarFrame({ command, payload });
+    if (frame.byteLength > this.maximumFrameBytes) fail('ERR_CAPABILITY_SIDECAR_FRAME_TOO_LARGE');
+    const response = runSidecarCommandSync({
+      argv: this.command,
+      input: frame,
+      timeoutMs: this.timeoutMs,
+      maximumFrameBytes: this.maximumFrameBytes,
+      env: this.env,
+      cwd: this.cwd,
+    });
+    if (!response || response.command !== command) fail('ERR_CAPABILITY_SIDECAR_RESPONSE_COMMAND');
+    return response;
+  }
+
   manifest() {
-    return this.request(CapabilitySidecarCommand.manifest);
+    return this.requestPayloadSync(CapabilitySidecarCommand.manifest);
   }
 
-  preflight(payload) {
-    return this.request(CapabilitySidecarCommand.preflight, payload);
+  async preflight(context, hostRequest) {
+    return await this.requestPayload(CapabilitySidecarCommand.preflight, driverHostRequestPayload(context, hostRequest, arguments.length));
   }
 
-  resolve(payload) {
-    return this.request(CapabilitySidecarCommand.resolve, payload);
+  async resolve(context, hostRequest) {
+    return await this.requestPayload(CapabilitySidecarCommand.resolve, driverHostRequestPayload(context, hostRequest, arguments.length));
   }
 
-  recover(payload) {
-    return this.request(CapabilitySidecarCommand.recover, payload);
+  async recover(context, effectRecord) {
+    return await this.requestPayload(CapabilitySidecarCommand.recover, arguments.length === 1 ? context : { context, effectRecord });
   }
 
-  dryRun(payload) {
-    return this.request(CapabilitySidecarCommand.dryRun, payload);
+  async dryRun(context, hostRequest) {
+    return await this.requestPayload(CapabilitySidecarCommand.dryRun, driverHostRequestPayload(context, hostRequest, arguments.length));
   }
 
-  shadow(payload) {
-    return this.request(CapabilitySidecarCommand.shadow, payload);
+  async shadow(context, hostRequest, recordedResolution) {
+    return await this.requestPayload(
+      CapabilitySidecarCommand.shadow,
+      arguments.length === 1 ? context : { context, hostRequest, recordedResolution },
+    );
   }
+
+  async requestPayload(command, payload = {}) {
+    return (await this.request(command, payload)).payload;
+  }
+
+  requestPayloadSync(command, payload = {}) {
+    return this.requestSync(command, payload).payload;
+  }
+}
+
+function driverHostRequestPayload(context, hostRequest, arity) {
+  return arity === 1 ? context : { context, hostRequest };
 }
 
 export class CapabilitySidecarConformance {
@@ -230,6 +261,29 @@ async function runSidecarCommand({ argv, input, timeoutMs, maximumFrameBytes, en
       stdinError = error;
     }
   });
+}
+
+function runSidecarCommandSync({ argv, input, timeoutMs, maximumFrameBytes, env, cwd }) {
+  const spawnArgv = sidecarSpawnArgv(argv, cwd);
+  const result = spawnSync(spawnArgv[0], spawnArgv.slice(1), {
+    input: Buffer.from(input),
+    timeout: timeoutMs,
+    maxBuffer: maximumFrameBytes * 2 + 1024,
+    shell: false,
+    env,
+    cwd,
+  });
+  const stderr = result.stderr ? Buffer.from(result.stderr).toString('utf8') : '';
+  if (Buffer.byteLength(stderr) > maximumFrameBytes) fail('ERR_CAPABILITY_SIDECAR_STDERR_TOO_LARGE');
+  const stdout = result.stdout ? new Uint8Array(result.stdout) : new Uint8Array();
+  if (stdout.byteLength > maximumFrameBytes) fail('ERR_CAPABILITY_SIDECAR_FRAME_TOO_LARGE');
+  if (result.error) {
+    if (result.error.code === 'ETIMEDOUT') fail('ERR_CAPABILITY_SIDECAR_TIMEOUT');
+    if (result.error.code === 'ENOBUFS') fail('ERR_CAPABILITY_SIDECAR_FRAME_TOO_LARGE');
+    throw result.error;
+  }
+  if (result.status !== 0) fail('ERR_CAPABILITY_SIDECAR_EXIT', `sidecar exited ${result.status ?? result.signal}: stderr ${Buffer.byteLength(stderr)} bytes redacted`);
+  return decodeSidecarFrame(stdout, maximumFrameBytes);
 }
 
 function sidecarSpawnArgv(argv, cwd = undefined) {

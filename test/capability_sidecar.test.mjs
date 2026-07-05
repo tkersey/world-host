@@ -6,6 +6,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { CapabilitySidecar, CapabilitySidecarCommand, decodeSidecarFrame, encodeSidecarFrame } from '../src/sidecars/capability_sidecar.mjs';
+import { defineCapabilityDriver } from '../src/core/capability_driver.mjs';
 import { fromUtf8 } from '../src/core/store.mjs';
 
 describe('Capability sidecar transport', () => {
@@ -48,9 +49,30 @@ describe('Capability sidecar transport', () => {
         const input = await new Response(Bun.stdin.stream()).text();
         const frame = JSON.parse(input);
         if (frame.command === 'manifest') {
-          process.stdout.write(JSON.stringify({ command: 'manifest', payload: { driverId: 'fixture-sidecar' } }) + '\\n');
+          process.stdout.write(JSON.stringify({
+            command: 'manifest',
+            payload: {
+              driverId: 'fixture-sidecar',
+              supportedActuatorRefs: ['http:json'],
+              supportedDescriptorFingerprints: ['descriptor:http-json'],
+              supportedActuationClasses: ['http'],
+              supportedResponseStatuses: ['ok'],
+              maximumRequestBytes: 1024,
+              maximumResponseBytes: 1024,
+              recoveryClass: 'idempotent',
+              concurrencyLimit: 1,
+              authorityLabels: ['network:http']
+            }
+          }) + '\\n');
         } else if (frame.command === 'resolve') {
-          process.stdout.write(JSON.stringify({ command: 'resolve', payload: { ok: true } }) + '\\n');
+          process.stdout.write(JSON.stringify({
+            command: 'resolve',
+            payload: {
+              ok: true,
+              actuatorRef: frame.payload.hostRequest?.actuatorRef ?? null,
+              legacyRequest: frame.payload.request ?? null
+            }
+          }) + '\\n');
         } else {
           process.exit(2);
         }
@@ -64,10 +86,15 @@ describe('Capability sidecar transport', () => {
         { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
       );
       const sidecar = new CapabilitySidecar({ command: [process.execPath, sidecarPath], timeoutMs: 1000 });
-      assert.equal((await sidecar.manifest()).payload.driverId, 'fixture-sidecar');
-      assert.equal((await sidecar.resolve({ request: 'ok' })).payload.ok, true);
-      assert.equal((await new CapabilitySidecar({ command: ['bun', sidecarPath], timeoutMs: 1000 }).manifest()).payload.driverId, 'fixture-sidecar');
-      assert.equal((await new CapabilitySidecar({ command: ['bun', 'sidecar.mjs'], cwd: root, timeoutMs: 1000 }).manifest()).payload.driverId, 'fixture-sidecar');
+      assert.equal((await sidecar.request(CapabilitySidecarCommand.manifest)).payload.driverId, 'fixture-sidecar');
+      assert.equal((await sidecar.manifest()).driverId, 'fixture-sidecar');
+      assert.equal(defineCapabilityDriver(sidecar).manifest().driverId, 'fixture-sidecar');
+      const resolved = await sidecar.resolve({ trace: true }, { actuatorRef: 'http:json' });
+      assert.equal(resolved.ok, true);
+      assert.equal(resolved.actuatorRef, 'http:json');
+      assert.equal((await sidecar.resolve({ request: 'ok' })).legacyRequest, 'ok');
+      assert.equal((await new CapabilitySidecar({ command: ['bun', sidecarPath], timeoutMs: 1000 }).manifest()).driverId, 'fixture-sidecar');
+      assert.equal((await new CapabilitySidecar({ command: ['bun', 'sidecar.mjs'], cwd: root, timeoutMs: 1000 }).manifest()).driverId, 'fixture-sidecar');
       await assert.rejects(() => sidecar.dryRun({}), { code: 'ERR_CAPABILITY_SIDECAR_EXIT' });
 
       const envPath = path.join(root, 'env.mjs');
@@ -85,15 +112,15 @@ describe('Capability sidecar transport', () => {
       process.env.WORLD_HOST_SIDECAR_AMBIENT_SECRET = 'ambient-secret';
       try {
         const isolated = await new CapabilitySidecar({ command: [process.execPath, envPath], timeoutMs: 1000 }).manifest();
-        assert.equal(isolated.payload.ambientSecret, null);
-        assert.equal(isolated.payload.declaredSecret, null);
+        assert.equal(isolated.ambientSecret, null);
+        assert.equal(isolated.declaredSecret, null);
         const declared = await new CapabilitySidecar({
           command: [process.execPath, envPath],
           timeoutMs: 1000,
           env: { DECLARED_SECRET: 'mapped-secret' },
         }).manifest();
-        assert.equal(declared.payload.ambientSecret, null);
-        assert.equal(declared.payload.declaredSecret, 'mapped-secret');
+        assert.equal(declared.ambientSecret, null);
+        assert.equal(declared.declaredSecret, 'mapped-secret');
       } finally {
         if (originalAmbient === undefined) {
           delete process.env.WORLD_HOST_SIDECAR_AMBIENT_SECRET;
@@ -121,16 +148,16 @@ describe('Capability sidecar transport', () => {
         await writeFile(path.join(root, 'bunfig.toml'), 'preload = ["./preload.mjs"]\n');
         await writeFile(path.join(root, 'run'), '');
         const dotenvIsolated = await new CapabilitySidecar({ command: [process.execPath, dotenvPath], timeoutMs: 1000 }).manifest();
-        assert.equal(dotenvIsolated.payload.dotenvSecret, null);
-        assert.equal(dotenvIsolated.payload.bunfigPreload, false);
-        await assert.rejects(
+        assert.equal(dotenvIsolated.dotenvSecret, null);
+        assert.equal(dotenvIsolated.bunfigPreload, false);
+        assert.throws(
           () => new CapabilitySidecar({
             command: ['env', 'bun', dotenvPath],
             timeoutMs: 1000,
           }).manifest(),
           { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
         );
-        await assert.rejects(
+        assert.throws(
           () => new CapabilitySidecar({
             command: ['/usr/bin/env', 'bun', dotenvPath],
             timeoutMs: 1000,
@@ -141,85 +168,85 @@ describe('Capability sidecar transport', () => {
           command: [process.execPath, '--env-file', path.join(root, '.env'), dotenvPath],
           timeoutMs: 1000,
         }).manifest();
-        assert.equal(explicitDotenv.payload.dotenvSecret, 'dotenv-secret');
-        assert.equal(explicitDotenv.payload.bunfigPreload, false);
+        assert.equal(explicitDotenv.dotenvSecret, 'dotenv-secret');
+        assert.equal(explicitDotenv.bunfigPreload, false);
         const runtimeOptionDotenv = await new CapabilitySidecar({
           command: [process.execPath, '--smol', dotenvPath, '--env-file', path.join(root, '.env')],
           timeoutMs: 1000,
         }).manifest();
-        assert.equal(runtimeOptionDotenv.payload.dotenvSecret, null);
-        assert.equal(runtimeOptionDotenv.payload.bunfigPreload, false);
-        await assert.rejects(
+        assert.equal(runtimeOptionDotenv.dotenvSecret, null);
+        assert.equal(runtimeOptionDotenv.bunfigPreload, false);
+        assert.throws(
           () => new CapabilitySidecar({
             command: [process.execPath, '--env-file-if-exists=missing.env', dotenvPath],
             timeoutMs: 1000,
           }).manifest(),
           { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
         );
-        await assert.rejects(
+        assert.throws(
           () => new CapabilitySidecar({
             command: [process.execPath, '--import', './preload.mjs', '--env-file-if-exists=missing.env', dotenvPath],
             timeoutMs: 1000,
           }).manifest(),
           { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
         );
-        await assert.rejects(
+        assert.throws(
           () => new CapabilitySidecar({
             command: [process.execPath, '-c', './bunfig.toml', '--env-file-if-exists=missing.env', dotenvPath],
             timeoutMs: 1000,
           }).manifest(),
           { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
         );
-        await assert.rejects(
+        assert.throws(
           () => new CapabilitySidecar({
             command: [process.execPath, 'run', '--env-file-if-exists=missing.env', 'show'],
             timeoutMs: 1000,
           }).manifest(),
           { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
         );
-        await assert.rejects(
+        assert.throws(
           () => new CapabilitySidecar({
             command: [process.execPath, 'run', 'show'],
             timeoutMs: 1000,
           }).manifest(),
           { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
         );
-        await assert.rejects(
+        assert.throws(
           () => new CapabilitySidecar({
             command: [process.execPath, '--config', 'run', dotenvPath],
             timeoutMs: 1000,
           }).manifest(),
           { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
         );
-        await assert.rejects(
+        assert.throws(
           () => new CapabilitySidecar({
             command: [process.execPath, '--config-file=./bunfig.toml', dotenvPath],
             timeoutMs: 1000,
           }).manifest(),
           { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
         );
-        await assert.rejects(
+        assert.throws(
           () => new CapabilitySidecar({
             command: [process.execPath, '-c=./bunfig.toml', dotenvPath],
             timeoutMs: 1000,
           }).manifest(),
           { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
         );
-        await assert.rejects(
+        assert.throws(
           () => new CapabilitySidecar({
             command: [process.execPath, '--cwd', 'run', dotenvPath],
             timeoutMs: 1000,
           }).manifest(),
           { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
         );
-        await assert.rejects(
+        assert.throws(
           () => new CapabilitySidecar({
             command: [process.execPath, '--conditions', 'prod', '--cwd', 'run', dotenvPath],
             timeoutMs: 1000,
           }).manifest(),
           { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
         );
-        await assert.rejects(
+        assert.throws(
           () => new CapabilitySidecar({
             command: [process.execPath, '--no-config', dotenvPath],
             timeoutMs: 1000,
@@ -239,7 +266,7 @@ describe('Capability sidecar transport', () => {
           command: [shebangPath],
           timeoutMs: 1000,
         }).manifest();
-        assert.equal(shebangDotenvIsolated.payload.dotenvSecret, null);
+        assert.equal(shebangDotenvIsolated.dotenvSecret, null);
         await writeFile(path.join(root, 'shebang-preload.mjs'), 'globalThis.__worldHostShebangPreload = true;\n');
         const shebangWithArgsPath = path.join(root, 'preloaded-sidecar');
         await writeFile(shebangWithArgsPath, `#!/usr/bin/env -S bun --preload ./shebang-preload.mjs
@@ -257,15 +284,15 @@ describe('Capability sidecar transport', () => {
           command: [shebangWithArgsPath],
           timeoutMs: 1000,
         }).manifest();
-        assert.equal(shebangArgsPreserved.payload.preloaded, true);
-        assert.equal(shebangArgsPreserved.payload.dotenvSecret, null);
+        assert.equal(shebangArgsPreserved.preloaded, true);
+        assert.equal(shebangArgsPreserved.dotenvSecret, null);
         const quotedShebangWithArgsPath = path.join(root, 'quoted-preloaded-sidecar');
         await writeFile(quotedShebangWithArgsPath, `#!/usr/bin/env -S bun --preload "./shebang-preload.mjs"
           await new Response(Bun.stdin.stream()).text();
           process.stdout.write(JSON.stringify({ command: 'manifest', payload: {} }) + '\\n');
         `);
         await chmod(quotedShebangWithArgsPath, 0o755);
-        await assert.rejects(
+        assert.throws(
           () => new CapabilitySidecar({
             command: [quotedShebangWithArgsPath],
             timeoutMs: 1000,
@@ -280,14 +307,14 @@ describe('Capability sidecar transport', () => {
           }),
           { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
         );
-        await assert.rejects(
+        assert.throws(
           () => new CapabilitySidecar({
             command: [process.execPath, '-r', './preload.mjs', '--env-file-if-exists=missing.env', dotenvPath],
             timeoutMs: 1000,
           }).manifest(),
           { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
         );
-        await assert.rejects(
+        assert.throws(
           () => new CapabilitySidecar({
             command: [process.execPath, '--require', './preload.mjs', '--env-file-if-exists=missing.env', dotenvPath],
             timeoutMs: 1000,
@@ -298,12 +325,12 @@ describe('Capability sidecar transport', () => {
           command: [process.execPath, dotenvPath, '--env-file', path.join(root, '.env')],
           timeoutMs: 1000,
         }).manifest();
-        assert.equal(scriptArgEnvFile.payload.dotenvSecret, null);
+        assert.equal(scriptArgEnvFile.dotenvSecret, null);
         const scriptArgEnvFileIfExists = await new CapabilitySidecar({
           command: [process.execPath, dotenvPath, '--env-file-if-exists=.env'],
           timeoutMs: 1000,
         }).manifest();
-        assert.equal(scriptArgEnvFileIfExists.payload.dotenvSecret, null);
+        assert.equal(scriptArgEnvFileIfExists.dotenvSecret, null);
       } finally {
         process.chdir(originalCwd);
       }
@@ -325,8 +352,8 @@ describe('Capability sidecar transport', () => {
         cwd: root,
         timeoutMs: 1000,
       }).manifest();
-      assert.equal(cwdShebangIsolated.payload.dotenvSecret, null);
-      assert.equal(cwdShebangIsolated.payload.bunfigPreload, false);
+      assert.equal(cwdShebangIsolated.dotenvSecret, null);
+      assert.equal(cwdShebangIsolated.bunfigPreload, false);
 
       const mismatchPath = path.join(root, 'mismatch.mjs');
       await writeFile(mismatchPath, `
@@ -343,7 +370,7 @@ describe('Capability sidecar transport', () => {
         process.stderr.write('DECLARED_SECRET=' + process.env.DECLARED_SECRET);
         process.exit(2);
       `);
-      await assert.rejects(
+      assert.throws(
         () => new CapabilitySidecar({
           command: [process.execPath, exitSecretPath],
           timeoutMs: 1000,
@@ -375,7 +402,7 @@ describe('Capability sidecar transport', () => {
         process.stderr.write('x'.repeat(2048));
         await new Promise(() => {});
       `);
-      await assert.rejects(
+      assert.throws(
         () => new CapabilitySidecar({ command: [process.execPath, stderrPath], timeoutMs: 1000, maximumFrameBytes: 1024 }).manifest(),
         { code: 'ERR_CAPABILITY_SIDECAR_STDERR_TOO_LARGE' },
       );
@@ -385,7 +412,7 @@ describe('Capability sidecar transport', () => {
         process.on('SIGTERM', () => {});
         await new Promise(() => {});
       `);
-      await assert.rejects(
+      assert.throws(
         () => new CapabilitySidecar({ command: [process.execPath, sleepPath], timeoutMs: 10 }).manifest(),
         { code: 'ERR_CAPABILITY_SIDECAR_TIMEOUT' },
       );
