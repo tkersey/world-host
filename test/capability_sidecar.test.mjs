@@ -164,6 +164,16 @@ describe('Capability sidecar transport', () => {
           }).manifest(),
           { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
         );
+        for (const command of [
+          ['nice', 'bun', dotenvPath],
+          ['timeout', '1', 'bun', dotenvPath],
+          ['sh', '-c', `bun ${dotenvPath}`],
+        ]) {
+          assert.throws(
+            () => new CapabilitySidecar({ command, timeoutMs: 1000 }).manifest(),
+            { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+          );
+        }
         const explicitDotenv = await new CapabilitySidecar({
           command: [process.execPath, '--env-file', path.join(root, '.env'), dotenvPath],
           timeoutMs: 1000,

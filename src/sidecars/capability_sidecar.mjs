@@ -50,6 +50,8 @@ const BUN_RUNTIME_VALUE_OPTIONS = new Set([
   '-F',
   '-r',
 ]);
+const BUN_ARGV_WRAPPER_COMMANDS = new Set(['env', 'nice', 'timeout']);
+const BUN_SHELL_WRAPPER_COMMANDS = new Set(['bash', 'dash', 'fish', 'sh', 'zsh']);
 
 export class CapabilitySidecar {
   constructor({ command, cwd = null, timeoutMs = 5000, maximumFrameBytes = 1024 * 1024, env = {} } = {}) {
@@ -290,8 +292,8 @@ function sidecarSpawnArgv(argv, cwd = undefined) {
   const emptyEnvFileArg = `--env-file=${EMPTY_BUN_ENV_FILE}`;
   const emptyConfigArg = `--config=${EMPTY_BUN_CONFIG_FILE}`;
   if (commandBaseName(argv[0]) !== 'bun') {
-    if (bunEnvWrapperCommand(argv)) {
-      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars must not run through env wrappers');
+    if (bunWrapperCommand(argv)) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars must not run through command wrappers');
     }
     const bunShebangArgs = bunShebangRuntimeArgs(commandInspectionPath(argv[0], cwd));
     if (bunShebangArgs) {
@@ -311,8 +313,16 @@ function sidecarSpawnArgv(argv, cwd = undefined) {
   return [argv[0], ...isolationArgs, ...argv.slice(1)];
 }
 
-function bunEnvWrapperCommand(argv) {
-  return commandBaseName(argv[0]) === 'env' && argv.slice(1).some((value) => commandBaseName(value) === 'bun');
+function bunWrapperCommand(argv) {
+  const command = commandBaseName(argv[0]);
+  if (BUN_SHELL_WRAPPER_COMMANDS.has(command)) return true;
+  if (!BUN_ARGV_WRAPPER_COMMANDS.has(command)) return false;
+  return argv.slice(1).some((value) => bunCommandArgument(value));
+}
+
+function bunCommandArgument(value) {
+  if (commandBaseName(value) === 'bun') return true;
+  return /(?:^|[\s"'=:;|&()<>])bun(?:\.exe)?(?:$|[\s"':;|&()<>])/.test(value.toLowerCase());
 }
 
 function commandInspectionPath(value, cwd = undefined) {
