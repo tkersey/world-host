@@ -2697,6 +2697,18 @@ describe('Capability Plane v0.2 core contracts', () => {
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
+        adapter: { kind: 'sidecar', command: ['corepack', 'pnpm', '--store-dir', './store', 'exec', 'node', './adapter.mjs'] },
+        docs: [],
+        checksums: [
+          { path: './store', checksum: sidecarChecksum },
+          { path: './adapter.mjs', checksum: sidecarChecksum },
+        ],
+      }, { './store': sidecar, './adapter.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
         adapter: { kind: 'sidecar', command: ['nice', 'node', '-e', 'import("node:fs")', './sidecar.mjs'] },
         docs: [],
         checksums: [{ path: './sidecar.mjs', checksum: sidecarChecksum }],
@@ -2727,6 +2739,18 @@ describe('Capability Plane v0.2 core contracts', () => {
         { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
       );
     }
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['corepack', 'pnpm', '--store-dir', './store', 'node', './adapter.mjs'] },
+        docs: [],
+        checksums: [
+          { path: './store', checksum: sidecarChecksum },
+          { path: './adapter.mjs', checksum: sidecarChecksum },
+        ],
+      }, { './store': sidecar, './adapter.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,

@@ -2734,8 +2734,8 @@ function sidecarCorepackPackageExecBeforeArtifact(command, index) {
   if (index < 2 || !SIDECAR_PACKAGE_MANAGER_SCRIPT_COMMANDS.has(String(command[index]).toLowerCase())) return false;
   const packageManager = String(command[1]).toLowerCase();
   if (!['bun', 'npm', 'pnpm', 'yarn'].includes(packageManager)) return false;
-  for (let cursor = 1; cursor < index; cursor += 1) {
-    if (sidecarCommandArtifact(command[cursor]) && !sidecarPackageManagerOptionValuePosition(command, cursor)) return false;
+  for (let cursor = 2; cursor < index; cursor += 1) {
+    if (sidecarCommandArtifact(command[cursor]) && !sidecarPackageManagerOptionValuePosition(command, cursor, 1)) return false;
   }
   return true;
 }
@@ -2756,7 +2756,7 @@ function sidecarCorepackPackageRuntimeBeforeArtifact(command, index) {
   const packageManager = String(command[1]).toLowerCase();
   if (!['bun', 'npm', 'pnpm', 'yarn'].includes(packageManager)) return false;
   for (let cursor = 2; cursor < index; cursor += 1) {
-    if (sidecarCommandArtifact(command[cursor])) return false;
+    if (sidecarCommandArtifact(command[cursor]) && !sidecarPackageManagerOptionValuePosition(command, cursor, 1)) return false;
   }
   return true;
 }
@@ -2768,8 +2768,8 @@ function sidecarDenoTaskBeforeArtifact(command, index) {
   return entrypointIndex < 0 || index < entrypointIndex;
 }
 
-function sidecarPackageManagerOptionValuePosition(command, index) {
-  if (index < 2 || !['bun', 'npm', 'pnpm', 'yarn'].includes(commandBaseName(command[0]).toLowerCase())) return false;
+function sidecarPackageManagerOptionValuePosition(command, index, packageManagerIndex = 0) {
+  if (index < packageManagerIndex + 2 || !['bun', 'npm', 'pnpm', 'yarn'].includes(commandBaseName(command[packageManagerIndex]).toLowerCase())) return false;
   const previous = command[index - 1];
   if (typeof previous !== 'string' || !previous.startsWith('-') || previous.includes('=')) return false;
   return SIDECAR_PACKAGE_MANAGER_VALUE_OPTIONS.has(previous);
