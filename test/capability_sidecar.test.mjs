@@ -370,6 +370,14 @@ describe('Capability sidecar transport', () => {
       }).manifest();
       assert.equal(cwdShebangIsolated.dotenvSecret, null);
       assert.equal(cwdShebangIsolated.bunfigPreload, false);
+      assert.throws(
+        () => new CapabilitySidecar({
+          command: ['timeout', '5', './cwd-sidecar'],
+          cwd: root,
+          timeoutMs: 1000,
+        }).manifest(),
+        { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+      );
 
       const mismatchPath = path.join(root, 'mismatch.mjs');
       await writeFile(mismatchPath, `

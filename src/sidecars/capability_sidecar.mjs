@@ -292,7 +292,7 @@ function sidecarSpawnArgv(argv, cwd = undefined) {
   const emptyEnvFileArg = `--env-file=${EMPTY_BUN_ENV_FILE}`;
   const emptyConfigArg = `--config=${EMPTY_BUN_CONFIG_FILE}`;
   if (commandBaseName(argv[0]) !== 'bun') {
-    if (bunWrapperCommand(argv)) {
+    if (bunWrapperCommand(argv, cwd)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars must not run through command wrappers');
     }
     const bunShebangArgs = bunShebangRuntimeArgs(commandInspectionPath(argv[0], cwd));
@@ -313,15 +313,16 @@ function sidecarSpawnArgv(argv, cwd = undefined) {
   return [argv[0], ...isolationArgs, ...argv.slice(1)];
 }
 
-function bunWrapperCommand(argv) {
+function bunWrapperCommand(argv, cwd = undefined) {
   const command = commandBaseName(argv[0]);
   if (BUN_SHELL_WRAPPER_COMMANDS.has(command)) return true;
   if (!BUN_ARGV_WRAPPER_COMMANDS.has(command)) return false;
-  return argv.slice(1).some((value) => bunCommandArgument(value));
+  return argv.slice(1).some((value) => bunCommandArgument(value, cwd));
 }
 
-function bunCommandArgument(value) {
+function bunCommandArgument(value, cwd = undefined) {
   if (commandBaseName(value) === 'bun') return true;
+  if ((value.includes('/') || value.includes('\\')) && bunShebangEntrypoint(commandInspectionPath(value, cwd))) return true;
   return /(?:^|[\s"'=:;|&()<>])bun(?:\.exe)?(?:$|[\s"':;|&()<>])/.test(value.toLowerCase());
 }
 

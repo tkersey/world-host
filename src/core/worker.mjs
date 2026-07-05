@@ -859,9 +859,12 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}) {
     if (allowedHttpMethods.size && (!method || !allowedHttpMethods.has(method))) return false;
   }
   const allowedFileRoots = policySet(policy.allowedFileRoots);
-  if (allowedFileRoots.size && driverManifestIsFile(manifest, hostRequest)) {
-    const root = manifest.diagnostics?.root;
-    if (!root || !allowedFileRoots.has(root)) return false;
+  if (driverManifestIsFile(manifest, hostRequest)) {
+    if (policy.allowPartialEffectBatch === true && !allowedFileRoots.size) return false;
+    if (allowedFileRoots.size) {
+      const root = manifest.diagnostics?.root;
+      if (!root || !allowedFileRoots.has(root)) return false;
+    }
   }
   try {
     assertDurableRecoveryAllowed(manifest.recoveryClass, policy);

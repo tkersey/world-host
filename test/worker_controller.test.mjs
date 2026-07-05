@@ -1738,6 +1738,70 @@ describe('RunController and WorldWorker', () => {
     }
   });
 
+  it('leaves file requests without root allowlists unresolved in partial batches', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'partial-file-root-key:1', idempotencyKeyFingerprint: 0xa09n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'partial-file-root-key:2', idempotencyKeyFingerprint: 0xa19n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const coveredDriver = fixtureEffectDriver();
+    const fileDriver = fixtureEffectDriver({
+      driverId: 'file.effect.driver',
+      actuatorRef: 'file:read',
+      descriptorFingerprint: 'descriptor:file-read',
+      actuationClasses: ['file'],
+      responseStatuses: ['ok'],
+      authorityLabels: ['file:sandbox'],
+      diagnostics: { root: FIXTURE_FILE_ROOT },
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [coveredDriver, fileDriver],
+      effectPolicy: {
+        allowPartialEffectBatch: true,
+        allowedAuthorityLabels: new Set(['test', 'file:sandbox']),
+      },
+      hostRequestMapper: (worldHostRequest) => {
+        if (worldHostRequest.requestFingerprint === 0xa02n) {
+          return {
+            actuatorRef: 'file:read',
+            descriptorFingerprint: 'descriptor:file-read',
+            actuationClass: 'file',
+            responseSchema: { status: 'ok' },
+            idempotencyKeyBytes: fromUtf8('partial-file-missing-root-policy-key'),
+            idempotencyKeyWorldFingerprint: 'world:key:partial-file-missing-root-policy',
+            requestBytes: fromUtf8('file read'),
+            hostRequestFingerprint: 'world:host-request:0000000000000a02',
+          };
+        }
+        return {
+          actuatorRef: 'world:actuator-ref:0000000000000a05',
+          descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+          actuationClass: 'world:actuation-class:1',
+          responseSchema: { status: 'responded' },
+          idempotencyKeyBytes: fromUtf8('partial-file-covered-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:partial-file-covered',
+          requestBytes: fromUtf8('covered'),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        };
+      },
+    });
+
+    const result = await controller.advance(runId, branchId);
+    const effects = await store.listEffectRecords(runId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(coveredDriver.invocationCount, 1);
+    assert.equal(fileDriver.invocationCount, 0);
+    assert.equal(effects.length, 1);
+    assert.equal(result.unresolvedHostRequests.length, 1);
+    assert.equal(result.unresolvedHostRequests[0].hostRequestFingerprint, 'world:host-request:0000000000000a02');
+  });
+
   it('includes configured HTTP endpoints in controller effect identity', async () => {
     const pendingClosure = fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]);
     const { store, runId, branchId } = await fixtureStore({
