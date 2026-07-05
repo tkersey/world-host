@@ -2287,7 +2287,7 @@ describe('RunController and WorldWorker', () => {
       closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
     });
     const idempotencyKeyBytes = fromUtf8('cached-model-budget-key');
-    const idempotencyKeyWorldFingerprint = `sha256:${sha256Hex(idempotencyKeyBytes)}`;
+    const idempotencyKeyWorldFingerprint = 'world:key:cached-model-budget';
     const requestBytes = fromUtf8(JSON.stringify({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: 'goal=cached-budget' }));
     const effectIdentityBytes = fromUtf8(stableJson({
       request: JSON.parse(new TextDecoder().decode(requestBytes)),

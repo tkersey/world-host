@@ -387,12 +387,12 @@ export class RunController {
 
 async function loadEffectResolutionInputs(store, effectRecords, pendingRequests = []) {
   const pendingKeys = await pendingRequestReusableKeys(pendingRequests);
-  if (pendingKeys.size === 0) return new Map();
+  if (pendingKeys.worldFingerprints.size === 0 && pendingKeys.idempotencyKeyBytesHex.size === 0) return new Map();
   const inputs = new Map();
   for (const record of effectRecords) {
     if (!record?.resolutionInputRef) continue;
     if (!EFFECT_OUTCOME_STATES.has(record.state)) continue;
-    if (!pendingKeys.has(record.idempotencyKeyWorldFingerprint)) continue;
+    if (!effectRecordMatchesPendingKey(record, pendingKeys)) continue;
     const ref = assertBlobRef(record.resolutionInputRef);
     const key = `${ref.algorithm}:${ref.checksum}:${ref.byteLength}`;
     if (inputs.has(key)) continue;
@@ -402,17 +402,29 @@ async function loadEffectResolutionInputs(store, effectRecords, pendingRequests 
 }
 
 async function pendingRequestReusableKeys(pendingRequests) {
-  const keys = new Set();
+  const keys = {
+    worldFingerprints: new Set(),
+    idempotencyKeyBytesHex: new Set(),
+  };
   for (const request of pendingRequests ?? []) {
     if (typeof request?.idempotencyKeyWorldFingerprint === 'string' && request.idempotencyKeyWorldFingerprint.length > 0) {
-      keys.add(request.idempotencyKeyWorldFingerprint);
-      continue;
+      keys.worldFingerprints.add(request.idempotencyKeyWorldFingerprint);
     }
     if (request?.idempotencyKeyBytes != null) {
-      keys.add(`sha256:${await sha256Hex(assertBytes(request.idempotencyKeyBytes, 'idempotencyKeyBytes'))}`);
+      const idempotencyKeyBytes = assertBytes(request.idempotencyKeyBytes, 'idempotencyKeyBytes');
+      keys.idempotencyKeyBytesHex.add(toHex(idempotencyKeyBytes));
+      if (typeof request?.idempotencyKeyWorldFingerprint !== 'string' || request.idempotencyKeyWorldFingerprint.length === 0) {
+        keys.worldFingerprints.add(`sha256:${await sha256Hex(idempotencyKeyBytes)}`);
+      }
     }
   }
   return keys;
+}
+
+function effectRecordMatchesPendingKey(record, pendingKeys) {
+  if (pendingKeys.worldFingerprints.has(record.idempotencyKeyWorldFingerprint)) return true;
+  return record?.idempotencyKey?.format === 'world-idempotency-key-bytes.hex' &&
+    pendingKeys.idempotencyKeyBytesHex.has(record.idempotencyKey.bytesHex);
 }
 
 function controllerResolveDriver(driver) {

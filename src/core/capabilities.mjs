@@ -672,7 +672,7 @@ function policyBlockers(route, request, policy) {
     const driverMethods = Array.isArray(route.diagnostics?.methods)
       ? new Set(route.diagnostics.methods.map((item) => String(item).toUpperCase()))
       : null;
-    if (!request && requestRoutedEndpointRoute(route)) {
+    if (!request) {
       if (!driverOrigins?.size) blockers.push('http-origin-denied:unknown');
       else if (!policy.allowedHttpOrigins.size) blockers.push('http-origin-allowlist-required');
       else if (!setsIntersect(driverOrigins, policy.allowedHttpOrigins)) blockers.push(`http-origin-denied:${[...driverOrigins].join(',')}`);

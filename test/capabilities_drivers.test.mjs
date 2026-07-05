@@ -206,6 +206,29 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.everyPendingRequestCovered, true);
   });
 
+  it('checks configured HTTP required actuators against any receiver-allowed method', () => {
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [{ actuatorRef: 'http:json', descriptorFingerprint: 'descriptor:http-json' }],
+        requiredHostAuthorityLabels: ['network:http'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      drivers: [new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        methods: ['GET', 'POST'],
+      })],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.everyRequiredActuatorCovered, true);
+  });
+
   it('uses default HTTP methods for multi-method request URLs during preflight', () => {
     const request = {
       ...httpRequest('https://allowed.example/path'),
