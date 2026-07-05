@@ -585,6 +585,8 @@ function adapterHostApiAccess(text, options = {}) {
     const identifier = identifierName.value;
     const destructuredMember = destructuredHostGlobalAccess(text, identifierOffset, identifier, options);
     if (destructuredMember) return destructuredMember;
+    const importMetaEnvAccess = importMetaEnvAccessAt(text, identifierOffset);
+    if (importMetaEnvAccess) return importMetaEnvAccess;
     const member = directHostMemberAccess(text, index);
     if (member && unsafeHostGlobalMember(identifier, member.name, options)) return `${identifier}.${member.name}`;
     if (!member && previousSignificant !== '.' && unsafeBareHostGlobalValue(identifier, options)) return identifier;
@@ -633,6 +635,7 @@ function adapterAliasesHostApiAccess(text, options = {}) {
     if (!target) return null;
     const destructuredMember = destructuredHostGlobalAccess(text, identifierOffset, target, options);
     if (destructuredMember) return destructuredMember;
+    if (target === 'import.meta.env') return target;
     if (HOST_NETWORK_GLOBALS.has(target)) {
       return !options.allowHostNetwork ? target : null;
     }
@@ -826,6 +829,8 @@ function hostAliasAssignmentValueAt(text, index, aliases) {
     if (!prefix || prefix.invalid || prefix.value !== 'await') break;
     value = skipWhitespaceAndComments(text, prefix.end);
   }
+  const importMetaTarget = importMetaAliasTargetAt(text, value);
+  if (importMetaTarget) return importMetaTarget;
   const identifier = readIdentifierName(text, value);
   if (identifier) return !identifier.invalid ? hostAliasTarget(identifier.value, aliases) : 'fetch';
   if (text[value] === '(') {
@@ -889,6 +894,8 @@ function hostAliasTargetInSpan(text, start, end, aliases) {
       index += 1;
       continue;
     }
+    const importMetaTarget = importMetaAliasTargetAt(text, index);
+    if (importMetaTarget) return importMetaTarget;
     const identifier = readIdentifierName(text, index);
     if (!identifier || identifier.invalid) return 'fetch';
     const target = hostAliasTarget(identifier.value, aliases);
@@ -897,6 +904,19 @@ function hostAliasTargetInSpan(text, start, end, aliases) {
     previousSignificant = identifierSignificance(identifier.value);
   }
   return null;
+}
+
+function importMetaEnvAccessAt(text, index) {
+  return importMetaAliasTargetAt(text, index) === 'import.meta.env' ? 'import.meta.env' : null;
+}
+
+function importMetaAliasTargetAt(text, index) {
+  const identifier = readIdentifierName(text, index);
+  if (!identifier || identifier.invalid || identifier.value !== 'import') return null;
+  const metaMember = directHostMemberAccess(text, identifier.end);
+  if (!metaMember || metaMember.name !== 'meta') return null;
+  const envMember = directHostMemberAccess(text, metaMember.end);
+  return envMember?.name === 'env' ? 'import.meta.env' : 'import.meta';
 }
 
 function identifierSignificance(identifier) {
@@ -961,6 +981,8 @@ function skipRegexLiteral(text, index) {
 }
 
 function unsafeHostGlobalMember(identifier, member, options = {}) {
+  if (identifier === 'import.meta') return member === 'env';
+  if (identifier === 'import.meta.env') return true;
   if (['globalThis', 'global', 'window', 'self'].includes(identifier)) {
     if (['process', 'Bun'].includes(member)) return true;
     if (['fetch', 'WebSocket', 'EventSource'].includes(member)) return !options.allowHostNetwork;

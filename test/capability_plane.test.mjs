@@ -435,6 +435,26 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': optionalComputedGlobalBunEnvAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const importMetaEnvAdapter = fromUtf8("export function CapabilityDriver() { return import.meta.env.PATH; }\n");
+    const importMetaEnvAdapterChecksum = `sha256:${await sha256Hex(importMetaEnvAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: importMetaEnvAdapterChecksum }],
+      }, { 'adapter.mjs': importMetaEnvAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const aliasedImportMetaEnvAdapter = fromUtf8("const meta = import.meta; export function CapabilityDriver() { return meta.env.PATH; }\n");
+    const aliasedImportMetaEnvAdapterChecksum = `sha256:${await sha256Hex(aliasedImportMetaEnvAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: aliasedImportMetaEnvAdapterChecksum }],
+      }, { 'adapter.mjs': aliasedImportMetaEnvAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const computedBunFileAdapter = fromUtf8("export function CapabilityDriver() { return Bun['file']('/etc/passwd'); }\n");
     const computedBunFileAdapterChecksum = `sha256:${await sha256Hex(computedBunFileAdapter)}`;
     await assert.rejects(

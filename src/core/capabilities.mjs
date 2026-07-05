@@ -242,6 +242,7 @@ export function preflightCapabilities({
 function sizeLimitBlocker(item) {
   return item.startsWith('runtime-') ||
     item === 'request-limit-exceeds-policy' ||
+    item === 'prompt-limit-exceeds-policy' ||
     item === 'response-limit-exceeds-policy' ||
     item === 'ERR_CAPABILITY_REUSABLE_EFFECT_RESPONSE_TOO_LARGE';
 }

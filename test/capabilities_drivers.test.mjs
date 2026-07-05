@@ -1135,6 +1135,7 @@ describe('capability preflight and reference drivers', () => {
       policy,
     });
     assert.ok(preflightReport.blockers.includes('prompt-limit-exceeds-policy'));
+    assert.equal(preflightReport.valueSizeLimitsSupported, false);
   });
 
   it('enforces prompt byte limits during live model receiver preflight', () => {
@@ -1168,6 +1169,7 @@ describe('capability preflight and reference drivers', () => {
     });
 
     assert.ok(report.blockers.includes('prompt-limit-exceeds-policy'));
+    assert.equal(report.valueSizeLimitsSupported, false);
   });
 
   it('rejects invalid human approval modes during driver preflight', async () => {
