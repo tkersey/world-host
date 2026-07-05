@@ -749,6 +749,19 @@ describe('capability preflight and reference drivers', () => {
       effectRecords: [cachedModelEffect],
       effectResolutionInputs: cachedModelResolutionInputs,
     });
+    const divergentFingerprintReplayReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 0 }),
+      effectRecords: [{
+        ...cachedModelEffect,
+        idempotencyKeyWorldFingerprint: `sha256:${createHash('sha256').update(cachedModelRequest.idempotencyKeyBytes).digest('hex')}`,
+      }],
+      effectResolutionInputs: cachedModelResolutionInputs,
+    });
     const oneNewWithCachedReport = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },
       currentHead: { generation: 0 },
@@ -941,6 +954,7 @@ describe('capability preflight and reference drivers', () => {
     assert.ok(overBudgetReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
     assert.ok(wrappedOverBudgetReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
     assert.equal(replayOnlyReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'), false);
+    assert.deepEqual(divergentFingerprintReplayReport.blockers, []);
     assert.equal(oneNewWithCachedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'), false);
     assert.ok(shadowedReplayReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
     assert.deepEqual(shadowedReplayWithResolutionReport.blockers, []);

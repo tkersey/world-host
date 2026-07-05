@@ -290,11 +290,10 @@ function hasReusableEffectOutcome(
   reusableEffectBlockers = [],
   nonRerunnableReusableEffectBlockers = [],
 ) {
-  if (!request?.idempotencyKeyWorldFingerprint || !request?.hostRequestFingerprint) return false;
+  if (!request?.hostRequestFingerprint) return false;
   const identity = reusableRequestIdentity(request, route);
   if (!identity) return false;
   const sameKeyRecords = effectRecords.filter((record) => (
-    record?.idempotencyKeyWorldFingerprint === request.idempotencyKeyWorldFingerprint &&
     record?.idempotencyKey?.format === 'world-idempotency-key-bytes.hex' &&
     record.idempotencyKey.bytesHex === identity.idempotencyKeyBytesHex
   ));
