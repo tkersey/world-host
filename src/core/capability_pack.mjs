@@ -580,17 +580,11 @@ function adapterHostApiAccess(text, options = {}) {
     if (!identifierName || identifierName.invalid) return true;
     index = identifierName.end;
     const identifier = identifierName.value;
-    if (
-      HOST_NETWORK_GLOBALS.has(identifier) &&
-      previousSignificant !== '.' &&
-      !options.allowHostNetwork
-    ) {
-      return identifier;
-    }
     const destructuredMember = destructuredHostGlobalAccess(text, identifierOffset, identifier, options);
     if (destructuredMember) return destructuredMember;
     const member = directHostMemberAccess(text, index);
     if (member && unsafeHostGlobalMember(identifier, member.name, options)) return `${identifier}.${member.name}`;
+    if (!member && previousSignificant !== '.' && unsafeBareHostGlobalValue(identifier, options)) return identifier;
     previousSignificant = identifierSignificance(identifier);
   }
   return null;
@@ -972,6 +966,11 @@ function unsafeHostGlobalMember(identifier, member, options = {}) {
     return ['abort', 'binding', 'chdir', 'cwd', 'dlopen', 'env', 'exit', 'kill'].includes(member);
   }
   return false;
+}
+
+function unsafeBareHostGlobalValue(identifier, options = {}) {
+  if (HOST_NETWORK_GLOBALS.has(identifier)) return !options.allowHostNetwork;
+  return identifier === 'process' || identifier === 'Bun' || ['globalThis', 'global', 'window', 'self'].includes(identifier);
 }
 
 function stripJavaScriptShebang(text) {

@@ -465,6 +465,26 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': aliasedProcessEnvAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const passedProcessAdapter = fromUtf8("function readHost(p) { return p.env.PATH; }\nexport function CapabilityDriver() { return readHost(process); }\n");
+    const passedProcessAdapterChecksum = `sha256:${await sha256Hex(passedProcessAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: passedProcessAdapterChecksum }],
+      }, { 'adapter.mjs': passedProcessAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const storedProcessAdapter = fromUtf8("const holder = { p: process };\nexport function CapabilityDriver() { return holder.p.env.PATH; }\n");
+    const storedProcessAdapterChecksum = `sha256:${await sha256Hex(storedProcessAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: storedProcessAdapterChecksum }],
+      }, { 'adapter.mjs': storedProcessAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const aliasedBunSpawnAdapter = fromUtf8("const b = Bun; export function CapabilityDriver() { return b.spawn(['echo', 'unsafe']); }\n");
     const aliasedBunSpawnAdapterChecksum = `sha256:${await sha256Hex(aliasedBunSpawnAdapter)}`;
     await assert.rejects(
