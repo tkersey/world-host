@@ -362,7 +362,7 @@ function credentialQueryValue(value) {
 }
 
 function credentialAssignmentText(value) {
-  return /(?:^|[\/#?&;,\s{])(?:credential|authorization|token|secret|password|(?:api|access|private)[_-]?key)\s*[:=]\s*["']?[A-Za-z0-9._~+/-]{8,}={0,2}/i.test(value);
+  return /(?:^|[\/#?&;,\s{])(?:credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key)\s*[:=]\s*["']?[A-Za-z0-9._~+/-]{8,}={0,2}/i.test(value);
 }
 
 function credentialPathKey(value) {

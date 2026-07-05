@@ -1969,6 +1969,9 @@ function sidecarScannedJavaScriptArtifacts(command, packArtifacts) {
 function assertSidecarEntrypointScannable(command, packArtifacts) {
   const entrypoint = sidecarSelectedEntrypointArtifact(command);
   if (!entrypoint) return;
+  if (!sidecarRuntimeCommandPosition(command, 0) && sidecarCommandEntrypointArtifact(command) !== entrypoint) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'sidecar adapter entrypoints must be invoked directly or by a JavaScript runtime');
+  }
   if (sidecarCommandEntrypointNeedsJavaScriptScan(entrypoint, packArtifacts)) return;
   fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'sidecar adapter entrypoints must be JavaScript or carry a JavaScript runtime shebang');
 }

@@ -1408,6 +1408,15 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { './adapter.py': pythonSidecar }),
       { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['python3', './adapter'] },
+        docs: [],
+        checksums: [{ path: './adapter', checksum: pythonSidecarChecksum }],
+      }, { './adapter': pythonSidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
     const pythonShebangSidecar = fromUtf8("#!/usr/bin/python3\nprint('ready')\n");
     const pythonShebangSidecarChecksum = `sha256:${await sha256Hex(pythonShebangSidecar)}`;
     await assert.rejects(
@@ -3923,11 +3932,19 @@ describe('Capability Plane v0.2 core contracts', () => {
         { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
       );
       assert.throws(
+        () => new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/bearer=secret-value/decide' }),
+        { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
+      );
+      assert.throws(
         () => new HttpJsonPackCapabilityDriver({ endpointUrl: 'https://allowed.example/api_key:secret-value/decide' }),
         { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
       );
       assert.throws(
         () => new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide#token=secret-fragment-value' }),
+        { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
+      );
+      assert.throws(
+        () => new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide#bearer=secret-fragment-value' }),
         { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
       );
       const credentialQueryRequest = {
@@ -3960,6 +3977,18 @@ describe('Capability Plane v0.2 core contracts', () => {
           allowEndpointFromRequest: true,
           origins: ['https://allowed.example'],
         }).dryRun({}, credentialPathRequest),
+        { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
+      );
+      const credentialBearerPathRequest = {
+        ...httpRequest(),
+        requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/bearer=secret-value/decide', method: 'POST', body: { prompt: 'hi' } })),
+      };
+      assert.throws(
+        () => new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          allowEndpointFromRequest: true,
+          origins: ['https://allowed.example'],
+        }).dryRun({}, credentialBearerPathRequest),
         { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
       );
       const result = await driver.resolve({
