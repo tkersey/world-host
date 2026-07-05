@@ -2173,6 +2173,55 @@ describe('RunController and WorldWorker', () => {
     }
   });
 
+  it('applies prompt byte limits to model request bytes before resolving effects', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    let fetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"action":{"variant":"final","text":"too-late"}}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonModelDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          packFingerprint: 'sha256:'.concat('f'.repeat(64)),
+        })],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['model:http-json', 'network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          maximumLiveModelCalls: 1,
+          maximumRequestBytes: 4096,
+          maximumPromptBytes: 4,
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'model:decision',
+          descriptorFingerprint: 'descriptor:agent-decision-prompt',
+          actuationClass: 'model',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('model-prompt-limit-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:model-prompt-limit',
+          requestBytes: fromUtf8(JSON.stringify({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: 'goal=prompt-limit' })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      await assert.rejects(
+        () => controller.advance(runId, branchId),
+        { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+      );
+      assert.equal(fetchCalled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('resolves through the preflight-selected non-live model route', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
@@ -2237,6 +2286,8 @@ describe('RunController and WorldWorker', () => {
       headStatus: 'needs_host',
       closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
     });
+    const idempotencyKeyBytes = fromUtf8('cached-model-budget-key');
+    const idempotencyKeyWorldFingerprint = `sha256:${sha256Hex(idempotencyKeyBytes)}`;
     const requestBytes = fromUtf8(JSON.stringify({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: 'goal=cached-budget' }));
     const effectIdentityBytes = fromUtf8(stableJson({
       request: JSON.parse(new TextDecoder().decode(requestBytes)),
@@ -2267,9 +2318,9 @@ describe('RunController and WorldWorker', () => {
       hostRequestFingerprint: 'world:host-request:0000000000000a01',
       idempotencyKey: {
         format: 'world-idempotency-key-bytes.hex',
-        bytesHex: Buffer.from('cached-model-budget-key').toString('hex'),
+        bytesHex: Buffer.from(idempotencyKeyBytes).toString('hex'),
       },
-      idempotencyKeyWorldFingerprint: 'world:key:cached-model-budget',
+      idempotencyKeyWorldFingerprint,
       actuatorRef: 'model:decision',
       descriptorFingerprint: 'descriptor:agent-decision-prompt',
       actuationClass: 'model',
@@ -2305,8 +2356,7 @@ describe('RunController and WorldWorker', () => {
           descriptorFingerprint: 'descriptor:agent-decision-prompt',
           actuationClass: 'model',
           responseSchema: { status: 'ok' },
-          idempotencyKeyBytes: fromUtf8('cached-model-budget-key'),
-          idempotencyKeyWorldFingerprint: 'world:key:cached-model-budget',
+          idempotencyKeyBytes,
           requestBytes,
           hostRequestFingerprint: 'world:host-request:0000000000000a01',
         }),

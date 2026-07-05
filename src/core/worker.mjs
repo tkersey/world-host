@@ -386,7 +386,7 @@ export class RunController {
 }
 
 async function loadEffectResolutionInputs(store, effectRecords, pendingRequests = []) {
-  const pendingKeys = pendingRequestReusableKeys(pendingRequests);
+  const pendingKeys = await pendingRequestReusableKeys(pendingRequests);
   if (pendingKeys.size === 0) return new Map();
   const inputs = new Map();
   for (const record of effectRecords) {
@@ -401,11 +401,15 @@ async function loadEffectResolutionInputs(store, effectRecords, pendingRequests 
   return inputs;
 }
 
-function pendingRequestReusableKeys(pendingRequests) {
+async function pendingRequestReusableKeys(pendingRequests) {
   const keys = new Set();
   for (const request of pendingRequests ?? []) {
     if (typeof request?.idempotencyKeyWorldFingerprint === 'string' && request.idempotencyKeyWorldFingerprint.length > 0) {
       keys.add(request.idempotencyKeyWorldFingerprint);
+      continue;
+    }
+    if (request?.idempotencyKeyBytes != null) {
+      keys.add(`sha256:${await sha256Hex(assertBytes(request.idempotencyKeyBytes, 'idempotencyKeyBytes'))}`);
     }
   }
   return keys;
