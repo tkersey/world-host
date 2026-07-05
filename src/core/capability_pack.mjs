@@ -550,7 +550,10 @@ function adapterHostApiAccess(text, options = {}) {
       continue;
     }
     if (char === '`') {
-      index = readTemplateString(text, index).end;
+      const literal = readTemplateString(text, index);
+      const templateAccess = scanTemplateExpressions(literal, (expression) => adapterHostApiAccess(expression, options));
+      if (templateAccess) return templateAccess;
+      index = literal.end;
       previousSignificant = 'template';
       continue;
     }
@@ -649,7 +652,10 @@ function scanAdapterAliasIdentifiers(text, visitor) {
       continue;
     }
     if (char === '`') {
-      index = readTemplateString(text, index).end;
+      const literal = readTemplateString(text, index);
+      const result = scanTemplateExpressions(literal, (expression) => scanAdapterAliasIdentifiers(expression, visitor));
+      if (result) return result;
+      index = literal.end;
       previousSignificant = 'template';
       continue;
     }
@@ -855,7 +861,10 @@ function hostAliasTargetInSpan(text, start, end, aliases) {
       continue;
     }
     if (char === '`') {
-      index = readTemplateString(text, index).end;
+      const literal = readTemplateString(text, index);
+      const target = scanTemplateExpressions(literal, (expression) => hostAliasTargetInSpan(expression, 0, expression.length - 1, aliases));
+      if (target) return target;
+      index = literal.end;
       previousSignificant = 'template';
       continue;
     }
@@ -1164,6 +1173,7 @@ function adapterHasImportCall(text) {
     }
     if (char === '`') {
       const literal = readTemplateString(text, index);
+      if (scanTemplateExpressions(literal, adapterHasImportCall)) return true;
       const afterLiteral = skipWhitespaceAndComments(text, literal.end);
       if (
         previousSignificant === '[' &&
@@ -1637,6 +1647,7 @@ function readQuotedString(text, index, quote) {
 function readTemplateString(text, index) {
   let value = '';
   let staticLiteral = true;
+  const expressions = [];
   index += 1;
   while (index < text.length) {
     if (text[index] === '\\') {
@@ -1647,14 +1658,26 @@ function readTemplateString(text, index) {
     }
     if (text[index] === '$' && text[index + 1] === '{') {
       staticLiteral = false;
-      index = skipBalancedBrace(text, index + 1);
+      const expressionStart = index + 2;
+      const expressionEnd = skipBalancedBrace(text, index + 1);
+      const closeBrace = text[expressionEnd - 1] === '}' ? expressionEnd - 1 : expressionEnd;
+      expressions.push(text.slice(expressionStart, Math.max(expressionStart, closeBrace)));
+      index = expressionEnd;
       continue;
     }
-    if (text[index] === '`') return { value: staticLiteral ? value : null, end: index + 1 };
+    if (text[index] === '`') return { value: staticLiteral ? value : null, end: index + 1, expressions };
     if (staticLiteral) value += text[index];
     index += 1;
   }
-  return { value: staticLiteral ? value : null, end: index };
+  return { value: staticLiteral ? value : null, end: index, expressions };
+}
+
+function scanTemplateExpressions(literal, scanner) {
+  for (const expression of literal.expressions ?? []) {
+    const result = scanner(expression);
+    if (result) return result;
+  }
+  return null;
 }
 
 function readStringEscape(text, index) {
