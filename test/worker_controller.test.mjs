@@ -1662,6 +1662,82 @@ describe('RunController and WorldWorker', () => {
     }
   });
 
+  it('leaves HTTP requests without method allowlists unresolved in partial batches', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'partial-allowlisted-key:1', idempotencyKeyFingerprint: 0xa09n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'partial-allowlisted-key:2', idempotencyKeyFingerprint: 0xa19n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    try {
+      globalThis.fetch = async () => {
+        fetchCount += 1;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [
+          fixtureEffectDriver(),
+          new GenericHttpJsonCapabilityDriver({
+            endpointUrl: 'https://allowed.example/decide',
+            allowEndpointFromRequest: true,
+            origins: ['https://allowed.example'],
+            methods: ['POST'],
+          }),
+        ],
+        effectPolicy: {
+          allowPartialEffectBatch: true,
+          allowedAuthorityLabels: new Set(['test', 'network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+        },
+        hostRequestMapper: (worldHostRequest) => {
+          if (worldHostRequest.requestFingerprint === 0xa02n) {
+            return {
+              actuatorRef: 'http:json',
+              descriptorFingerprint: 'descriptor:http-json',
+              actuationClass: 'http',
+              responseSchema: { status: 'ok' },
+              idempotencyKeyBytes: fromUtf8('partial-http-missing-method-policy-key'),
+              idempotencyKeyWorldFingerprint: 'world:key:partial-http-missing-method-policy',
+              requestBytes: fromUtf8(JSON.stringify({
+                url: 'https://allowed.example/decide',
+                method: 'POST',
+                body: { prompt: 'unresolved' },
+              })),
+              hostRequestFingerprint: 'world:host-request:0000000000000a02',
+            };
+          }
+          return {
+            actuatorRef: 'world:actuator-ref:0000000000000a05',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+            actuationClass: 'world:actuation-class:1',
+            responseSchema: { status: 'responded' },
+            idempotencyKeyBytes: fromUtf8('partial-covered-key'),
+            idempotencyKeyWorldFingerprint: 'world:key:partial-covered',
+            requestBytes: fromUtf8('covered'),
+            hostRequestFingerprint: 'world:host-request:0000000000000a01',
+          };
+        },
+      });
+
+      const result = await controller.advance(runId, branchId);
+      const effects = await store.listEffectRecords(runId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fetchCount, 0);
+      assert.equal(effects.length, 1);
+      assert.equal(result.unresolvedHostRequests.length, 1);
+      assert.equal(result.unresolvedHostRequests[0].hostRequestFingerprint, 'world:host-request:0000000000000a02');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('includes configured HTTP endpoints in controller effect identity', async () => {
     const pendingClosure = fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]);
     const { store, runId, branchId } = await fixtureStore({

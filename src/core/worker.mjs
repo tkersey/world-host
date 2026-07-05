@@ -847,6 +847,7 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}) {
     const origin = requestOriginForManifest(hostRequest, manifest);
     const driverOrigins = Array.isArray(manifest.diagnostics?.origins) ? new Set(manifest.diagnostics.origins) : null;
     if (driverOrigins && (!origin || !driverOrigins.has(origin))) return false;
+    if (policy.allowPartialEffectBatch === true && !allowedHttpOrigins.size) return false;
     if (allowedHttpOrigins.size && (!origin || !allowedHttpOrigins.has(origin))) return false;
     const method = requestMethodForManifest(hostRequest, manifest);
     const driverMethods = Array.isArray(manifest.diagnostics?.methods)
@@ -854,6 +855,7 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}) {
       : null;
     if (driverMethods && (!method || !driverMethods.has(method))) return false;
     const allowedHttpMethods = policyUpperSet(policy.allowedHttpMethods);
+    if (policy.allowPartialEffectBatch === true && !allowedHttpMethods.size) return false;
     if (allowedHttpMethods.size && (!method || !allowedHttpMethods.has(method))) return false;
   }
   const allowedFileRoots = policySet(policy.allowedFileRoots);
