@@ -478,6 +478,7 @@ function sidecarPath() {
 }
 
 function encodeBytes(value) {
+  if (typeof value === 'bigint') return sidecarBigIntString(value);
   if (value instanceof Uint8Array) {
     return {
       [BYTES_SENTINEL_KEY]: BYTES_SENTINEL_VALUE,
@@ -494,6 +495,12 @@ function encodeBytes(value) {
     };
   }
   return encoded;
+}
+
+function sidecarBigIntString(value) {
+  const sign = value < 0n ? '-' : '';
+  const magnitude = value < 0n ? -value : value;
+  return `${sign}0x${magnitude.toString(16)}`;
 }
 
 function decodeBytes(value) {

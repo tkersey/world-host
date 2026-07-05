@@ -70,7 +70,8 @@ describe('Capability sidecar transport', () => {
             payload: {
               ok: true,
               actuatorRef: frame.payload.hostRequest?.actuatorRef ?? null,
-              legacyRequest: frame.payload.request ?? null
+              legacyRequest: frame.payload.request ?? null,
+              contextRequestFingerprint: frame.payload.context?.worldHostRequest?.requestFingerprint ?? null
             }
           }) + '\\n');
         } else {
@@ -92,6 +93,11 @@ describe('Capability sidecar transport', () => {
       const resolved = await sidecar.resolve({ trace: true }, { actuatorRef: 'http:json' });
       assert.equal(resolved.ok, true);
       assert.equal(resolved.actuatorRef, 'http:json');
+      const resolvedWithBigIntContext = await sidecar.resolve(
+        { worldHostRequest: { requestFingerprint: 0x12n } },
+        { actuatorRef: 'http:json' },
+      );
+      assert.equal(resolvedWithBigIntContext.contextRequestFingerprint, '0x12');
       assert.equal((await sidecar.resolve({ request: 'ok' })).legacyRequest, 'ok');
       assert.equal((await new CapabilitySidecar({ command: ['bun', sidecarPath], timeoutMs: 1000 }).manifest()).driverId, 'fixture-sidecar');
       assert.equal((await new CapabilitySidecar({ command: ['bun', 'sidecar.mjs'], cwd: root, timeoutMs: 1000 }).manifest()).driverId, 'fixture-sidecar');
