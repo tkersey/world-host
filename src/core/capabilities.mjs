@@ -849,7 +849,7 @@ function configuredRouteMethod(route) {
 function isHttpRoute(route, request) {
   return request?.actuationClass === 'http' ||
     (route?.supportedActuationClasses ?? []).includes('http') ||
-    (route?.authorityLabels ?? []).includes('network:http');
+    (route?.authorityLabels ?? []).some((label) => label.startsWith('network:'));
 }
 
 function isLiveModelRoute(route, request) {

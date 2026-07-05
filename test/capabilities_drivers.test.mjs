@@ -71,6 +71,53 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.fileNetworkAuthoritiesAllowed, false);
   });
 
+  it('applies HTTP policy to network-prefixed authority labels during route selection', () => {
+    const request = {
+      ...fixtureRequest(),
+      requestBytes: fromUtf8(stableJson({ prompt: 'hi' })),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [
+        fixtureDriverWithAuthority(['network:openai'], {
+          driverId: 'blocked-openai',
+          diagnostics: {
+            endpointSource: 'config',
+            configuredOrigin: 'https://blocked.example',
+            origins: ['https://blocked.example'],
+            defaultMethod: 'POST',
+            methods: ['POST'],
+          },
+        }),
+        fixtureDriverWithAuthority(['network:openai'], {
+          driverId: 'allowed-openai',
+          diagnostics: {
+            endpointSource: 'config',
+            configuredOrigin: 'https://allowed.example',
+            origins: ['https://allowed.example'],
+            defaultMethod: 'POST',
+            methods: ['POST'],
+          },
+        }),
+      ],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:openai'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.deepEqual(report.selectedPendingRequestRoutes, [{
+      actuatorRef: 'fixture:model',
+      descriptorFingerprint: 'descriptor:fixture-model',
+      driverId: 'allowed-openai',
+      driverIndex: 1,
+    }]);
+  });
+
   it('uses configured HTTP driver default methods when request URLs omit methods during preflight', () => {
     const request = {
       ...httpRequest('https://allowed.example/path'),

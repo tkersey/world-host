@@ -958,6 +958,7 @@ function skipRegexLiteral(text, index) {
 
 function unsafeHostGlobalMember(identifier, member, options = {}) {
   if (['globalThis', 'global', 'window', 'self'].includes(identifier)) {
+    if (['process', 'Bun'].includes(member)) return true;
     if (['fetch', 'WebSocket', 'EventSource'].includes(member)) return !options.allowHostNetwork;
     return ['Worker', 'SharedWorker'].includes(member);
   }
