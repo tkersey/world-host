@@ -337,6 +337,26 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': aliasedBareEventSourceAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const promiseThenFetchAdapter = fromUtf8("export function CapabilityDriver(url) { return Promise.resolve(url).then(fetch); }\n");
+    const promiseThenFetchAdapterChecksum = `sha256:${await sha256Hex(promiseThenFetchAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: promiseThenFetchAdapterChecksum }],
+      }, { 'adapter.mjs': promiseThenFetchAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const arrayEscapedFetchAdapter = fromUtf8("export function CapabilityDriver(url) { return [fetch].at(0)(url); }\n");
+    const arrayEscapedFetchAdapterChecksum = `sha256:${await sha256Hex(arrayEscapedFetchAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: arrayEscapedFetchAdapterChecksum }],
+      }, { 'adapter.mjs': arrayEscapedFetchAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const commentedFetchAliasAdapter = fromUtf8("// const f = fetch\nconst note = 'f = fetch';\nfunction f() { return { ok: true }; }\nexport function CapabilityDriver() { return f(); }\n");
     const commentedFetchAliasAdapterChecksum = `sha256:${await sha256Hex(commentedFetchAliasAdapter)}`;
     await assert.doesNotReject(

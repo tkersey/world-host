@@ -39,7 +39,6 @@ const SEMANTIC_FIELDS = Object.freeze([
 const SECRET_PATTERN = /credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key/i;
 const CONFORMANCE_RECEIPT_PATH = 'conformance.json';
 const HOST_NETWORK_GLOBALS = new Set(['fetch', 'WebSocket', 'EventSource']);
-const HOST_NETWORK_CONSTRUCTORS = new Set(['WebSocket', 'EventSource']);
 const ADAPTER_IMPORT_SCANNERS = globalThis.Bun?.Transpiler ? Object.freeze({
   js: new globalThis.Bun.Transpiler({ loader: 'js' }),
   jsx: new globalThis.Bun.Transpiler({ loader: 'jsx' }),
@@ -584,8 +583,7 @@ function adapterHostApiAccess(text, options = {}) {
     if (
       HOST_NETWORK_GLOBALS.has(identifier) &&
       previousSignificant !== '.' &&
-      !options.allowHostNetwork &&
-      hostNetworkInvocationAt(text, index, previousSignificant, identifier)
+      !options.allowHostNetwork
     ) {
       return identifier;
     }
@@ -639,7 +637,7 @@ function adapterAliasesHostApiAccess(text, options = {}) {
     const destructuredMember = destructuredHostGlobalAccess(text, identifierOffset, target, options);
     if (destructuredMember) return destructuredMember;
     if (HOST_NETWORK_GLOBALS.has(target)) {
-      return !options.allowHostNetwork && hostNetworkInvocationAt(text, index, _previousSignificant, target) ? target : null;
+      return !options.allowHostNetwork ? target : null;
     }
     const member = directHostMemberAccess(text, index) ?? directHostMemberAccess(text, skipClosingCalleeParens(text, index));
     return member && unsafeHostGlobalMember(target, member.name, options) ? `${target}.${member.name}` : null;
@@ -692,25 +690,6 @@ function scanAdapterAliasIdentifiers(text, visitor) {
     previousSignificant = identifierSignificance(identifier);
   }
   return null;
-}
-
-function hostNetworkInvocationAt(text, index, previousSignificant, target) {
-  if (HOST_NETWORK_CONSTRUCTORS.has(target) && previousSignificant === 'new') return true;
-  const callStart = skipWhitespaceAndComments(text, index);
-  if (hostInvocationAt(text, callStart)) return true;
-  if (hostInvocationAfterCallee(text, index)) return true;
-  const member = directHostMemberAccess(text, index) ?? directHostMemberAccess(text, skipClosingCalleeParens(text, index));
-  return Boolean(member && ['call', 'apply', 'bind'].includes(member.name));
-}
-
-function hostInvocationAt(text, index) {
-  return dangerousCallAt(text, index) || text[index] === '`';
-}
-
-function hostInvocationAfterCallee(text, index) {
-  index = skipWhitespaceAndComments(text, index);
-  while (text[index] === ')') index = skipWhitespaceAndComments(text, index + 1);
-  return hostInvocationAt(text, index);
 }
 
 function skipClosingCalleeParens(text, index) {
