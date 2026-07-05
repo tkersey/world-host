@@ -1126,6 +1126,48 @@ describe('capability preflight and reference drivers', () => {
       () => driver.resolve(context, humanRequest),
       { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
     );
+
+    const preflightReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [humanRequest],
+      drivers: [driver],
+      policy,
+    });
+    assert.ok(preflightReport.blockers.includes('prompt-limit-exceeds-policy'));
+  });
+
+  it('enforces prompt byte limits during live model receiver preflight', () => {
+    const modelRequest = {
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClass: 'model',
+      responseSchema: { status: 'ok' },
+      idempotencyKeyWorldFingerprint: 'world:key:model-prompt-limit',
+      requestBytes: fromUtf8(stableJson({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: 'goal=too-large' })),
+      hostRequestFingerprint: 'world:host-request:0000000000000b01',
+    };
+    const driver = fixtureDriverWithAuthority(['model:live'], {
+      driverId: 'live-model-prompt-limit',
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClasses: ['model'],
+      recoveryClass: EffectRecoveryClass.idempotent,
+    });
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [modelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:live'],
+        maximumLiveModelCalls: 1,
+        maximumRequestBytes: 4096,
+        maximumPromptBytes: 4,
+      }),
+    });
+
+    assert.ok(report.blockers.includes('prompt-limit-exceeds-policy'));
   });
 
   it('rejects invalid human approval modes during driver preflight', async () => {

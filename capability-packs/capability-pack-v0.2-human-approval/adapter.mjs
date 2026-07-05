@@ -1247,9 +1247,12 @@ function assertHumanPolicyAllows(context, manifest, hostRequest) {
   if (deniedAuthorityLabels.length)
     fail("ERR_CAPABILITY_AUTHORITY_DENIED", "authority label denied", { labels: deniedAuthorityLabels });
   const maximumRequestBytes = positivePolicyLimit(policy.maximumRequestBytes ?? policy.maximumPromptBytes ?? 1024 * 1024, "maximumRequestBytes");
+  const maximumPromptBytes = positivePolicyLimit(policy.maximumPromptBytes ?? maximumRequestBytes, "maximumPromptBytes");
   const maximumResponseBytes = positivePolicyLimit(policy.maximumResponseBytes ?? 1024 * 1024, "maximumResponseBytes");
   const policyRequestBytes = hostRequest?.policyRequestBytes ?? hostRequest?.requestBytes;
-  if (policyRequestBytes?.byteLength > maximumRequestBytes)
+  if (hostRequest?.requestBytes?.byteLength > maximumRequestBytes)
+    fail("ERR_CAPABILITY_PROMPT_TOO_LARGE");
+  if (policyRequestBytes?.byteLength > maximumPromptBytes)
     fail("ERR_CAPABILITY_PROMPT_TOO_LARGE");
   if (manifest?.maximumResponseBytes > maximumResponseBytes)
     fail("ERR_CAPABILITY_RESPONSE_LIMIT_EXCEEDS_POLICY");

@@ -659,6 +659,8 @@ function policyBlockers(route, request, policy) {
   const deniedLabels = route.authorityLabels.filter((label) => policy.allowedAuthorityLabels.size && !policy.allowedAuthorityLabels.has(label));
   if (deniedLabels.length) blockers.push(`authority-denied:${deniedLabels.join(',')}`);
   if (request && policy.maximumRequestBytes !== undefined && request.requestBytes?.byteLength > policy.maximumRequestBytes) blockers.push('request-limit-exceeds-policy');
+  const promptBytes = request?.policyRequestBytes ?? (isLiveModelRoute(route, request) || isHumanRoute(route, request) ? request?.requestBytes : undefined);
+  if (request && policy.maximumPromptBytes !== undefined && promptBytes?.byteLength > policy.maximumPromptBytes) blockers.push('prompt-limit-exceeds-policy');
   if (policy.maximumResponseBytes !== undefined && route.maximumResponseBytes > policy.maximumResponseBytes) blockers.push('response-limit-exceeds-policy');
   const allowedFileRoots = policy.allowedFileRoots ?? new Set();
   if (isFileRoute(route, request)) {

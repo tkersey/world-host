@@ -2290,7 +2290,11 @@ describe('RunController and WorldWorker', () => {
 
       await assert.rejects(
         () => controller.advance(runId, branchId),
-        { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+        (error) => {
+          assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+          assert.ok(error.details?.blockers?.includes('prompt-limit-exceeds-policy'));
+          return true;
+        },
       );
       assert.equal(fetchCalled, false);
     } finally {

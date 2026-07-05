@@ -5061,6 +5061,27 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.deepEqual(packApproval.manifest().supportedResponseStatuses, ['ok']);
     assert.deepEqual(new HumanApprovalPackCapabilityDriver({ mode: 'noninteractive-deny' }).manifest().supportedResponseStatuses, ['rejected']);
     assert.equal(packApproval.preflight({}, approvalRequest()).accepted, false);
+    const promptLimitedApprovalRequest = {
+      ...approvalRequest(),
+      requestBytes: fromUtf8(stableJson({ prompt: 'approve this larger request' })),
+    };
+    const promptLimitedApprovalPolicy = {
+      allowLiveEffects: true,
+      allowHumanEffects: true,
+      maximumRequestBytes: 4096,
+      maximumPromptBytes: 4,
+    };
+    const promptLimitedPackApprovalReport = packApproval.preflight({
+      policy: promptLimitedApprovalPolicy,
+    }, promptLimitedApprovalRequest);
+    assert.equal(promptLimitedPackApprovalReport.accepted, false);
+    assert.ok(promptLimitedPackApprovalReport.blockers.includes('ERR_CAPABILITY_PROMPT_TOO_LARGE'));
+    await assert.rejects(
+      () => packApproval.resolve({
+        policy: promptLimitedApprovalPolicy,
+      }, promptLimitedApprovalRequest),
+      { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+    );
     const unsupportedPackApproval = new HumanApprovalPackCapabilityDriver({ mode: 'interactive', prompt: async () => true });
     const unsupportedPackApprovalReport = unsupportedPackApproval.preflight({
       policy: { allowLiveEffects: true, allowHumanEffects: true },
