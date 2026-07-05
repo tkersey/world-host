@@ -3841,6 +3841,21 @@ describe('Capability Plane v0.2 core contracts', () => {
         { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
       );
       assert.equal(packPromptLimitedFetchCalled, false);
+      await assert.rejects(
+        () => runCapabilityMode({
+          mode: 'dry-run',
+          driver: new HttpJsonPackCapabilityDriver({
+            endpointUrl: 'https://allowed.example/decide',
+            requestTemplate: { prompt: 'x'.repeat(128) },
+          }),
+          hostRequest: { ...httpRequest(), requestBytes: fromUtf8(stableJson({ body: 'x' })) },
+          policy: {
+            maximumRequestBytes: 4096,
+            maximumPromptBytes: 8,
+          },
+        }),
+        { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+      );
 
       let packMalformedExplicitUrlFetchCalled = false;
       globalThis.fetch = async () => {

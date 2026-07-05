@@ -100,6 +100,7 @@ export class GenericHttpJsonCapabilityDriver {
 
   dryRun(context, hostRequest) {
     const request = this.#request(hostRequest);
+    this.#assertDryRunPolicyAllows(context, hostRequest, request);
     return new DryRunReport({
       wouldInvoke: true,
       proposedAction: {
@@ -190,6 +191,33 @@ export class GenericHttpJsonCapabilityDriver {
     const bodyBytes = body ? fromUtf8(body).byteLength : 0;
     if (bodyBytes > this.maximumRequestBytes) fail('ERR_HTTP_REQUEST_TOO_LARGE');
     return { url, method, body, bodyBytes };
+  }
+
+  #assertDryRunPolicyAllows(context, hostRequest, request) {
+    const manifest = this.manifest();
+    const policy = createCapabilityPolicy(context?.policy ?? {});
+    assertCapabilityPolicyAllows({
+      manifest,
+      hostRequest,
+      policy,
+      mode: 'dry-run',
+      enforceNetworkTarget: false,
+      requireEffectOptIn: false,
+      checkNetworkTarget: false,
+      checkFileRoot: false,
+      checkRecoveryClass: false,
+    });
+    assertRenderedRequestWithinPolicy(request, policy);
+    assertCapabilityPolicyAllows({
+      manifest,
+      hostRequest: this.#policyHostRequest(hostRequest, request),
+      policy,
+      mode: 'dry-run',
+      requireEffectOptIn: false,
+      checkNetworkTarget: policy.allowedOrigins.size > 0 || policy.allowedMethods.size > 0,
+      checkFileRoot: false,
+      checkRecoveryClass: false,
+    });
   }
 
   #policyHostRequest(hostRequest, request = this.#request(hostRequest)) {
