@@ -778,6 +778,22 @@ describe('capability preflight and reference drivers', () => {
       effectRecords: shadowedCachedEffects,
       effectResolutionInputs: cachedModelResolutionInputs,
     });
+    const shadowedInvalidCurrentBranchSubmittedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 0 }),
+      effectRecords: [
+        { ...cachedModelEffect, branchId: 'cached-branch' },
+        { ...cachedModelEffect, state: EffectState.submitted, resolutionInputRef: mismatchedResolutionInputRef },
+      ],
+      effectResolutionInputs: new Map([
+        [blobRefKey(cachedModelResolutionInputRef), cachedModelResolutionInputBytes],
+        [blobRefKey(mismatchedResolutionInputRef), mismatchedResolutionInputBytes],
+      ]),
+    });
     const shadowedMixedReport = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },
       currentHead: { generation: 0 },
@@ -928,6 +944,10 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(oneNewWithCachedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'), false);
     assert.ok(shadowedReplayReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
     assert.deepEqual(shadowedReplayWithResolutionReport.blockers, []);
+    assert.deepEqual(shadowedInvalidCurrentBranchSubmittedReport.blockers, [
+      'ERR_CAPABILITY_REUSABLE_EFFECT_TARGET_MISMATCH',
+      'ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED',
+    ]);
     assert.ok(shadowedMixedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
     assert.ok(mismatchedCachedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
     assert.ok(wrongFullKeyReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));

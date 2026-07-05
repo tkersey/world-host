@@ -6,6 +6,7 @@ import { decodeResolutionInputBytes } from '../protocol/world_appliance_wire_cod
 import { decodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
 
 const FIXTURE_MODEL_AUTHORITY_LABELS = new Set(['model:fixture', 'model:fixture-agent']);
+const TERMINAL_REUSABLE_OUTCOME_STATES = new Set(['resolved', 'submitted', 'closure_committed']);
 
 export class CapabilityReport {
   constructor(fields) {
@@ -314,25 +315,37 @@ function hasReusableEffectOutcome(
     : matchingRecords;
   const candidateReusableEffectBlockers = [];
   const candidateNonRerunnableReusableEffectBlockers = [];
-  const reusable = orderedRecords.some((record) => reusableOutcomeRecord(
-    record,
-    request,
-    route,
-    effectResolutionInputs,
-    policy,
-    candidateReusableEffectBlockers,
-    candidateNonRerunnableReusableEffectBlockers,
-    currentBranchId,
-    currentParentTurnClosureFingerprint,
-  ));
-  if (reusable) return true;
+  for (const record of orderedRecords) {
+    const recordReusableEffectBlockers = [];
+    const recordNonRerunnableReusableEffectBlockers = [];
+    if (reusableOutcomeRecord(
+      record,
+      request,
+      route,
+      effectResolutionInputs,
+      policy,
+      recordReusableEffectBlockers,
+      recordNonRerunnableReusableEffectBlockers,
+      currentBranchId,
+      currentParentTurnClosureFingerprint,
+    )) {
+      return true;
+    }
+    addUniqueBlockers(candidateReusableEffectBlockers, recordReusableEffectBlockers);
+    addUniqueBlockers(candidateNonRerunnableReusableEffectBlockers, recordNonRerunnableReusableEffectBlockers);
+    if (branchLocalTerminalOutcomeRecord(record, currentBranchId)) {
+      addUniqueBlockers(reusableEffectBlockers, candidateReusableEffectBlockers);
+      addUniqueBlockers(nonRerunnableReusableEffectBlockers, candidateNonRerunnableReusableEffectBlockers);
+      return false;
+    }
+  }
   addUniqueBlockers(reusableEffectBlockers, candidateReusableEffectBlockers);
   addUniqueBlockers(nonRerunnableReusableEffectBlockers, candidateNonRerunnableReusableEffectBlockers);
   return false;
 }
 
 function reusableOutcomeRecord(record, request, route, effectResolutionInputs, policy, reusableEffectBlockers, nonRerunnableReusableEffectBlockers, currentBranchId = null, currentParentTurnClosureFingerprint = null) {
-  if (!record?.resolutionInputRef || !['resolved', 'submitted', 'closure_committed'].includes(record.state)) return false;
+  if (!record?.resolutionInputRef || !TERMINAL_REUSABLE_OUTCOME_STATES.has(record.state)) return false;
   const resolutionInputBytes = effectResolutionInputs.get(blobRefKey(record.resolutionInputRef));
   if (!resolutionInputBytes) return false;
   try {
@@ -346,6 +359,15 @@ function reusableOutcomeRecord(record, request, route, effectResolutionInputs, p
     return false;
   }
   return true;
+}
+
+function branchLocalTerminalOutcomeRecord(record, currentBranchId = null) {
+  return Boolean(
+    currentBranchId &&
+    record?.branchId === currentBranchId &&
+    record?.resolutionInputRef &&
+    TERMINAL_REUSABLE_OUTCOME_STATES.has(record.state)
+  );
 }
 
 function assertReusableRecoveryClassAccepted(record, route) {
