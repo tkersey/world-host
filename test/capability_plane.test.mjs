@@ -3696,6 +3696,26 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_CAPABILITY_FIXTURE_LIVE_EFFECT_DENIED' },
     );
     assert.equal(approvalShortcutLiveEffectResolveCalled, false);
+    let approvalBudgetDeniedModelResolveCalled = false;
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'approval',
+        driver: deterministicModelLiveEffectDriver(() => {
+          approvalBudgetDeniedModelResolveCalled = true;
+        }),
+        hostRequest: genericHttpModelRequest('goal=approval-budget-denied', 'model-approval-budget-denied-key'),
+        approval: () => ({ approved: true }),
+        journalOptions: {
+          store: new MemoryStore(),
+          runId: 'model-approval-budget-denied-run',
+          branchId: 'main',
+          parentTurnClosureFingerprint: 'world:turn-closure:parent',
+        },
+        policy: { allowLiveEffects: true },
+      }),
+      { code: 'ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED' },
+    );
+    assert.equal(approvalBudgetDeniedModelResolveCalled, false);
     await assert.rejects(
       () => runCapabilityMode({
         mode: 'approval',
@@ -5625,6 +5645,30 @@ describe('Capability Plane v0.2 core contracts', () => {
       );
       assert.equal(deniedPreflight.accepted, false);
       assert.equal(deniedPreflight.blockers.includes('ERR_CAPABILITY_NETWORK_DENIED'), true);
+      let runModeBudgetDeniedResolveCalled = false;
+      await assert.rejects(
+        () => runCapabilityMode({
+          mode: 'live',
+          driver: deterministicModelLiveEffectDriver(() => {
+            runModeBudgetDeniedResolveCalled = true;
+          }),
+          hostRequest: genericHttpModelRequest('goal=run-mode-budget-denied', 'model-run-mode-budget-denied-key'),
+          journalOptions: {
+            store: new MemoryStore(),
+            runId: 'model-run-mode-budget-denied-run',
+            branchId: 'main',
+            parentTurnClosureFingerprint: 'world:turn-closure:parent',
+          },
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }),
+        { code: 'ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED' },
+      );
+      assert.equal(runModeBudgetDeniedResolveCalled, false);
       let authorityDeniedFetchCalled = false;
       globalThis.fetch = async () => {
         authorityDeniedFetchCalled = true;

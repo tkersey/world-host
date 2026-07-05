@@ -86,6 +86,7 @@ export async function runCapabilityMode({
       mode: 'live',
       action: { approved: true },
       enforceNetworkTarget: shouldEnforceNetworkTarget(hostRequest, manifest),
+      // Keep reusable journal outcomes available; beforeInvoke enforces the budget before any live driver call.
       checkLiveModelBudget: false,
     });
     if (!journalOptions) fail('ERR_CAPABILITY_APPROVAL_JOURNAL_REQUIRED', 'approval mode live effects require EffectJournal options');
@@ -113,6 +114,7 @@ export async function runCapabilityMode({
     policy: livePolicy,
     mode: 'live',
     enforceNetworkTarget: shouldEnforceNetworkTarget(hostRequest, manifest),
+    // Keep reusable journal outcomes available; beforeInvoke enforces the budget before any live driver call.
     checkLiveModelBudget: false,
   });
   if (!journalOptions) fail('ERR_CAPABILITY_LIVE_JOURNAL_REQUIRED', 'live mode requires EffectJournal options');
