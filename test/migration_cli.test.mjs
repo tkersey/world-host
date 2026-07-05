@@ -967,10 +967,13 @@ describe('migration, branching, and CLI diagnostics', () => {
         : item);
       await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 
-      assert.equal(await runBunCli(['capability', 'check-pack', '--pack', pack], {
-        stdout: { write() {} },
-        stderr: { write() {} },
-      }), 0);
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+      );
       await assert.rejects(() => readFile(sideEffectPath), { code: 'ENOENT' });
     } finally {
       await rm(root, { recursive: true, force: true });

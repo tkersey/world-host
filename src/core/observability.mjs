@@ -61,10 +61,33 @@ export class HostEventStream {
 export function createHostEvent(type, fields = {}, redact = redactCapabilityDiagnostics) {
   if (!EVENT_TYPES.has(type)) throw new Error(`ERR_HOST_EVENT_TYPE_UNSUPPORTED:${type}`);
   return Object.freeze({
-    ...redact(fields),
+    ...jsonSafeDiagnostics(redact(fields)),
     type,
     at: new Date().toISOString(),
     wallClockDiagnosticOnly: true,
     worldAuthoredEvidence: false,
   });
+}
+
+function jsonSafeDiagnostics(value, seen = new WeakSet()) {
+  if (typeof value === 'bigint') return bigintDiagnosticString(value);
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return '[Circular]';
+    seen.add(value);
+    const out = value.map((item) => jsonSafeDiagnostics(item, seen));
+    seen.delete(value);
+    return out;
+  }
+  if (!value || typeof value !== 'object') return value;
+  if (seen.has(value)) return '[Circular]';
+  seen.add(value);
+  const out = Object.fromEntries(Object.entries(value).map(([key, child]) => [key, jsonSafeDiagnostics(child, seen)]));
+  seen.delete(value);
+  return out;
+}
+
+function bigintDiagnosticString(value) {
+  const sign = value < 0n ? '-' : '';
+  const magnitude = value < 0n ? -value : value;
+  return `${sign}0x${magnitude.toString(16)}`;
 }

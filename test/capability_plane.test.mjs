@@ -107,6 +107,26 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': externalAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const fetchAdapter = fromUtf8("export async function CapabilityDriver() { return await fetch('https://example.test'); }\n");
+    const fetchAdapterChecksum = `sha256:${await sha256Hex(fetchAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: fetchAdapterChecksum }],
+      }, { 'adapter.mjs': fetchAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
+    const bunFileAdapter = fromUtf8("export function CapabilityDriver() { return Bun.file('/etc/passwd'); }\n");
+    const bunFileAdapterChecksum = `sha256:${await sha256Hex(bunFileAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: bunFileAdapterChecksum }],
+      }, { 'adapter.mjs': bunFileAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const localImportAdapter = fromUtf8("import helper from './helper.mjs'; export const CapabilityDriver = helper;");
     const localImportAdapterChecksum = `sha256:${await sha256Hex(localImportAdapter)}`;
     await assert.rejects(
@@ -906,6 +926,17 @@ describe('Capability Plane v0.2 core contracts', () => {
       docs: [],
       checksums: [{ path: 'bin/adapter', checksum: sidecarChecksum }],
     }, { 'bin/adapter': sidecar }), true);
+    const pythonSidecar = fromUtf8("import os\nprint('ready')\n");
+    const pythonSidecarChecksum = `sha256:${await sha256Hex(pythonSidecar)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['python3', './adapter.py'] },
+        docs: [],
+        checksums: [{ path: './adapter.py', checksum: pythonSidecarChecksum }],
+      }, { './adapter.py': pythonSidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
     const extensionlessSidecarImport = fromUtf8("import './helper.mjs';\nconsole.log('ready');\n");
     const extensionlessSidecarImportChecksum = `sha256:${await sha256Hex(extensionlessSidecarImport)}`;
     await assert.rejects(
@@ -1126,12 +1157,15 @@ describe('Capability Plane v0.2 core contracts', () => {
     }, { 'bin/adapter': extensionlessBunTypeScriptSidecar, 'bin/helper': extensionlessBunTypeScriptHelper }), true);
     const binarySidecar = new Uint8Array([0, 159, 146, 150]);
     const binarySidecarChecksum = `sha256:${await sha256Hex(binarySidecar)}`;
-    assert.equal(await assertCapabilityPackChecksums({
-      ...manifest,
-      adapter: { kind: 'sidecar', command: ['bin/native-adapter'] },
-      docs: [],
-      checksums: [{ path: 'bin/native-adapter', checksum: binarySidecarChecksum }],
-    }, { 'bin/native-adapter': binarySidecar }), true);
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bin/native-adapter'] },
+        docs: [],
+        checksums: [{ path: 'bin/native-adapter', checksum: binarySidecarChecksum }],
+      }, { 'bin/native-adapter': binarySidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
     await assert.rejects(
       () => assertCapabilityPackChecksums({
       ...manifest,
@@ -5338,7 +5372,13 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.equal(event.type, HostEventType.capabilityPackLoaded);
     assert.equal(event.at === 'caller-clock', false);
     assert.equal(event.worldAuthoredEvidence, false);
-    stream.emit(HostEventType.runCompleted, { worldFingerprint: 'world:turn-closure:1' });
+    const bigintEvent = stream.emit(HostEventType.runCompleted, {
+      manifestFingerprint: 0x12n,
+      nested: { closureFingerprint: 0xabcdn },
+      worldFingerprint: 'world:turn-closure:1',
+    });
+    assert.equal(bigintEvent.manifestFingerprint, '0x12');
+    assert.equal(bigintEvent.nested.closureFingerprint, '0xabcd');
     const jsonl = stream.toJsonl();
     assert.equal(jsonl.includes('secret'), false);
     assert.equal(stream.summary().worldAuthoredEvidence, false);

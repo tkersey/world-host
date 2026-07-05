@@ -341,6 +341,7 @@ function semanticArtifactChecksums(manifest) {
 function assertAdapterArtifactSelfContained(manifest, artifacts) {
   if (manifest.adapter.kind !== 'in_process' || !manifest.adapter.module) return;
   assertJavaScriptAdapterArtifactSelfContained(manifest.adapter.module, artifacts, 'adapter', checksumPathSet(manifest), new Set(), {
+    ...adapterScannerOptionsForManifest(manifest),
     bunResolutionAliases: true,
     typeScriptCapableRuntime: true,
   });
@@ -349,8 +350,10 @@ function assertAdapterArtifactSelfContained(manifest, artifacts) {
 function assertSidecarAdapterArtifactsSelfContained(manifest, artifacts) {
   if (manifest.adapter.kind !== 'sidecar') return;
   const covered = checksumPathSet(manifest);
+  assertSidecarEntrypointScannable(manifest.adapter.command, artifacts);
   const shebangCommand = sidecarShebangRuntimeCommand(manifest.adapter.command, artifacts);
   const scannerOptions = {
+    ...adapterScannerOptionsForManifest(manifest),
     bunResolutionAliases: sidecarUsesBunResolution(manifest.adapter.command, artifacts),
     typeScriptCapableRuntime: sidecarTypeScriptCapableRuntime(manifest.adapter.command) ||
       (shebangCommand ? sidecarTypeScriptCapableRuntime(shebangCommand) : false),
@@ -504,6 +507,10 @@ function assertJavaScriptAdapterArtifactSelfContained(artifactPath, artifacts, l
   if (adapterHasImportCall(scannedText)) {
     fail('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT', `${label} imports code outside its checksum-covered entry module: ${artifactPath}`);
   }
+  const hostApiAccess = adapterHostApiAccess(scannedText, scannerOptions);
+  if (hostApiAccess) {
+    fail('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT', `${label} accesses host APIs outside receiver policy: ${artifactPath}`, { hostApi: hostApiAccess });
+  }
   for (const item of imports) {
     const imported = localImportArtifact(artifactPath, item.path, covered, scannerOptions);
     if (!imported) {
@@ -517,6 +524,78 @@ function assertJavaScriptAdapterArtifactSelfContained(artifactPath, artifacts, l
     }
     assertJavaScriptAdapterArtifactSelfContained(imported, artifacts, label, covered, seen, scannerOptions);
   }
+}
+
+function adapterScannerOptionsForManifest(manifest) {
+  const authorityLabels = manifest?.authorityLabels ?? [];
+  const actuationClasses = manifest?.supportedActuationClasses ?? [];
+  return {
+    allowHostFile: actuationClasses.includes('file') || authorityLabels.some((label) => label.startsWith('file:')),
+    allowHostNetwork: actuationClasses.includes('http') || authorityLabels.some((label) => label.startsWith('network:')),
+  };
+}
+
+function adapterHostApiAccess(text, options = {}) {
+  for (let index = 0, previousSignificant = null; index < text.length;) {
+    index = skipWhitespaceAndComments(text, index);
+    if (index >= text.length) break;
+    const char = text[index];
+    if (char === '\'' || char === '"') {
+      index = readQuotedString(text, index, char).end;
+      previousSignificant = 'literal';
+      continue;
+    }
+    if (char === '`') {
+      index = readTemplateString(text, index).end;
+      previousSignificant = 'template';
+      continue;
+    }
+    if (!identifierStart(char) && !identifierEscapeStart(text, index)) {
+      previousSignificant = char;
+      index += 1;
+      continue;
+    }
+    const identifierName = readIdentifierName(text, index);
+    if (!identifierName || identifierName.invalid) return true;
+    index = identifierName.end;
+    const identifier = identifierName.value;
+    const callStart = skipWhitespaceAndComments(text, index);
+    if (identifier === 'fetch' && previousSignificant !== '.' && dangerousCallAt(text, callStart) && !options.allowHostNetwork) return 'fetch';
+    const member = directHostMemberAccess(text, index);
+    if (member && unsafeHostGlobalMember(identifier, member.name, options)) return `${identifier}.${member.name}`;
+    previousSignificant = identifier === 'new' ? 'new' : 'identifier';
+  }
+  return null;
+}
+
+function directHostMemberAccess(text, index) {
+  let cursor = skipWhitespaceAndComments(text, index);
+  if (text[cursor] === '.') {
+    cursor += 1;
+  } else if (text[cursor] === '?' && text[cursor + 1] === '.') {
+    cursor += 2;
+  } else {
+    return null;
+  }
+  cursor = skipWhitespaceAndComments(text, cursor);
+  const member = readIdentifierName(text, cursor);
+  return member && !member.invalid ? { name: member.value, end: member.end } : null;
+}
+
+function unsafeHostGlobalMember(identifier, member, options = {}) {
+  if (['globalThis', 'global', 'window', 'self'].includes(identifier)) {
+    if (['fetch', 'WebSocket', 'EventSource'].includes(member)) return !options.allowHostNetwork;
+    return ['Worker', 'SharedWorker'].includes(member);
+  }
+  if (identifier === 'Bun') {
+    if (['connect', 'listen', 'serve'].includes(member)) return !options.allowHostNetwork;
+    if (['file', 'write'].includes(member)) return !options.allowHostFile;
+    return ['env', 'password', 'spawn', 'spawnSync'].includes(member);
+  }
+  if (identifier === 'process') {
+    return ['binding', 'chdir', 'cwd', 'dlopen', 'env', 'exit', 'kill'].includes(member);
+  }
+  return false;
 }
 
 function stripJavaScriptShebang(text) {
@@ -1482,25 +1561,34 @@ function sidecarScannedJavaScriptArtifacts(command, packArtifacts) {
   return artifacts;
 }
 
+function assertSidecarEntrypointScannable(command, packArtifacts) {
+  const entrypoint = sidecarSelectedEntrypointArtifact(command);
+  if (!entrypoint) return;
+  if (sidecarCommandEntrypointNeedsJavaScriptScan(entrypoint, packArtifacts)) return;
+  fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'sidecar adapter entrypoints must be JavaScript or carry a JavaScript runtime shebang');
+}
+
+function sidecarSelectedEntrypointArtifact(command) {
+  const commandEntrypoint = sidecarCommandEntrypointArtifact(command);
+  if (commandEntrypoint) return commandEntrypoint;
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  return entrypointIndex < 0 ? null : command[entrypointIndex];
+}
+
 function sidecarCommandEntrypointNeedsJavaScriptScan(artifactPath, packArtifacts) {
   if (explicitJavaScriptArtifactPath(artifactPath)) return !runtimeOptionDataArtifact(artifactPath);
   if (!extensionlessArtifactPath(artifactPath) || runtimeOptionDataArtifact(artifactPath)) return false;
-  return artifactHasJavaScriptShebang(artifactPath, packArtifacts);
+  return artifactHasScannableText(artifactPath, packArtifacts);
 }
 
-function artifactHasJavaScriptShebang(artifactPath, packArtifacts) {
+function artifactHasScannableText(artifactPath, packArtifacts) {
   const bytes = packArtifacts[artifactPath];
   if (!(bytes instanceof Uint8Array)) return false;
-  let text;
   try {
-    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    return !new TextDecoder('utf-8', { fatal: true }).decode(bytes).includes('\0');
   } catch {
     return false;
   }
-  if (!text.startsWith('#!')) return false;
-  const lineEnd = text.search(/\r|\n/);
-  const firstLine = lineEnd < 0 ? text : text.slice(0, lineEnd);
-  return /(?:^|[/\s])(?:bun|node|deno)(?:\s|$)/i.test(firstLine);
 }
 
 function artifactHasBunShebang(artifactPath, packArtifacts) {
