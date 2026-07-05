@@ -1218,6 +1218,17 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { './adapter.py': pythonSidecar }),
       { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
+    const pythonShebangSidecar = fromUtf8("#!/usr/bin/python3\nprint('ready')\n");
+    const pythonShebangSidecarChecksum = `sha256:${await sha256Hex(pythonShebangSidecar)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['./adapter'] },
+        docs: [],
+        checksums: [{ path: './adapter', checksum: pythonShebangSidecarChecksum }],
+      }, { './adapter': pythonShebangSidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
     const extensionlessSidecarImport = fromUtf8("import './helper.mjs';\nconsole.log('ready');\n");
     const extensionlessSidecarImportChecksum = `sha256:${await sha256Hex(extensionlessSidecarImport)}`;
     await assert.rejects(
@@ -2497,6 +2508,15 @@ describe('Capability Plane v0.2 core contracts', () => {
       () => assertCapabilityPackChecksums({
         ...manifest,
         adapter: { kind: 'sidecar', command: ['nice', 'node', '-e', 'import("node:fs")', './sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: './sidecar.mjs', checksum: sidecarChecksum }],
+      }, { './sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['stdbuf', '-oL', 'node', '-e', 'import("node:fs")', './sidecar.mjs'] },
         docs: [],
         checksums: [{ path: './sidecar.mjs', checksum: sidecarChecksum }],
       }, { './sidecar.mjs': sidecar }),

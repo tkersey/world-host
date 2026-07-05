@@ -960,6 +960,35 @@ describe('capability preflight and reference drivers', () => {
     assert.ok(allowDriverRejectedReport.blockers.includes('ERR_RESPONSE_STATUS_NOT_SUPPORTED'));
   });
 
+  it('applies prompt byte limits to human approval prompts', async () => {
+    const humanRequest = {
+      actuatorRef: 'human:approval',
+      descriptorFingerprint: 'descriptor:human-approval',
+      actuationClass: 'human',
+      responseSchema: { status: 'ok' },
+      idempotencyKeyWorldFingerprint: 'world:key:human-prompt-limit',
+      requestBytes: fromUtf8(stableJson({ prompt: 'approve this larger request' })),
+      hostRequestFingerprint: 'world:host-request:0000000000000a01',
+    };
+    const policy = {
+      allowLiveEffects: true,
+      allowHumanEffects: true,
+      allowedAuthorityLabels: ['human:approval'],
+      maximumRequestBytes: 4096,
+      maximumPromptBytes: 4,
+    };
+    const context = { policy };
+    const driver = new HumanApprovalCapabilityDriver({ mode: 'noninteractive-allow' });
+    const report = driver.preflight(context, humanRequest);
+
+    assert.equal(report.accepted, false);
+    assert.ok(report.blockers.includes('ERR_CAPABILITY_PROMPT_TOO_LARGE'));
+    await assert.rejects(
+      () => driver.resolve(context, humanRequest),
+      { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+    );
+  });
+
   it('rejects invalid human approval modes during driver preflight', async () => {
     const humanRequest = {
       actuatorRef: 'human:approval',

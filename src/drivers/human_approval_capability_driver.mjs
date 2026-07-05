@@ -118,9 +118,12 @@ export class HumanApprovalCapabilityDriver {
 }
 
 function assertHumanPolicyAllows(context, manifest, hostRequest) {
+  const policyHostRequest = hostRequest && hostRequest.policyRequestBytes === undefined
+    ? { ...hostRequest, policyRequestBytes: hostRequest.requestBytes }
+    : hostRequest;
   assertCapabilityPolicyAllows({
     manifest,
-    hostRequest,
+    hostRequest: policyHostRequest,
     policy: context?.policy ?? {},
     mode: 'live',
   });

@@ -60,6 +60,7 @@ const SIDECAR_RUNTIME_WRAPPERS = new Set([
   'powershell.exe',
   'pwsh',
   'sh',
+  'stdbuf',
   'tcsh',
   'time',
   'timeout',
@@ -1837,7 +1838,12 @@ function sidecarSelectedEntrypointArtifact(command) {
 function sidecarCommandEntrypointNeedsJavaScriptScan(artifactPath, packArtifacts) {
   if (explicitJavaScriptArtifactPath(artifactPath)) return !runtimeOptionDataArtifact(artifactPath);
   if (!extensionlessArtifactPath(artifactPath) || runtimeOptionDataArtifact(artifactPath)) return false;
+  if (artifactShebangFirstLine(artifactPath, packArtifacts)) return artifactHasJavaScriptRuntimeShebang(artifactPath, packArtifacts);
   return artifactHasScannableText(artifactPath, packArtifacts);
+}
+
+function artifactHasJavaScriptRuntimeShebang(artifactPath, packArtifacts) {
+  return sidecarShebangRuntimeCommand([artifactPath], packArtifacts) !== null;
 }
 
 function artifactHasScannableText(artifactPath, packArtifacts) {

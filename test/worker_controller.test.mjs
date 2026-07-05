@@ -2642,6 +2642,101 @@ describe('RunController and WorldWorker', () => {
     assert.equal((await store.listEffectRecords(runId)).length, 0);
   });
 
+  it('preserves request-routed HTTP prompt byte limits on cached effect replay', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const requestBytes = fromUtf8(JSON.stringify({
+      url: 'https://allowed.example/decide',
+      method: 'POST',
+      body: { prompt: 'larger-prompt' },
+    }));
+    const requestBytesRef = await store.putBlob(requestBytes);
+    const resolutionInputRef = await store.putBlob(encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xa01n,
+      status: 0,
+      responseValueImageBytes: fixtureResponseValueBytes('cached-http-response', 0xa01n),
+      hostClaimBytes: fromUtf8('claim'),
+      attemptNumber: 1,
+      metadata: fromUtf8('metadata'),
+    }));
+    await store.putEffectRecord(createEffectRecord({
+      runId,
+      branchId,
+      parentTurnClosureFingerprint: 'world:closure:cached-http-parent',
+      hostRequestFingerprint: 'world:host-request:0000000000000a01',
+      idempotencyKey: {
+        format: 'world-idempotency-key-bytes.hex',
+        bytesHex: Buffer.from('request-routed-http-prompt-key').toString('hex'),
+      },
+      idempotencyKeyWorldFingerprint: 'world:key:request-routed-http-prompt',
+      actuatorRef: 'http:json',
+      descriptorFingerprint: 'descriptor:http-json',
+      actuationClass: 'http',
+      responseSchema: { status: 'ok' },
+      requestBytesChecksum: `sha256:${sha256Hex(requestBytes)}`,
+      requestIdentityChecksum: `sha256:${sha256Hex(requestBytes)}`,
+      requestBytesRef,
+      state: EffectState.resolved,
+      driverRecoveryClass: EffectRecoveryClass.pure,
+      resolutionInputRef,
+    }));
+    const driver = fixtureEffectDriver({
+      driverId: 'request-routed-http-prompt-driver',
+      actuatorRef: 'http:json',
+      descriptorFingerprint: 'descriptor:http-json',
+      actuationClasses: ['http'],
+      responseStatuses: ['ok'],
+      authorityLabels: ['network:http'],
+      diagnostics: {
+        endpointSource: 'request-or-config',
+        origins: ['https://allowed.example'],
+        methods: ['POST'],
+      },
+    });
+    let fetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [driver],
+        effectPolicy: {
+          maximumRequestBytes: 4096,
+          maximumPromptBytes: 4,
+          maximumResponseBytes: 4096,
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('request-routed-http-prompt-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:request-routed-http-prompt',
+          requestBytes,
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      await assert.rejects(
+        () => controller.advance(runId, branchId),
+        { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+      );
+      assert.equal(fetchCalled, false);
+      assert.equal(driver.invocationCount, 0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('rejects file-capable drivers outside receiver root policy before resolving effects', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',

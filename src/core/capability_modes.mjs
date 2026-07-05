@@ -220,10 +220,12 @@ export function networkPolicyHostRequest(hostRequest, manifest) {
     if (endpointSource === 'config' || (endpointSource === 'request-or-config' && parsed?.url === undefined)) {
       return configuredNetworkPolicyHostRequest(hostRequest, manifest, parsed);
     }
-    if (parsed?.url === undefined || parsed.method !== undefined) return hostRequest;
+    const policyRequestBytes = hostRequest.policyRequestBytes ?? hostRequest.requestBytes;
+    if (parsed?.url === undefined) return hostRequest;
+    if (parsed.method !== undefined) return { ...hostRequest, policyRequestBytes };
     const methods = Array.isArray(manifest?.diagnostics?.methods) ? manifest.diagnostics.methods : [];
     const method = manifest?.diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : 'GET');
-    return { ...hostRequest, requestBytes: fromUtf8(stableJson({ ...parsed, method })) };
+    return { ...hostRequest, policyRequestBytes, requestBytes: fromUtf8(stableJson({ ...parsed, method })) };
   } catch {
     return hostRequest;
   }
