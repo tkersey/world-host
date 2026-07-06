@@ -3931,6 +3931,52 @@ describe('Capability Plane v0.2 core contracts', () => {
         }, { ...httpRequest(), requestBytes: fromUtf8(stableJson({ body: 'larger-than-one-byte' })) }),
         { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
       );
+      assert.throws(
+        () => new HttpJsonPackCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          allowEndpointFromRequest: true,
+          origins: ['https://allowed.example', 'https://denied.example'],
+          methods: ['POST'],
+        }).dryRun({
+          policy: {
+            maximumRequestBytes: 4096,
+            maximumPromptBytes: 4096,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }, {
+          ...httpRequest(),
+          requestBytes: fromUtf8(stableJson({
+            url: 'https://denied.example/decide',
+            method: 'POST',
+            body: { prompt: 'pack' },
+          })),
+        }),
+        { code: 'ERR_CAPABILITY_ORIGIN_DENIED' },
+      );
+      assert.throws(
+        () => new HttpJsonPackCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          allowEndpointFromRequest: true,
+          origins: ['https://allowed.example'],
+          methods: ['POST', 'DELETE'],
+        }).dryRun({
+          policy: {
+            maximumRequestBytes: 4096,
+            maximumPromptBytes: 4096,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }, {
+          ...httpRequest(),
+          requestBytes: fromUtf8(stableJson({
+            url: 'https://allowed.example/decide',
+            method: 'DELETE',
+            body: { prompt: 'pack' },
+          })),
+        }),
+        { code: 'ERR_CAPABILITY_METHOD_DENIED' },
+      );
 
       let packMalformedExplicitUrlFetchCalled = false;
       globalThis.fetch = async () => {

@@ -1504,6 +1504,9 @@ class GenericHttpJsonCapabilityDriver {
     if (hostRequest?.requestBytes?.byteLength > policy.maximumRequestBytes)
       fail("ERR_CAPABILITY_PROMPT_TOO_LARGE");
     assertRenderedRequestWithinPolicy(request, policy);
+    if (policy.allowedOrigins.size > 0 || policy.allowedMethods.size > 0) {
+      assertOriginAndMethodAllowed(this.#policyHostRequest(hostRequest, request), policy);
+    }
   }
   #assertPolicyAllows(context, hostRequest) {
     const manifest = this.manifest();

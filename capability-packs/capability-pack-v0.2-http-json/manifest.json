@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "packFingerprint": "sha256:1eed7f97de5403a1a0fcd489cbd46e240c363ebd1873e9fea4d35f47f467bd2b",
+  "packFingerprint": "sha256:318ae1654f5756987fc64b7fc912190761cb753bc9995f0471704fa3b3fbf9a5",
   "packageName": "world-capability-http-json",
   "packageVersion": "0.2.0",
   "driverId": "generic-http-json",
@@ -57,7 +57,7 @@
   "checksums": [
     {
       "path": "adapter.mjs",
-      "checksum": "sha256:c881e166d4babba2dc0ecb4751cc46ab525e929d2ef961a4fdd0ac1b61109ae2"
+      "checksum": "sha256:b5fc12f444d33f6134c01b8104caf33fae64ebe96f5385353ab8ce21ffbc2996"
     },
     {
       "path": "README.md",
@@ -69,7 +69,7 @@
     },
     {
       "path": "conformance.json",
-      "checksum": "sha256:db334e82f6e1f1f17db59f82af608497f4f7d0ba555f7ac4a7039e2dc7c0b03b"
+      "checksum": "sha256:ee6d50675e978f9f3847ed12c2136c374caecca442331923f7f60bbd79b29e46"
     }
   ],
   "docs": [
