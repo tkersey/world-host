@@ -319,6 +319,27 @@ describe('RunController and WorldWorker', () => {
     assert.equal(result.status, 'advanced');
   });
 
+  it('allows legacy host-generated install summaries without manifest source diagnostics', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      manifestBytes: fromUtf8(stableJson({
+        kind: 'world-host.install-summary',
+        source: 'host-generated-install-summary',
+        worldAuthoredEvidence: false,
+      })),
+      applicationOverrides: {
+        installationDiagnostics: {},
+      },
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ManifestCheckingWorker(fixtureTurnClosureBytes(), 0x211n),
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+  });
+
   it('disposes dirty warm workers after failed turn submission before retry', async () => {
     const { store, runId, branchId } = await fixtureStore({ headStatus: 'genesis' });
     const workers = [];

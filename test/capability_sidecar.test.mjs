@@ -281,6 +281,27 @@ describe('Capability sidecar transport', () => {
         );
         assert.throws(
           () => new CapabilitySidecar({
+            command: [process.execPath, '--import', './preload.mjs', dotenvPath],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+        assert.throws(
+          () => new CapabilitySidecar({
+            command: [process.execPath, '-r', './preload.mjs', dotenvPath],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+        assert.throws(
+          () => new CapabilitySidecar({
+            command: [process.execPath, '--require=./preload.mjs', dotenvPath],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+        assert.throws(
+          () => new CapabilitySidecar({
             command: [process.execPath, '-e', 'console.log(1)', dotenvPath],
             timeoutMs: 1000,
           }).manifest(),

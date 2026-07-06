@@ -388,6 +388,9 @@ function unsupportedBunConfigOption(value) {
 
 function unsupportedBunCodeLoadingOption(value) {
   return value === '-e' || value === '--eval' || value.startsWith('-e') || value.startsWith('--eval=') ||
+    value === '--import' || value.startsWith('--import=') ||
+    value === '-r' || value.startsWith('-r') ||
+    value === '--require' || value.startsWith('--require=') ||
     value === '--preload' || value.startsWith('--preload=');
 }
 

@@ -1122,14 +1122,33 @@ function assertParentClosureManifestMatchesWorker(worker, parentHead, parentClos
 }
 
 async function decodeStoredApplicationManifestForPreflight(store, application) {
+  let bytes;
   try {
-    return decodeApplianceManifest(await store.getBlob(application.applianceManifestRef));
+    bytes = await store.getBlob(application.applianceManifestRef);
+    return decodeApplianceManifest(bytes);
   } catch (error) {
-    if (application.installationDiagnostics?.manifestSource === 'host-generated-install-summary') return null;
+    if (
+      application.installationDiagnostics?.manifestSource === 'host-generated-install-summary' ||
+      isHostGeneratedInstallSummaryBytes(bytes)
+    ) {
+      return null;
+    }
     fail('ERR_APPLICATION_MANIFEST_INVALID', 'stored appliance manifest is not decodable', {
       cause: error?.message ?? String(error),
     });
   }
+}
+
+function isHostGeneratedInstallSummaryBytes(bytes) {
+  let parsed;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return false;
+  }
+  return parsed?.kind === 'world-host.install-summary' &&
+    parsed?.source === 'host-generated-install-summary' &&
+    parsed?.worldAuthoredEvidence === false;
 }
 
 function assertLoadedApplianceManifestAccepted(worker, application, parentHead, policy) {
@@ -1150,10 +1169,17 @@ async function assertStoredApplicationManifestMatchesWorker(worker, store, appli
   const loaded = worker.readApplianceManifest()?.decoded?.manifestFingerprint;
   if (loaded == null) return;
   let stored;
+  let bytes;
   try {
-    stored = decodeApplianceManifest(await store.getBlob(application.applianceManifestRef));
+    bytes = await store.getBlob(application.applianceManifestRef);
+    stored = decodeApplianceManifest(bytes);
   } catch (error) {
-    if (application.installationDiagnostics?.manifestSource === 'host-generated-install-summary') return;
+    if (
+      application.installationDiagnostics?.manifestSource === 'host-generated-install-summary' ||
+      isHostGeneratedInstallSummaryBytes(bytes)
+    ) {
+      return;
+    }
     fail('ERR_APPLICATION_MANIFEST_INVALID', 'stored appliance manifest is not decodable', {
       cause: error?.message ?? String(error),
     });
