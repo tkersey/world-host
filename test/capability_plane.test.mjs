@@ -4059,6 +4059,10 @@ describe('Capability Plane v0.2 core contracts', () => {
         { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
       );
       assert.throws(
+        () => new HttpJsonPackCapabilityDriver({ endpointUrl: 'https://allowed.example/bearer=secret-value/decide' }),
+        { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
+      );
+      assert.throws(
         () => new HttpJsonPackCapabilityDriver({ endpointUrl: 'https://allowed.example/api_key:secret-value/decide' }),
         { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
       );
@@ -4108,6 +4112,14 @@ describe('Capability Plane v0.2 core contracts', () => {
       };
       assert.throws(
         () => new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          allowEndpointFromRequest: true,
+          origins: ['https://allowed.example'],
+        }).dryRun({}, credentialBearerPathRequest),
+        { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
+      );
+      assert.throws(
+        () => new HttpJsonPackCapabilityDriver({
           endpointUrl: 'https://allowed.example/decide',
           allowEndpointFromRequest: true,
           origins: ['https://allowed.example'],
