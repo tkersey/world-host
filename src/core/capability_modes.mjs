@@ -222,7 +222,7 @@ export function networkPolicyHostRequest(hostRequest, manifest) {
     if (endpointSource === 'config' || (endpointSource === 'request-or-config' && parsed?.url === undefined)) {
       return configuredNetworkPolicyHostRequest(hostRequest, manifest, parsed);
     }
-    const policyRequestBytes = hostRequest.policyRequestBytes ?? hostRequest.requestBytes;
+    const policyRequestBytes = hostRequest.policyRequestBytes ?? httpPolicyRequestBytes(parsed, manifest);
     if (parsed?.url === undefined) return hostRequest;
     if (parsed.method !== undefined) return { ...hostRequest, policyRequestBytes };
     const methods = Array.isArray(manifest?.diagnostics?.methods) ? manifest.diagnostics.methods : [];
@@ -243,9 +243,15 @@ function configuredNetworkPolicyHostRequest(hostRequest, manifest, parsed = {}) 
   if (!url || !method) return hostRequest;
   return {
     ...hostRequest,
-    policyRequestBytes: hostRequest?.requestBytes,
+    policyRequestBytes: hostRequest?.policyRequestBytes ?? httpPolicyRequestBytes(parsed, manifest),
     requestBytes: fromUtf8(stableJson({ url, method })),
   };
+}
+
+function httpPolicyRequestBytes(parsed, manifest) {
+  if (!Object.prototype.hasOwnProperty.call(parsed ?? {}, 'body')) return new Uint8Array();
+  const rendered = manifest?.driverId === 'http-json' ? JSON.stringify(parsed.body) : stableJson(parsed.body);
+  return rendered === undefined ? new Uint8Array() : fromUtf8(rendered);
 }
 
 function assertFixtureModeAllowed(manifest, hostRequest) {

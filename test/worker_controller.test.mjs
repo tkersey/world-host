@@ -3278,6 +3278,60 @@ describe('RunController and WorldWorker', () => {
     assert.equal((await store.listEffectRecords(runId)).length, 0);
   });
 
+  it('charges request-routed HTTP prompt limits to rendered bodies after policy rewrites', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    let fetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://fallback.example/decide',
+          allowEndpointFromRequest: true,
+          origins: ['https://allowed.example', 'https://fallback.example'],
+          methods: ['POST'],
+        })],
+        effectPolicy: {
+          maximumRequestBytes: 4096,
+          maximumPromptBytes: 32,
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('http-rendered-body-prompt-limit-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-rendered-body-prompt-limit',
+          requestBytes: fromUtf8(stableJson({
+            url: `https://allowed.example/${'x'.repeat(256)}`,
+            method: 'POST',
+            metadata: 'x'.repeat(256),
+            body: { prompt: 'ok' },
+          })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fetchCalled, true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('preserves request-routed HTTP prompt byte limits on cached effect replay', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',

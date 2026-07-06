@@ -18,7 +18,7 @@ import {
 } from '../src/core/capability_pack.mjs';
 import { assertCapabilityResolutionBoundary, assertNoWorldEvidenceKeys, defineCapabilityDriver } from '../src/core/capability_driver.mjs';
 import { assertCapabilityPolicyAllows, createCapabilityPolicy, redactCapabilityDiagnostics } from '../src/core/capability_policy.mjs';
-import { runCapabilityMode } from '../src/core/capability_modes.mjs';
+import { networkPolicyHostRequest, runCapabilityMode } from '../src/core/capability_modes.mjs';
 import { preflightCapabilities } from '../src/core/capabilities.mjs';
 import { EnvSecretProvider, assertNoSecretValuePersisted, assertRequiredSecretsAvailable, redactSecrets } from '../src/core/secrets.mjs';
 import { FileSecretProvider, PromptSecretProvider } from '../src/bun/secret_providers.mjs';
@@ -3350,6 +3350,34 @@ describe('Capability Plane v0.2 core contracts', () => {
       },
       mode: 'dry-run',
     }), { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' });
+    const longRoutedHttpRequest = {
+      ...httpRequest(),
+      requestBytes: fromUtf8(stableJson({
+        url: `https://allowed.example/${'x'.repeat(128)}`,
+        body: { prompt: 'ok' },
+      })),
+    };
+    const routedHttpPolicyRequest = networkPolicyHostRequest(longRoutedHttpRequest, new GenericHttpJsonCapabilityDriver({
+      endpointUrl: 'https://fallback.example/decide',
+      allowEndpointFromRequest: true,
+      origins: ['https://allowed.example', 'https://fallback.example'],
+      methods: ['POST'],
+    }).manifest());
+    assert.equal(
+      new TextDecoder().decode(routedHttpPolicyRequest.policyRequestBytes),
+      stableJson({ prompt: 'ok' }),
+    );
+    const configuredHttpPolicyRequest = networkPolicyHostRequest({
+      ...httpRequest(),
+      requestBytes: fromUtf8(stableJson({
+        metadata: 'x'.repeat(128),
+        body: { prompt: 'ok' },
+      })),
+    }, new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }).manifest());
+    assert.equal(
+      new TextDecoder().decode(configuredHttpPolicyRequest.policyRequestBytes),
+      stableJson({ prompt: 'ok' }),
+    );
     const requestlessHttpReport = preflightCapabilities({
       application: { requiredHostAuthorityLabels: ['network:http'] },
       drivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
@@ -4778,7 +4806,11 @@ describe('Capability Plane v0.2 core contracts', () => {
             allowedMethods: ['POST'],
           },
         }),
-        { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+        (error) => {
+          assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+          assert.ok(error.details?.blockers?.includes('ERR_CAPABILITY_PROMPT_TOO_LARGE'));
+          return true;
+        },
       );
       assert.equal(promptLimitedFetchCalled, false);
 
