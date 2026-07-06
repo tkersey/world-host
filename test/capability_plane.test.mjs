@@ -1327,8 +1327,10 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
     );
     const sidecar = fromUtf8('export const sidecar = true;');
+    const bunShebangSidecar = fromUtf8("#!/usr/bin/env bun\nconsole.log('ready');\n");
     const launcherChecksum = `sha256:${await sha256Hex(artifact)}`;
     const sidecarChecksum = `sha256:${await sha256Hex(sidecar)}`;
+    const bunShebangSidecarChecksum = `sha256:${await sha256Hex(bunShebangSidecar)}`;
     await assert.rejects(
       () => assertCapabilityPackChecksums({ ...withFingerprint, checksums: withFingerprint.checksums.slice(0, 1) }, { 'adapter.mjs': artifact }),
       { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
@@ -1426,12 +1428,15 @@ describe('Capability Plane v0.2 core contracts', () => {
       docs: [],
       checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
     }, { 'sidecar.mjs': sidecar }), true);
-    assert.equal(await assertCapabilityPackChecksums({
-      ...manifest,
-      adapter: { kind: 'sidecar', command: ['bin/adapter'] },
-      docs: [],
-      checksums: [{ path: 'bin/adapter', checksum: sidecarChecksum }],
-    }, { 'bin/adapter': sidecar }), true);
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bin/adapter'] },
+        docs: [],
+        checksums: [{ path: 'bin/adapter', checksum: sidecarChecksum }],
+      }, { 'bin/adapter': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
     const pythonSidecar = fromUtf8("import os\nprint('ready')\n");
     const pythonSidecarChecksum = `sha256:${await sha256Hex(pythonSidecar)}`;
     await assert.rejects(
@@ -1561,10 +1566,10 @@ describe('Capability Plane v0.2 core contracts', () => {
       adapter: { kind: 'sidecar', command: ['bin/adapter', '--config=config.json'] },
       docs: [],
       checksums: [
-        { path: 'bin/adapter', checksum: sidecarChecksum },
+        { path: 'bin/adapter', checksum: bunShebangSidecarChecksum },
         { path: 'config.json', checksum: sidecarChecksum },
       ],
-    }, { 'bin/adapter': sidecar, 'config.json': sidecar }), true);
+    }, { 'bin/adapter': bunShebangSidecar, 'config.json': sidecar }), true);
     const extensionlessSidecarExternalImport = fromUtf8("#!/usr/bin/env bun\nimport 'node:fs';\n");
     const extensionlessSidecarExternalImportChecksum = `sha256:${await sha256Hex(extensionlessSidecarExternalImport)}`;
     await assert.rejects(
@@ -1703,7 +1708,7 @@ describe('Capability Plane v0.2 core contracts', () => {
     );
     assert.equal(await assertCapabilityPackChecksums({
       ...manifest,
-      adapter: { kind: 'sidecar', command: ['@scope/register'] },
+      adapter: { kind: 'sidecar', command: ['bun', '@scope/register'] },
       docs: [],
       checksums: [{ path: '@scope/register', checksum: sidecarChecksum }],
     }, { '@scope/register': sidecar }), true);
@@ -3005,6 +3010,10 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.throws(
       () => assertCapabilityManifest({ ...manifest, adapter: { kind: 'in_process', module: 'adapter.mjs' } }),
       { code: 'ERR_CAPABILITY_MANIFEST_INVALID' },
+    );
+    assert.throws(
+      () => assertCapabilityManifest({ ...manifest, adapter: { kind: 'in_process', module: 'config.json', exportName: 'driver' } }),
+      { code: 'ERR_CAPABILITY_ADAPTER_INVALID' },
     );
     assert.throws(
       () => assertCapabilityManifest({ ...manifest, adapter: { kind: 'sidecar', command: ['/tmp/provider'] } }),

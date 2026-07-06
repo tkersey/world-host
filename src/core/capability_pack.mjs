@@ -1981,7 +1981,9 @@ function sidecarScannedJavaScriptArtifacts(command, packArtifacts) {
   const runtimeEntrypoint = sidecarRuntimeEntrypointArtifact(command);
   if (runtimeEntrypoint) artifacts.add(runtimeEntrypoint);
   const commandEntrypoint = sidecarCommandEntrypointArtifact(command);
-  if (commandEntrypoint && sidecarCommandEntrypointNeedsJavaScriptScan(commandEntrypoint, packArtifacts)) {
+  if (commandEntrypoint && sidecarCommandEntrypointNeedsJavaScriptScan(commandEntrypoint, packArtifacts, {
+    allowScannableExtensionless: sidecarRuntimeCommandPosition(command, 0),
+  })) {
     artifacts.add(commandEntrypoint);
   }
   for (const artifactPath of sidecarPreloadArtifacts(command)) artifacts.add(artifactPath);
@@ -2003,7 +2005,9 @@ function assertSidecarEntrypointScannable(command, packArtifacts) {
   if (!sidecarRuntimeCommandPosition(command, 0) && sidecarCommandEntrypointArtifact(command) !== entrypoint) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'sidecar adapter entrypoints must be invoked directly or by a JavaScript runtime');
   }
-  if (sidecarCommandEntrypointNeedsJavaScriptScan(entrypoint, packArtifacts)) return;
+  if (sidecarCommandEntrypointNeedsJavaScriptScan(entrypoint, packArtifacts, {
+    allowScannableExtensionless: sidecarRuntimeCommandPosition(command, 0),
+  })) return;
   fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'sidecar adapter entrypoints must be JavaScript or carry a JavaScript runtime shebang');
 }
 
@@ -2014,11 +2018,11 @@ function sidecarSelectedEntrypointArtifact(command) {
   return entrypointIndex < 0 ? null : command[entrypointIndex];
 }
 
-function sidecarCommandEntrypointNeedsJavaScriptScan(artifactPath, packArtifacts) {
+function sidecarCommandEntrypointNeedsJavaScriptScan(artifactPath, packArtifacts, { allowScannableExtensionless = false } = {}) {
   if (explicitJavaScriptArtifactPath(artifactPath)) return !runtimeOptionDataArtifact(artifactPath);
   if (!extensionlessArtifactPath(artifactPath) || runtimeOptionDataArtifact(artifactPath)) return false;
   if (artifactShebangFirstLine(artifactPath, packArtifacts)) return artifactHasJavaScriptRuntimeShebang(artifactPath, packArtifacts);
-  return artifactHasScannableText(artifactPath, packArtifacts);
+  return allowScannableExtensionless && artifactHasScannableText(artifactPath, packArtifacts);
 }
 
 function artifactHasJavaScriptRuntimeShebang(artifactPath, packArtifacts) {
@@ -2861,6 +2865,7 @@ function normalizeAdapter(adapter) {
   if (!['in_process', 'sidecar'].includes(kind)) fail('ERR_CAPABILITY_ADAPTER_INVALID', 'adapter kind must be in_process or sidecar');
   if (kind === 'in_process') {
     const module = optionalRelativePath(adapter.module, 'adapter.module');
+    if (!javascriptArtifactPath(module)) fail('ERR_CAPABILITY_ADAPTER_INVALID', 'in_process adapter module must be a JavaScript artifact');
     return Object.freeze({
       kind,
       module,
