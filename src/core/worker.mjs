@@ -5,7 +5,7 @@ import { defineCapabilityDriver } from './capability_driver.mjs';
 import { assertCapabilityPreflightAccepted, journaledHostRequest, networkPolicyHostRequest } from './capability_modes.mjs';
 import { assertCapabilityPolicyAllows } from './capability_policy.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from './run.mjs';
-import { assertBlobRef, assertBytes, fail, fromUtf8, toHex } from './store.mjs';
+import { assertBlobRef, assertBytes, fail, fromUtf8, stableJson, toHex } from './store.mjs';
 import { decodeApplianceManifest, decodeResolutionInputBytes, encodeRestoreTurnInput, resolutionResponded } from '../protocol/world_appliance_wire_codec.mjs';
 import { inspectTurnOutput, summarizeTurnClosureForRunHead } from '../protocol/world_universal_appliance_codec.mjs';
 import { wyhash64 } from '../protocol/world_loaded_value_codec.mjs';
@@ -831,7 +831,7 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}) {
   if (hostRequest.requestBytes?.byteLength > manifest.maximumRequestBytes) return false;
   if (policy.maximumRequestBytes !== undefined && hostRequest.requestBytes?.byteLength > policy.maximumRequestBytes) return false;
   if (policy.allowPartialEffectBatch === true) {
-    const promptBytes = hostRequest.policyRequestBytes ?? (driverManifestChargesLiveModelBudget(manifest, hostRequest) || driverManifestIsHuman(manifest, hostRequest) ? hostRequest.requestBytes : undefined);
+    const promptBytes = hostRequestPolicyPromptBytes(manifest, hostRequest);
     if (policy.maximumPromptBytes !== undefined && promptBytes?.byteLength > policy.maximumPromptBytes) return false;
   }
   if (policy.maximumResponseBytes !== undefined && manifest.maximumResponseBytes > policy.maximumResponseBytes) return false;
@@ -878,6 +878,25 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}) {
     return false;
   }
   return true;
+}
+
+function hostRequestPolicyPromptBytes(manifest, hostRequest) {
+  if (hostRequest.policyRequestBytes) return hostRequest.policyRequestBytes;
+  if (driverManifestChargesLiveModelBudget(manifest, hostRequest) || driverManifestIsHuman(manifest, hostRequest)) return hostRequest.requestBytes;
+  if (hostRequest.actuationClass === 'http' || manifest.authorityLabels.includes('network:http')) return httpRequestBodyPolicyBytes(manifest, hostRequest);
+  return undefined;
+}
+
+function httpRequestBodyPolicyBytes(manifest, hostRequest) {
+  if (manifest?.driverId === 'generic-http-json' && manifest?.diagnostics?.requestRendering?.requestTemplateFingerprint) return undefined;
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
+    if (!Object.prototype.hasOwnProperty.call(payload, 'body')) return new Uint8Array();
+    const rendered = manifest?.driverId === 'http-json' ? JSON.stringify(payload.body) : stableJson(payload.body);
+    return rendered === undefined ? new Uint8Array() : fromUtf8(rendered);
+  } catch {
+    return undefined;
+  }
 }
 
 function driverManifestIsFile(manifest, hostRequest) {

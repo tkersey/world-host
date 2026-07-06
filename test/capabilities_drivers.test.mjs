@@ -421,6 +421,36 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.fileNetworkAuthoritiesAllowed, true);
   });
 
+  it('leaves HTTP prompt-limited requests unresolved in partial preflight', () => {
+    const request = {
+      ...httpRequest('https://allowed.example/path', 'POST'),
+      requestBytes: fromUtf8(stableJson({
+        url: 'https://allowed.example/path',
+        method: 'POST',
+        body: { prompt: 'too large for receiver prompt policy' },
+      })),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'], methods: ['POST'] })],
+      policy: createRunPolicy({
+        allowPartialEffectBatch: true,
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+        maximumRequestBytes: 4096,
+        maximumPromptBytes: 4,
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
+    assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('prompt-limit-exceeds-policy'));
+    assert.equal(report.everyPendingRequestCovered, false);
+  });
+
   it('summarizes receiver HTTP method denials as authority failures', () => {
     const report = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },

@@ -2481,6 +2481,82 @@ describe('RunController and WorldWorker', () => {
     }
   });
 
+  it('leaves HTTP prompt-limited requests unresolved in partial batches', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'partial-http-covered-key', idempotencyKeyFingerprint: 0xa09n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'partial-http-prompt-key', idempotencyKeyFingerprint: 0xa19n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const coveredDriver = fixtureEffectDriver();
+    let fetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [
+          coveredDriver,
+          new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }),
+        ],
+        effectPolicy: {
+          allowPartialEffectBatch: true,
+          allowedAuthorityLabels: new Set(['test', 'network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          maximumRequestBytes: 4096,
+          maximumPromptBytes: 4,
+        },
+        hostRequestMapper: (worldHostRequest) => {
+          if (worldHostRequest.requestFingerprint === 0xa02n) {
+            return {
+              actuatorRef: 'http:json',
+              descriptorFingerprint: 'descriptor:http-json',
+              actuationClass: 'http',
+              responseSchema: { status: 'ok' },
+              idempotencyKeyBytes: fromUtf8('partial-http-prompt-key'),
+              idempotencyKeyWorldFingerprint: 'world:key:partial-http-prompt',
+              requestBytes: fromUtf8(stableJson({
+                url: 'https://allowed.example/decide',
+                method: 'POST',
+                body: { prompt: 'too large for receiver prompt policy' },
+              })),
+              hostRequestFingerprint: 'world:host-request:0000000000000a02',
+            };
+          }
+          return {
+            actuatorRef: 'world:actuator-ref:0000000000000a05',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+            actuationClass: 'world:actuation-class:1',
+            responseSchema: { status: 'responded' },
+            idempotencyKeyBytes: fromUtf8('partial-http-covered-key'),
+            idempotencyKeyWorldFingerprint: 'world:key:partial-http-covered',
+            requestBytes: fromUtf8('covered'),
+            hostRequestFingerprint: 'world:host-request:0000000000000a01',
+          };
+        },
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(coveredDriver.invocationCount, 1);
+      assert.equal(fetchCalled, false);
+      assert.deepEqual(
+        result.unresolvedHostRequests.map((item) => item.hostRequestFingerprint),
+        ['world:host-request:0000000000000a02'],
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('leaves over-budget live-model requests unresolved in partial batches', async () => {
     const requests = [
       fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'partial-model-budget-key-1', idempotencyKeyFingerprint: 0xa09n }),

@@ -694,7 +694,7 @@ function policyBlockers(route, request, policy) {
   const deniedLabels = route.authorityLabels.filter((label) => policy.allowedAuthorityLabels.size && !policy.allowedAuthorityLabels.has(label));
   if (deniedLabels.length) blockers.push(`authority-denied:${deniedLabels.join(',')}`);
   if (request && policy.maximumRequestBytes !== undefined && request.requestBytes?.byteLength > policy.maximumRequestBytes) blockers.push('request-limit-exceeds-policy');
-  const promptBytes = request?.policyRequestBytes ?? (isLiveModelRoute(route, request) || isHumanRoute(route, request) ? request?.requestBytes : undefined);
+  const promptBytes = requestPolicyPromptBytes(route, request, policy);
   if (request && policy.maximumPromptBytes !== undefined && promptBytes?.byteLength > policy.maximumPromptBytes) blockers.push('prompt-limit-exceeds-policy');
   if (policy.maximumResponseBytes !== undefined && route.maximumResponseBytes > policy.maximumResponseBytes) blockers.push('response-limit-exceeds-policy');
   const allowedFileRoots = policy.allowedFileRoots ?? new Set();
@@ -730,6 +730,26 @@ function policyBlockers(route, request, policy) {
     }
   }
   return blockers;
+}
+
+function requestPolicyPromptBytes(route, request, policy) {
+  if (!request) return undefined;
+  if (request.policyRequestBytes) return request.policyRequestBytes;
+  if (isLiveModelRoute(route, request) || isHumanRoute(route, request)) return request.requestBytes;
+  if (policy?.allowPartialEffectBatch === true && isHttpRoute(route, request)) return httpRequestBodyPolicyBytes(route, request);
+  return undefined;
+}
+
+function httpRequestBodyPolicyBytes(route, request) {
+  if (route?.driverId === 'generic-http-json' && route?.diagnostics?.requestRendering?.requestTemplateFingerprint) return undefined;
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(request.requestBytes));
+    if (!Object.prototype.hasOwnProperty.call(payload, 'body')) return new Uint8Array();
+    const rendered = route?.driverId === 'http-json' ? JSON.stringify(payload.body) : stableJson(payload.body);
+    return rendered === undefined ? new Uint8Array() : fromUtf8(rendered);
+  } catch {
+    return undefined;
+  }
 }
 
 function setsIntersect(left, right) {
