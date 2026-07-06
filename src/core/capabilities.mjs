@@ -233,12 +233,14 @@ export function preflightCapabilities({
   const supervisionPolicy = applianceSupervisionPolicy(applianceManifest);
   if (supervisionPolicy != null && !policy.acceptedSupervisionPolicies.has(supervisionPolicy)) blockers.push('supervision-policy-rejected');
   if (!currentHead) warnings.push('current-head-not-provided');
+  const everyPendingRequestCovered = unresolvedPendingRequestRoutes.length === 0 &&
+    !blockers.some((item) => item.startsWith('pending-request'));
 
   return new CapabilityReport({
     executableCompatible: !blockers.some((item) => item.startsWith('required-actuator') || item.startsWith('required-authority')),
     runtimeCompatible: !blockers.some((item) => item.startsWith('runtime-') || item === 'supervision-policy-rejected'),
     everyRequiredActuatorCovered: !blockers.some((item) => item.startsWith('required-actuator') || item.startsWith('required-authority')),
-    everyPendingRequestCovered: !blockers.some((item) => item.startsWith('pending-request')),
+    everyPendingRequestCovered,
     responseStatusesSupported: !blockers.some(responseStatusBlocker),
     valueSizeLimitsSupported: !blockers.some(sizeLimitBlocker),
     recoveryClassSufficient: !blockers.includes('ERR_BEST_EFFORT_REQUIRES_OPERATOR_OPT_IN'),

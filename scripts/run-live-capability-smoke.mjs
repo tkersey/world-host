@@ -37,6 +37,7 @@ const driver = new GenericHttpJsonCapabilityDriver({
 });
 
 const idempotencyKeyBytes = fromUtf8(config.idempotencyKey ?? 'live-smoke-key');
+const requestMethod = config.method ?? config.methods?.[0] ?? 'POST';
 const hostRequest = {
   hostRequestFingerprint: 'world:host-request:0000000000000c02',
   idempotencyKeyBytes,
@@ -45,7 +46,7 @@ const hostRequest = {
   descriptorFingerprint: 'descriptor:http-json',
   actuationClass: 'http',
   responseSchema: { status: 'ok' },
-  requestBytes: fromUtf8(stableJson({ body: config.body ?? {}, method: config.method ?? 'POST' })),
+  requestBytes: fromUtf8(stableJson({ body: config.body ?? {}, method: requestMethod })),
 };
 
 const diagnostics = live

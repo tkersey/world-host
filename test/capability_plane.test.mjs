@@ -3482,7 +3482,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       const endpointUrl = 'https://allowed.example/decide';
       const idempotencyKey = 'operator-selected-live-smoke-key';
       const config = path.join(root, 'config.json');
-      await writeFile(config, JSON.stringify({ endpointUrl, idempotencyKey, body: { ok: true } }));
+      await writeFile(config, JSON.stringify({ endpointUrl, idempotencyKey, body: { ok: true }, methods: ['GET'] }));
       const result = await runBunProcess([
         process.execPath,
         '--preload',

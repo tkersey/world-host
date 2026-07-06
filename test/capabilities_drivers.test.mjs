@@ -401,6 +401,26 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.fileNetworkAuthoritiesAllowed, false);
   });
 
+  it('marks partial unresolved pending requests as uncovered', () => {
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path', 'GET')],
+      drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'], methods: ['GET'] })],
+      policy: createRunPolicy({
+        allowPartialEffectBatch: true,
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
+    assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('http-method-allowlist-required'));
+    assert.equal(report.everyPendingRequestCovered, false);
+    assert.equal(report.fileNetworkAuthoritiesAllowed, true);
+  });
+
   it('summarizes receiver HTTP method denials as authority failures', () => {
     const report = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },
