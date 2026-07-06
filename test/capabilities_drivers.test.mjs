@@ -2423,6 +2423,31 @@ describe('capability preflight and reference drivers', () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it('does not send raw HTTP request bodies with HEAD', async () => {
+    const driver = new HttpJsonDriver({ origins: ['https://allowed.example'], methods: ['HEAD'] });
+    const originalFetch = globalThis.fetch;
+    let observedBody = 'not-called';
+    try {
+      globalThis.fetch = async (_url, options) => {
+        observedBody = options.body;
+        return new Response('', { status: 204 });
+      };
+
+      await driver.resolve({}, {
+        ...httpRequest('https://allowed.example/path', 'HEAD'),
+        requestBytes: fromUtf8(stableJson({
+          url: 'https://allowed.example/path',
+          method: 'HEAD',
+          body: { prompt: 'must-not-send' },
+        })),
+      });
+
+      assert.equal(observedBody, undefined);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
 
 function policyDeniedFixtureDriver() {

@@ -1504,7 +1504,7 @@ class GenericHttpJsonCapabilityDriver {
     if (!this.methods.has(method))
       fail("ERR_HTTP_METHOD_REJECTED");
     const bodyValue = this.requestTemplate ?? (Object.prototype.hasOwnProperty.call(payload, "body") ? payload.body : payload);
-    const body = method === "GET" ? undefined : stableJson(bodyValue);
+    const body = bodylessHttpMethod(method) ? undefined : stableJson(bodyValue);
     const bodyBytes = body ? fromUtf8(body).byteLength : 0;
     if (bodyBytes > this.maximumRequestBytes)
       fail("ERR_HTTP_REQUEST_TOO_LARGE");
@@ -1656,6 +1656,9 @@ class GenericHttpJsonCapabilityDriver {
 function parseJsonBytes(bytes2) {
   assertBytes(bytes2, "requestBytes");
   return JSON.parse(new TextDecoder().decode(bytes2));
+}
+function bodylessHttpMethod(method) {
+  return method === "GET" || method === "HEAD";
 }
 function sha256Json(value) {
   return `sha256:${new Bun.CryptoHasher("sha256").update(fromUtf8(stableJson(value))).digest("hex")}`;

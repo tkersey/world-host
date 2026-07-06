@@ -520,18 +520,23 @@ export function journaledHostRequest(hostRequest, manifest) {
   } catch {
     return hostRequest;
   }
-  if (endpointSource === 'request-or-config' && parsed?.url !== undefined && parsed.method !== undefined) {
+  const identityRequest = canonicalHttpIdentityRequest(
+    manifest?.diagnostics,
+    parsed,
+    shouldCanonicalizeDefaultHttpMethod(manifest, hostRequest),
+  );
+  if (endpointSource === 'request-or-config' && identityRequest?.url !== undefined && identityRequest.method !== undefined) {
     return requestRendering === null && !hasModelOutputValidation(manifest?.diagnostics) ? hostRequest : {
       ...hostRequest,
-      effectIdentityBytes: fromUtf8(stableJson(effectIdentityPayload(manifest?.diagnostics, normalizedHttpMethodRequest(parsed), null, requestRendering))),
+      effectIdentityBytes: fromUtf8(stableJson(effectIdentityPayload(manifest?.diagnostics, identityRequest, null, requestRendering))),
       effectIdentitySource: 'manifest',
     };
   }
-  const configuredEndpoint = configuredEffectIdentityTarget(manifest, parsed);
+  const configuredEndpoint = configuredEffectIdentityTarget(manifest, identityRequest);
   if (!configuredEndpoint && requestRendering === null && !hasModelOutputValidation(manifest?.diagnostics)) return hostRequest;
   return {
     ...hostRequest,
-    effectIdentityBytes: fromUtf8(stableJson(effectIdentityPayload(manifest?.diagnostics, normalizedHttpMethodRequest(parsed), configuredEndpoint, requestRendering))),
+    effectIdentityBytes: fromUtf8(stableJson(effectIdentityPayload(manifest?.diagnostics, identityRequest, configuredEndpoint, requestRendering))),
     effectIdentitySource: 'manifest',
   };
 }
@@ -555,6 +560,22 @@ function effectIdentityPayload(diagnostics, request, configuredEndpoint, request
 
 function hasModelOutputValidation(diagnostics) {
   return diagnostics != null && Object.prototype.hasOwnProperty.call(diagnostics, 'modelOutputValidation');
+}
+
+function shouldCanonicalizeDefaultHttpMethod(manifest, hostRequest) {
+  return hostRequest?.actuationClass === 'http' || (manifest?.supportedActuationClasses ?? []).includes('http');
+}
+
+function canonicalHttpIdentityRequest(diagnostics, request, defaultMethodAllowed) {
+  if (request?.method !== undefined) return normalizedHttpMethodRequest(request);
+  if (!defaultMethodAllowed) return normalizedHttpMethodRequest(request);
+  const method = defaultHttpMethodForDiagnostics(diagnostics);
+  return method == null ? normalizedHttpMethodRequest(request) : { ...request, method };
+}
+
+function defaultHttpMethodForDiagnostics(diagnostics) {
+  const methods = Array.isArray(diagnostics?.methods) ? diagnostics.methods : [];
+  return normalizedHttpMethod(diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : null));
 }
 
 function normalizedHttpMethodRequest(request) {

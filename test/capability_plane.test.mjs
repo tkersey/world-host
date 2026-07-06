@@ -4014,6 +4014,37 @@ describe('Capability Plane v0.2 core contracts', () => {
         }),
         { code: 'ERR_CAPABILITY_METHOD_DENIED' },
       );
+      const headBodies = [];
+      globalThis.fetch = async (_url, options) => {
+        headBodies.push(options.body);
+        return new Response('', {
+          status: 204,
+          headers: { 'x-request-id': `head-${headBodies.length}` },
+        });
+      };
+      await new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        methods: ['HEAD'],
+      }).resolve({
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['HEAD'],
+        },
+      }, { ...httpRequest(), requestBytes: fromUtf8(stableJson({ body: 'must-not-send' })) });
+      await new HttpJsonPackCapabilityDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        methods: ['HEAD'],
+      }).resolve({
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['HEAD'],
+        },
+      }, { ...httpRequest(), requestBytes: fromUtf8(stableJson({ body: 'must-not-send' })) });
+      assert.deepEqual(headBodies, [undefined, undefined]);
 
       let packMalformedExplicitUrlFetchCalled = false;
       globalThis.fetch = async () => {

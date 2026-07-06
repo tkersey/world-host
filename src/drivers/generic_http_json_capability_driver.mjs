@@ -188,7 +188,7 @@ export class GenericHttpJsonCapabilityDriver {
     const method = String(payload.method ?? [...this.methods][0] ?? 'POST').toUpperCase();
     if (!this.methods.has(method)) fail('ERR_HTTP_METHOD_REJECTED');
     const bodyValue = this.requestTemplate ?? (Object.prototype.hasOwnProperty.call(payload, 'body') ? payload.body : payload);
-    const body = method === 'GET' ? undefined : stableJson(bodyValue);
+    const body = bodylessHttpMethod(method) ? undefined : stableJson(bodyValue);
     const bodyBytes = body ? fromUtf8(body).byteLength : 0;
     if (bodyBytes > this.maximumRequestBytes) fail('ERR_HTTP_REQUEST_TOO_LARGE');
     return { url, method, body, bodyBytes };
@@ -344,6 +344,10 @@ export class GenericHttpJsonCapabilityDriver {
 function parseJsonBytes(bytes) {
   assertBytes(bytes, 'requestBytes');
   return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+function bodylessHttpMethod(method) {
+  return method === 'GET' || method === 'HEAD';
 }
 
 function sha256Json(value) {

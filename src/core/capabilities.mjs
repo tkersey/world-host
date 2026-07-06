@@ -552,7 +552,7 @@ function reusableRequestIdentity(request, route) {
     const idempotencyKeyBytes = assertBytes(request.idempotencyKeyBytes, 'idempotencyKeyBytes');
     const requestBytes = assertBytes(request.requestBytes, 'requestBytes');
     const effectIdentityBytes = request.effectIdentityBytes === undefined
-      ? routeEffectIdentityBytes(requestBytes, route) ?? requestBytes
+      ? routeEffectIdentityBytes(request, route) ?? requestBytes
       : assertBytes(request.effectIdentityBytes, 'effectIdentityBytes');
     return {
       idempotencyKeyBytesHex: toHex(idempotencyKeyBytes),
@@ -563,24 +563,30 @@ function reusableRequestIdentity(request, route) {
   }
 }
 
-function routeEffectIdentityBytes(requestBytes, route) {
+function routeEffectIdentityBytes(request, route) {
   const endpointSource = route?.diagnostics?.endpointSource;
   if (endpointSource !== 'config' && endpointSource !== 'request-or-config') return null;
   const requestRendering = route?.diagnostics?.requestRendering ?? null;
   let parsed = {};
   try {
+    const requestBytes = assertBytes(request.requestBytes, 'requestBytes');
     parsed = JSON.parse(new TextDecoder().decode(requestBytes));
   } catch {
     return null;
   }
-  if (endpointSource === 'request-or-config' && parsed?.url !== undefined && parsed.method !== undefined) {
+  const identityRequest = canonicalHttpIdentityRequest(
+    route?.diagnostics,
+    parsed,
+    shouldCanonicalizeDefaultHttpMethod(route, request),
+  );
+  if (endpointSource === 'request-or-config' && identityRequest?.url !== undefined && identityRequest.method !== undefined) {
     return requestRendering === null && !hasModelOutputValidation(route?.diagnostics)
       ? null
-      : fromUtf8(stableJson(effectIdentityPayload(route?.diagnostics, normalizedHttpMethodRequest(parsed), null, requestRendering)));
+      : fromUtf8(stableJson(effectIdentityPayload(route?.diagnostics, identityRequest, null, requestRendering)));
   }
-  const configuredEndpoint = configuredEffectIdentityTargetForRoute(route, parsed);
+  const configuredEndpoint = configuredEffectIdentityTargetForRoute(route, identityRequest);
   if (!configuredEndpoint && requestRendering === null && !hasModelOutputValidation(route?.diagnostics)) return null;
-  return fromUtf8(stableJson(effectIdentityPayload(route?.diagnostics, normalizedHttpMethodRequest(parsed), configuredEndpoint, requestRendering)));
+  return fromUtf8(stableJson(effectIdentityPayload(route?.diagnostics, identityRequest, configuredEndpoint, requestRendering)));
 }
 
 function configuredEffectIdentityTargetForRoute(route, parsed = {}) {
@@ -602,6 +608,22 @@ function effectIdentityPayload(diagnostics, request, configuredEndpoint, request
 
 function hasModelOutputValidation(diagnostics) {
   return diagnostics != null && Object.prototype.hasOwnProperty.call(diagnostics, 'modelOutputValidation');
+}
+
+function shouldCanonicalizeDefaultHttpMethod(route, request) {
+  return request?.actuationClass === 'http' || (route?.supportedActuationClasses ?? []).includes('http');
+}
+
+function canonicalHttpIdentityRequest(diagnostics, request, defaultMethodAllowed) {
+  if (request?.method !== undefined) return normalizedHttpMethodRequest(request);
+  if (!defaultMethodAllowed) return normalizedHttpMethodRequest(request);
+  const method = defaultHttpMethodForDiagnostics(diagnostics);
+  return method == null ? normalizedHttpMethodRequest(request) : { ...request, method };
+}
+
+function defaultHttpMethodForDiagnostics(diagnostics) {
+  const methods = Array.isArray(diagnostics?.methods) ? diagnostics.methods : [];
+  return normalizedHttpMethod(diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : null));
 }
 
 function normalizedHttpMethodRequest(request) {

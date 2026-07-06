@@ -36,7 +36,7 @@ export class HttpJsonDriver {
     if (!this.origins.has(url.origin)) fail('ERR_HTTP_ORIGIN_REJECTED');
     const method = String(request.method ?? defaultHttpJsonMethod(this.methods)).toUpperCase();
     if (!this.methods.has(method)) fail('ERR_HTTP_METHOD_REJECTED');
-    const body = request.body === undefined ? undefined : JSON.stringify(request.body);
+    const body = request.body === undefined || bodylessHttpMethod(method) ? undefined : JSON.stringify(request.body);
     if (body && fromUtf8(body).byteLength > this.maximumRequestBytes) fail('ERR_HTTP_REQUEST_TOO_LARGE');
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -87,6 +87,10 @@ export class HttpJsonDriver {
 
 function defaultHttpJsonMethod(methods) {
   return methods.has('GET') ? 'GET' : [...methods][0] ?? 'GET';
+}
+
+function bodylessHttpMethod(method) {
+  return method === 'GET' || method === 'HEAD';
 }
 
 async function discardResponseBody(response) {
