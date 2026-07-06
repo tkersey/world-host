@@ -3919,6 +3919,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       });
       assert.equal(renderingPackDriver.manifest().diagnostics.configuredEndpointUrl, 'https://allowed.example/decide');
       assert.match(renderingPackDriver.manifest().diagnostics.requestRendering.requestTemplateFingerprint, /^sha256:[0-9a-f]{64}$/);
+      assert.equal(renderingPackDriver.manifest().diagnostics.requestRendering.requestTemplateBodyBytes, fromUtf8(stableJson({ prompt: 'pack' })).byteLength);
       assert.match(renderingPackDriver.manifest().diagnostics.requestRendering.secretHeadersFingerprint, /^sha256:[0-9a-f]{64}$/);
       assert.equal(renderingPackDriver.manifest().diagnostics.requestRendering.idempotencyHeaderName, 'X-Idempotency-Key');
       assert.match(renderingPackDriver.manifest().diagnostics.requestRendering.responseExtractionPathFingerprint, /^sha256:[0-9a-f]{64}$/);

@@ -1372,6 +1372,7 @@ class GenericHttpJsonCapabilityDriver {
     this.packFingerprint = packFingerprint;
   }
   manifest() {
+    const requestTemplateBodyBytes = this.requestTemplate == null ? null : fromUtf8(stableJson(this.requestTemplate)).byteLength;
     return {
       driverId: "generic-http-json",
       ...(this.packFingerprint ? { packFingerprint: this.packFingerprint } : {}),
@@ -1394,6 +1395,7 @@ class GenericHttpJsonCapabilityDriver {
         secretHeaders: Object.keys(this.secretHeaders),
         requestRendering: {
           requestTemplateFingerprint: this.requestTemplate == null ? null : sha256Json(this.requestTemplate),
+          ...(requestTemplateBodyBytes === null ? {} : { requestTemplateBodyBytes }),
           secretHeadersFingerprint: sha256Json(this.secretHeaders),
           idempotencyHeaderName: this.idempotencyHeaderName,
           responseExtractionPathFingerprint: this.responseExtractionPath == null ? null : sha256Json(this.responseExtractionPath)
