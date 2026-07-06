@@ -1185,7 +1185,6 @@ function prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, hostRequestM
   if (parentSummary.hostRequestCount === 0) fail('ERR_NEEDS_HOST_REQUESTS_EMPTY', 'needs_host TurnClosure has no pending HostRequests');
   const pending = [];
   const unresolvedHostRequests = [];
-  let selectedLiveModelRequestCount = 0;
   for (let index = 0; index < parentSummary.hostRequests.length; index += 1) {
     const worldHostRequest = parentSummary.hostRequests[index];
     let hostRequest;
@@ -1202,13 +1201,6 @@ function prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, hostRequestM
       policy,
       preferredAuthorityLabelsForHostRequest(hostRequest, application, effectDrivers, policy),
     );
-    if (selection && policy.allowPartialEffectBatch === true && driverManifestChargesLiveModelBudget(selection.manifest, hostRequest)) {
-      if (selectedLiveModelRequestCount >= policy.maximumLiveModelCalls) {
-        unresolvedHostRequests.push(unresolvedHostRequestDiagnostic(index, hostRequest));
-        continue;
-      }
-      selectedLiveModelRequestCount += 1;
-    }
     if (selection) pending.push({ index, worldHostRequest, hostRequest, ...selection });
     else unresolvedHostRequests.push(unresolvedHostRequestDiagnostic(index, hostRequest));
   }

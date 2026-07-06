@@ -2647,9 +2647,12 @@ function sidecarRuntimePermissionGrantOption(command, index) {
 
 function denoPermissionGrantOption(option) {
   return option === '-A' || option.startsWith('-A=') ||
+    option === '-E' || option.startsWith('-E=') ||
+    option === '-F' || option.startsWith('-F=') ||
     option === '-N' || option.startsWith('-N=') ||
     option === '-P' || option.startsWith('-P=') ||
     option === '-R' || option.startsWith('-R=') ||
+    option === '-S' || option.startsWith('-S=') ||
     option === '-W' || option.startsWith('-W=') ||
     option === '--allow-all' || option === '--permission-set' ||
     option.startsWith('--permission-set=') ||

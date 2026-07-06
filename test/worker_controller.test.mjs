@@ -2550,6 +2550,7 @@ describe('RunController and WorldWorker', () => {
           fixtureModelDriver,
         ],
         effectPolicy: {
+          allowPartialEffectBatch: true,
           allowedAuthorityLabels: new Set(['model:http-json', 'network:http', 'model:fixture']),
           allowedHttpOrigins: new Set(['https://allowed.example']),
           allowedHttpMethods: new Set(['POST']),
@@ -2642,6 +2643,7 @@ describe('RunController and WorldWorker', () => {
           packFingerprint: 'sha256:'.concat('b'.repeat(64)),
         })],
         effectPolicy: {
+          allowPartialEffectBatch: true,
           allowedAuthorityLabels: new Set(['model:http-json', 'network:http']),
           allowedHttpOrigins: new Set(['https://allowed.example']),
           allowedHttpMethods: new Set(['POST']),

@@ -2654,7 +2654,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { './sidecar.ts': sidecar }),
       { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
-    for (const permission of ['-N=example.com', '-R=/etc']) {
+    for (const permission of ['-E=TOKEN', '-F=ffi', '-N=example.com', '-R=/etc', '-S=system']) {
       await assert.rejects(
         () => assertCapabilityPackChecksums({
           ...manifest,
