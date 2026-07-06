@@ -788,6 +788,57 @@ describe('EffectJournal', () => {
     }
   });
 
+  it('normalizes configured HTTP method casing in effect identity', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const lowerCaseMethodRequest = httpHostRequest({
+      requestBytes: fromUtf8(JSON.stringify({ method: 'post', body: { prompt: 'hi' } })),
+      hostRequestFingerprint: 'world:host-request:0000000000000c01',
+    });
+    const upperCaseMethodRequest = {
+      ...lowerCaseMethodRequest,
+      requestBytes: fromUtf8(JSON.stringify({ method: 'POST', body: { prompt: 'hi' } })),
+    };
+    const driver = new GenericHttpJsonCapabilityDriver({
+      endpointUrl: 'https://allowed.example/decide',
+      origins: ['https://allowed.example'],
+      methods: ['POST'],
+    });
+    const context = {
+      mode: 'live',
+      policy: {
+        allowLiveEffects: true,
+        allowNetworkEffects: true,
+        allowedOrigins: ['https://allowed.example'],
+        allowedMethods: ['POST'],
+      },
+    };
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    try {
+      globalThis.fetch = async (_url, options) => {
+        calls += 1;
+        assert.equal(options.method, 'POST');
+        return new Response('{"action":{"variant":"final","text":"method-normalized"}}', {
+          status: 200,
+          headers: { 'x-request-id': 'method-normalized-1' },
+        });
+      };
+      const first = await journal.resolve(context, lowerCaseMethodRequest, driver);
+
+      globalThis.fetch = async () => {
+        throw new Error('normalized method identity should reuse before fetch');
+      };
+      const second = await journal.resolve(context, upperCaseMethodRequest, driver);
+
+      assert.equal(first.reused, false);
+      assert.equal(second.reused, true);
+      assert.equal(calls, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('journals configured capability identity from fallback request objects', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });

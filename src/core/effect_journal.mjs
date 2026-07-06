@@ -523,7 +523,7 @@ export function journaledHostRequest(hostRequest, manifest) {
   if (endpointSource === 'request-or-config' && parsed?.url !== undefined && parsed.method !== undefined) {
     return requestRendering === null && !hasModelOutputValidation(manifest?.diagnostics) ? hostRequest : {
       ...hostRequest,
-      effectIdentityBytes: fromUtf8(stableJson(effectIdentityPayload(manifest?.diagnostics, parsed, null, requestRendering))),
+      effectIdentityBytes: fromUtf8(stableJson(effectIdentityPayload(manifest?.diagnostics, normalizedHttpMethodRequest(parsed), null, requestRendering))),
       effectIdentitySource: 'manifest',
     };
   }
@@ -531,7 +531,7 @@ export function journaledHostRequest(hostRequest, manifest) {
   if (!configuredEndpoint && requestRendering === null && !hasModelOutputValidation(manifest?.diagnostics)) return hostRequest;
   return {
     ...hostRequest,
-    effectIdentityBytes: fromUtf8(stableJson(effectIdentityPayload(manifest?.diagnostics, parsed, configuredEndpoint, requestRendering))),
+    effectIdentityBytes: fromUtf8(stableJson(effectIdentityPayload(manifest?.diagnostics, normalizedHttpMethodRequest(parsed), configuredEndpoint, requestRendering))),
     effectIdentitySource: 'manifest',
   };
 }
@@ -542,7 +542,7 @@ function configuredEffectIdentityTarget(manifest, parsed = {}) {
   const endpointSource = manifest?.diagnostics?.endpointSource;
   const requestUrl = endpointSource === 'request-or-config' && parsed?.url !== undefined ? parsed.url : null;
   const url = requestUrl ?? manifest?.diagnostics?.configuredEndpointUrl ?? manifest?.diagnostics?.configuredOrigin ?? (origins.length === 1 ? origins[0] : null);
-  const method = parsed.method ?? manifest?.diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : null);
+  const method = normalizedHttpMethod(parsed.method ?? manifest?.diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : null));
   if (!url || !method) return null;
   return { url, method };
 }
@@ -555,6 +555,15 @@ function effectIdentityPayload(diagnostics, request, configuredEndpoint, request
 
 function hasModelOutputValidation(diagnostics) {
   return diagnostics != null && Object.prototype.hasOwnProperty.call(diagnostics, 'modelOutputValidation');
+}
+
+function normalizedHttpMethodRequest(request) {
+  if (request?.method === undefined) return request;
+  return { ...request, method: normalizedHttpMethod(request.method) };
+}
+
+function normalizedHttpMethod(method) {
+  return method == null ? null : String(method).toUpperCase();
 }
 
 function driverFailureState(recoveryClass) {

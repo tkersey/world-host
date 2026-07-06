@@ -551,11 +551,11 @@ function routeEffectIdentityBytes(requestBytes, route) {
   if (endpointSource === 'request-or-config' && parsed?.url !== undefined && parsed.method !== undefined) {
     return requestRendering === null && !hasModelOutputValidation(route?.diagnostics)
       ? null
-      : fromUtf8(stableJson(effectIdentityPayload(route?.diagnostics, parsed, null, requestRendering)));
+      : fromUtf8(stableJson(effectIdentityPayload(route?.diagnostics, normalizedHttpMethodRequest(parsed), null, requestRendering)));
   }
   const configuredEndpoint = configuredEffectIdentityTargetForRoute(route, parsed);
   if (!configuredEndpoint && requestRendering === null && !hasModelOutputValidation(route?.diagnostics)) return null;
-  return fromUtf8(stableJson(effectIdentityPayload(route?.diagnostics, parsed, configuredEndpoint, requestRendering)));
+  return fromUtf8(stableJson(effectIdentityPayload(route?.diagnostics, normalizedHttpMethodRequest(parsed), configuredEndpoint, requestRendering)));
 }
 
 function configuredEffectIdentityTargetForRoute(route, parsed = {}) {
@@ -564,7 +564,7 @@ function configuredEffectIdentityTargetForRoute(route, parsed = {}) {
   const endpointSource = route?.diagnostics?.endpointSource;
   const requestUrl = endpointSource === 'request-or-config' && parsed?.url !== undefined ? parsed.url : null;
   const url = requestUrl ?? route?.diagnostics?.configuredEndpointUrl ?? route?.diagnostics?.configuredOrigin ?? (origins.length === 1 ? origins[0] : null);
-  const method = parsed.method ?? route?.diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : null);
+  const method = normalizedHttpMethod(parsed.method ?? route?.diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : null));
   if (!url || !method) return null;
   return { url, method };
 }
@@ -577,6 +577,15 @@ function effectIdentityPayload(diagnostics, request, configuredEndpoint, request
 
 function hasModelOutputValidation(diagnostics) {
   return diagnostics != null && Object.prototype.hasOwnProperty.call(diagnostics, 'modelOutputValidation');
+}
+
+function normalizedHttpMethodRequest(request) {
+  if (request?.method === undefined) return request;
+  return { ...request, method: normalizedHttpMethod(request.method) };
+}
+
+function normalizedHttpMethod(method) {
+  return method == null ? null : String(method).toUpperCase();
 }
 
 function uniqueFlat(groups) {
