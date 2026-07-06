@@ -719,6 +719,7 @@ function policyBlockers(route, request, policy) {
   const promptBytes = requestPolicyPromptBytes(route, request, policy);
   if (request && policy.maximumPromptBytes !== undefined && promptBytes?.byteLength > policy.maximumPromptBytes) blockers.push('prompt-limit-exceeds-policy');
   if (policy.maximumResponseBytes !== undefined && route.maximumResponseBytes > policy.maximumResponseBytes) blockers.push('response-limit-exceeds-policy');
+  if (policy.allowPartialEffectBatch === true && request && routeRequiresApproval(route, request, policy)) blockers.push('ERR_CAPABILITY_APPROVAL_REQUIRED');
   const allowedFileRoots = policy.allowedFileRoots ?? new Set();
   if (isFileRoute(route, request)) {
     if (!allowedFileRoots.size) blockers.push('file-root-allowlist-required');
@@ -727,7 +728,6 @@ function policyBlockers(route, request, policy) {
   }
   if (isHumanRoute(route, request) && policy.allowHumanEffects !== true) blockers.push('ERR_CAPABILITY_HUMAN_DENIED');
   if (isHttpRoute(route, request)) {
-    if (policy.allowPartialEffectBatch === true && policy.requireApprovalForNetworkEffects) blockers.push('ERR_CAPABILITY_APPROVAL_REQUIRED');
     const driverOrigins = Array.isArray(route.diagnostics?.origins) ? new Set(route.diagnostics.origins) : null;
     const driverMethods = Array.isArray(route.diagnostics?.methods)
       ? new Set(route.diagnostics.methods.map((item) => String(item).toUpperCase()))
@@ -753,6 +753,22 @@ function policyBlockers(route, request, policy) {
     }
   }
   return blockers;
+}
+
+function routeRequiresApproval(route, request, policy) {
+  return (policy.requireApprovalForNetworkEffects && isHttpRoute(route, request)) ||
+    (policy.requireApprovalForDestructiveEffects && isDestructiveFileRequest(route, request)) ||
+    (policy.requireApprovalForBestEffort && route.recoveryClass === EffectRecoveryClass.bestEffort);
+}
+
+function isDestructiveFileRequest(route, request) {
+  if (!isFileRoute(route, request)) return false;
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(request.requestBytes));
+    return payload?.operation !== 'read';
+  } catch {
+    return false;
+  }
 }
 
 function requestPolicyPromptBytes(route, request, policy) {

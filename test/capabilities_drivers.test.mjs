@@ -472,6 +472,47 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.everyPendingRequestCovered, false);
   });
 
+  it('leaves approval-required file and best-effort requests unresolved in partial preflight', () => {
+    const bestEffortRequest = {
+      ...fixtureRequest(),
+      hostRequestFingerprint: 'world:host-request:best-effort-approval',
+    };
+    const destructiveFileRequest = {
+      ...fileRequest('out.txt', { operation: 'write', content: 'needs approval' }),
+      hostRequestFingerprint: 'world:host-request:file-approval',
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [bestEffortRequest, destructiveFileRequest],
+      drivers: [
+        fixtureDriverWithAuthority(['test'], { recoveryClass: EffectRecoveryClass.bestEffort }),
+        fixtureDriverWithAuthority(['file:sandbox'], {
+          actuatorRef: 'sandbox:file',
+          descriptorFingerprint: 'descriptor:sandbox-file',
+          actuationClasses: ['file'],
+          diagnostics: { root: FIXTURE_FILE_ROOT },
+        }),
+      ],
+      policy: createRunPolicy({
+        allowPartialEffectBatch: true,
+        allowBestEffort: true,
+        allowedAuthorityLabels: ['test', 'file:sandbox'],
+        allowedFileRoots: [FIXTURE_FILE_ROOT],
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.unresolvedPendingRequestRoutes.length, 2);
+    assert.deepEqual(
+      report.unresolvedPendingRequestRoutes.map((route) => route.hostRequestFingerprint).sort(),
+      ['world:host-request:best-effort-approval', 'world:host-request:file-approval'],
+    );
+    assert.ok(report.unresolvedPendingRequestRoutes.every((route) =>
+      route.blockers.includes('ERR_CAPABILITY_APPROVAL_REQUIRED')));
+    assert.equal(report.everyPendingRequestCovered, false);
+  });
+
   it('summarizes receiver HTTP method denials as authority failures', () => {
     const report = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },

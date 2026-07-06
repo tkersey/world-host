@@ -2659,6 +2659,95 @@ describe('RunController and WorldWorker', () => {
     }
   });
 
+  it('leaves approval-required file and best-effort requests unresolved in partial batches', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'partial-approval-covered-key', idempotencyKeyFingerprint: 0xa09n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'partial-approval-file-key', idempotencyKeyFingerprint: 0xa19n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa03n, requestOrdinal: 2, idempotencyKey: 'partial-approval-best-effort-key', idempotencyKeyFingerprint: 0xa29n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const coveredDriver = fixtureEffectDriver();
+    const fileDriver = fixtureEffectDriver({
+      driverId: 'file.approval.driver',
+      actuatorRef: 'file:write',
+      descriptorFingerprint: 'descriptor:file-write',
+      actuationClasses: ['file'],
+      responseStatuses: ['ok'],
+      authorityLabels: ['file:sandbox'],
+      diagnostics: { root: FIXTURE_FILE_ROOT },
+    });
+    const bestEffortDriver = fixtureEffectDriver({
+      driverId: 'best.effort.approval.driver',
+      actuatorRef: 'best:effort',
+      descriptorFingerprint: 'descriptor:best-effort',
+      actuationClasses: ['best-effort'],
+      responseStatuses: ['ok'],
+      authorityLabels: ['test'],
+      recoveryClass: EffectRecoveryClass.bestEffort,
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [coveredDriver, fileDriver, bestEffortDriver],
+      effectPolicy: {
+        allowPartialEffectBatch: true,
+        allowBestEffort: true,
+        allowedAuthorityLabels: new Set(['test', 'file:sandbox']),
+        allowedFileRoots: new Set([FIXTURE_FILE_ROOT]),
+      },
+      hostRequestMapper: (worldHostRequest) => {
+        if (worldHostRequest.requestFingerprint === 0xa02n) {
+          return {
+            actuatorRef: 'file:write',
+            descriptorFingerprint: 'descriptor:file-write',
+            actuationClass: 'file',
+            responseSchema: { status: 'ok' },
+            idempotencyKeyBytes: fromUtf8('partial-approval-file-key'),
+            idempotencyKeyWorldFingerprint: 'world:key:partial-approval-file',
+            requestBytes: fromUtf8(stableJson({ path: 'out.txt', operation: 'write', content: 'needs approval' })),
+            hostRequestFingerprint: 'world:host-request:0000000000000a02',
+          };
+        }
+        if (worldHostRequest.requestFingerprint === 0xa03n) {
+          return {
+            actuatorRef: 'best:effort',
+            descriptorFingerprint: 'descriptor:best-effort',
+            actuationClass: 'best-effort',
+            responseSchema: { status: 'ok' },
+            idempotencyKeyBytes: fromUtf8('partial-approval-best-effort-key'),
+            idempotencyKeyWorldFingerprint: 'world:key:partial-approval-best-effort',
+            requestBytes: fromUtf8('best effort'),
+            hostRequestFingerprint: 'world:host-request:0000000000000a03',
+          };
+        }
+        return {
+          actuatorRef: 'world:actuator-ref:0000000000000a05',
+          descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+          actuationClass: 'world:actuation-class:1',
+          responseSchema: { status: 'responded' },
+          idempotencyKeyBytes: fromUtf8('partial-approval-covered-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:partial-approval-covered',
+          requestBytes: fromUtf8('covered'),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        };
+      },
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(coveredDriver.invocationCount, 1);
+    assert.equal(fileDriver.invocationCount, 0);
+    assert.equal(bestEffortDriver.invocationCount, 0);
+    assert.deepEqual(
+      result.unresolvedHostRequests.map((item) => item.hostRequestFingerprint).sort(),
+      ['world:host-request:0000000000000a02', 'world:host-request:0000000000000a03'],
+    );
+  });
+
   it('leaves over-budget live-model requests unresolved in partial batches', async () => {
     const requests = [
       fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'partial-model-budget-key-1', idempotencyKeyFingerprint: 0xa09n }),
@@ -3751,7 +3840,7 @@ function fixtureEffectDriver(options = {}) {
         supportedResponseStatuses: options.responseStatuses ?? ['responded'],
         maximumRequestBytes: 4096,
         maximumResponseBytes: 4096,
-        recoveryClass: EffectRecoveryClass.pure,
+        recoveryClass: options.recoveryClass ?? EffectRecoveryClass.pure,
         concurrencyLimit: 1,
         authorityLabels: options.authorityLabels ?? ['test'],
         diagnostics: options.diagnostics ?? {},

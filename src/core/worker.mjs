@@ -1,5 +1,5 @@
 import { EffectJournal, EffectState } from './effect_journal.mjs';
-import { assertDurableRecoveryAllowed } from './actuator.mjs';
+import { EffectRecoveryClass, assertDurableRecoveryAllowed } from './actuator.mjs';
 import { assertCapabilityReportAccepted, createRunPolicy, preflightCapabilities } from './capabilities.mjs';
 import { defineCapabilityDriver } from './capability_driver.mjs';
 import { assertCapabilityPreflightAccepted, journaledHostRequest, networkPolicyHostRequest } from './capability_modes.mjs';
@@ -872,7 +872,7 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}) {
     }
   }
   if (policy.allowPartialEffectBatch === true && driverManifestIsHuman(manifest, hostRequest) && policy.allowHumanEffects !== true) return false;
-  if (policy.allowPartialEffectBatch === true && driverManifestIsNetwork(manifest, hostRequest) && policy.requireApprovalForNetworkEffects === true) return false;
+  if (policy.allowPartialEffectBatch === true && driverManifestRequiresApproval(manifest, hostRequest, policy)) return false;
   try {
     assertDurableRecoveryAllowed(manifest.recoveryClass, policy);
   } catch {
@@ -910,6 +910,22 @@ function driverManifestIsNetwork(manifest, hostRequest) {
   return hostRequest?.actuationClass === 'http' ||
     (manifest.supportedActuationClasses ?? []).includes('http') ||
     (manifest.authorityLabels ?? []).some((label) => label.startsWith('network:'));
+}
+
+function driverManifestRequiresApproval(manifest, hostRequest, policy) {
+  return (policy.requireApprovalForNetworkEffects === true && driverManifestIsNetwork(manifest, hostRequest)) ||
+    (policy.requireApprovalForDestructiveEffects !== false && driverManifestIsDestructiveFileRequest(manifest, hostRequest)) ||
+    (policy.requireApprovalForBestEffort !== false && manifest.recoveryClass === EffectRecoveryClass.bestEffort);
+}
+
+function driverManifestIsDestructiveFileRequest(manifest, hostRequest) {
+  if (!driverManifestIsFile(manifest, hostRequest)) return false;
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
+    return payload?.operation !== 'read';
+  } catch {
+    return false;
+  }
 }
 
 function driverManifestIsHuman(manifest, hostRequest) {
