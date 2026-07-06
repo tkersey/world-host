@@ -194,7 +194,9 @@ function assertManifestCoversHostRequest(manifest, hostRequest) {
 }
 
 export function assertCapabilityPreflightAccepted(report) {
-  if (report.accepted !== true) fail('ERR_CAPABILITY_PREFLIGHT_BLOCKED', 'capability preflight blocked', { blockers: report.blockers });
+  if (report.accepted !== true || (Array.isArray(report.blockers) && report.blockers.length > 0)) {
+    fail('ERR_CAPABILITY_PREFLIGHT_BLOCKED', 'capability preflight blocked', { blockers: report.blockers });
+  }
   return true;
 }
 

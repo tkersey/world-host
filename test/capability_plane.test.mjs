@@ -5708,6 +5708,33 @@ describe('Capability Plane v0.2 core contracts', () => {
     );
     assert.equal(liveDriver.resolveCalled, false);
 
+    const inconsistentLiveDriver = preflightBlockedDriver({ accepted: true, blockers: ['inconsistent-preflight-blocker'] });
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'live',
+        driver: inconsistentLiveDriver,
+        hostRequest: httpRequest(),
+        journalOptions: {
+          store: new MemoryStore(),
+          runId: 'inconsistent-preflight-live-run',
+          branchId: 'main',
+          parentTurnClosureFingerprint: 'world:turn-closure:parent',
+        },
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      }),
+      (error) => {
+        assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+        assert.deepEqual(error.details?.blockers, ['inconsistent-preflight-blocker']);
+        return true;
+      },
+    );
+    assert.equal(inconsistentLiveDriver.resolveCalled, false);
+
     const approvalDriver = preflightBlockedDriver();
     await assert.rejects(
       () => runCapabilityMode({
@@ -6454,7 +6481,7 @@ describe('Capability Plane v0.2 core contracts', () => {
   });
 });
 
-function preflightBlockedDriver() {
+function preflightBlockedDriver(preflightReport = { accepted: false, blockers: ['driver-specific-blocker'] }) {
   let resolveCalled = false;
   return {
     get resolveCalled() {
@@ -6475,7 +6502,7 @@ function preflightBlockedDriver() {
       };
     },
     preflight() {
-      return { accepted: false, blockers: ['driver-specific-blocker'] };
+      return preflightReport;
     },
     dryRun() {
       return { wouldInvoke: true, proposedAction: { driver: 'preflight-blocked-http' } };
