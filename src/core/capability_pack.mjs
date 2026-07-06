@@ -60,6 +60,7 @@ const SIDECAR_RUNTIME_WRAPPERS = new Set([
   'powershell',
   'powershell.exe',
   'pwsh',
+  'setsid',
   'sh',
   'stdbuf',
   'tcsh',
@@ -989,8 +990,8 @@ function unsafeHostGlobalMember(identifier, member, options = {}) {
     return ['Worker', 'SharedWorker'].includes(member);
   }
   if (identifier === 'Bun') {
-    if (['connect', 'listen', 'serve'].includes(member)) return !options.allowHostNetwork;
-    if (['file', 'write'].includes(member)) return !options.allowHostFile;
+    if (['connect', 'fetch', 'listen', 'serve', 'udpSocket'].includes(member)) return !options.allowHostNetwork;
+    if (['file', 'mmap', 'write'].includes(member)) return !options.allowHostFile;
     return ['$', 'env', 'password', 'spawn', 'spawnSync'].includes(member);
   }
   if (identifier === 'process') {
@@ -1059,13 +1060,20 @@ function extensionlessArtifactPath(artifactPath) {
 function localImportArtifact(fromPath, specifier, covered, options = {}) {
   if (typeof specifier !== 'string' || (!specifier.startsWith('./') && !specifier.startsWith('../'))) return null;
   if (specifier.endsWith('/') || specifier.endsWith('\\')) return null;
-  if (percentEncodedLocalSpecifier(specifier)) return null;
-  const candidates = localImportArtifactCandidates(fromPath, specifier, options);
+  const canonicalSpecifier = canonicalLocalImportSpecifier(specifier);
+  if (!canonicalSpecifier) return null;
+  const candidates = localImportArtifactCandidates(fromPath, canonicalSpecifier, options);
   return candidates.find((candidate) => covered.has(candidate)) ?? candidates[0] ?? null;
 }
 
-function percentEncodedLocalSpecifier(specifier) {
-  return /%[0-9a-fA-F]{2}/.test(specifier);
+function canonicalLocalImportSpecifier(specifier) {
+  if (!/%[0-9a-fA-F]{2}/.test(specifier)) return specifier;
+  try {
+    const decoded = decodeURIComponent(specifier);
+    return decoded.startsWith('./') || decoded.startsWith('../') ? decoded : null;
+  } catch {
+    return null;
+  }
 }
 
 function localImportArtifactCandidates(fromPath, specifier, options = {}) {
@@ -2639,7 +2647,10 @@ function sidecarRuntimePermissionGrantOption(command, index) {
 
 function denoPermissionGrantOption(option) {
   return option === '-A' || option.startsWith('-A=') ||
+    option === '-N' || option.startsWith('-N=') ||
     option === '-P' || option.startsWith('-P=') ||
+    option === '-R' || option.startsWith('-R=') ||
+    option === '-W' || option.startsWith('-W=') ||
     option === '--allow-all' || option === '--permission-set' ||
     option.startsWith('--permission-set=') ||
     option.startsWith('--allow-');

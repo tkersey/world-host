@@ -1402,6 +1402,7 @@ class GenericHttpJsonCapabilityDriver {
   }
   dryRun(context, hostRequest) {
     const request = this.#request(hostRequest);
+    this.#assertDryRunPolicyAllows(context, hostRequest, request);
     return new DryRunReport({
       wouldInvoke: true,
       proposedAction: {
@@ -1436,7 +1437,8 @@ class GenericHttpJsonCapabilityDriver {
           await discardResponseBody(response, this.maximumResponseBytes);
           const transactionRef2 = response.headers.get("x-request-id");
           assertNoKnownSecretEcho(transactionRef2, secretValues);
-          return this.#resolution(hostRequest, { status: "http_error", statusCode: response.status }, 1, transactionRef2);
+          const status = httpErrorResponseStatus(hostRequest);
+          return this.#resolution(hostRequest, { status, statusCode: response.status }, ResponseStatusCode[status], transactionRef2);
         }
         const transactionRef = response.headers.get("x-request-id");
         try {
@@ -1496,6 +1498,12 @@ class GenericHttpJsonCapabilityDriver {
   }
   #policyHostRequest(hostRequest, request = this.#request(hostRequest)) {
     return { ...hostRequest, requestBytes: fromUtf8(stableJson({ url: request.url, method: request.method })) };
+  }
+  #assertDryRunPolicyAllows(context, hostRequest, request) {
+    const policy = createCapabilityPolicy(context?.policy ?? {});
+    if (hostRequest?.requestBytes?.byteLength > policy.maximumRequestBytes)
+      fail("ERR_CAPABILITY_PROMPT_TOO_LARGE");
+    assertRenderedRequestWithinPolicy(request, policy);
   }
   #assertPolicyAllows(context, hostRequest) {
     const manifest = this.manifest();
@@ -1743,6 +1751,9 @@ function assertRenderedRequestWithinPolicy(request, inputPolicy) {
   const policy = createCapabilityPolicy(inputPolicy);
   if (request.bodyBytes > policy.maximumPromptBytes)
     fail("ERR_CAPABILITY_PROMPT_TOO_LARGE");
+}
+function httpErrorResponseStatus(hostRequest) {
+  return hostRequest?.responseSchema?.status === "failed" ? "failed" : "http_error";
 }
 function extractPath(value, path) {
   if (!path)

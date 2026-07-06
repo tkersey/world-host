@@ -15,6 +15,7 @@ export class CapabilityReport {
     Object.freeze(this.warnings);
     Object.freeze(this.coveredRequests);
     if (this.selectedPendingRequestRoutes) Object.freeze(this.selectedPendingRequestRoutes);
+    if (this.unresolvedPendingRequestRoutes) Object.freeze(this.unresolvedPendingRequestRoutes);
     Object.freeze(this);
   }
 }
@@ -90,6 +91,7 @@ export function preflightCapabilities({
   const coveredRequests = [];
   const selectedRequiredActuatorRoutes = [];
   const selectedPendingRequestRoutes = [];
+  const unresolvedPendingRequestRoutes = [];
   let selectedLiveModelRequestCount = 0;
   const reusableEffectBlockers = [];
   const nonRerunnableReusableEffectBlockers = [];
@@ -131,7 +133,13 @@ export function preflightCapabilities({
     if (!candidates.length) {
       const structuralRoute = findDriverManifestForRequest(manifests, request);
       if (structuralRoute) {
-        blockers.push(...policyBlockers(structuralRoute, request, policy));
+        const structuralBlockers = policyBlockers(structuralRoute, request, policy);
+        if (policy.allowPartialEffectBatch === true && structuralBlockers.length) {
+          coveredRequests.push({ actuatorRef: request.actuatorRef, descriptorFingerprint: request.descriptorFingerprint, driverId: structuralRoute.driverId });
+          unresolvedPendingRequestRoutes.push(unresolvedPendingRequestRoute(structuralRoute, request, structuralBlockers));
+          continue;
+        }
+        blockers.push(...structuralBlockers);
         coveredRequests.push({ actuatorRef: request.actuatorRef, descriptorFingerprint: request.descriptorFingerprint, driverId: structuralRoute.driverId });
       } else if (manifests.some((manifest) => driverMatchesExceptResponseStatus(manifest, request))) {
         blockers.push('ERR_RESPONSE_STATUS_NOT_SUPPORTED');
@@ -155,6 +163,15 @@ export function preflightCapabilities({
       currentParentTurnClosureFingerprint,
       effectResolutionInputs,
     );
+    if (!route) {
+      if (policy.allowPartialEffectBatch === true) {
+        coveredRequests.push({ actuatorRef: request.actuatorRef, descriptorFingerprint: request.descriptorFingerprint, driverId: selectedPendingRequestRouteDriverId(candidates, preferredAuthorityLabels) });
+        unresolvedPendingRequestRoutes.push(unresolvedPendingRequestRoute(null, request, ['ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED']));
+        continue;
+      }
+      blockers.push('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED');
+      continue;
+    }
     hasReusableEffectOutcome(
       request,
       effectRecords,
@@ -231,9 +248,11 @@ export function preflightCapabilities({
     selectedPendingRequestRoutes: selectedPendingRequestRoutes.map(({ manifest, request }) => ({
       actuatorRef: request.actuatorRef,
       descriptorFingerprint: request.descriptorFingerprint,
+      ...(request.hostRequestFingerprint == null ? {} : { hostRequestFingerprint: request.hostRequestFingerprint }),
       driverId: manifest.driverId,
       driverIndex: manifest.driverIndex,
     })),
+    unresolvedPendingRequestRoutes,
     blockers,
     warnings,
   });
@@ -772,7 +791,9 @@ function selectPendingRequestRoute(candidates, preferredAuthorityLabels, request
 
   const nonChargingCandidates = candidates.filter((manifest) =>
     !chargesLiveModelBudget(manifest, request, effectRecords, currentBranchId, currentParentTurnClosureFingerprint, effectResolutionInputs, policy));
-  if (!nonChargingCandidates.length) return selected;
+  if (!nonChargingCandidates.length) {
+    return policy.allowPartialEffectBatch === true && selectedLiveModelRequestCount >= policy.maximumLiveModelCalls ? null : selected;
+  }
   if (selectedLiveModelRequestCount >= policy.maximumLiveModelCalls) {
     return selectPreferredAuthorityManifest(nonChargingCandidates, preferredAuthorityLabels);
   }
@@ -783,6 +804,21 @@ function selectPendingRequestRoute(candidates, preferredAuthorityLabels, request
   return equallyPreferredNonChargingCandidates.length
     ? selectPreferredAuthorityManifest(equallyPreferredNonChargingCandidates, preferredAuthorityLabels)
     : selected;
+}
+
+function selectedPendingRequestRouteDriverId(candidates, preferredAuthorityLabels) {
+  return selectPreferredAuthorityManifest(candidates, preferredAuthorityLabels)?.driverId ?? null;
+}
+
+function unresolvedPendingRequestRoute(route, request, blockers) {
+  return {
+    actuatorRef: request.actuatorRef,
+    descriptorFingerprint: request.descriptorFingerprint,
+    hostRequestFingerprint: request.hostRequestFingerprint ?? null,
+    driverId: route?.driverId ?? null,
+    driverIndex: route?.driverIndex ?? null,
+    blockers: [...blockers],
+  };
 }
 
 function authorityPreferenceScore(manifest, preferredAuthorityLabels) {

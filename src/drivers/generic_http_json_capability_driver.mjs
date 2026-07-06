@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { EffectRecoveryClass } from '../core/actuator.mjs';
+import { EffectRecoveryClass, ResponseStatusCode } from '../core/actuator.mjs';
 import { CapabilityPreflightReport, DryRunReport, ShadowReport, capabilityHostClaimBytes, defaultCapabilityPreflight } from '../core/capability_driver.mjs';
 import { hostRequestTargetFingerprint } from '../core/effect_journal.mjs';
 import { assertCapabilityPolicyAllows, createCapabilityPolicy } from '../core/capability_policy.mjs';
@@ -137,7 +137,8 @@ export class GenericHttpJsonCapabilityDriver {
           await discardResponseBody(response, this.maximumResponseBytes);
           const transactionRef = response.headers.get('x-request-id');
           assertNoKnownSecretEcho(transactionRef, secretValues);
-          return this.#resolution(hostRequest, { status: 'http_error', statusCode: response.status }, 1, transactionRef);
+          const status = httpErrorResponseStatus(hostRequest);
+          return this.#resolution(hostRequest, { status, statusCode: response.status }, ResponseStatusCode[status], transactionRef);
         }
         const transactionRef = response.headers.get('x-request-id');
         try {
@@ -206,6 +207,7 @@ export class GenericHttpJsonCapabilityDriver {
       checkNetworkTarget: false,
       checkFileRoot: false,
       checkRecoveryClass: false,
+      enforceApprovalRequirements: false,
     });
     assertRenderedRequestWithinPolicy(request, policy);
     assertCapabilityPolicyAllows({
@@ -217,6 +219,7 @@ export class GenericHttpJsonCapabilityDriver {
       checkNetworkTarget: policy.allowedOrigins.size > 0 || policy.allowedMethods.size > 0,
       checkFileRoot: false,
       checkRecoveryClass: false,
+      enforceApprovalRequirements: false,
     });
   }
 
@@ -477,6 +480,10 @@ function visitPayloadStrings(value, visit) {
 function assertRenderedRequestWithinPolicy(request, inputPolicy) {
   const policy = createCapabilityPolicy(inputPolicy);
   if (request.bodyBytes > policy.maximumPromptBytes) fail('ERR_CAPABILITY_PROMPT_TOO_LARGE');
+}
+
+function httpErrorResponseStatus(hostRequest) {
+  return hostRequest?.responseSchema?.status === 'failed' ? 'failed' : 'http_error';
 }
 
 function extractPath(value, path) {

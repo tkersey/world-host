@@ -17,6 +17,7 @@ const EFFECT_OUTCOME_STATES = new Set([
   EffectState.submitted,
   EffectState.closureCommitted,
 ]);
+const FIXTURE_MODEL_AUTHORITY_LABELS = new Set(['model:fixture', 'model:fixture-agent']);
 
 export class WorldWorker {
   constructor() {
@@ -829,6 +830,10 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}) {
   if (!structuralMatch) return false;
   if (hostRequest.requestBytes?.byteLength > manifest.maximumRequestBytes) return false;
   if (policy.maximumRequestBytes !== undefined && hostRequest.requestBytes?.byteLength > policy.maximumRequestBytes) return false;
+  if (policy.allowPartialEffectBatch === true) {
+    const promptBytes = hostRequest.policyRequestBytes ?? (driverManifestChargesLiveModelBudget(manifest, hostRequest) || driverManifestIsHuman(manifest, hostRequest) ? hostRequest.requestBytes : undefined);
+    if (policy.maximumPromptBytes !== undefined && promptBytes?.byteLength > policy.maximumPromptBytes) return false;
+  }
   if (policy.maximumResponseBytes !== undefined && manifest.maximumResponseBytes > policy.maximumResponseBytes) return false;
   const deniedCapabilityPacks = policySet(policy.deniedCapabilityPacks);
   if (deniedCapabilityPacks.has(manifest.packFingerprint) || deniedCapabilityPacks.has(manifest.driverId)) return false;
@@ -866,6 +871,7 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}) {
       if (!root || !allowedFileRoots.has(root)) return false;
     }
   }
+  if (policy.allowPartialEffectBatch === true && driverManifestIsHuman(manifest, hostRequest) && policy.allowHumanEffects !== true) return false;
   try {
     assertDurableRecoveryAllowed(manifest.recoveryClass, policy);
   } catch {
@@ -878,6 +884,25 @@ function driverManifestIsFile(manifest, hostRequest) {
   return hostRequest?.actuationClass === 'file' ||
     (manifest.supportedActuationClasses ?? []).includes('file') ||
     (manifest.authorityLabels ?? []).some((label) => label.startsWith('file:'));
+}
+
+function driverManifestIsHuman(manifest, hostRequest) {
+  return hostRequest?.actuationClass === 'human' ||
+    (manifest.supportedActuationClasses ?? []).includes('human') ||
+    (manifest.authorityLabels ?? []).some((label) => label.startsWith('human:'));
+}
+
+function driverManifestChargesLiveModelBudget(manifest, hostRequest) {
+  if (!driverManifestIsModel(manifest, hostRequest)) return false;
+  const modelLabels = (manifest?.authorityLabels ?? []).filter((label) => label.startsWith('model:'));
+  if (!modelLabels.length) return true;
+  return modelLabels.some((label) => !FIXTURE_MODEL_AUTHORITY_LABELS.has(label));
+}
+
+function driverManifestIsModel(manifest, hostRequest) {
+  return hostRequest?.actuationClass === 'model' ||
+    (manifest.supportedActuationClasses ?? []).includes('model') ||
+    (manifest.authorityLabels ?? []).some((label) => label.startsWith('model:'));
 }
 
 function policySet(value) {
@@ -1160,6 +1185,7 @@ function prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, hostRequestM
   if (parentSummary.hostRequestCount === 0) fail('ERR_NEEDS_HOST_REQUESTS_EMPTY', 'needs_host TurnClosure has no pending HostRequests');
   const pending = [];
   const unresolvedHostRequests = [];
+  let selectedLiveModelRequestCount = 0;
   for (let index = 0; index < parentSummary.hostRequests.length; index += 1) {
     const worldHostRequest = parentSummary.hostRequests[index];
     let hostRequest;
@@ -1176,6 +1202,13 @@ function prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, hostRequestM
       policy,
       preferredAuthorityLabelsForHostRequest(hostRequest, application, effectDrivers, policy),
     );
+    if (selection && policy.allowPartialEffectBatch === true && driverManifestChargesLiveModelBudget(selection.manifest, hostRequest)) {
+      if (selectedLiveModelRequestCount >= policy.maximumLiveModelCalls) {
+        unresolvedHostRequests.push(unresolvedHostRequestDiagnostic(index, hostRequest));
+        continue;
+      }
+      selectedLiveModelRequestCount += 1;
+    }
     if (selection) pending.push({ index, worldHostRequest, hostRequest, ...selection });
     else unresolvedHostRequests.push(unresolvedHostRequestDiagnostic(index, hostRequest));
   }
@@ -1198,19 +1231,42 @@ function prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, hostRequestM
 
 function bindEffectPlanToPreflightReport(plan, report, effectDrivers, policy) {
   const selectedRoutes = report.selectedPendingRequestRoutes ?? [];
-  const pending = plan.pending.map((item, index) => {
-    const route = selectedRoutes[index];
-    if (!route) fail('ERR_HOST_REQUEST_DRIVER_UNAVAILABLE', 'preflight report missing selected HostRequest route', unresolvedHostRequestDiagnostic(item.index, item.hostRequest));
+  const selectedByRequest = new Map(selectedRoutes.map((route) => [preflightRouteKey(route), route]));
+  const unresolvedKeys = new Set((report.unresolvedPendingRequestRoutes ?? []).map(preflightRouteKey));
+  const unresolvedHostRequests = [...plan.unresolvedHostRequests];
+  const pending = [];
+  for (const item of plan.pending) {
+    const key = preflightRouteKey(item.hostRequest);
+    const route = selectedByRequest.get(key);
+    if (!route) {
+      if (unresolvedKeys.has(key)) {
+        unresolvedHostRequests.push(unresolvedHostRequestDiagnostic(item.index, item.hostRequest));
+        continue;
+      }
+      fail('ERR_HOST_REQUEST_DRIVER_UNAVAILABLE', 'preflight report missing selected HostRequest route', unresolvedHostRequestDiagnostic(item.index, item.hostRequest));
+    }
     const selection = selectEffectDriverByPreflightRoute(effectDrivers, item.hostRequest, policy, route);
     if (!selection) fail('ERR_HOST_REQUEST_DRIVER_UNAVAILABLE', 'preflight-covered driver unavailable for pending HostRequest', {
       ...unresolvedHostRequestDiagnostic(item.index, item.hostRequest),
       driverId: route.driverId,
       driverIndex: route.driverIndex,
     });
-    if (item.driver === selection.driver) return item;
-    return { ...item, ...selection };
-  });
-  return { ...plan, pending };
+    pending.push(item.driver === selection.driver ? item : { ...item, ...selection });
+  }
+  if (pending.length === 0 && unresolvedHostRequests.length > 0) {
+    fail('ERR_PARTIAL_EFFECT_BATCH_EMPTY', 'partial effect batch has no covered HostRequests', {
+      unresolvedHostRequestCount: unresolvedHostRequests.length,
+    });
+  }
+  return { ...plan, pending, unresolvedHostRequests };
+}
+
+function preflightRouteKey(route) {
+  return [
+    route.hostRequestFingerprint ?? '',
+    route.actuatorRef ?? '',
+    route.descriptorFingerprint ?? '',
+  ].join('\0');
 }
 
 function selectEffectDriverByPreflightRoute(drivers, hostRequest, policy, route) {

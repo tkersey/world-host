@@ -145,6 +145,7 @@ export class GenericHttpJsonModelDriver {
   }
 
   dryRun(context, hostRequest) {
+    assertModelDryRunPolicyAllows(context, this.manifest(), hostRequest);
     const prompt = parseDecisionPrompt(hostRequest.requestBytes);
     return new DryRunReport({
       wouldInvoke: true,
@@ -170,6 +171,33 @@ function modelOutputValidationDiagnostics(allowedToolIds) {
 function redactedEndpoint(endpointUrl) {
   const endpoint = new URL(endpointUrl);
   return `${endpoint.origin}${endpoint.pathname}`;
+}
+
+function assertModelDryRunPolicyAllows(context, manifest, hostRequest) {
+  assertCapabilityPolicyAllows({
+    manifest,
+    hostRequest,
+    policy: context?.policy ?? {},
+    mode: 'dry-run',
+    requireEffectOptIn: false,
+    enforceNetworkTarget: false,
+    checkNetworkTarget: false,
+    checkFileRoot: false,
+    checkRecoveryClass: false,
+    enforceApprovalRequirements: false,
+  });
+  assertCapabilityPolicyAllows({
+    manifest,
+    hostRequest: modelPolicyHostRequest(hostRequest, manifest),
+    policy: context?.policy ?? {},
+    mode: 'dry-run',
+    requireEffectOptIn: false,
+    enforceNetworkTarget: false,
+    checkNetworkTarget: false,
+    checkFileRoot: false,
+    checkRecoveryClass: false,
+    enforceApprovalRequirements: false,
+  });
 }
 
 function modelPolicyHostRequest(hostRequest, manifest) {

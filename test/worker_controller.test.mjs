@@ -2366,6 +2366,158 @@ describe('RunController and WorldWorker', () => {
     }
   });
 
+  it('leaves human-denied and prompt-limited requests unresolved in partial batches', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'partial-policy-covered-key', idempotencyKeyFingerprint: 0xa09n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'partial-policy-human-key', idempotencyKeyFingerprint: 0xa19n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa03n, requestOrdinal: 2, idempotencyKey: 'partial-policy-model-key', idempotencyKeyFingerprint: 0xa29n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const coveredDriver = fixtureEffectDriver();
+    let approveCalled = false;
+    const humanDriver = new HumanApprovalCapabilityDriver({ mode: 'noninteractive-allow' });
+    humanDriver.approve = async () => {
+      approveCalled = true;
+      return { approved: true, record: { kind: 'partial-human-denied' } };
+    };
+    let modelFetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        modelFetchCalled = true;
+        return new Response('{"action":{"variant":"final","text":"too-late"}}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [
+          coveredDriver,
+          humanDriver,
+          new GenericHttpJsonModelDriver({ endpointUrl: 'https://allowed.example/decide' }),
+        ],
+        effectPolicy: {
+          allowPartialEffectBatch: true,
+          allowedAuthorityLabels: new Set(['test', 'human:approval', 'model:http-json', 'network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          maximumLiveModelCalls: 1,
+          maximumRequestBytes: 4096,
+          maximumPromptBytes: 4,
+        },
+        hostRequestMapper: (worldHostRequest) => {
+          if (worldHostRequest.requestFingerprint === 0xa02n) {
+            return {
+              actuatorRef: 'human:approval',
+              descriptorFingerprint: 'descriptor:human-approval',
+              actuationClass: 'human',
+              responseSchema: { status: 'ok' },
+              idempotencyKeyBytes: fromUtf8('partial-policy-human-key'),
+              idempotencyKeyWorldFingerprint: 'world:key:partial-policy-human',
+              requestBytes: fromUtf8(JSON.stringify({ prompt: 'approve this prompt' })),
+              hostRequestFingerprint: 'world:host-request:0000000000000a02',
+            };
+          }
+          if (worldHostRequest.requestFingerprint === 0xa03n) {
+            return {
+              actuatorRef: 'model:decision',
+              descriptorFingerprint: 'descriptor:agent-decision-prompt',
+              actuationClass: 'model',
+              responseSchema: { status: 'ok' },
+              idempotencyKeyBytes: fromUtf8('partial-policy-model-key'),
+              idempotencyKeyWorldFingerprint: 'world:key:partial-policy-model',
+              requestBytes: fromUtf8(JSON.stringify({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: 'goal=prompt-limit' })),
+              hostRequestFingerprint: 'world:host-request:0000000000000a03',
+            };
+          }
+          return {
+            actuatorRef: 'world:actuator-ref:0000000000000a05',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+            actuationClass: 'world:actuation-class:1',
+            responseSchema: { status: 'responded' },
+            idempotencyKeyBytes: fromUtf8('partial-policy-covered-key'),
+            idempotencyKeyWorldFingerprint: 'world:key:partial-policy-covered',
+            requestBytes: fromUtf8('covered'),
+            hostRequestFingerprint: 'world:host-request:0000000000000a01',
+          };
+        },
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(coveredDriver.invocationCount, 1);
+      assert.equal(approveCalled, false);
+      assert.equal(modelFetchCalled, false);
+      assert.deepEqual(
+        result.unresolvedHostRequests.map((item) => item.hostRequestFingerprint).sort(),
+        ['world:host-request:0000000000000a02', 'world:host-request:0000000000000a03'],
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('leaves over-budget live-model requests unresolved in partial batches', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'partial-model-budget-key-1', idempotencyKeyFingerprint: 0xa09n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'partial-model-budget-key-2', idempotencyKeyFingerprint: 0xa19n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    let fetchCount = 0;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCount += 1;
+        return new Response('{"action":{"variant":"final","text":"covered"}}', {
+          status: 200,
+          headers: { 'x-request-id': 'partial-model-budget' },
+        });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonModelDriver({ endpointUrl: 'https://allowed.example/decide' })],
+        effectPolicy: {
+          allowPartialEffectBatch: true,
+          allowedAuthorityLabels: new Set(['model:http-json', 'network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          maximumLiveModelCalls: 1,
+        },
+        hostRequestMapper: (worldHostRequest) => ({
+          actuatorRef: 'model:decision',
+          descriptorFingerprint: 'descriptor:agent-decision-prompt',
+          actuationClass: 'model',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8(`partial-model-budget-key-${worldHostRequest.requestFingerprint === 0xa01n ? '1' : '2'}`),
+          idempotencyKeyWorldFingerprint: `world:key:partial-model-budget-${worldHostRequest.requestFingerprint === 0xa01n ? '1' : '2'}`,
+          requestBytes: fromUtf8(JSON.stringify({
+            schema: 'boundary.Agent.DecisionPrompt.v0',
+            observation: `goal=partial-model-${worldHostRequest.requestFingerprint.toString(16)}`,
+          })),
+          hostRequestFingerprint: worldHostRequest.requestFingerprint === 0xa01n
+            ? 'world:host-request:0000000000000a01'
+            : 'world:host-request:0000000000000a02',
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fetchCount, 1);
+      assert.equal(result.unresolvedHostRequests.length, 1);
+      assert.equal(result.unresolvedHostRequests[0].hostRequestFingerprint, 'world:host-request:0000000000000a02');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('resolves through the preflight-selected non-live model route', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',

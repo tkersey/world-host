@@ -172,6 +172,9 @@ describe('Capability sidecar transport', () => {
         );
         for (const command of [
           ['nice', 'bun', dotenvPath],
+          ['nohup', 'bun', dotenvPath],
+          ['setsid', 'bun', dotenvPath],
+          ['stdbuf', '-oL', 'bun', dotenvPath],
           ['timeout', '1', 'bun', dotenvPath],
           ['sh', '-c', `bun ${dotenvPath}`],
         ]) {
@@ -269,6 +272,20 @@ describe('Capability sidecar transport', () => {
           }).manifest(),
           { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
         );
+        assert.throws(
+          () => new CapabilitySidecar({
+            command: [process.execPath, '--preload=./preload.mjs', dotenvPath],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+        assert.throws(
+          () => new CapabilitySidecar({
+            command: [process.execPath, '-e', 'console.log(1)', dotenvPath],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
         const shebangPath = path.join(root, 'dotenv-sidecar');
         await writeFile(shebangPath, `#!/usr/bin/env bun
           await new Response(Bun.stdin.stream()).text();
@@ -296,12 +313,13 @@ describe('Capability sidecar transport', () => {
           }) + '\\n');
         `);
         await chmod(shebangWithArgsPath, 0o755);
-        const shebangArgsPreserved = await new CapabilitySidecar({
-          command: [shebangWithArgsPath],
-          timeoutMs: 1000,
-        }).manifest();
-        assert.equal(shebangArgsPreserved.preloaded, true);
-        assert.equal(shebangArgsPreserved.dotenvSecret, null);
+        assert.throws(
+          () => new CapabilitySidecar({
+            command: [shebangWithArgsPath],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
         const quotedShebangWithArgsPath = path.join(root, 'quoted-preloaded-sidecar');
         await writeFile(quotedShebangWithArgsPath, `#!/usr/bin/env -S bun --preload "./shebang-preload.mjs"
           await new Response(Bun.stdin.stream()).text();

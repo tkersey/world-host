@@ -43,7 +43,7 @@ export async function runCapabilityMode({
   if (mode === CapabilityExecutionMode.dryRun) {
     assertManifestCoversHostRequest(manifest, hostRequest);
     assertLocalCapabilityPolicyAllows(manifest, hostRequest, livePolicy, 'dry-run');
-    return { mode, submittedToWorld: false, dryRun: await driver.dryRun(context, hostRequest) };
+    return { mode, submittedToWorld: false, dryRun: await driver.dryRun({ ...context, policy: livePolicy }, hostRequest) };
   }
   if (mode === CapabilityExecutionMode.shadow) {
     assertManifestCoversHostRequest(manifest, hostRequest);
@@ -68,7 +68,7 @@ export async function runCapabilityMode({
   if (mode === CapabilityExecutionMode.approval) {
     assertManifestCoversHostRequest(manifest, hostRequest);
     assertLocalCapabilityPolicyAllows(manifest, hostRequest, livePolicy, 'approval');
-    const proposed = await driver.dryRun(context, hostRequest);
+    const proposed = await driver.dryRun({ ...context, policy: livePolicy }, hostRequest);
     const decision = await approvalDecision(approval, { manifest, hostRequest, proposed });
     if (decision.approved !== true) return { mode, submittedToWorld: false, approved: false, proposed };
     if (isEffectFreeFixture(manifest) && !journalOptions) {

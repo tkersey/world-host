@@ -50,7 +50,7 @@ const BUN_RUNTIME_VALUE_OPTIONS = new Set([
   '-F',
   '-r',
 ]);
-const BUN_ARGV_WRAPPER_COMMANDS = new Set(['env', 'nice', 'timeout']);
+const BUN_ARGV_WRAPPER_COMMANDS = new Set(['env', 'nice', 'nohup', 'setsid', 'stdbuf', 'timeout']);
 const BUN_SHELL_WRAPPER_COMMANDS = new Set(['bash', 'dash', 'fish', 'sh', 'zsh']);
 
 export class CapabilitySidecar {
@@ -346,6 +346,9 @@ function assertSupportedBunEnvFileOptions(argv) {
     if (unsupportedBunConfigOption(value)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars only support --config=... for config isolation');
     }
+    if (unsupportedBunCodeLoadingOption(value)) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars do not support inline code or preload options');
+    }
     if (bunRuntimeOptionValuePosition(argv, index)) continue;
     if (value === 'run') {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars do not support package script commands');
@@ -381,6 +384,11 @@ function bunConfigOptionPresent(argv) {
 function unsupportedBunConfigOption(value) {
   return value === '--config' || value === '--config-file' || value.startsWith('--config-file=') ||
     value === '-c' || value.startsWith('-c=') || (value.startsWith('-c') && value !== '-c');
+}
+
+function unsupportedBunCodeLoadingOption(value) {
+  return value === '-e' || value === '--eval' || value.startsWith('-e') || value.startsWith('--eval=') ||
+    value === '--preload' || value.startsWith('--preload=');
 }
 
 function bunRuntimeOptionValuePosition(argv, index) {

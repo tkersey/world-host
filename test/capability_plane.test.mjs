@@ -545,6 +545,23 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': parenthesizedAliasedBunSpawnAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    for (const [name, source] of [
+      ['bun-fetch', "export function CapabilityDriver() { return Bun.fetch('https://example.test'); }\n"],
+      ['bun-udp', "export function CapabilityDriver() { return Bun.udpSocket({ port: 1234 }); }\n"],
+      ['bun-mmap', "export function CapabilityDriver() { return Bun.mmap('/etc/passwd'); }\n"],
+    ]) {
+      const adapter = fromUtf8(source);
+      const checksum = `sha256:${await sha256Hex(adapter)}`;
+      await assert.rejects(
+        () => assertCapabilityPackChecksums({
+          ...manifest,
+          docs: [],
+          checksums: [{ path: `${name}.mjs`, checksum }],
+          adapter: { kind: 'in_process', module: `${name}.mjs`, exportName: 'CapabilityDriver' },
+        }, { [`${name}.mjs`]: adapter }),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+      );
+    }
     const aliasedGlobalFetchAdapter = fromUtf8("const g = globalThis; export function CapabilityDriver() { return g['fetch']('https://example.test'); }\n");
     const aliasedGlobalFetchAdapterChecksum = `sha256:${await sha256Hex(aliasedGlobalFetchAdapter)}`;
     await assert.rejects(
@@ -627,17 +644,14 @@ describe('Capability Plane v0.2 core contracts', () => {
     }, { 'adapter.mjs': localImportAdapter, 'helper.mjs': localHelper }), true);
     const percentEncodedLocalImportAdapter = fromUtf8("import helper from './helper%2Emjs'; export const CapabilityDriver = helper;");
     const percentEncodedLocalImportAdapterChecksum = `sha256:${await sha256Hex(percentEncodedLocalImportAdapter)}`;
-    await assert.rejects(
-      () => assertCapabilityPackChecksums({
-        ...manifest,
-        docs: [],
-        checksums: [
-          { path: 'adapter.mjs', checksum: percentEncodedLocalImportAdapterChecksum },
-          { path: 'helper%2Emjs', checksum: localHelperChecksum },
-        ],
-      }, { 'adapter.mjs': percentEncodedLocalImportAdapter, 'helper%2Emjs': localHelper }),
-      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
-    );
+    assert.equal(await assertCapabilityPackChecksums({
+      ...manifest,
+      docs: [],
+      checksums: [
+        { path: 'adapter.mjs', checksum: percentEncodedLocalImportAdapterChecksum },
+        { path: 'helper.mjs', checksum: localHelperChecksum },
+      ],
+    }, { 'adapter.mjs': percentEncodedLocalImportAdapter, 'helper.mjs': localHelper }), true);
     const extensionlessLocalImportAdapter = fromUtf8("import helper from './helper'; export const CapabilityDriver = helper;");
     const extensionlessLocalImportAdapterChecksum = `sha256:${await sha256Hex(extensionlessLocalImportAdapter)}`;
     assert.equal(await assertCapabilityPackChecksums({
@@ -2640,6 +2654,17 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { './sidecar.ts': sidecar }),
       { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
+    for (const permission of ['-N=example.com', '-R=/etc']) {
+      await assert.rejects(
+        () => assertCapabilityPackChecksums({
+          ...manifest,
+          adapter: { kind: 'sidecar', command: ['deno', 'run', '--no-config', permission, './sidecar.ts'] },
+          docs: [],
+          checksums: [{ path: './sidecar.ts', checksum: sidecarChecksum }],
+        }, { './sidecar.ts': sidecar }),
+        { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+      );
+    }
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
@@ -2748,6 +2773,15 @@ describe('Capability Plane v0.2 core contracts', () => {
       () => assertCapabilityPackChecksums({
         ...manifest,
         adapter: { kind: 'sidecar', command: ['stdbuf', '-oL', 'node', '-e', 'import("node:fs")', './sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: './sidecar.mjs', checksum: sidecarChecksum }],
+      }, { './sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['setsid', 'node', '-e', 'import("node:fs")', './sidecar.mjs'] },
         docs: [],
         checksums: [{ path: './sidecar.mjs', checksum: sidecarChecksum }],
       }, { './sidecar.mjs': sidecar }),
@@ -3876,6 +3910,18 @@ describe('Capability Plane v0.2 core contracts', () => {
         }),
         { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
       );
+      assert.throws(
+        () => new HttpJsonPackCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          requestTemplate: { prompt: 'pack' },
+        }).dryRun({
+          policy: {
+            maximumRequestBytes: 1,
+            maximumPromptBytes: 4096,
+          },
+        }, { ...httpRequest(), requestBytes: fromUtf8(stableJson({ body: 'larger-than-one-byte' })) }),
+        { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+      );
 
       let packMalformedExplicitUrlFetchCalled = false;
       globalThis.fetch = async () => {
@@ -3929,6 +3975,28 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(decodeResolutionInputBytes(packPostResponseFailure.resolutionInputBytes).status, 2);
       assert.equal(packPostResponseFailure.diagnostics.status, 'failed');
       assert.equal(packPostResponseFailureFetchCount, 1);
+      globalThis.fetch = async () => new Response('transport failed', {
+        status: 500,
+        headers: { 'x-request-id': 'pack-transport-failure' },
+      });
+      const packTransportFailure = await new HttpJsonPackCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+        }).resolve({
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }, {
+          ...httpRequest(),
+          responseSchema: { status: 'failed' },
+          hostRequestFingerprint: 'world:host-request:00000000000000af',
+          idempotencyKeyBytes: fromUtf8('http-pack-transport-failure'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-pack-transport-failure',
+        });
+      assert.equal(decodeResolutionInputBytes(packTransportFailure.resolutionInputBytes).status, 2);
+      assert.equal(packTransportFailure.diagnostics.status, 'failed');
       globalThis.fetch = async (url, options) => {
         observedHeaders = options.headers;
         return new Response('{"action":{"variant":"final","text":"ok"}}', {
@@ -5190,6 +5258,27 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, promptLimitedApprovalRequest),
       { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
     );
+    assert.throws(
+      () => approval.dryRun({
+        policy: promptLimitedApprovalPolicy,
+      }, promptLimitedApprovalRequest),
+      { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+    );
+    let promptLimitedApprovalProviderCalled = false;
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'approval',
+        driver: approval,
+        hostRequest: promptLimitedApprovalRequest,
+        approval: () => {
+          promptLimitedApprovalProviderCalled = true;
+          return { approved: false };
+        },
+        policy: promptLimitedApprovalPolicy,
+      }),
+      { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+    );
+    assert.equal(promptLimitedApprovalProviderCalled, false);
     const unsupportedPackApproval = new HumanApprovalPackCapabilityDriver({ mode: 'interactive', prompt: async () => true });
     const unsupportedPackApprovalReport = unsupportedPackApproval.preflight({
       policy: { allowLiveEffects: true, allowHumanEffects: true },
@@ -5510,6 +5599,35 @@ describe('Capability Plane v0.2 core contracts', () => {
     );
     assert.equal(approvalDeniedPackDriver.dryRunCalled, false);
 
+    const dryRunPolicyDriver = policyProbeDriver();
+    const dryRunPolicy = await runCapabilityMode({
+      mode: 'dry-run',
+      driver: dryRunPolicyDriver,
+      hostRequest: httpRequest(),
+      policy: {
+        allowNetworkEffects: true,
+        maximumRequestBytes: 4096,
+        allowedOrigins: ['https://allowed.example'],
+        allowedMethods: ['POST'],
+      },
+    });
+    assert.equal(dryRunPolicy.dryRun.proposedAction.maximumRequestBytes, 4096);
+
+    const approvalPolicyDriver = policyProbeDriver();
+    const approvalPolicy = await runCapabilityMode({
+      mode: 'approval',
+      driver: approvalPolicyDriver,
+      hostRequest: httpRequest(),
+      approval: () => ({ approved: false }),
+      policy: {
+        allowNetworkEffects: true,
+        maximumRequestBytes: 4096,
+        allowedOrigins: ['https://allowed.example'],
+        allowedMethods: ['POST'],
+      },
+    });
+    assert.equal(approvalPolicy.proposed.proposedAction.maximumRequestBytes, 4096);
+
     const localShadowDeniedPackDriver = localPolicyProbeDriver({ packFingerprint });
     await assert.rejects(
       () => runCapabilityMode({
@@ -5644,6 +5762,12 @@ describe('Capability Plane v0.2 core contracts', () => {
       const driver = new GenericHttpJsonModelDriver({ endpointUrl: 'https://allowed.example/decide' });
       assert.deepEqual(driver.manifest().supportedResponseStatuses, ['ok', 'http_error', 'failed', 'deferred']);
       assert.equal(driver.dryRun({}, genericHttpModelRequest('goal=invoke', 'model-dry-key')).wouldInvoke, true);
+      assert.throws(
+        () => driver.dryRun({
+          policy: { maximumRequestBytes: 1, maximumPromptBytes: 4096 },
+        }, genericHttpModelRequest('goal=oversized-dry-run', 'model-dry-request-limit-key')),
+        { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+      );
       assert.throws(() => new GenericHttpJsonModelDriver({
         endpointUrl: 'https://allowed.example/decide?api_key=secret',
       }), { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' });
@@ -6265,9 +6389,13 @@ function policyProbeDriver({ packFingerprint } = {}) {
     preflight() {
       return { accepted: true };
     },
-    dryRun() {
+    dryRun(context = {}) {
       dryRunCalled = true;
-      return { wouldInvoke: true, proposedAction: { driver: 'policy-probe-http' } };
+      const proposedAction = { driver: 'policy-probe-http' };
+      if (context?.policy?.maximumRequestBytes !== undefined) {
+        proposedAction.maximumRequestBytes = context.policy.maximumRequestBytes;
+      }
+      return { wouldInvoke: true, proposedAction };
     },
     shadow() {
       shadowCalled = true;

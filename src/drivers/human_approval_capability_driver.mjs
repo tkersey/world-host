@@ -46,6 +46,7 @@ export class HumanApprovalCapabilityDriver {
   }
 
   dryRun(context, hostRequest) {
+    assertHumanPromptPolicyAllows(context, this.manifest(), hostRequest);
     return new DryRunReport({
       wouldInvoke: this.mode === 'interactive-terminal',
       proposedAction: { approval: this.#redactedPrompt(hostRequest) },
@@ -118,15 +119,32 @@ export class HumanApprovalCapabilityDriver {
 }
 
 function assertHumanPolicyAllows(context, manifest, hostRequest) {
-  const policyHostRequest = hostRequest && hostRequest.policyRequestBytes === undefined
-    ? { ...hostRequest, policyRequestBytes: hostRequest.requestBytes }
-    : hostRequest;
   assertCapabilityPolicyAllows({
     manifest,
-    hostRequest: policyHostRequest,
+    hostRequest: humanPolicyHostRequest(hostRequest),
     policy: context?.policy ?? {},
     mode: 'live',
   });
+}
+
+function assertHumanPromptPolicyAllows(context, manifest, hostRequest) {
+  assertCapabilityPolicyAllows({
+    manifest,
+    hostRequest: humanPolicyHostRequest(hostRequest),
+    policy: context?.policy ?? {},
+    mode: 'dry-run',
+    requireEffectOptIn: false,
+    checkNetworkTarget: false,
+    checkFileRoot: false,
+    checkRecoveryClass: false,
+    enforceApprovalRequirements: false,
+  });
+}
+
+function humanPolicyHostRequest(hostRequest) {
+  return hostRequest && hostRequest.policyRequestBytes === undefined
+    ? { ...hostRequest, policyRequestBytes: hostRequest.requestBytes }
+    : hostRequest;
 }
 
 function assertHumanApprovalModeReady(mode, prompt) {
