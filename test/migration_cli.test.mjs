@@ -923,6 +923,71 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('requires operator-supplied terminal manifest refs to resolve to ApplianceManifest bytes', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-terminal-operator-manifest-import-'));
+    const sourceRoot = path.join(root, 'source');
+    const receiverRoot = path.join(root, 'receiver');
+    const missingPackagePath = path.join(root, 'missing-manifest-export.json');
+    const summaryPackagePath = path.join(root, 'summary-manifest-export.json');
+    try {
+      const { run } = await fixtureDirectoryStore(sourceRoot);
+      const sourceStore = new DirectoryStore(sourceRoot);
+      const carrierExport = await exportCarrierRun(sourceStore, run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
+      const missingManifestBlob = blobEntryForBytes(fixtureApplianceManifestBytes({ manifestFingerprint: 0x912n }));
+      const missingManifestExport = JSON.parse(JSON.stringify(carrierExport));
+      missingManifestExport.bundle.application.applianceManifestRef = {
+        algorithm: 'sha256',
+        checksum: missingManifestBlob.checksum,
+        byteLength: missingManifestBlob.byteLength,
+      };
+      missingManifestExport.bundle.application.installationDiagnostics = { manifestSource: 'operator-supplied' };
+      await writeFile(missingPackagePath, `${JSON.stringify(missingManifestExport, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli([
+          'import',
+          '--store', receiverRoot,
+          '--package', missingPackagePath,
+          '--run', 'receiver-terminal-missing-manifest-run',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_IMPORT_PREFLIGHT_APPLIANCE_MANIFEST_MISSING' },
+      );
+
+      const summaryBlob = blobEntryForBytes(fromUtf8(stableJson({
+        kind: 'world-host.install-summary',
+        source: 'host-generated-install-summary',
+        worldAuthoredEvidence: false,
+      })));
+      const summaryManifestExport = JSON.parse(JSON.stringify(carrierExport));
+      summaryManifestExport.bundle.application.applianceManifestRef = {
+        algorithm: 'sha256',
+        checksum: summaryBlob.checksum,
+        byteLength: summaryBlob.byteLength,
+      };
+      summaryManifestExport.bundle.application.installationDiagnostics = { manifestSource: 'operator-supplied' };
+      summaryManifestExport.bundle.blobs.push(summaryBlob);
+      await writeFile(summaryPackagePath, `${JSON.stringify(summaryManifestExport, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli([
+          'import',
+          '--store', receiverRoot,
+          '--package', summaryPackagePath,
+          '--run', 'receiver-terminal-summary-manifest-run',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_IMPORT_PREFLIGHT_APPLIANCE_MANIFEST_INVALID' },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('imports terminal host-generated install summaries without requiring appliance manifest bytes', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-terminal-summary-import-'));
     const sourceRoot = path.join(root, 'source');

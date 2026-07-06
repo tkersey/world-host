@@ -760,12 +760,13 @@ async function importedApplianceManifest(bundle, application, store, expectedMan
   const bytes = carrierBundleBlobBytesOptional(bundle, ref, 'appliance manifest') ??
     await storedCarrierBlobBytes(store, ref);
   if (!bytes) {
-    if (required) {
-      fail('ERR_IMPORT_PREFLIGHT_APPLIANCE_MANIFEST_MISSING', 'receiver preflight requires exported ApplianceManifest bytes');
-    }
-    return null;
+    fail('ERR_IMPORT_PREFLIGHT_APPLIANCE_MANIFEST_MISSING', 'receiver preflight requires exported ApplianceManifest bytes');
   }
-  if (!required && isHostGeneratedInstallSummaryBytes(bytes)) return null;
+  if (
+    !required &&
+    application.installationDiagnostics?.manifestSource !== 'operator-supplied' &&
+    isHostGeneratedInstallSummaryBytes(bytes)
+  ) return null;
   try {
     const manifest = decodeApplianceManifest(bytes);
     if (expectedManifestFingerprint != null && manifest.manifestFingerprint !== expectedManifestFingerprint) {
