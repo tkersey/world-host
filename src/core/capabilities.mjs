@@ -716,8 +716,8 @@ function policyBlockers(route, request, policy) {
   const deniedLabels = route.authorityLabels.filter((label) => policy.allowedAuthorityLabels.size && !policy.allowedAuthorityLabels.has(label));
   if (deniedLabels.length) blockers.push(`authority-denied:${deniedLabels.join(',')}`);
   if (request && policy.maximumRequestBytes !== undefined && request.requestBytes?.byteLength > policy.maximumRequestBytes) blockers.push('request-limit-exceeds-policy');
-  const promptBytes = requestPolicyPromptBytes(route, request, policy);
-  if (request && policy.maximumPromptBytes !== undefined && promptBytes?.byteLength > policy.maximumPromptBytes) blockers.push('prompt-limit-exceeds-policy');
+  const promptByteLength = requestPolicyPromptByteLength(route, request, policy);
+  if (request && policy.maximumPromptBytes !== undefined && promptByteLength > policy.maximumPromptBytes) blockers.push('prompt-limit-exceeds-policy');
   if (policy.maximumResponseBytes !== undefined && route.maximumResponseBytes > policy.maximumResponseBytes) blockers.push('response-limit-exceeds-policy');
   if (policy.allowPartialEffectBatch === true && request && routeRequiresApproval(route, request, policy)) blockers.push('ERR_CAPABILITY_APPROVAL_REQUIRED');
   const allowedFileRoots = policy.allowedFileRoots ?? new Set();
@@ -771,24 +771,36 @@ function isDestructiveFileRequest(route, request) {
   }
 }
 
-function requestPolicyPromptBytes(route, request, policy) {
+function requestPolicyPromptByteLength(route, request, policy) {
   if (!request) return undefined;
-  if (request.policyRequestBytes) return request.policyRequestBytes;
-  if (isLiveModelRoute(route, request) || isHumanRoute(route, request)) return request.requestBytes;
-  if (isHttpRoute(route, request)) return httpRequestBodyPolicyBytes(route, request);
+  if (request.policyRequestBytes) return request.policyRequestBytes.byteLength;
+  if (isLiveModelRoute(route, request) || isHumanRoute(route, request)) return request.requestBytes?.byteLength;
+  if (isHttpRoute(route, request)) return httpRequestBodyPolicyByteLength(route, request);
   return undefined;
 }
 
-function httpRequestBodyPolicyBytes(route, request) {
-  if (route?.driverId === 'generic-http-json' && route?.diagnostics?.requestRendering?.requestTemplateFingerprint) return undefined;
+function httpRequestBodyPolicyByteLength(route, request) {
+  if (bodylessHttpMethod(requestMethodForRoute(request, route))) return 0;
+  if (route?.driverId === 'generic-http-json' && route?.diagnostics?.requestRendering?.requestTemplateFingerprint) {
+    return requestTemplateBodyByteLength(route.diagnostics.requestRendering);
+  }
   try {
     const payload = JSON.parse(new TextDecoder().decode(request.requestBytes));
-    if (!Object.prototype.hasOwnProperty.call(payload, 'body')) return new Uint8Array();
+    if (!Object.prototype.hasOwnProperty.call(payload, 'body')) return 0;
     const rendered = route?.driverId === 'http-json' ? JSON.stringify(payload.body) : stableJson(payload.body);
-    return rendered === undefined ? new Uint8Array() : fromUtf8(rendered);
+    return rendered === undefined ? 0 : fromUtf8(rendered).byteLength;
   } catch {
     return undefined;
   }
+}
+
+function requestTemplateBodyByteLength(requestRendering) {
+  const byteLength = requestRendering?.requestTemplateBodyBytes;
+  return Number.isSafeInteger(byteLength) && byteLength >= 0 ? byteLength : undefined;
+}
+
+function bodylessHttpMethod(method) {
+  return method === 'GET' || method === 'HEAD';
 }
 
 function setsIntersect(left, right) {

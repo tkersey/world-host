@@ -451,6 +451,46 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.everyPendingRequestCovered, false);
   });
 
+  it('leaves templated generic HTTP prompt-limited requests unresolved in partial preflight', () => {
+    const requestTemplate = { prompt: 'template exceeds receiver prompt policy' };
+    const driver = new GenericHttpJsonCapabilityDriver({
+      endpointUrl: 'https://allowed.example/decide',
+      requestTemplate,
+    });
+    const request = {
+      ...httpRequest('https://allowed.example/path', 'POST'),
+      requestBytes: fromUtf8(stableJson({
+        url: 'https://allowed.example/path',
+        method: 'POST',
+        body: { prompt: 'ok' },
+      })),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowPartialEffectBatch: true,
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+        maximumRequestBytes: 4096,
+        maximumPromptBytes: 4,
+      }),
+    });
+
+    assert.equal(
+      driver.manifest().diagnostics.requestRendering.requestTemplateBodyBytes,
+      fromUtf8(stableJson(requestTemplate)).byteLength,
+    );
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
+    assert.equal(report.unresolvedPendingRequestRoutes[0].driverId, 'generic-http-json');
+    assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('prompt-limit-exceeds-policy'));
+    assert.equal(report.everyPendingRequestCovered, false);
+  });
+
   it('reports HTTP prompt limits as blockers in non-partial preflight', () => {
     const request = {
       ...httpRequest('https://allowed.example/path', 'POST'),

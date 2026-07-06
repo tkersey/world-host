@@ -831,8 +831,8 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}) {
   if (hostRequest.requestBytes?.byteLength > manifest.maximumRequestBytes) return false;
   if (policy.maximumRequestBytes !== undefined && hostRequest.requestBytes?.byteLength > policy.maximumRequestBytes) return false;
   if (policy.allowPartialEffectBatch === true) {
-    const promptBytes = hostRequestPolicyPromptBytes(manifest, hostRequest);
-    if (policy.maximumPromptBytes !== undefined && promptBytes?.byteLength > policy.maximumPromptBytes) return false;
+    const promptByteLength = hostRequestPolicyPromptByteLength(manifest, hostRequest);
+    if (policy.maximumPromptBytes !== undefined && promptByteLength > policy.maximumPromptBytes) return false;
   }
   if (policy.maximumResponseBytes !== undefined && manifest.maximumResponseBytes > policy.maximumResponseBytes) return false;
   const deniedCapabilityPacks = policySet(policy.deniedCapabilityPacks);
@@ -881,23 +881,35 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}) {
   return true;
 }
 
-function hostRequestPolicyPromptBytes(manifest, hostRequest) {
-  if (hostRequest.policyRequestBytes) return hostRequest.policyRequestBytes;
-  if (driverManifestChargesLiveModelBudget(manifest, hostRequest) || driverManifestIsHuman(manifest, hostRequest)) return hostRequest.requestBytes;
-  if (hostRequest.actuationClass === 'http' || manifest.authorityLabels.includes('network:http')) return httpRequestBodyPolicyBytes(manifest, hostRequest);
+function hostRequestPolicyPromptByteLength(manifest, hostRequest) {
+  if (hostRequest.policyRequestBytes) return hostRequest.policyRequestBytes.byteLength;
+  if (driverManifestChargesLiveModelBudget(manifest, hostRequest) || driverManifestIsHuman(manifest, hostRequest)) return hostRequest.requestBytes?.byteLength;
+  if (hostRequest.actuationClass === 'http' || manifest.authorityLabels.includes('network:http')) return httpRequestBodyPolicyByteLength(manifest, hostRequest);
   return undefined;
 }
 
-function httpRequestBodyPolicyBytes(manifest, hostRequest) {
-  if (manifest?.driverId === 'generic-http-json' && manifest?.diagnostics?.requestRendering?.requestTemplateFingerprint) return undefined;
+function httpRequestBodyPolicyByteLength(manifest, hostRequest) {
+  if (bodylessHttpMethod(requestMethodForManifest(hostRequest, manifest))) return 0;
+  if (manifest?.driverId === 'generic-http-json' && manifest?.diagnostics?.requestRendering?.requestTemplateFingerprint) {
+    return requestTemplateBodyByteLength(manifest.diagnostics.requestRendering);
+  }
   try {
     const payload = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
-    if (!Object.prototype.hasOwnProperty.call(payload, 'body')) return new Uint8Array();
+    if (!Object.prototype.hasOwnProperty.call(payload, 'body')) return 0;
     const rendered = manifest?.driverId === 'http-json' ? JSON.stringify(payload.body) : stableJson(payload.body);
-    return rendered === undefined ? new Uint8Array() : fromUtf8(rendered);
+    return rendered === undefined ? 0 : fromUtf8(rendered).byteLength;
   } catch {
     return undefined;
   }
+}
+
+function requestTemplateBodyByteLength(requestRendering) {
+  const byteLength = requestRendering?.requestTemplateBodyBytes;
+  return Number.isSafeInteger(byteLength) && byteLength >= 0 ? byteLength : undefined;
+}
+
+function bodylessHttpMethod(method) {
+  return method === 'GET' || method === 'HEAD';
 }
 
 function driverManifestIsFile(manifest, hostRequest) {
