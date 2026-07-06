@@ -775,7 +775,7 @@ function requestPolicyPromptBytes(route, request, policy) {
   if (!request) return undefined;
   if (request.policyRequestBytes) return request.policyRequestBytes;
   if (isLiveModelRoute(route, request) || isHumanRoute(route, request)) return request.requestBytes;
-  if (policy?.allowPartialEffectBatch === true && isHttpRoute(route, request)) return httpRequestBodyPolicyBytes(route, request);
+  if (isHttpRoute(route, request)) return httpRequestBodyPolicyBytes(route, request);
   return undefined;
 }
 

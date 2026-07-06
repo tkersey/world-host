@@ -2584,6 +2584,83 @@ describe('RunController and WorldWorker', () => {
     }
   });
 
+  it('rejects non-partial HTTP prompt-limited batches before resolving effects', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'non-partial-http-covered-key', idempotencyKeyFingerprint: 0xa09n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'non-partial-http-prompt-key', idempotencyKeyFingerprint: 0xa19n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const coveredDriver = fixtureEffectDriver();
+    let fetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [
+          coveredDriver,
+          new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }),
+        ],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['test', 'network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          maximumRequestBytes: 4096,
+          maximumPromptBytes: 4,
+        },
+        hostRequestMapper: (worldHostRequest) => {
+          if (worldHostRequest.requestFingerprint === 0xa02n) {
+            return {
+              actuatorRef: 'http:json',
+              descriptorFingerprint: 'descriptor:http-json',
+              actuationClass: 'http',
+              responseSchema: { status: 'ok' },
+              idempotencyKeyBytes: fromUtf8('non-partial-http-prompt-key'),
+              idempotencyKeyWorldFingerprint: 'world:key:non-partial-http-prompt',
+              requestBytes: fromUtf8(stableJson({
+                url: 'https://allowed.example/decide',
+                method: 'POST',
+                body: { prompt: 'too large for receiver prompt policy' },
+              })),
+              hostRequestFingerprint: 'world:host-request:0000000000000a02',
+            };
+          }
+          return {
+            actuatorRef: 'world:actuator-ref:0000000000000a05',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+            actuationClass: 'world:actuation-class:1',
+            responseSchema: { status: 'responded' },
+            idempotencyKeyBytes: fromUtf8('non-partial-http-covered-key'),
+            idempotencyKeyWorldFingerprint: 'world:key:non-partial-http-covered',
+            requestBytes: fromUtf8('covered'),
+            hostRequestFingerprint: 'world:host-request:0000000000000a01',
+          };
+        },
+      });
+
+      await assert.rejects(
+        () => controller.advance(runId, branchId),
+        (error) => {
+          assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+          assert.ok(error.details?.blockers?.includes('prompt-limit-exceeds-policy'));
+          return true;
+        },
+      );
+      assert.equal(coveredDriver.invocationCount, 0);
+      assert.equal(fetchCalled, false);
+      assert.equal((await store.listEffectRecords(runId)).length, 0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('leaves approval-required network requests unresolved in partial batches', async () => {
     const requests = [
       fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'partial-network-covered-key', idempotencyKeyFingerprint: 0xa09n }),
@@ -3244,7 +3321,7 @@ describe('RunController and WorldWorker', () => {
     assert.equal((await store.listEffectRecords(runId)).length, 0);
   });
 
-  it('preserves selected effect prompt byte limits before resolving effects', async () => {
+  it('preflights selected effect prompt byte limits before resolving effects', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
       closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
@@ -3289,7 +3366,11 @@ describe('RunController and WorldWorker', () => {
 
     await assert.rejects(
       () => controller.advance(runId, branchId),
-      { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+      (error) => {
+        assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+        assert.ok(error.details?.blockers?.includes('prompt-limit-exceeds-policy'));
+        return true;
+      },
     );
     assert.equal(driver.invocationCount, 0);
     assert.equal((await store.listEffectRecords(runId)).length, 0);
@@ -3349,7 +3430,7 @@ describe('RunController and WorldWorker', () => {
     }
   });
 
-  it('preserves request-routed HTTP prompt byte limits on cached effect replay', async () => {
+  it('preflights request-routed HTTP prompt byte limits on cached effect replay', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
       closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
@@ -3435,7 +3516,11 @@ describe('RunController and WorldWorker', () => {
 
       await assert.rejects(
         () => controller.advance(runId, branchId),
-        { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+        (error) => {
+          assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+          assert.ok(error.details?.blockers?.includes('prompt-limit-exceeds-policy'));
+          return true;
+        },
       );
       assert.equal(fetchCalled, false);
       assert.equal(driver.invocationCount, 0);

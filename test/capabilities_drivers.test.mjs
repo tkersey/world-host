@@ -451,6 +451,35 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.everyPendingRequestCovered, false);
   });
 
+  it('reports HTTP prompt limits as blockers in non-partial preflight', () => {
+    const request = {
+      ...httpRequest('https://allowed.example/path', 'POST'),
+      requestBytes: fromUtf8(stableJson({
+        url: 'https://allowed.example/path',
+        method: 'POST',
+        body: { prompt: 'too large for receiver prompt policy' },
+      })),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'], methods: ['POST'] })],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+        maximumRequestBytes: 4096,
+        maximumPromptBytes: 4,
+      }),
+    });
+
+    assert.ok(report.blockers.includes('prompt-limit-exceeds-policy'));
+    assert.deepEqual(report.unresolvedPendingRequestRoutes, []);
+    assert.equal(report.everyPendingRequestCovered, true);
+    assert.equal(report.valueSizeLimitsSupported, false);
+  });
+
   it('leaves approval-required HTTP requests unresolved in partial preflight', () => {
     const report = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },
