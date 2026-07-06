@@ -173,6 +173,33 @@ describe('RunController and WorldWorker', () => {
     assert.equal(workerCreated, false);
   });
 
+  it('rejects summary-shaped operator-supplied appliance manifests before worker execution', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      manifestBytes: fromUtf8(stableJson({
+        kind: 'world-host.install-summary',
+        source: 'host-generated-install-summary',
+        worldAuthoredEvidence: false,
+      })),
+      applicationOverrides: {
+        installationDiagnostics: { manifestSource: 'operator-supplied' },
+      },
+    });
+    let workerCreated = false;
+    const controller = new RunController({
+      store,
+      workerFactory: async () => {
+        workerCreated = true;
+        return new ScriptedWorker();
+      },
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_APPLICATION_MANIFEST_INVALID' },
+    );
+    assert.equal(workerCreated, false);
+  });
+
   it('checks generated-install worker appliance manifests before turn submission', async () => {
     const { store, runId, branchId } = await fixtureStore({
       manifestBytes: fromUtf8('world-host install summary'),

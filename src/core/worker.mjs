@@ -1146,10 +1146,7 @@ async function decodeStoredApplicationManifestForPreflight(store, application) {
     bytes = await store.getBlob(application.applianceManifestRef);
     return decodeApplianceManifest(bytes);
   } catch (error) {
-    if (
-      application.installationDiagnostics?.manifestSource === 'host-generated-install-summary' ||
-      isHostGeneratedInstallSummaryBytes(bytes)
-    ) {
+    if (allowsStoredManifestInstallSummaryFallback(application, bytes)) {
       return null;
     }
     fail('ERR_APPLICATION_MANIFEST_INVALID', 'stored appliance manifest is not decodable', {
@@ -1168,6 +1165,13 @@ function isHostGeneratedInstallSummaryBytes(bytes) {
   return parsed?.kind === 'world-host.install-summary' &&
     parsed?.source === 'host-generated-install-summary' &&
     parsed?.worldAuthoredEvidence === false;
+}
+
+function allowsStoredManifestInstallSummaryFallback(application, bytes) {
+  const manifestSource = application.installationDiagnostics?.manifestSource;
+  if (manifestSource === 'host-generated-install-summary') return true;
+  if (manifestSource == null) return isHostGeneratedInstallSummaryBytes(bytes);
+  return false;
 }
 
 function assertLoadedApplianceManifestAccepted(worker, application, parentHead, policy) {
@@ -1193,10 +1197,7 @@ async function assertStoredApplicationManifestMatchesWorker(worker, store, appli
     bytes = await store.getBlob(application.applianceManifestRef);
     stored = decodeApplianceManifest(bytes);
   } catch (error) {
-    if (
-      application.installationDiagnostics?.manifestSource === 'host-generated-install-summary' ||
-      isHostGeneratedInstallSummaryBytes(bytes)
-    ) {
+    if (allowsStoredManifestInstallSummaryFallback(application, bytes)) {
       return;
     }
     fail('ERR_APPLICATION_MANIFEST_INVALID', 'stored appliance manifest is not decodable', {
