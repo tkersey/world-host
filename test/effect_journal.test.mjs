@@ -28,6 +28,58 @@ describe('EffectJournal', () => {
     assert.deepEqual(decodeResolutionInputBytes(second.resolutionInputBytes).responseValueImageBytes, fromUtf8('resolution:one'));
   });
 
+  it('enforces prompt limits before reusing cached outcomes', async () => {
+    const store = new MemoryStore();
+    const request = httpHostRequest({
+      idempotencyKeyBytes: fromUtf8('cached-prompt-limit-key'),
+      idempotencyKeyWorldFingerprint: 'world:key:cached-prompt-limit',
+      requestBytes: fromUtf8(JSON.stringify({
+        url: 'https://allowed.example/decide',
+        method: 'POST',
+        body: { prompt: 'larger-prompt' },
+      })),
+      hostRequestFingerprint: 'world:host-request:0000000000000c01',
+    });
+    const driver = fixtureDriver({
+      recoveryClass: EffectRecoveryClass.idempotent,
+      actuatorRef: 'http:json',
+      descriptorFingerprint: 'descriptor:http-json',
+      actuationClasses: ['http'],
+      authorityLabels: ['network:http'],
+    });
+    const permissive = new EffectJournal({
+      store,
+      runId: 'run',
+      branchId: 'main',
+      parentTurnClosureFingerprint: 'turn:0',
+      policy: { maximumRequestBytes: 4096, maximumPromptBytes: 4096 },
+    });
+    const limited = new EffectJournal({
+      store,
+      runId: 'run',
+      branchId: 'main',
+      parentTurnClosureFingerprint: 'turn:0',
+      policy: { maximumRequestBytes: 4096, maximumPromptBytes: 4 },
+    });
+
+    await permissive.resolve({}, request, driver);
+    let preflightCalled = false;
+    await assert.rejects(
+      () => limited.resolve({}, request, driver, {
+        beforeInvoke() {
+          preflightCalled = true;
+          const error = new Error('preflight should not run after prompt policy rejects');
+          error.code = 'ERR_TEST_PREFLIGHT_SHOULD_NOT_RUN';
+          throw error;
+        },
+      }),
+      { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+    );
+
+    assert.equal(preflightCalled, false);
+    assert.equal(driver.calls, 1);
+  });
+
   it('reruns safely recoverable effects when a terminal reusable outcome is invalid', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
@@ -1741,7 +1793,22 @@ function humanApprovalRequest(overrides = {}) {
   };
 }
 
-function fixtureDriver({ recoveryClass, response = 'resolution', recoverResponse = null, descriptorFingerprint = 'descriptor:fixture', recover = true, recoverHostClaim = false, driverTransactionRef = undefined, delayMs = 0, maximumRequestBytes = 1024, maximumResponseBytes = 1024, supportedResponseStatuses = ['ok'] }) {
+function fixtureDriver({
+  recoveryClass,
+  response = 'resolution',
+  recoverResponse = null,
+  actuatorRef = 'fixture:model',
+  descriptorFingerprint = 'descriptor:fixture',
+  actuationClasses = ['fixture'],
+  authorityLabels = ['fixture'],
+  recover = true,
+  recoverHostClaim = false,
+  driverTransactionRef = undefined,
+  delayMs = 0,
+  maximumRequestBytes = 1024,
+  maximumResponseBytes = 1024,
+  supportedResponseStatuses = ['ok'],
+}) {
   return {
     calls: 0,
     recoverCalls: 0,
@@ -1749,15 +1816,15 @@ function fixtureDriver({ recoveryClass, response = 'resolution', recoverResponse
     manifest() {
       return {
         driverId: 'fixture-driver',
-        supportedActuatorRefs: ['fixture:model'],
+        supportedActuatorRefs: [actuatorRef],
         supportedDescriptorFingerprints: [descriptorFingerprint],
-        supportedActuationClasses: ['fixture'],
+        supportedActuationClasses: actuationClasses,
         supportedResponseStatuses,
         maximumRequestBytes,
         maximumResponseBytes,
         recoveryClass,
         concurrencyLimit: 1,
-        authorityLabels: ['fixture'],
+        authorityLabels,
       };
     },
     async resolve(_context, request) {

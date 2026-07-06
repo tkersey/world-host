@@ -716,7 +716,7 @@ function policyBlockers(route, request, policy) {
   const deniedLabels = route.authorityLabels.filter((label) => policy.allowedAuthorityLabels.size && !policy.allowedAuthorityLabels.has(label));
   if (deniedLabels.length) blockers.push(`authority-denied:${deniedLabels.join(',')}`);
   if (request && policy.maximumRequestBytes !== undefined && request.requestBytes?.byteLength > policy.maximumRequestBytes) blockers.push('request-limit-exceeds-policy');
-  const promptByteLength = requestPolicyPromptByteLength(route, request, policy);
+  const promptByteLength = requestPolicyPromptByteLength(route, request);
   if (request && policy.maximumPromptBytes !== undefined && promptByteLength > policy.maximumPromptBytes) blockers.push('prompt-limit-exceeds-policy');
   if (policy.maximumResponseBytes !== undefined && route.maximumResponseBytes > policy.maximumResponseBytes) blockers.push('response-limit-exceeds-policy');
   if (policy.allowPartialEffectBatch === true && request && routeRequiresApproval(route, request, policy)) blockers.push('ERR_CAPABILITY_APPROVAL_REQUIRED');
@@ -771,11 +771,15 @@ function isDestructiveFileRequest(route, request) {
   }
 }
 
-function requestPolicyPromptByteLength(route, request, policy) {
-  if (!request) return undefined;
-  if (request.policyRequestBytes) return request.policyRequestBytes.byteLength;
-  if (isLiveModelRoute(route, request) || isHumanRoute(route, request)) return request.requestBytes?.byteLength;
-  if (isHttpRoute(route, request)) return httpRequestBodyPolicyByteLength(route, request);
+function requestPolicyPromptByteLength(route, request) {
+  return hostRequestPolicyPromptByteLength(route, request);
+}
+
+export function hostRequestPolicyPromptByteLength(manifest, hostRequest) {
+  if (!hostRequest) return undefined;
+  if (hostRequest.policyRequestBytes) return hostRequest.policyRequestBytes.byteLength;
+  if (isLiveModelRoute(manifest, hostRequest) || isHumanRoute(manifest, hostRequest)) return hostRequest.requestBytes?.byteLength;
+  if (isHttpRoute(manifest, hostRequest)) return httpRequestBodyPolicyByteLength(manifest, hostRequest);
   return undefined;
 }
 
