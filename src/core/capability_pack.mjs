@@ -54,6 +54,7 @@ const SIDECAR_RUNTIME_WRAPPERS = new Set([
   'dash',
   'env',
   'fish',
+  'ionice',
   'ksh',
   'nice',
   'nohup',
@@ -992,7 +993,7 @@ function unsafeHostGlobalMember(identifier, member, options = {}) {
   if (identifier === 'Bun') {
     if (['connect', 'fetch', 'listen', 'serve', 'udpSocket'].includes(member)) return !options.allowHostNetwork;
     if (['file', 'mmap', 'write'].includes(member)) return !options.allowHostFile;
-    return ['$', 'env', 'password', 'spawn', 'spawnSync'].includes(member);
+    return ['$', 'env', 'FFI', 'password', 'spawn', 'spawnSync'].includes(member);
   }
   if (identifier === 'process') {
     return ['abort', 'binding', 'chdir', 'cwd', 'dlopen', 'env', 'exit', 'kill'].includes(member);

@@ -1788,6 +1788,8 @@ function visitPayloadStrings(value, visit) {
 }
 function assertRenderedRequestWithinPolicy(request, inputPolicy) {
   const policy = createCapabilityPolicy(inputPolicy);
+  if (request.bodyBytes > policy.maximumRequestBytes)
+    fail("ERR_CAPABILITY_PROMPT_TOO_LARGE");
   if (request.bodyBytes > policy.maximumPromptBytes)
     fail("ERR_CAPABILITY_PROMPT_TOO_LARGE");
 }

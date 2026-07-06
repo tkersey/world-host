@@ -378,6 +378,7 @@ export class CapabilityDriver {
     if (!manifest.supportedActuatorRefs.includes(hostRequest?.actuatorRef)) blockers.push('actuator-ref-uncovered');
     if (!manifest.supportedDescriptorFingerprints.includes(hostRequest?.descriptorFingerprint)) blockers.push('descriptor-uncovered');
     if (!manifest.supportedActuationClasses.includes(hostRequest?.actuationClass)) blockers.push('actuation-class-uncovered');
+    if (hostRequest?.requestBytes?.byteLength > manifest.maximumRequestBytes) blockers.push('request-limit-exceeded');
     if (hostRequest?.responseSchema && !manifest.supportedResponseStatuses.includes(hostRequest.responseSchema.status)) {
       blockers.push('response-status-uncovered');
     }
@@ -401,6 +402,15 @@ export class CapabilityDriver {
   }
 
   shadow(context, hostRequest, recordedResolution) {
+    try {
+      parseDecisionPrompt(hostRequest.requestBytes);
+    } catch (error) {
+      return {
+        liveInvoked: false,
+        schemaAccepted: false,
+        diagnostics: { driver: 'fixture-agent-model', blocker: error.code ?? 'ERR_AGENT_DECISION_PROMPT_INVALID' },
+      };
+    }
     return {
       liveInvoked: false,
       schemaAccepted: Boolean(recordedResolution),

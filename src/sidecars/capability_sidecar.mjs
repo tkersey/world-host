@@ -50,7 +50,7 @@ const BUN_RUNTIME_VALUE_OPTIONS = new Set([
   '-F',
   '-r',
 ]);
-const BUN_ARGV_WRAPPER_COMMANDS = new Set(['env', 'nice', 'nohup', 'setsid', 'stdbuf', 'timeout']);
+const BUN_ARGV_WRAPPER_COMMANDS = new Set(['env', 'gtimeout', 'ionice', 'nice', 'nohup', 'setsid', 'stdbuf', 'timeout']);
 const BUN_SHELL_WRAPPER_COMMANDS = new Set(['bash', 'dash', 'fish', 'sh', 'zsh']);
 
 export class CapabilitySidecar {

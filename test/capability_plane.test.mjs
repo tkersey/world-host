@@ -547,6 +547,7 @@ describe('Capability Plane v0.2 core contracts', () => {
     );
     for (const [name, source] of [
       ['bun-fetch', "export function CapabilityDriver() { return Bun.fetch('https://example.test'); }\n"],
+      ['bun-ffi', "export function CapabilityDriver() { return Bun.FFI.dlopen('/tmp/libevil.so', {}); }\n"],
       ['bun-udp', "export function CapabilityDriver() { return Bun.udpSocket({ port: 1234 }); }\n"],
       ['bun-mmap', "export function CapabilityDriver() { return Bun.mmap('/etc/passwd'); }\n"],
     ]) {
@@ -2796,6 +2797,24 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { './sidecar.mjs': sidecar }),
       { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['gtimeout', '1', 'node', '-e', 'import("node:fs")', './sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: './sidecar.mjs', checksum: sidecarChecksum }],
+      }, { './sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['ionice', 'node', '-e', 'import("node:fs")', './sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: './sidecar.mjs', checksum: sidecarChecksum }],
+      }, { './sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
     for (const command of [
       ['pnpm', 'node', '-e', 'import("node:fs")', './sidecar.mjs'],
       ['yarn', 'node', '-e', 'import("node:fs")', './sidecar.mjs'],
@@ -3931,6 +3950,19 @@ describe('Capability Plane v0.2 core contracts', () => {
         }, { ...httpRequest(), requestBytes: fromUtf8(stableJson({ body: 'larger-than-one-byte' })) }),
         { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
       );
+      const renderedPackDryRunLimitRequest = { ...httpRequest(), requestBytes: fromUtf8(stableJson({ body: 'x' })) };
+      assert.throws(
+        () => new HttpJsonPackCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          requestTemplate: { prompt: 'x'.repeat(128) },
+        }).dryRun({
+          policy: {
+            maximumRequestBytes: renderedPackDryRunLimitRequest.requestBytes.byteLength + 8,
+            maximumPromptBytes: 4096,
+          },
+        }, renderedPackDryRunLimitRequest),
+        { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+      );
       assert.throws(
         () => new HttpJsonPackCapabilityDriver({
           endpointUrl: 'https://allowed.example/decide',
@@ -4704,6 +4736,19 @@ describe('Capability Plane v0.2 core contracts', () => {
         { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
       );
       assert.equal(renderedLimitedFetchCalled, false);
+      const renderedDryRunLimitRequest = { ...httpRequest(), requestBytes: fromUtf8(stableJson({ body: 'x' })) };
+      assert.throws(
+        () => new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          requestTemplate: { prompt: 'x'.repeat(128) },
+        }).dryRun({
+          policy: {
+            maximumRequestBytes: renderedDryRunLimitRequest.requestBytes.byteLength + 8,
+            maximumPromptBytes: 4096,
+          },
+        }, renderedDryRunLimitRequest),
+        { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+      );
 
       let promptLimitedFetchCalled = false;
       globalThis.fetch = async () => {
@@ -5582,6 +5627,15 @@ describe('Capability Plane v0.2 core contracts', () => {
     });
     assert.equal(malformedFixturePackPreflight.accepted, false);
     assert.deepEqual(malformedFixturePackPreflight.blockers, ['ERR_AGENT_DECISION_PROMPT_SCHEMA']);
+    const oversizedFixturePackPreflight = fixturePackDriver.preflight({}, {
+      ...modelRequest('goal=invoke', 'oversized-fixture-pack-preflight-key'),
+      requestBytes: fromUtf8(stableJson({
+        schema: 'boundary.Agent.DecisionPrompt.v0',
+        observation: 'x'.repeat(fixturePackDriver.manifest().maximumRequestBytes + 1),
+      })),
+    });
+    assert.equal(oversizedFixturePackPreflight.accepted, false);
+    assert.ok(oversizedFixturePackPreflight.blockers.includes('request-limit-exceeded'));
     const fixturePackResolution = await defineCapabilityDriver(fixturePackDriver).resolve({}, modelRequest('goal=invoke', 'fixture-pack-wire-key'));
     assert.equal(decodeResolutionInputBytes(fixturePackResolution.resolutionInputBytes).status, 0);
     assert.deepEqual(
@@ -5912,6 +5966,59 @@ describe('Capability Plane v0.2 core contracts', () => {
           policy: { maximumRequestBytes: 1, maximumPromptBytes: 4096 },
         }, genericHttpModelRequest('goal=oversized-dry-run', 'model-dry-request-limit-key')),
         { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+      );
+      assert.equal(driver.manifest().maximumRequestBytes, 64 * 1024);
+      const routedModelDriver = new GenericHttpJsonModelDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        allowEndpointFromRequest: true,
+        origins: ['https://allowed.example', 'https://denied.example'],
+        methods: ['POST'],
+      });
+      assert.throws(
+        () => routedModelDriver.dryRun({
+          policy: {
+            maximumRequestBytes: 4096,
+            maximumPromptBytes: 4096,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }, {
+          ...genericHttpModelRequest('goal=routed-denied', 'model-routed-dry-key'),
+          requestBytes: fromUtf8(stableJson({
+            schema: 'boundary.Agent.DecisionPrompt.v0',
+            observation: 'goal=routed-denied',
+            url: 'https://denied.example/decide',
+            method: 'POST',
+          })),
+        }),
+        { code: 'ERR_CAPABILITY_ORIGIN_DENIED' },
+      );
+      assert.equal(
+        routedModelDriver.dryRun({
+          policy: {
+            maximumRequestBytes: 4096,
+            maximumPromptBytes: 4096,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }, {
+          ...genericHttpModelRequest('goal=routed-allowed', 'model-routed-allowed-dry-key'),
+          requestBytes: fromUtf8(stableJson({
+            schema: 'boundary.Agent.DecisionPrompt.v0',
+            observation: 'goal=routed-allowed',
+            url: 'https://allowed.example/alternate',
+            method: 'POST',
+          })),
+        }).proposedAction.endpoint,
+        'https://allowed.example/alternate',
+      );
+      assert.equal(
+        new FixtureAgentModelCapabilityDriver().shadow(
+          {},
+          { ...genericHttpModelRequest('goal=fixture-shadow', 'fixture-shadow-key'), requestBytes: fromUtf8('not-json') },
+          { resolutionInputBytes: fromUtf8('recorded') },
+        ).schemaAccepted,
+        false,
       );
       assert.throws(() => new GenericHttpJsonModelDriver({
         endpointUrl: 'https://allowed.example/decide?api_key=secret',

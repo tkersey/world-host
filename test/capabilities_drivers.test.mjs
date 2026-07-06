@@ -451,6 +451,27 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.everyPendingRequestCovered, false);
   });
 
+  it('leaves approval-required HTTP requests unresolved in partial preflight', () => {
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path', 'POST')],
+      drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'], methods: ['POST'] })],
+      policy: createRunPolicy({
+        allowPartialEffectBatch: true,
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+        requireApprovalForNetworkEffects: true,
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
+    assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('ERR_CAPABILITY_APPROVAL_REQUIRED'));
+    assert.equal(report.everyPendingRequestCovered, false);
+  });
+
   it('summarizes receiver HTTP method denials as authority failures', () => {
     const report = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },

@@ -872,6 +872,7 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}) {
     }
   }
   if (policy.allowPartialEffectBatch === true && driverManifestIsHuman(manifest, hostRequest) && policy.allowHumanEffects !== true) return false;
+  if (policy.allowPartialEffectBatch === true && driverManifestIsNetwork(manifest, hostRequest) && policy.requireApprovalForNetworkEffects === true) return false;
   try {
     assertDurableRecoveryAllowed(manifest.recoveryClass, policy);
   } catch {
@@ -903,6 +904,12 @@ function driverManifestIsFile(manifest, hostRequest) {
   return hostRequest?.actuationClass === 'file' ||
     (manifest.supportedActuationClasses ?? []).includes('file') ||
     (manifest.authorityLabels ?? []).some((label) => label.startsWith('file:'));
+}
+
+function driverManifestIsNetwork(manifest, hostRequest) {
+  return hostRequest?.actuationClass === 'http' ||
+    (manifest.supportedActuationClasses ?? []).includes('http') ||
+    (manifest.authorityLabels ?? []).some((label) => label.startsWith('network:'));
 }
 
 function driverManifestIsHuman(manifest, hostRequest) {

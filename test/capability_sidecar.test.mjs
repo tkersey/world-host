@@ -171,6 +171,8 @@ describe('Capability sidecar transport', () => {
           { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
         );
         for (const command of [
+          ['gtimeout', '1', 'bun', dotenvPath],
+          ['ionice', 'bun', dotenvPath],
           ['nice', 'bun', dotenvPath],
           ['nohup', 'bun', dotenvPath],
           ['setsid', 'bun', dotenvPath],

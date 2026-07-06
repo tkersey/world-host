@@ -727,6 +727,7 @@ function policyBlockers(route, request, policy) {
   }
   if (isHumanRoute(route, request) && policy.allowHumanEffects !== true) blockers.push('ERR_CAPABILITY_HUMAN_DENIED');
   if (isHttpRoute(route, request)) {
+    if (policy.allowPartialEffectBatch === true && policy.requireApprovalForNetworkEffects) blockers.push('ERR_CAPABILITY_APPROVAL_REQUIRED');
     const driverOrigins = Array.isArray(route.diagnostics?.origins) ? new Set(route.diagnostics.origins) : null;
     const driverMethods = Array.isArray(route.diagnostics?.methods)
       ? new Set(route.diagnostics.methods.map((item) => String(item).toUpperCase()))

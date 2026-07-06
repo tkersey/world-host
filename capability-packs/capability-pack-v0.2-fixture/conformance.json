@@ -1,6 +1,6 @@
 {
   "driverId": "fixture-agent-model",
-  "packFingerprint": "sha256:399ff818a90e4fd54860fc94643952629ca83e67d52258160c270a3523804bee",
+  "packFingerprint": "sha256:e29d180cb58f2c86f8f1a7a8037863c0b6045f0e8370751e4fa960f4ef2b2ee3",
   "corpusFingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
   "vectors": [
     {

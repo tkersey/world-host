@@ -1,6 +1,6 @@
 import { EffectRecoveryClass } from '../core/actuator.mjs';
 import { CapabilityPreflightReport, DryRunReport, ShadowReport, capabilityHostClaimBytes, defaultCapabilityPreflight } from '../core/capability_driver.mjs';
-import { assertCapabilityPolicyAllows } from '../core/capability_policy.mjs';
+import { assertCapabilityPolicyAllows, createCapabilityPolicy } from '../core/capability_policy.mjs';
 import { fail, fromUtf8, stableJson } from '../core/store.mjs';
 import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
 import { decodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
@@ -35,6 +35,15 @@ export class FixtureAgentModelCapabilityDriver extends FixtureAgentModelDriver {
   }
 
   shadow(context, hostRequest, recordedResolution) {
+    try {
+      parseDecisionPrompt(hostRequest.requestBytes);
+    } catch (error) {
+      return new ShadowReport({
+        liveInvoked: false,
+        schemaAccepted: false,
+        diagnostics: { driver: 'fixture-agent-model', blocker: error.code ?? 'ERR_AGENT_DECISION_PROMPT_INVALID' },
+      });
+    }
     return new ShadowReport({
       liveInvoked: false,
       schemaAccepted: Boolean(recordedResolution),
@@ -65,6 +74,7 @@ export class GenericHttpJsonModelDriver {
       supportedDescriptorFingerprints: ['descriptor:agent-decision-prompt'],
       supportedActuationClasses: ['model'],
       supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+      maximumRequestBytes: this.http.maximumRequestBytes,
       recoveryClass: EffectRecoveryClass.idempotent,
       authorityLabels: ['model:http-json', 'network:http'],
       diagnostics: {
@@ -145,11 +155,13 @@ export class GenericHttpJsonModelDriver {
   }
 
   dryRun(context, hostRequest) {
-    assertModelDryRunPolicyAllows(context, this.manifest(), hostRequest);
+    const manifest = this.manifest();
+    assertModelDryRunPolicyAllows(context, manifest, hostRequest);
     const prompt = parseDecisionPrompt(hostRequest.requestBytes);
+    const target = modelPolicyTarget(hostRequest, manifest);
     return new DryRunReport({
       wouldInvoke: true,
-      proposedAction: { endpoint: redactedEndpoint(this.http.endpointUrl), observationBytes: prompt.observation.length },
+      proposedAction: { endpoint: redactedEndpoint(target.url), observationBytes: prompt.observation.length },
     });
   }
 
@@ -174,10 +186,11 @@ function redactedEndpoint(endpointUrl) {
 }
 
 function assertModelDryRunPolicyAllows(context, manifest, hostRequest) {
+  const policy = createCapabilityPolicy(context?.policy ?? {});
   assertCapabilityPolicyAllows({
     manifest,
     hostRequest,
-    policy: context?.policy ?? {},
+    policy,
     mode: 'dry-run',
     requireEffectOptIn: false,
     enforceNetworkTarget: false,
@@ -189,11 +202,11 @@ function assertModelDryRunPolicyAllows(context, manifest, hostRequest) {
   assertCapabilityPolicyAllows({
     manifest,
     hostRequest: modelPolicyHostRequest(hostRequest, manifest),
-    policy: context?.policy ?? {},
+    policy,
     mode: 'dry-run',
     requireEffectOptIn: false,
-    enforceNetworkTarget: false,
-    checkNetworkTarget: false,
+    enforceNetworkTarget: true,
+    checkNetworkTarget: policy.allowedOrigins.size > 0 || policy.allowedMethods.size > 0,
     checkFileRoot: false,
     checkRecoveryClass: false,
     enforceApprovalRequirements: false,
@@ -201,15 +214,29 @@ function assertModelDryRunPolicyAllows(context, manifest, hostRequest) {
 }
 
 function modelPolicyHostRequest(hostRequest, manifest) {
-  const diagnostics = manifest?.diagnostics ?? {};
   return {
     ...hostRequest,
     policyRequestBytes: hostRequest.requestBytes,
-    requestBytes: fromUtf8(stableJson({
-      url: diagnostics.configuredEndpointUrl ?? diagnostics.configuredOrigin,
-      method: diagnostics.defaultMethod ?? 'POST',
-    })),
+    requestBytes: fromUtf8(stableJson(modelPolicyTarget(hostRequest, manifest))),
   };
+}
+
+function modelPolicyTarget(hostRequest, manifest) {
+  const diagnostics = manifest?.diagnostics ?? {};
+  const configured = {
+    url: diagnostics.configuredEndpointUrl ?? diagnostics.configuredOrigin,
+    method: diagnostics.defaultMethod ?? 'POST',
+  };
+  if (diagnostics.endpointSource !== 'request-or-config') return configured;
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
+    return {
+      url: Object.prototype.hasOwnProperty.call(payload, 'url') ? payload.url : configured.url,
+      method: Object.prototype.hasOwnProperty.call(payload, 'method') ? payload.method : configured.method,
+    };
+  } catch {
+    return configured;
+  }
 }
 
 function transportHostRequest(hostRequest) {
