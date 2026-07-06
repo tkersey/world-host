@@ -54,8 +54,8 @@ export class HumanApprovalCapabilityDriver {
     });
   }
 
-  shadow() {
-    return new ShadowReport({ liveInvoked: false, schemaAccepted: true });
+  shadow(context, hostRequest, recordedResolution) {
+    return new ShadowReport({ liveInvoked: false, schemaAccepted: Boolean(recordedResolution) });
   }
 
   async approve({ proposed }) {

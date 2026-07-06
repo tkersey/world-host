@@ -2014,6 +2014,30 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.responseStatusesSupported, false);
   });
 
+  it('leaves unsupported response statuses unresolved in partial batches', () => {
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [
+        httpRequest('https://allowed.example/path', 'GET'),
+        httpRequest('https://allowed.example/path', 'GET', { status: 'streaming' }),
+      ],
+      drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'] })],
+      policy: createRunPolicy({
+        allowPartialEffectBatch: true,
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['GET'],
+      }),
+    });
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.selectedPendingRequestRoutes.length, 1);
+    assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
+    assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('ERR_RESPONSE_STATUS_NOT_SUPPORTED'));
+    assert.equal(report.everyPendingRequestCovered, false);
+    assert.equal(report.responseStatusesSupported, true);
+  });
+
   it('reports receiver byte-limit policy blockers for otherwise matching drivers', () => {
     const report = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },

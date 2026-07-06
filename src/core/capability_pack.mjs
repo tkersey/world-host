@@ -2512,6 +2512,7 @@ function sidecarRuntimeInspectorOption(command, index) {
   if (!sidecarRuntimeOptionPosition(command, index)) return false;
   const value = command[index];
   if (typeof value !== 'string') return false;
+  if (commandBaseName(command[0]).toLowerCase() === 'node' && value === 'inspect') return true;
   const option = value.includes('=') ? value.slice(0, value.indexOf('=')) : value;
   return option.startsWith('--inspect') || option === '--debug-port';
 }

@@ -1165,14 +1165,15 @@ class HumanApprovalCapabilityDriver {
     return new CapabilityPreflightReport({ accepted: blockers.length === 0, blockers });
   }
   dryRun(context, hostRequest) {
+    assertHumanPromptPolicyAllows(context, this.manifest(), hostRequest);
     return new DryRunReport({
       wouldInvoke: this.mode === "interactive-terminal",
       proposedAction: { approval: this.#redactedPrompt(hostRequest) },
       diagnostics: { mode: this.mode }
     });
   }
-  shadow() {
-    return new ShadowReport({ liveInvoked: false, schemaAccepted: true });
+  shadow(context, hostRequest, recordedResolution) {
+    return new ShadowReport({ liveInvoked: false, schemaAccepted: Boolean(recordedResolution) });
   }
   async approve({ proposed }) {
     assertHumanApprovalModeReady(this.mode, this.prompt);
@@ -1242,6 +1243,29 @@ function assertHumanPolicyAllows(context, manifest, hostRequest) {
     fail("ERR_CAPABILITY_PACK_NOT_ALLOWED");
   if (policy.allowHumanEffects !== true)
     fail("ERR_CAPABILITY_HUMAN_DENIED");
+  const allowedAuthorityLabels = policySet(policy.allowedAuthorityLabels);
+  const deniedAuthorityLabels = (manifest?.authorityLabels ?? []).filter((label) => allowedAuthorityLabels.size && !allowedAuthorityLabels.has(label));
+  if (deniedAuthorityLabels.length)
+    fail("ERR_CAPABILITY_AUTHORITY_DENIED", "authority label denied", { labels: deniedAuthorityLabels });
+  const maximumRequestBytes = positivePolicyLimit(policy.maximumRequestBytes ?? policy.maximumPromptBytes ?? 1024 * 1024, "maximumRequestBytes");
+  const maximumPromptBytes = positivePolicyLimit(policy.maximumPromptBytes ?? maximumRequestBytes, "maximumPromptBytes");
+  const maximumResponseBytes = positivePolicyLimit(policy.maximumResponseBytes ?? 1024 * 1024, "maximumResponseBytes");
+  const policyRequestBytes = hostRequest?.policyRequestBytes ?? hostRequest?.requestBytes;
+  if (hostRequest?.requestBytes?.byteLength > maximumRequestBytes)
+    fail("ERR_CAPABILITY_PROMPT_TOO_LARGE");
+  if (policyRequestBytes?.byteLength > maximumPromptBytes)
+    fail("ERR_CAPABILITY_PROMPT_TOO_LARGE");
+  if (manifest?.maximumResponseBytes > maximumResponseBytes)
+    fail("ERR_CAPABILITY_RESPONSE_LIMIT_EXCEEDS_POLICY");
+}
+function assertHumanPromptPolicyAllows(context, manifest, hostRequest) {
+  const policy = context?.policy ?? {};
+  const deniedCapabilityPacks = policySet(policy.deniedCapabilityPacks);
+  if (deniedCapabilityPacks.has(manifest?.packFingerprint) || deniedCapabilityPacks.has(manifest?.driverId))
+    fail("ERR_CAPABILITY_PACK_DENIED");
+  const allowedCapabilityPacks = policySet(policy.allowedCapabilityPacks);
+  if (allowedCapabilityPacks.size && !allowedCapabilityPacks.has(manifest?.packFingerprint) && !allowedCapabilityPacks.has(manifest?.driverId))
+    fail("ERR_CAPABILITY_PACK_NOT_ALLOWED");
   const allowedAuthorityLabels = policySet(policy.allowedAuthorityLabels);
   const deniedAuthorityLabels = (manifest?.authorityLabels ?? []).filter((label) => allowedAuthorityLabels.size && !allowedAuthorityLabels.has(label));
   if (deniedAuthorityLabels.length)

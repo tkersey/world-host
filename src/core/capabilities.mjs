@@ -142,6 +142,10 @@ export function preflightCapabilities({
         blockers.push(...structuralBlockers);
         coveredRequests.push({ actuatorRef: request.actuatorRef, descriptorFingerprint: request.descriptorFingerprint, driverId: structuralRoute.driverId });
       } else if (manifests.some((manifest) => driverMatchesExceptResponseStatus(manifest, request))) {
+        if (policy.allowPartialEffectBatch === true) {
+          unresolvedPendingRequestRoutes.push(unresolvedPendingRequestRoute(null, request, ['ERR_RESPONSE_STATUS_NOT_SUPPORTED']));
+          continue;
+        }
         blockers.push('ERR_RESPONSE_STATUS_NOT_SUPPORTED');
       } else {
         blockers.push(`pending-request-uncovered:${request.hostRequestFingerprint ?? request.actuatorRef}`);

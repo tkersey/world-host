@@ -2185,6 +2185,15 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'sidecar.mjs': sidecar }),
       { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['node', 'inspect', './sidecar.mjs'] },
+        docs: [],
+        checksums: [{ path: './sidecar.mjs', checksum: sidecarChecksum }],
+      }, { './sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
     const sidecarEnvFile = fromUtf8('SETTING=value\n');
     const sidecarEnvFileChecksum = `sha256:${await sha256Hex(sidecarEnvFile)}`;
     await assert.rejects(
@@ -5276,6 +5285,12 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, promptLimitedApprovalRequest),
       { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
     );
+    assert.throws(
+      () => packApproval.dryRun({
+        policy: promptLimitedApprovalPolicy,
+      }, promptLimitedApprovalRequest),
+      { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+    );
     let promptLimitedApprovalProviderCalled = false;
     await assert.rejects(
       () => runCapabilityMode({
@@ -5351,6 +5366,10 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.equal(decodeResolutionInputBytes((await packApproval.resolve({
       policy: { allowLiveEffects: true, allowHumanEffects: true },
     }, approvalRequest())).resolutionInputBytes).status, 0);
+    assert.equal(approval.shadow({}, approvalRequest(), null).schemaAccepted, false);
+    assert.equal(approval.shadow({}, approvalRequest(), fromUtf8('recorded')).schemaAccepted, true);
+    assert.equal(packApproval.shadow({}, approvalRequest(), null).schemaAccepted, false);
+    assert.equal(packApproval.shadow({}, approvalRequest(), fromUtf8('recorded')).schemaAccepted, true);
     assert.equal(approval.preflight({}, httpRequest()).accepted, false);
     const proposedApproval = approval.dryRun({}, {
       ...approvalRequest(),
