@@ -924,7 +924,7 @@ function driverManifestIsDestructiveFileRequest(manifest, hostRequest) {
     const payload = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
     return payload?.operation !== 'read';
   } catch {
-    return false;
+    return true;
   }
 }
 

@@ -767,7 +767,7 @@ function isDestructiveFileRequest(route, request) {
     const payload = JSON.parse(new TextDecoder().decode(request.requestBytes));
     return payload?.operation !== 'read';
   } catch {
-    return false;
+    return true;
   }
 }
 

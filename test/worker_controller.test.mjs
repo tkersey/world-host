@@ -2664,6 +2664,7 @@ describe('RunController and WorldWorker', () => {
       fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'partial-approval-covered-key', idempotencyKeyFingerprint: 0xa09n }),
       fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'partial-approval-file-key', idempotencyKeyFingerprint: 0xa19n }),
       fixtureHostRequestBytes({ requestFingerprint: 0xa03n, requestOrdinal: 2, idempotencyKey: 'partial-approval-best-effort-key', idempotencyKeyFingerprint: 0xa29n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa04n, requestOrdinal: 3, idempotencyKey: 'partial-approval-malformed-file-key', idempotencyKeyFingerprint: 0xa39n }),
     ];
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
@@ -2723,6 +2724,18 @@ describe('RunController and WorldWorker', () => {
             hostRequestFingerprint: 'world:host-request:0000000000000a03',
           };
         }
+        if (worldHostRequest.requestFingerprint === 0xa04n) {
+          return {
+            actuatorRef: 'file:write',
+            descriptorFingerprint: 'descriptor:file-write',
+            actuationClass: 'file',
+            responseSchema: { status: 'ok' },
+            idempotencyKeyBytes: fromUtf8('partial-approval-malformed-file-key'),
+            idempotencyKeyWorldFingerprint: 'world:key:partial-approval-malformed-file',
+            requestBytes: fromUtf8('not-json'),
+            hostRequestFingerprint: 'world:host-request:0000000000000a04',
+          };
+        }
         return {
           actuatorRef: 'world:actuator-ref:0000000000000a05',
           descriptorFingerprint: 'world:descriptor:0000000000000a0b',
@@ -2744,7 +2757,11 @@ describe('RunController and WorldWorker', () => {
     assert.equal(bestEffortDriver.invocationCount, 0);
     assert.deepEqual(
       result.unresolvedHostRequests.map((item) => item.hostRequestFingerprint).sort(),
-      ['world:host-request:0000000000000a02', 'world:host-request:0000000000000a03'],
+      [
+        'world:host-request:0000000000000a02',
+        'world:host-request:0000000000000a03',
+        'world:host-request:0000000000000a04',
+      ],
     );
   });
 

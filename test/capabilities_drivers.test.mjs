@@ -481,10 +481,15 @@ describe('capability preflight and reference drivers', () => {
       ...fileRequest('out.txt', { operation: 'write', content: 'needs approval' }),
       hostRequestFingerprint: 'world:host-request:file-approval',
     };
+    const malformedFileRequest = {
+      ...fileRequest('broken.txt'),
+      requestBytes: fromUtf8('not-json'),
+      hostRequestFingerprint: 'world:host-request:file-malformed-approval',
+    };
     const report = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },
       currentHead: { generation: 0 },
-      pendingRequests: [bestEffortRequest, destructiveFileRequest],
+      pendingRequests: [bestEffortRequest, destructiveFileRequest, malformedFileRequest],
       drivers: [
         fixtureDriverWithAuthority(['test'], { recoveryClass: EffectRecoveryClass.bestEffort }),
         fixtureDriverWithAuthority(['file:sandbox'], {
@@ -503,10 +508,14 @@ describe('capability preflight and reference drivers', () => {
     });
 
     assert.deepEqual(report.blockers, []);
-    assert.equal(report.unresolvedPendingRequestRoutes.length, 2);
+    assert.equal(report.unresolvedPendingRequestRoutes.length, 3);
     assert.deepEqual(
       report.unresolvedPendingRequestRoutes.map((route) => route.hostRequestFingerprint).sort(),
-      ['world:host-request:best-effort-approval', 'world:host-request:file-approval'],
+      [
+        'world:host-request:best-effort-approval',
+        'world:host-request:file-approval',
+        'world:host-request:file-malformed-approval',
+      ],
     );
     assert.ok(report.unresolvedPendingRequestRoutes.every((route) =>
       route.blockers.includes('ERR_CAPABILITY_APPROVAL_REQUIRED')));
