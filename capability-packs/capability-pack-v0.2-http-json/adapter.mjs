@@ -1153,7 +1153,20 @@ class CapabilityPolicy {
     Object.freeze(this);
   }
 }
-function assertCapabilityPolicyAllows({ manifest, hostRequest = null, policy: inputPolicy = {}, mode = "live", action = null, enforceNetworkTarget = true }) {
+function assertCapabilityPolicyAllows({
+  manifest,
+  hostRequest = null,
+  policy: inputPolicy = {},
+  mode = "live",
+  action = null,
+  enforceNetworkTarget = true,
+  requireEffectOptIn = true,
+  checkNetworkTarget = true,
+  checkFileRoot = true,
+  checkRecoveryClass = true,
+  checkLiveModelBudget = true,
+  enforceApprovalRequirements = true
+}) {
   const policy = createCapabilityPolicy(inputPolicy);
   if (mode === "live" && policy.auditOnly === true)
     fail("ERR_CAPABILITY_AUDIT_ONLY_DENIED");
@@ -1169,35 +1182,36 @@ function assertCapabilityPolicyAllows({ manifest, hostRequest = null, policy: in
   const deniedAuthorityLabels = authorityLabels.filter((label) => policy.allowedAuthorityLabels.size && !policy.allowedAuthorityLabels.has(label));
   if (deniedAuthorityLabels.length)
     fail("ERR_CAPABILITY_AUTHORITY_DENIED", "authority label denied", { labels: deniedAuthorityLabels });
-  if (isNetwork(manifest, hostRequest) && policy.allowNetworkEffects !== true)
+  if (requireEffectOptIn && isNetwork(manifest, hostRequest) && policy.allowNetworkEffects !== true)
     fail("ERR_CAPABILITY_NETWORK_DENIED");
-  if (isFile(manifest, hostRequest) && policy.allowFileEffects !== true)
+  if (requireEffectOptIn && isFile(manifest, hostRequest) && policy.allowFileEffects !== true)
     fail("ERR_CAPABILITY_FILE_DENIED");
-  if (isHuman(manifest, hostRequest) && policy.allowHumanEffects !== true)
+  if (requireEffectOptIn && isHuman(manifest, hostRequest) && policy.allowHumanEffects !== true)
     fail("ERR_CAPABILITY_HUMAN_DENIED");
-  if (mode === "live" && isLiveModelCall(manifest, hostRequest) && policy.maximumLiveModelCalls < 1)
+  if (checkLiveModelBudget && mode === "live" && isLiveModelCall(manifest, hostRequest) && policy.maximumLiveModelCalls < 1)
     fail("ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED");
-  if (manifest?.recoveryClass === EffectRecoveryClass.bestEffort && policy.allowBestEffort !== true)
+  if (checkRecoveryClass && manifest?.recoveryClass === EffectRecoveryClass.bestEffort && policy.allowBestEffort !== true)
     fail("ERR_BEST_EFFORT_REQUIRES_OPERATOR_OPT_IN");
   const policyRequestBytes = hostRequest?.policyRequestBytes ?? hostRequest?.requestBytes;
   if (policyRequestBytes?.byteLength > policy.maximumRequestBytes)
     fail("ERR_CAPABILITY_PROMPT_TOO_LARGE");
   if (manifest?.maximumResponseBytes > policy.maximumResponseBytes)
     fail("ERR_CAPABILITY_RESPONSE_LIMIT_EXCEEDS_POLICY");
-  if (isNetwork(manifest, hostRequest)) {
+  if (checkNetworkTarget && isNetwork(manifest, hostRequest)) {
     if (enforceNetworkTarget) {
       assertOriginAndMethodAllowed(hostRequest, policy);
     } else {
       assertNetworkAllowlistsPresent(policy);
     }
   }
-  assertFileRootAllowed(manifest, policy);
+  if (checkFileRoot)
+    assertFileRootAllowed(manifest, policy);
   const approved = action?.approved === true;
-  if (action?.destructive === true && policy.requireApprovalForDestructiveEffects && !approved)
+  if (enforceApprovalRequirements && action?.destructive === true && policy.requireApprovalForDestructiveEffects && !approved)
     fail("ERR_CAPABILITY_APPROVAL_REQUIRED");
-  if (isNetwork(manifest, hostRequest) && policy.requireApprovalForNetworkEffects && !approved)
+  if (enforceApprovalRequirements && isNetwork(manifest, hostRequest) && policy.requireApprovalForNetworkEffects && !approved)
     fail("ERR_CAPABILITY_APPROVAL_REQUIRED");
-  if (manifest?.recoveryClass === EffectRecoveryClass.bestEffort && policy.requireApprovalForBestEffort && !approved)
+  if (enforceApprovalRequirements && manifest?.recoveryClass === EffectRecoveryClass.bestEffort && policy.requireApprovalForBestEffort && !approved)
     fail("ERR_CAPABILITY_APPROVAL_REQUIRED");
   return true;
 }
@@ -1500,13 +1514,32 @@ class GenericHttpJsonCapabilityDriver {
     return { ...hostRequest, requestBytes: fromUtf8(stableJson({ url: request.url, method: request.method })) };
   }
   #assertDryRunPolicyAllows(context, hostRequest, request) {
+    const manifest = this.manifest();
     const policy = createCapabilityPolicy(context?.policy ?? {});
-    if (hostRequest?.requestBytes?.byteLength > policy.maximumRequestBytes)
-      fail("ERR_CAPABILITY_PROMPT_TOO_LARGE");
+    assertCapabilityPolicyAllows({
+      manifest,
+      hostRequest,
+      policy,
+      mode: "dry-run",
+      enforceNetworkTarget: false,
+      requireEffectOptIn: false,
+      checkNetworkTarget: false,
+      checkFileRoot: false,
+      checkRecoveryClass: false,
+      enforceApprovalRequirements: false
+    });
     assertRenderedRequestWithinPolicy(request, policy);
-    if (policy.allowedOrigins.size > 0 || policy.allowedMethods.size > 0) {
-      assertOriginAndMethodAllowed(this.#policyHostRequest(hostRequest, request), policy);
-    }
+    assertCapabilityPolicyAllows({
+      manifest,
+      hostRequest: this.#policyHostRequest(hostRequest, request),
+      policy,
+      mode: "dry-run",
+      requireEffectOptIn: false,
+      checkNetworkTarget: policy.allowedOrigins.size > 0 || policy.allowedMethods.size > 0,
+      checkFileRoot: false,
+      checkRecoveryClass: false,
+      enforceApprovalRequirements: false
+    });
   }
   #assertPolicyAllows(context, hostRequest) {
     const manifest = this.manifest();

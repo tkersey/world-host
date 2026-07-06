@@ -3934,6 +3934,43 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.throws(
         () => new HttpJsonPackCapabilityDriver({
           endpointUrl: 'https://allowed.example/decide',
+        }).dryRun({
+          policy: {
+            maximumRequestBytes: 4096,
+            maximumPromptBytes: 4096,
+            deniedCapabilityPacks: ['generic-http-json'],
+          },
+        }, { ...httpRequest(), requestBytes: fromUtf8(stableJson({ body: 'pack' })) }),
+        { code: 'ERR_CAPABILITY_PACK_DENIED' },
+      );
+      assert.throws(
+        () => new HttpJsonPackCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          packFingerprint: 'sha256:'.concat('5'.repeat(64)),
+        }).dryRun({
+          policy: {
+            maximumRequestBytes: 4096,
+            maximumPromptBytes: 4096,
+            allowedCapabilityPacks: ['sha256:'.concat('6'.repeat(64))],
+          },
+        }, { ...httpRequest(), requestBytes: fromUtf8(stableJson({ body: 'pack' })) }),
+        { code: 'ERR_CAPABILITY_PACK_NOT_ALLOWED' },
+      );
+      assert.throws(
+        () => new HttpJsonPackCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+        }).dryRun({
+          policy: {
+            maximumRequestBytes: 4096,
+            maximumPromptBytes: 4096,
+            allowedAuthorityLabels: ['file:local'],
+          },
+        }, { ...httpRequest(), requestBytes: fromUtf8(stableJson({ body: 'pack' })) }),
+        { code: 'ERR_CAPABILITY_AUTHORITY_DENIED' },
+      );
+      assert.throws(
+        () => new HttpJsonPackCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
           allowEndpointFromRequest: true,
           origins: ['https://allowed.example', 'https://denied.example'],
           methods: ['POST'],
