@@ -895,8 +895,9 @@ function httpRequestBodyPolicyByteLength(manifest, hostRequest) {
   }
   try {
     const payload = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
-    if (!Object.prototype.hasOwnProperty.call(payload, 'body')) return 0;
-    const rendered = manifest?.driverId === 'http-json' ? JSON.stringify(payload.body) : stableJson(payload.body);
+    const rendered = manifest?.driverId === 'http-json'
+      ? (Object.prototype.hasOwnProperty.call(payload, 'body') ? JSON.stringify(payload.body) : undefined)
+      : stableJson(Object.prototype.hasOwnProperty.call(payload, 'body') ? payload.body : payload);
     return rendered === undefined ? 0 : fromUtf8(rendered).byteLength;
   } catch {
     return undefined;

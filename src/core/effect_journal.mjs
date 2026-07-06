@@ -239,7 +239,10 @@ export class EffectJournal {
     const record = this.#assertRecordInScope(effectRecord);
     const manifest = driver.manifest();
     assertDriverCanRecover(manifest, record);
-    const reused = await this.#resolutionFromRecord(record);
+    const recordWithRequestBytes = await this.#recordWithRequestBytes(record);
+    await assertRecoveredRequestWithinLimits(recordWithRequestBytes, manifest, this.policy);
+    await assertRecoveredEffectIdentityMatchesManifest(recordWithRequestBytes, manifest);
+    const reused = await this.#resolutionFromRecord(recordWithRequestBytes);
     if (reused) {
       assertResolutionAccepted(reused.resolutionInputBytes, record, manifest, this.policy);
       return reused;
@@ -254,9 +257,6 @@ export class EffectJournal {
       return { record: intervention, resolutionInputBytes: null, reused: false, operatorInterventionRequired: true };
     }
 
-    const recordWithRequestBytes = await this.#recordWithRequestBytes(record);
-    await assertRecoveredRequestWithinLimits(recordWithRequestBytes, manifest, this.policy);
-    await assertRecoveredEffectIdentityMatchesManifest(recordWithRequestBytes, manifest);
     assertManifestResponseWithinPolicy(manifest, this.policy);
     if (typeof driver.recover === 'function' || canSafelyReResolve(record.driverRecoveryClass)) {
       const recoveryResult = typeof driver.recover === 'function'

@@ -1275,6 +1275,35 @@ describe('EffectJournal', () => {
     );
   });
 
+  it('validates cached recovery identity before returning terminal outcomes', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const request = httpHostRequest({
+      requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'hi' } })),
+    });
+    const originalDriver = new GenericHttpJsonCapabilityDriver({
+      endpointUrl: 'https://allowed.example/decide',
+      origins: ['https://allowed.example'],
+    });
+    const observed = await journal.observe(journaledHostRequest(request, originalDriver.manifest()), { manifest: originalDriver.manifest() });
+    const resolutionInputRef = await store.putBlob(fixtureResolutionInputBytes(request, fromUtf8('cached response')));
+    const resolved = await store.putEffectRecord({
+      ...observed,
+      state: EffectState.resolved,
+      attemptCount: 1,
+      resolutionInputRef,
+    });
+    const changedDriver = new GenericHttpJsonCapabilityDriver({
+      endpointUrl: 'https://other.example/decide',
+      origins: ['https://other.example'],
+    });
+
+    await assert.rejects(
+      () => journal.recover({}, resolved, changedDriver),
+      { code: 'ERR_EFFECT_IDEMPOTENCY_CONFLICT' },
+    );
+  });
+
   it('rechecks persisted request byte limits before driver recovery', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });

@@ -491,6 +491,37 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.everyPendingRequestCovered, false);
   });
 
+  it('charges generic HTTP fallback bodies during partial preflight', () => {
+    const request = {
+      ...httpRequest('https://allowed.example/path', 'POST'),
+      requestBytes: fromUtf8(stableJson({
+        url: 'https://allowed.example/path',
+        method: 'POST',
+        metadata: 'fallback body exceeds receiver prompt policy',
+      })),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
+      policy: createRunPolicy({
+        allowPartialEffectBatch: true,
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+        maximumRequestBytes: 4096,
+        maximumPromptBytes: 4,
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
+    assert.equal(report.unresolvedPendingRequestRoutes[0].driverId, 'generic-http-json');
+    assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('prompt-limit-exceeds-policy'));
+    assert.equal(report.everyPendingRequestCovered, false);
+  });
+
   it('reports HTTP prompt limits as blockers in non-partial preflight', () => {
     const request = {
       ...httpRequest('https://allowed.example/path', 'POST'),
