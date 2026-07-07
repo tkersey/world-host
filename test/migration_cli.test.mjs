@@ -1241,6 +1241,13 @@ describe('migration, branching, and CLI diagnostics', () => {
         }),
         { code: 'ERR_CAPABILITY_PACK_ROOT_UNSAFE' },
       );
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', `${link}${path.sep}`, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ROOT_UNSAFE' },
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -135,10 +135,11 @@ async function readPackFile(packRoot, relativePath, encoding = null) {
 }
 
 async function safePackRoot(packRoot) {
-  const info = await lstat(packRoot).catch(() => fail('ERR_CAPABILITY_PACK_ROOT_INVALID', `pack root is not readable: ${packRoot}`));
+  const normalizedRoot = path.resolve(packRoot);
+  const info = await lstat(normalizedRoot).catch(() => fail('ERR_CAPABILITY_PACK_ROOT_INVALID', `pack root is not readable: ${packRoot}`));
   if (info.isSymbolicLink()) fail('ERR_CAPABILITY_PACK_ROOT_UNSAFE', `pack root is a symlink: ${packRoot}`);
   if (!info.isDirectory()) fail('ERR_CAPABILITY_PACK_ROOT_INVALID', `pack root is not a directory: ${packRoot}`);
-  return await realpath(packRoot).catch(() => fail('ERR_CAPABILITY_PACK_ROOT_INVALID', `pack root is not readable: ${packRoot}`));
+  return await realpath(normalizedRoot).catch(() => fail('ERR_CAPABILITY_PACK_ROOT_INVALID', `pack root is not readable: ${packRoot}`));
 }
 
 function pathInside(root, target) {

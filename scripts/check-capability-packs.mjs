@@ -64,10 +64,11 @@ async function readPackFile(packRoot, relativePath, encoding = null) {
 }
 
 async function safePackRoot(packRoot) {
-  const info = await lstat(packRoot);
+  const normalizedRoot = path.resolve(packRoot);
+  const info = await lstat(normalizedRoot);
   if (info.isSymbolicLink()) throw new Error(`ERR_CAPABILITY_PACK_ROOT_UNSAFE:${packRoot}`);
   if (!info.isDirectory()) throw new Error(`ERR_CAPABILITY_PACK_ROOT_INVALID:${packRoot}`);
-  return await realpath(packRoot);
+  return await realpath(normalizedRoot);
 }
 
 function pathInside(rootPath, target) {
