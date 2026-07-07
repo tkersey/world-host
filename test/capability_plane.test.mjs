@@ -6002,6 +6002,12 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, promptLimitedApprovalRequest),
       { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
     );
+    assert.throws(
+      () => packApproval.shadow({
+        policy: promptLimitedApprovalPolicy,
+      }, promptLimitedApprovalRequest, fromUtf8('recorded')),
+      { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+    );
     let promptLimitedApprovalProviderCalled = false;
     await assert.rejects(
       () => runCapabilityMode({
@@ -6084,6 +6090,12 @@ describe('Capability Plane v0.2 core contracts', () => {
       () => packApproval.resolve({
         policy: { allowLiveEffects: true, allowHumanEffects: true },
       }, { ...approvalRequest(), responseSchema: { status: 'rejected' } }),
+      { code: 'ERR_HUMAN_APPROVAL_RESPONSE_SCHEMA_UNSUPPORTED' },
+    );
+    assert.throws(
+      () => packApproval.shadow({
+        policy: { allowLiveEffects: true, allowHumanEffects: true },
+      }, { ...approvalRequest(), responseSchema: { status: 'rejected' } }, fromUtf8('recorded')),
       { code: 'ERR_HUMAN_APPROVAL_RESPONSE_SCHEMA_UNSUPPORTED' },
     );
     assert.equal(decodeResolutionInputBytes((await packApproval.resolve({
