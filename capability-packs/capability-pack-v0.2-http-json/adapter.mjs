@@ -1408,6 +1408,7 @@ class GenericHttpJsonCapabilityDriver {
     const blockers = [...structural.blockers];
     if (!blockers.length) {
       try {
+        assertResolvableHttpHostRequest(hostRequest);
         this.#assertPolicyAllows(context, hostRequest);
         this.#assertSecrets();
       } catch (error) {
@@ -1417,6 +1418,7 @@ class GenericHttpJsonCapabilityDriver {
     return new CapabilityPreflightReport({ accepted: blockers.length === 0, blockers });
   }
   dryRun(context, hostRequest) {
+    assertResolvableHttpHostRequest(hostRequest);
     const request = this.#request(hostRequest);
     this.#assertDryRunPolicyAllows(context, hostRequest, request);
     return new DryRunReport({

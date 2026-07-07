@@ -778,6 +778,96 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('preserves partial CLI import mapper failures as unresolved requests', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-partial-import-mapper-'));
+    const sourceRoot = path.join(root, 'source');
+    const receiverRoot = path.join(root, 'receiver');
+    const packagePath = path.join(root, 'carrier-export.json');
+    try {
+      const { run } = await fixtureDirectoryStore(sourceRoot, { closureOptions: { status: 1 } });
+      const sourceStore = new DirectoryStore(sourceRoot);
+      const carrierExport = await exportCarrierRun(sourceStore, run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
+      const pendingExport = carrierExportWithPendingHead(
+        carrierExport,
+        fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes(), agentModelHostRequestBytes()]),
+      );
+      await writeFile(packagePath, `${JSON.stringify(pendingExport, null, 2)}\n`);
+
+      let mapperCalls = 0;
+      let output = '';
+      const code = await runBunCli([
+        'import',
+        '--store', receiverRoot,
+        '--package', packagePath,
+        '--run', 'partial-import-run',
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      }, {
+        effectDrivers: [
+          agentWorldRequestDriver(new FixtureAgentModelDriver({
+            actuatorRef: 'world:actuator-ref:4f0c7160f25c4c62',
+            descriptorFingerprint: 'world:descriptor:be73177924a6b377',
+          }), 'world:actuation-class:2'),
+        ],
+        effectPolicy: { allowPartialEffectBatch: true },
+        hostRequestMapper(request) {
+          mapperCalls += 1;
+          if (mapperCalls === 1) {
+            const error = new Error('mapper rejected request');
+            error.code = 'ERR_WORLD_HOST_REQUEST_RESPONSE_STATUS_NOT_ALLOWED';
+            throw error;
+          }
+          return { ...agentWorldHostRequestToEffectRequest(request), pendingRequestIndex: 0 };
+        },
+      });
+      assert.equal(code, 0);
+      assert.equal(mapperCalls, 2);
+      assert.equal(JSON.parse(output).runId, 'partial-import-run');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects partial CLI imports with no selected effects', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-partial-import-empty-'));
+    const sourceRoot = path.join(root, 'source');
+    const receiverRoot = path.join(root, 'receiver');
+    const packagePath = path.join(root, 'carrier-export.json');
+    try {
+      const { run } = await fixtureDirectoryStore(sourceRoot, { closureOptions: { status: 1 } });
+      const sourceStore = new DirectoryStore(sourceRoot);
+      const carrierExport = await exportCarrierRun(sourceStore, run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
+      const pendingExport = carrierExportWithPendingHead(
+        carrierExport,
+        fixtureNeedsHostTurnClosureBytes([agentModelHostRequestBytes()]),
+      );
+      await writeFile(packagePath, `${JSON.stringify(pendingExport, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli([
+          'import',
+          '--store', receiverRoot,
+          '--package', packagePath,
+          '--run', 'empty-partial-import-run',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }, {
+          effectPolicy: { allowPartialEffectBatch: true },
+          hostRequestMapper() {
+            const error = new Error('mapper rejected request');
+            error.code = 'ERR_WORLD_HOST_REQUEST_RESPONSE_STATUS_NOT_ALLOWED';
+            throw error;
+          },
+        }),
+        { code: 'ERR_PARTIAL_EFFECT_BATCH_EMPTY' },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('does not trust imported host-generated diagnostics to skip manifest preflight', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-untrusted-import-diagnostics-'));
     const sourceRoot = path.join(root, 'source');
@@ -1229,6 +1319,30 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('allows receipt-less capability packs during CLI check-pack', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-receiptless-'));
+    const pack = path.join(root, 'capability-pack-v0.2-fixture');
+    try {
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.checksums = manifest.checksums.filter((item) => item.path !== 'conformance.json');
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      let output = '';
+      const code = await runBunCli(['capability', 'check-pack', '--pack', pack], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      });
+      assert.equal(code, 0);
+      assert.equal(JSON.parse(output).packFingerprint, manifest.packFingerprint);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('does not execute capability pack adapters during default CLI check-pack', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-no-exec-'));
     const pack = path.join(root, 'capability-pack-v0.2-fixture');
@@ -1283,6 +1397,576 @@ describe('migration, branching, and CLI diagnostics', () => {
         { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
       );
       await assert.rejects(() => readFile(sideEffectPath), { code: 'ENOENT' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('executes sidecar adapters during trusted CLI check-pack', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-cli-sidecar-'));
+    const pack = path.join(root, 'capability-pack-v0.2-fixture');
+    try {
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      const sidecarBytes = fromUtf8("throw new Error('sidecar startup failed');\n");
+      await writeFile(path.join(pack, 'sidecar.mjs'), sidecarBytes);
+      await rm(path.join(pack, 'adapter.mjs'));
+      await rm(path.join(pack, 'conformance.json'));
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.checksums = manifest.checksums
+        .filter((item) => item.path !== 'adapter.mjs' && item.path !== 'conformance.json')
+        .concat({ path: 'sidecar.mjs', checksum: `sha256:${createHash('sha256').update(sidecarBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_SIDECAR_EXIT' },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects manifest-only sidecars during trusted capability pack checks', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-sidecar-abi-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'adapter.mjs'));
+      await rm(path.join(pack, 'conformance.json'));
+
+      async function writeSidecarPack(sidecarBytes) {
+        await writeFile(path.join(pack, 'sidecar.mjs'), sidecarBytes);
+        const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+        manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
+        manifest.conformanceCorpusFingerprint = null;
+        manifest.checksums = manifest.checksums
+          .filter((item) => !['adapter.mjs', 'conformance.json', 'sidecar.mjs'].includes(item.path))
+          .concat({ path: 'sidecar.mjs', checksum: `sha256:${createHash('sha256').update(sidecarBytes).digest('hex')}` });
+        manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+        await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+      }
+
+      const invalidResolveSidecarBytes = fromUtf8(`
+        const input = await new Response(Bun.stdin.stream()).text();
+        const frame = JSON.parse(input);
+        const driverManifest = {
+          driverId: 'fixture-agent-model',
+          supportedActuatorRefs: ['fixture:agent-model'],
+          supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+          supportedActuationClasses: ['model'],
+          supportedResponseStatuses: ['ok', 'final'],
+          maximumRequestBytes: 1048576,
+          maximumResponseBytes: 1048576,
+          recoveryClass: 'pure',
+          concurrencyLimit: 1,
+          authorityLabels: ['model:fixture-agent'],
+          packFingerprint: frame.payload?.packFingerprint
+        };
+        const responses = {
+          manifest: driverManifest,
+          preflight: { accepted: true, blockers: [] },
+          'dry-run': { wouldInvoke: false },
+          shadow: { liveInvoked: false, schemaAccepted: false },
+          resolve: {},
+          recover: { operatorInterventionRequired: true }
+        };
+        process.stdout.write(JSON.stringify({ command: frame.command, payload: responses[frame.command] ?? driverManifest }) + '\\n');
+      `);
+      await writeSidecarPack(invalidResolveSidecarBytes);
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_EXPECTED_BYTES' },
+      );
+      let result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_EXPECTED_BYTES|resolutionInputBytes must be Uint8Array/);
+
+      const wrongTargetResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xdefn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('wrong-target-sidecar'),
+      })).toString('base64');
+      const wrongTargetSidecarBytes = fromUtf8(`
+        const input = await new Response(Bun.stdin.stream()).text();
+        const frame = JSON.parse(input);
+        const driverManifest = {
+          driverId: 'fixture-agent-model',
+          supportedActuatorRefs: ['fixture:agent-model'],
+          supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+          supportedActuationClasses: ['model'],
+          supportedResponseStatuses: ['ok', 'final'],
+          maximumRequestBytes: 1048576,
+          maximumResponseBytes: 1048576,
+          recoveryClass: 'pure',
+          concurrencyLimit: 1,
+          authorityLabels: ['model:fixture-agent'],
+          packFingerprint: frame.payload?.packFingerprint
+        };
+        const resolution = {
+          resolutionInputBytes: {
+            __world_host_sidecar_type: 'bytes',
+            base64: '${wrongTargetResolutionBase64}'
+          }
+        };
+        const responses = {
+          manifest: driverManifest,
+          preflight: { accepted: true, blockers: [] },
+          'dry-run': { wouldInvoke: false },
+          shadow: { liveInvoked: false, schemaAccepted: false },
+          resolve: resolution,
+          recover: { operatorInterventionRequired: true }
+        };
+        process.stdout.write(JSON.stringify({ command: frame.command, payload: responses[frame.command] ?? driverManifest }) + '\\n');
+      `);
+      await writeSidecarPack(wrongTargetSidecarBytes);
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_EFFECT_RESOLUTION_TARGET_MISMATCH' },
+      );
+      result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_EFFECT_RESOLUTION_TARGET_MISMATCH/);
+
+      const noResolveSidecarBytes = fromUtf8(`
+        const input = await new Response(Bun.stdin.stream()).text();
+        const frame = JSON.parse(input);
+        const driverManifest = {
+          driverId: 'fixture-agent-model',
+          supportedActuatorRefs: ['fixture:agent-model'],
+          supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+          supportedActuationClasses: ['model'],
+          supportedResponseStatuses: ['ok', 'final'],
+          maximumRequestBytes: 1048576,
+          maximumResponseBytes: 1048576,
+          recoveryClass: 'pure',
+          concurrencyLimit: 1,
+          authorityLabels: ['model:fixture-agent'],
+          packFingerprint: frame.payload?.packFingerprint
+        };
+        const responses = {
+          manifest: driverManifest,
+          preflight: { accepted: true, blockers: [] },
+          'dry-run': { wouldInvoke: false },
+          shadow: { liveInvoked: false, schemaAccepted: false },
+          recover: { operatorInterventionRequired: true }
+        };
+        const payload = responses[frame.command] ?? driverManifest;
+        const command = Object.hasOwn(responses, frame.command) ? frame.command : 'manifest';
+        process.stdout.write(JSON.stringify({ command, payload }) + '\\n');
+      `);
+      await writeSidecarPack(noResolveSidecarBytes);
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_SIDECAR_RESPONSE_COMMAND' },
+      );
+      result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_SIDECAR_RESPONSE_COMMAND/);
+
+      const manifestOnlySidecarBytes = fromUtf8(`
+        const input = await new Response(Bun.stdin.stream()).text();
+        const frame = JSON.parse(input);
+        process.stdout.write(JSON.stringify({
+          command: 'manifest',
+          payload: {
+            driverId: 'fixture-agent-model',
+            supportedActuatorRefs: ['fixture:agent-model'],
+            supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+            supportedActuationClasses: ['model'],
+            supportedResponseStatuses: ['ok', 'final'],
+            maximumRequestBytes: 1048576,
+            maximumResponseBytes: 1048576,
+            recoveryClass: 'pure',
+            concurrencyLimit: 1,
+            authorityLabels: ['model:fixture-agent'],
+            packFingerprint: frame.payload?.packFingerprint
+          }
+        }) + '\\n');
+      `);
+      await writeSidecarPack(manifestOnlySidecarBytes);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_SIDECAR_RESPONSE_COMMAND' },
+      );
+      result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_SIDECAR_RESPONSE_COMMAND/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects sidecar preflight and intervention payload failures during trusted checks', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-sidecar-abi-boundary-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'adapter.mjs'));
+      await rm(path.join(pack, 'conformance.json'));
+
+      async function writeSidecarPack(sidecarBytes) {
+        await writeFile(path.join(pack, 'sidecar.mjs'), sidecarBytes);
+        const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+        manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
+        manifest.conformanceCorpusFingerprint = null;
+        manifest.checksums = manifest.checksums
+          .filter((item) => !['adapter.mjs', 'conformance.json', 'sidecar.mjs'].includes(item.path))
+          .concat({ path: 'sidecar.mjs', checksum: `sha256:${createHash('sha256').update(sidecarBytes).digest('hex')}` });
+        manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+        await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+      }
+
+      const preflightDeniedSidecarBytes = fromUtf8(`
+        const input = await new Response(Bun.stdin.stream()).text();
+        const frame = JSON.parse(input);
+        const driverManifest = {
+          driverId: 'fixture-agent-model',
+          supportedActuatorRefs: ['fixture:agent-model'],
+          supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+          supportedActuationClasses: ['model'],
+          supportedResponseStatuses: ['ok', 'final'],
+          maximumRequestBytes: 1048576,
+          maximumResponseBytes: 1048576,
+          recoveryClass: 'pure',
+          concurrencyLimit: 1,
+          authorityLabels: ['model:fixture-agent'],
+          packFingerprint: frame.payload?.packFingerprint
+        };
+        const responses = {
+          manifest: driverManifest,
+          preflight: { accepted: false, blockers: ['probe-denied'] },
+          'dry-run': { wouldInvoke: false },
+          shadow: { liveInvoked: false, schemaAccepted: false },
+          resolve: {},
+          recover: { operatorInterventionRequired: true }
+        };
+        process.stdout.write(JSON.stringify({ command: frame.command, payload: responses[frame.command] ?? driverManifest }) + '\\n');
+      `);
+      await writeSidecarPack(preflightDeniedSidecarBytes);
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_PREFLIGHT' },
+      );
+      let result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_PREFLIGHT/);
+
+      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('valid-sidecar-probe'),
+      })).toString('base64');
+      const forbiddenRecoverInterventionSidecarBytes = fromUtf8(`
+        const input = await new Response(Bun.stdin.stream()).text();
+        const frame = JSON.parse(input);
+        const driverManifest = {
+          driverId: 'fixture-agent-model',
+          supportedActuatorRefs: ['fixture:agent-model'],
+          supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+          supportedActuationClasses: ['model'],
+          supportedResponseStatuses: ['ok', 'final'],
+          maximumRequestBytes: 1048576,
+          maximumResponseBytes: 1048576,
+          recoveryClass: 'pure',
+          concurrencyLimit: 1,
+          authorityLabels: ['model:fixture-agent'],
+          packFingerprint: frame.payload?.packFingerprint
+        };
+        const resolution = {
+          resolutionInputBytes: {
+            __world_host_sidecar_type: 'bytes',
+            base64: '${validResolutionBase64}'
+          }
+        };
+        const responses = {
+          manifest: driverManifest,
+          preflight: { accepted: true, blockers: [] },
+          'dry-run': { wouldInvoke: false },
+          shadow: { liveInvoked: false, schemaAccepted: false },
+          resolve: resolution,
+          recover: { operatorInterventionRequired: true, turnClosureBytes: 'forbidden-world-evidence' }
+        };
+        process.stdout.write(JSON.stringify({ command: frame.command, payload: responses[frame.command] ?? driverManifest }) + '\\n');
+      `);
+      await writeSidecarPack(forbiddenRecoverInterventionSidecarBytes);
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+      );
+      result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects sidecar manifest mismatches before trusted probes run', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-sidecar-manifest-order-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'adapter.mjs'));
+      await rm(path.join(pack, 'conformance.json'));
+      const sidecarBytes = fromUtf8(`
+        const input = await new Response(Bun.stdin.stream()).text();
+        const frame = JSON.parse(input);
+        if (frame.command !== 'manifest') {
+          process.stderr.write('probe command should not run before manifest match\\n');
+          process.stdout.write(JSON.stringify({ command: frame.command, payload: { accepted: true, blockers: [] } }) + '\\n');
+        } else {
+          process.stdout.write(JSON.stringify({
+            command: 'manifest',
+            payload: {
+              driverId: 'fixture-agent-model-mismatch',
+              supportedActuatorRefs: ['fixture:agent-model'],
+              supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+              supportedActuationClasses: ['model'],
+              supportedResponseStatuses: ['ok', 'final'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'pure',
+              concurrencyLimit: 1,
+              authorityLabels: ['model:fixture-agent'],
+              packFingerprint: frame.payload?.packFingerprint
+            }
+          }) + '\\n');
+        }
+      `);
+      await writeFile(path.join(pack, 'sidecar.mjs'), sidecarBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.checksums = manifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json', 'sidecar.mjs'].includes(item.path))
+        .concat({ path: 'sidecar.mjs', checksum: `sha256:${createHash('sha256').update(sidecarBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH' },
+      );
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH/);
+      assert.doesNotMatch(`${result.stdout}${result.stderr}`, /probe command should not run/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts sidecar ok probe resolutions when non-success statuses are listed first', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-sidecar-status-order-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'adapter.mjs'));
+      await rm(path.join(pack, 'conformance.json'));
+      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('status-order-sidecar'),
+      })).toString('base64');
+      const sidecarBytes = fromUtf8(`
+        const input = await new Response(Bun.stdin.stream()).text();
+        const frame = JSON.parse(input);
+        const driverManifest = {
+          driverId: 'fixture-agent-model',
+          supportedActuatorRefs: ['fixture:agent-model'],
+          supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+          supportedActuationClasses: ['model'],
+          supportedResponseStatuses: ['failed', 'ok'],
+          maximumRequestBytes: 1048576,
+          maximumResponseBytes: 1048576,
+          recoveryClass: 'pure',
+          concurrencyLimit: 1,
+          authorityLabels: ['model:fixture-agent'],
+          packFingerprint: frame.payload?.packFingerprint
+        };
+        const resolution = {
+          resolutionInputBytes: {
+            __world_host_sidecar_type: 'bytes',
+            base64: '${validResolutionBase64}'
+          }
+        };
+        const responses = {
+          manifest: driverManifest,
+          preflight: { accepted: true, blockers: [] },
+          'dry-run': { wouldInvoke: false },
+          shadow: { liveInvoked: false, schemaAccepted: false },
+          resolve: resolution,
+          recover: { operatorInterventionRequired: true }
+        };
+        process.stdout.write(JSON.stringify({ command: frame.command, payload: responses[frame.command] ?? driverManifest }) + '\\n');
+      `);
+      await writeFile(path.join(pack, 'sidecar.mjs'), sidecarBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.supportedResponseStatuses = ['failed', 'ok'];
+      manifest.checksums = manifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json', 'sidecar.mjs'].includes(item.path))
+        .concat({ path: 'sidecar.mjs', checksum: `sha256:${createHash('sha256').update(sidecarBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      assert.equal(await runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      }), 0);
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('matches sidecar probe bytes to the selected actuation class', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-sidecar-selected-class-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'adapter.mjs'));
+      await rm(path.join(pack, 'conformance.json'));
+      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('selected-class-sidecar'),
+      })).toString('base64');
+      const sidecarBytes = fromUtf8(`
+        const input = await new Response(Bun.stdin.stream()).text();
+        const frame = JSON.parse(input);
+        function decodedBytes(value) {
+          if (value?.__world_host_sidecar_type !== 'bytes') return '';
+          return Buffer.from(value.base64, 'base64').toString('utf8');
+        }
+        const hostRequest = frame.payload?.hostRequest;
+        const modelProbe = hostRequest?.actuationClass === 'model' &&
+          decodedBytes(hostRequest?.requestBytes).includes('boundary.Agent.DecisionPrompt.v0');
+        const driverManifest = {
+          driverId: 'fixture-agent-model',
+          supportedActuatorRefs: ['fixture:agent-model'],
+          supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+          supportedActuationClasses: ['model', 'http'],
+          supportedResponseStatuses: ['ok', 'final'],
+          maximumRequestBytes: 1048576,
+          maximumResponseBytes: 1048576,
+          recoveryClass: 'pure',
+          concurrencyLimit: 1,
+          authorityLabels: ['model:fixture-agent'],
+          packFingerprint: frame.payload?.packFingerprint
+        };
+        const resolution = {
+          resolutionInputBytes: {
+            __world_host_sidecar_type: 'bytes',
+            base64: '${validResolutionBase64}'
+          }
+        };
+        const responses = {
+          manifest: driverManifest,
+          preflight: { accepted: modelProbe, blockers: modelProbe ? [] : ['selected-class-probe-mismatch'] },
+          'dry-run': { wouldInvoke: false },
+          shadow: { liveInvoked: false, schemaAccepted: false },
+          resolve: resolution,
+          recover: { operatorInterventionRequired: true }
+        };
+        process.stdout.write(JSON.stringify({ command: frame.command, payload: responses[frame.command] ?? driverManifest }) + '\\n');
+      `);
+      await writeFile(path.join(pack, 'sidecar.mjs'), sidecarBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.supportedActuationClasses = ['model', 'http'];
+      manifest.checksums = manifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json', 'sidecar.mjs'].includes(item.path))
+        .concat({ path: 'sidecar.mjs', checksum: `sha256:${createHash('sha256').update(sidecarBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      assert.equal(await runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      }), 0);
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -4091,6 +4775,33 @@ function blobEntryForBytes(value) {
     checksum: createHash('sha256').update(value).digest('hex'),
     byteLength: value.byteLength,
     bytes: [...value],
+  };
+}
+
+function carrierExportWithPendingHead(carrierExport, closureBytes) {
+  const summary = summarizeTurnClosureForRunHead(closureBytes);
+  const blob = blobEntryForBytes(closureBytes);
+  return {
+    ...carrierExport,
+    bundle: {
+      ...carrierExport.bundle,
+      head: {
+        ...carrierExport.bundle.head,
+        generation: summary.inspectionDiagnostics.turnSequenceNumber + 1,
+        status: summary.status,
+        turnClosureRef: {
+          algorithm: 'sha256',
+          checksum: blob.checksum,
+          byteLength: blob.byteLength,
+        },
+        turnClosureWorldFingerprint: summary.turnClosureWorldFingerprint,
+        resultingStateFingerprint: summary.resultingStateFingerprint,
+        chronicleCursor: summary.chronicleCursor,
+        archiveMomentFingerprint: summary.archiveMomentFingerprint,
+        archiveSealFingerprint: summary.archiveSealFingerprint,
+      },
+      blobs: [...carrierExport.bundle.blobs, blob],
+    },
   };
 }
 

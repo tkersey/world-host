@@ -28,6 +28,18 @@ export const HostEventType = Object.freeze({
 });
 
 const EVENT_TYPES = new Set(Object.values(HostEventType));
+const WORLD_EVIDENCE_DIAGNOSTIC_KEYS = new Set([
+  'boundaryModuleBytes',
+  'worldReceiptBytes',
+  'turnReceiptBytes',
+  'turnClosureBytes',
+  'capsuleBytes',
+  'chronicleEventBytes',
+  'archiveAppendBatchBytes',
+  'actuationReceiptBytes',
+  'executableImageBytes',
+  'runHead',
+]);
 
 export class HostEventStream {
   constructor({ redact = redactCapabilityDiagnostics } = {}) {
@@ -81,7 +93,11 @@ function jsonSafeDiagnostics(value, seen = new WeakSet()) {
   if (!value || typeof value !== 'object') return value;
   if (seen.has(value)) return '[Circular]';
   seen.add(value);
-  const out = Object.fromEntries(Object.entries(value).map(([key, child]) => [key, jsonSafeDiagnostics(child, seen)]));
+  const out = Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !WORLD_EVIDENCE_DIAGNOSTIC_KEYS.has(key))
+      .map(([key, child]) => [key, jsonSafeDiagnostics(child, seen)]),
+  );
   seen.delete(value);
   return out;
 }

@@ -175,6 +175,131 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.everyPendingRequestCovered, true);
   });
 
+  it('mirrors raw HTTP default-method effect identity for reusable preflight records', () => {
+    const idempotencyKeyBytes = fromUtf8('raw-http-preflight-idempotency-key');
+    const requestBytes = fromUtf8(stableJson({ url: 'https://allowed.example/path', body: { prompt: 'hi' } }));
+    const request = {
+      ...httpRequest('https://allowed.example/path'),
+      idempotencyKeyBytes,
+      hostRequestFingerprint: 'world:host-request:0000000000000c11',
+      requestBytes,
+    };
+    const driver = new HttpJsonDriver({
+      origins: ['https://allowed.example'],
+      methods: ['POST'],
+    });
+    const canonicalIdentityBytes = journaledHostRequest(request, driver.manifest()).effectIdentityBytes;
+    const requestBytesChecksum = `sha256:${createHash('sha256').update(requestBytes).digest('hex')}`;
+    const requestIdentityChecksum = `sha256:${createHash('sha256').update(canonicalIdentityBytes).digest('hex')}`;
+    const resolutionInputBytes = encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xc11n,
+      status: 0,
+      responseValueImageBytes: fromUtf8('cached raw http response'),
+      hostClaimBytes: fromUtf8('host-claim:cached-raw-http-response'),
+      attemptNumber: 1,
+      metadata: fromUtf8('raw-http-default-method-preflight'),
+    });
+    const resolutionInputRef = blobRefForBytes(resolutionInputBytes);
+    const cachedEffectRecord = {
+      runId: 'run',
+      branchId: 'main',
+      parentTurnClosureFingerprint: 'turn:0',
+      hostRequestFingerprint: request.hostRequestFingerprint,
+      idempotencyKey: {
+        format: 'world-idempotency-key-bytes.hex',
+        bytesHex: Buffer.from(idempotencyKeyBytes).toString('hex'),
+      },
+      idempotencyKeyWorldFingerprint: 'world:key:raw-http-preflight',
+      actuatorRef: request.actuatorRef,
+      descriptorFingerprint: request.descriptorFingerprint,
+      actuationClass: request.actuationClass,
+      responseSchema: request.responseSchema,
+      requestBytesChecksum,
+      requestIdentityChecksum,
+      state: EffectState.resolved,
+      attemptCount: 1,
+      driverRecoveryClass: EffectRecoveryClass.idempotent,
+      resolutionInputRef,
+    };
+    const preflightWithCachedRecord = (effectRecord) => preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [request],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+      effectRecords: [effectRecord],
+      effectResolutionInputs: new Map([[blobRefKey(resolutionInputRef), resolutionInputBytes]]),
+    });
+    const report = preflightWithCachedRecord(cachedEffectRecord);
+    const legacyRawReport = preflightWithCachedRecord({
+      ...cachedEffectRecord,
+      requestIdentityChecksum: requestBytesChecksum,
+    });
+
+    assert.ok(canonicalIdentityBytes);
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.everyPendingRequestCovered, true);
+    assert.deepEqual(legacyRawReport.blockers, []);
+    assert.equal(legacyRawReport.everyPendingRequestCovered, true);
+  });
+
+  it('rejects legacy raw reusable records for configured preflight identities', () => {
+    const idempotencyKeyBytes = fromUtf8('configured-http-preflight-idempotency-key');
+    const requestBytes = fromUtf8(stableJson({ body: { prompt: 'configured' } }));
+    const request = {
+      ...httpRequest('https://allowed.example/decide'),
+      idempotencyKeyBytes,
+      hostRequestFingerprint: 'world:host-request:0000000000000c12',
+      requestBytes,
+    };
+    const requestBytesChecksum = `sha256:${createHash('sha256').update(requestBytes).digest('hex')}`;
+    const driver = new GenericHttpJsonCapabilityDriver({
+      endpointUrl: 'https://allowed.example/decide',
+      origins: ['https://allowed.example'],
+      methods: ['POST'],
+    });
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [request],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+      effectRecords: [{
+        runId: 'run',
+        branchId: 'main',
+        parentTurnClosureFingerprint: 'turn:0',
+        hostRequestFingerprint: request.hostRequestFingerprint,
+        idempotencyKey: {
+          format: 'world-idempotency-key-bytes.hex',
+          bytesHex: Buffer.from(idempotencyKeyBytes).toString('hex'),
+        },
+        idempotencyKeyWorldFingerprint: 'world:key:configured-http-preflight',
+        actuatorRef: request.actuatorRef,
+        descriptorFingerprint: request.descriptorFingerprint,
+        actuationClass: request.actuationClass,
+        responseSchema: request.responseSchema,
+        requestBytesChecksum,
+        requestIdentityChecksum: requestBytesChecksum,
+        state: EffectState.resolved,
+        attemptCount: 1,
+        driverRecoveryClass: EffectRecoveryClass.idempotent,
+      }],
+    });
+
+    assert.ok(journaledHostRequest(request, driver.manifest()).effectIdentityBytes);
+    assert.ok(report.blockers.includes('ERR_EFFECT_IDEMPOTENCY_CONFLICT'));
+  });
+
   it('checks request-routed HTTP required actuators against declared request origins', () => {
     const request = {
       ...httpRequest('https://allowed.example/path', 'POST'),
@@ -204,6 +329,44 @@ describe('capability preflight and reference drivers', () => {
     assert.deepEqual(report.blockers, []);
     assert.equal(report.everyRequiredActuatorCovered, true);
     assert.equal(report.everyPendingRequestCovered, true);
+  });
+
+  it('leaves credentialed request-routed HTTP targets unresolved in partial preflight', () => {
+    const allowedRequest = {
+      ...httpRequest('https://allowed.example/path', 'POST'),
+      hostRequestFingerprint: 'world:host-request:http-allowed',
+      requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/path', body: { prompt: 'hi' } })),
+    };
+    const credentialedRequest = {
+      ...httpRequest('https://user:pass@allowed.example/decide', 'POST'),
+      hostRequestFingerprint: 'world:host-request:http-credentialed',
+      requestBytes: fromUtf8(stableJson({ url: 'https://user:pass@allowed.example/decide', body: { prompt: 'hi' } })),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [allowedRequest, credentialedRequest],
+      drivers: [new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://fallback.example/decide',
+        allowEndpointFromRequest: true,
+        origins: ['https://allowed.example'],
+        methods: ['POST'],
+      })],
+      policy: createRunPolicy({
+        allowPartialEffectBatch: true,
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.selectedPendingRequestRoutes.length, 1);
+    assert.equal(report.selectedPendingRequestRoutes[0].hostRequestFingerprint, 'world:host-request:http-allowed');
+    assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
+    assert.equal(report.unresolvedPendingRequestRoutes[0].hostRequestFingerprint, 'world:host-request:http-credentialed');
+    assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('http-origin-denied:unknown'));
+    assert.equal(report.everyPendingRequestCovered, false);
   });
 
   it('checks configured HTTP required actuators against any receiver-allowed method', () => {
@@ -421,6 +584,37 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.fileNetworkAuthoritiesAllowed, true);
   });
 
+  it('leaves driver-oversized requests unresolved in partial preflight', () => {
+    const coveredRequest = {
+      ...fixtureRequest(),
+      hostRequestFingerprint: 'world:host-request:driver-size-covered',
+      requestBytes: fromUtf8('ok'),
+    };
+    const oversizedRequest = {
+      ...fixtureRequest(),
+      hostRequestFingerprint: 'world:host-request:driver-size-oversized',
+      requestBytes: fromUtf8('too large for selected driver'),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [coveredRequest, oversizedRequest],
+      drivers: [fixtureDriverWithAuthority(['test'], { maximumRequestBytes: 4 })],
+      policy: createRunPolicy({
+        allowPartialEffectBatch: true,
+        allowedAuthorityLabels: ['test'],
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.selectedPendingRequestRoutes.length, 1);
+    assert.equal(report.selectedPendingRequestRoutes[0].hostRequestFingerprint, 'world:host-request:driver-size-covered');
+    assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
+    assert.equal(report.unresolvedPendingRequestRoutes[0].hostRequestFingerprint, 'world:host-request:driver-size-oversized');
+    assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('ERR_HOST_REQUEST_TOO_LARGE'));
+    assert.equal(report.everyPendingRequestCovered, false);
+  });
+
   it('leaves HTTP prompt-limited requests unresolved in partial preflight', () => {
     const request = {
       ...httpRequest('https://allowed.example/path', 'POST'),
@@ -570,6 +764,25 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
     assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('ERR_CAPABILITY_APPROVAL_REQUIRED'));
     assert.equal(report.everyPendingRequestCovered, false);
+  });
+
+  it('reports approval-required HTTP requests as non-partial preflight blockers', () => {
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path', 'POST')],
+      drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'], methods: ['POST'] })],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+        requireApprovalForNetworkEffects: true,
+      }),
+    });
+
+    assert.ok(report.blockers.includes('ERR_CAPABILITY_APPROVAL_REQUIRED'));
+    assert.equal(report.selectedPendingRequestRoutes.length, 0);
+    assert.deepEqual(report.unresolvedPendingRequestRoutes, []);
   });
 
   it('leaves approval-required file and best-effort requests unresolved in partial preflight', () => {
@@ -2650,7 +2863,7 @@ function fixtureDriverWithAuthority(authorityLabels, options = {}) {
         supportedDescriptorFingerprints: [options.descriptorFingerprint ?? 'descriptor:fixture-model'],
         supportedActuationClasses: options.actuationClasses ?? ['fixture'],
         supportedResponseStatuses: ['ok'],
-        maximumRequestBytes: 1024 * 1024,
+        maximumRequestBytes: options.maximumRequestBytes ?? 1024 * 1024,
         maximumResponseBytes: options.maximumResponseBytes ?? 1024 * 1024,
         recoveryClass: options.recoveryClass ?? EffectRecoveryClass.pure,
         concurrencyLimit: 1,

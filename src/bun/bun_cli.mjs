@@ -5,19 +5,21 @@ import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 
 import { createApplicationRecord } from '../core/application.mjs';
+import { assertDriverManifest } from '../core/actuator.mjs';
 import { exportCarrierRun, forkRunBranch, importCarrierRun } from '../core/migration.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from '../core/run.mjs';
 import { assertBlobRef, fail, fromUtf8, makeBlobRef, stableJson } from '../core/store.mjs';
 import { RunController, effectRecordHostReplyFingerprint, worldHostRequestToEffectRequest } from '../core/worker.mjs';
-import { createRunPolicy, preflightCapabilities } from '../core/capabilities.mjs';
+import { CapabilityReport, createRunPolicy, preflightCapabilities } from '../core/capabilities.mjs';
 import { decodeApplianceManifest, decodeResolutionInputBytes, encodeBootTurnInput, encodeResolutionInputBytes, encodeRestoreTurnInput, encodeTurnInput, operationBoot } from '../protocol/world_appliance_wire_codec.mjs';
 import { encodeCanonicalValueImage, fingerprintValueImage } from '../protocol/world_loaded_value_codec.mjs';
 import { inspectTurnOutput, summarizeTurnClosureForRunHead } from '../protocol/world_universal_appliance_codec.mjs';
 import { carrierVersionSummary } from '../protocol/world_manifest.mjs';
-import { EffectJournal, EffectState } from '../core/effect_journal.mjs';
-import { defineCapabilityDriver } from '../core/capability_driver.mjs';
+import { EffectJournal, EffectState, assertResolutionAccepted } from '../core/effect_journal.mjs';
+import { assertCapabilityResolutionBoundary, defineCapabilityDriver } from '../core/capability_driver.mjs';
 import { FixtureAgentModelDriver } from '../drivers/fixture_agent_model_driver.mjs';
 import { SandboxFileDriver } from '../drivers/sandbox_file_driver.mjs';
+import { CapabilitySidecar, CapabilitySidecarCommand } from '../sidecars/capability_sidecar.mjs';
 import { BunWorldWorker } from './bun_worker.mjs';
 import { DirectoryStore } from '../stores/directory_store.mjs';
 
@@ -61,7 +63,7 @@ export async function runBunCli(args, io, options = {}) {
     const storePath = valueAfter(args, '--store');
     if (storePath && command === 'fork') return await runFork(args, io, storePath);
     if (storePath && command === 'export') return await runExport(args, io, storePath);
-    if (storePath && command === 'import') return await runImport(args, io, storePath);
+    if (storePath && command === 'import') return await runImport(args, io, storePath, options);
     throw new Error('missing required option: --store');
   }
   if (command === 'install') {
@@ -99,11 +101,13 @@ async function runCapabilityCommand(args, io) {
     const artifacts = {};
     for (const item of checked.checksums) artifacts[item.path] = new Uint8Array(await readPackFile(pack, item.path));
     await assertCapabilityPackChecksums(checked, artifacts);
-    if (trustedExecuteAdapters) await assertCapabilityPackAdapterAbi(checked, artifacts);
-    const receipt = assertCapabilityConformanceReceipt(JSON.parse(await readPackFile(pack, 'conformance.json', 'utf8')));
-    if (receipt.driverId !== checked.driverId) fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH', 'conformance receipt driverId does not match manifest');
-    if (receipt.packFingerprint !== checked.packFingerprint) fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH', 'conformance receipt packFingerprint does not match manifest');
-    if (receipt.corpusFingerprint !== checked.conformanceCorpusFingerprint) fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH', 'conformance receipt corpusFingerprint does not match manifest');
+    if (trustedExecuteAdapters) await assertCapabilityPackAdapterAbi(checked, artifacts, pack);
+    if (checked.conformanceCorpusFingerprint != null) {
+      const receipt = assertCapabilityConformanceReceipt(JSON.parse(await readPackFile(pack, 'conformance.json', 'utf8')));
+      if (receipt.driverId !== checked.driverId) fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH', 'conformance receipt driverId does not match manifest');
+      if (receipt.packFingerprint !== checked.packFingerprint) fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH', 'conformance receipt packFingerprint does not match manifest');
+      if (receipt.corpusFingerprint !== checked.conformanceCorpusFingerprint) fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH', 'conformance receipt corpusFingerprint does not match manifest');
+    }
     io.stdout.write(`${JSON.stringify(redact({
       command: 'capability check-pack',
       pack,
@@ -142,15 +146,231 @@ function pathInside(root, target) {
   return relative.length > 0 && !relative.startsWith('..') && !path.isAbsolute(relative);
 }
 
-async function assertCapabilityPackAdapterAbi(packManifest, artifacts) {
-  if (packManifest.adapter.kind !== 'in_process') return;
-  const module = await import(await capabilityPackAdapterImportUrl(packManifest, artifacts));
-  const Driver = module[packManifest.adapter.exportName];
-  if (typeof Driver !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_EXPORT');
-  const driver = new Driver(capabilityPackAdapterOptions(packManifest));
+async function assertCapabilityPackAdapterAbi(packManifest, artifacts, packRoot) {
+  let driver;
+  let sidecar = false;
+  if (packManifest.adapter.kind === 'in_process') {
+    const module = await import(await capabilityPackAdapterImportUrl(packManifest, artifacts));
+    const Driver = module[packManifest.adapter.exportName];
+    if (typeof Driver !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_EXPORT');
+    driver = new Driver(capabilityPackAdapterOptions(packManifest));
+  } else if (packManifest.adapter.kind === 'sidecar') {
+    driver = new CapabilitySidecar({ command: packManifest.adapter.command, cwd: packRoot });
+    sidecar = true;
+  } else {
+    return;
+  }
   const capabilityDriver = defineCapabilityDriver(driver);
   if (packManifest.canRecover === true && typeof driver.recover !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_RECOVER');
-  const driverManifest = capabilityDriver.manifest();
+  const driverManifest = sidecar
+    ? await capabilityPackSidecarManifest(driver, packManifest)
+    : capabilityDriver.manifest();
+  assertCapabilityPackDriverManifestMatches(packManifest, driverManifest);
+  if (sidecar) await assertCapabilityPackSidecarCommands(packManifest, driver, capabilityDriver, driverManifest);
+}
+
+async function capabilityPackSidecarManifest(sidecarDriver, packManifest) {
+  const raw = await sidecarDriver.requestPayload(CapabilitySidecarCommand.manifest, { packFingerprint: packManifest.packFingerprint });
+  const manifest = assertDriverManifest(raw);
+  if (raw.packFingerprint != null && typeof raw.packFingerprint !== 'string') {
+    fail('ERR_INVALID_DRIVER_MANIFEST', 'packFingerprint must be a string');
+  }
+  return raw.packFingerprint == null ? manifest : Object.freeze({ ...manifest, packFingerprint: raw.packFingerprint });
+}
+
+async function assertCapabilityPackSidecarCommands(packManifest, sidecarDriver, capabilityDriver, driverManifest) {
+  const hostRequest = capabilityPackSidecarProbeHostRequest(driverManifest);
+  const policy = capabilityPackSidecarProbePolicy(driverManifest, hostRequest);
+  const context = { worldHostCapabilityPackAbiProbe: true, policy };
+  const preflight = await capabilityDriver.preflight(context, hostRequest);
+  if (preflight.accepted !== true) {
+    fail('ERR_CAPABILITY_PACK_ADAPTER_PREFLIGHT', 'sidecar adapter ABI probe preflight rejected', { blockers: preflight.blockers });
+  }
+  await capabilityDriver.dryRun(context, hostRequest);
+  await capabilityDriver.shadow(context, hostRequest, { worldHostCapabilityPackAbiProbe: true });
+  assertCapabilityPackSidecarProbeResolution(
+    (await sidecarDriver.request(CapabilitySidecarCommand.resolve, { context, hostRequest })).payload,
+    hostRequest,
+    driverManifest,
+    policy,
+  );
+  if (packManifest.canRecover === true) {
+    if (typeof capabilityDriver.recover !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_RECOVER');
+    const recovery = await capabilityDriver.recover(context, capabilityPackSidecarProbeEffectRecord(driverManifest, hostRequest));
+    if (recovery?.operatorInterventionRequired !== true) {
+      assertCapabilityPackSidecarProbeResolution(recovery, hostRequest, driverManifest, policy);
+    }
+  }
+}
+
+function assertCapabilityPackSidecarProbeResolution(value, hostRequest, driverManifest, policy) {
+  assertCapabilityResolutionBoundary(value);
+  assertResolutionAccepted(value.resolutionInputBytes, hostRequest, driverManifest, policy);
+}
+
+function capabilityPackSidecarProbePolicy(driverManifest, hostRequest) {
+  const actuationClasses = new Set(driverManifest.supportedActuationClasses ?? []);
+  const diagnostics = driverManifest.diagnostics ?? {};
+  const { origins, methods } = capabilityPackSidecarProbeHttpPolicy(diagnostics, hostRequest);
+  return Object.freeze({
+    allowLiveEffects: true,
+    allowNetworkEffects: true,
+    allowFileEffects: true,
+    allowHumanEffects: true,
+    allowBestEffort: true,
+    requireApprovalForDestructiveEffects: false,
+    requireApprovalForNetworkEffects: false,
+    requireApprovalForBestEffort: false,
+    maximumLiveModelCalls: actuationClasses.has('model') ? 1 : 0,
+    allowedAuthorityLabels: [...(driverManifest.authorityLabels ?? [])],
+    allowedCapabilityPacks: [driverManifest.packFingerprint, driverManifest.driverId].filter((item) => typeof item === 'string' && item.length > 0),
+    allowedOrigins: origins,
+    allowedMethods: methods,
+    allowedHttpOrigins: origins,
+    allowedHttpMethods: methods,
+    allowedFileRoots: capabilityPackSidecarProbeFileRoots(driverManifest),
+    maximumConcurrentEffects: Math.max(1, driverManifest.concurrencyLimit ?? 1),
+    maximumRequestBytes: Math.max(1, driverManifest.maximumRequestBytes ?? 1, hostRequest.requestBytes?.byteLength ?? 0),
+    maximumPromptBytes: Math.max(1, driverManifest.maximumRequestBytes ?? 1, hostRequest.requestBytes?.byteLength ?? 0),
+    maximumResponseBytes: Math.max(1, driverManifest.maximumResponseBytes ?? 1),
+  });
+}
+
+function capabilityPackSidecarProbeHttpPolicy(diagnostics, hostRequest) {
+  const origins = new Set();
+  for (const origin of diagnostics.origins ?? []) addHttpOrigin(origins, origin);
+  addHttpOrigin(origins, diagnostics.configuredOrigin);
+  addHttpOrigin(origins, diagnostics.configuredEndpointUrl);
+  const request = parseProbeJson(hostRequest.requestBytes);
+  addHttpOrigin(origins, request?.url);
+  const methods = new Set((diagnostics.methods ?? []).map((item) => String(item).toUpperCase()));
+  if (diagnostics.defaultMethod) methods.add(String(diagnostics.defaultMethod).toUpperCase());
+  if (request?.method) methods.add(String(request.method).toUpperCase());
+  return { origins: [...origins], methods: [...methods] };
+}
+
+function capabilityPackSidecarProbeFileRoots(driverManifest) {
+  return [
+    driverManifest.diagnostics?.root,
+    ...(driverManifest.diagnostics?.allowedFileRoots ?? []),
+  ].filter((item) => typeof item === 'string' && item.length > 0);
+}
+
+function addHttpOrigin(origins, value) {
+  if (typeof value !== 'string' || value.length === 0) return;
+  try {
+    origins.add(new URL(value).origin);
+  } catch {
+    // Non-URL diagnostics are ignored; concrete probe bytes still provide a target when needed.
+  }
+}
+
+function parseProbeJson(bytes) {
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return null;
+  }
+}
+
+function capabilityPackSidecarProbeHostRequest(driverManifest) {
+  const actuationClass = driverManifest.supportedActuationClasses[0];
+  const requestBytes = capabilityPackSidecarProbeRequestBytes(driverManifest, actuationClass);
+  return Object.freeze({
+    actuatorRef: driverManifest.supportedActuatorRefs[0],
+    descriptorFingerprint: driverManifest.supportedDescriptorFingerprints[0],
+    actuationClass,
+    idempotencyKeyBytes: fromUtf8('world-host-capability-pack-sidecar-abi-probe-key'),
+    idempotencyKeyWorldFingerprint: 'world:idempotency-key:world-host-capability-pack-sidecar-abi-probe',
+    requestBytes,
+    hostRequestFingerprint: 'world:host-request:0000000000000abc',
+  });
+}
+
+function capabilityPackSidecarProbeRequestBytes(driverManifest, actuationClass) {
+  const diagnostics = driverManifest.diagnostics ?? {};
+  if (actuationClass === 'http') {
+    return fromUtf8(stableJson({
+      url: diagnostics.configuredEndpointUrl ??
+        httpProbeUrlForOrigin(diagnostics.configuredOrigin) ??
+        httpProbeUrlForOrigin(diagnostics.origins?.[0]) ??
+        'https://example.invalid/world-host-abi-probe',
+      method: diagnostics.defaultMethod ?? diagnostics.methods?.[0] ?? 'POST',
+      body: { worldHostCapabilityPackAbiProbe: true },
+    }));
+  }
+  if (actuationClass === 'model') {
+    return fromUtf8(stableJson({
+      schema: 'boundary.Agent.DecisionPrompt.v0',
+      observation: 'world-host capability pack sidecar ABI probe',
+    }));
+  }
+  if (actuationClass === 'human') {
+    return fromUtf8(stableJson({ action: 'world-host capability pack sidecar ABI probe' }));
+  }
+  if (actuationClass === 'file') {
+    return fromUtf8(stableJson({ operation: 'read', path: 'world-host-abi-probe.txt' }));
+  }
+  return fromUtf8(stableJson({ worldHostCapabilityPackAbiProbe: true }));
+}
+
+function httpProbeUrlForOrigin(origin) {
+  if (typeof origin !== 'string' || origin.length === 0) return null;
+  try {
+    return new URL('/world-host-abi-probe', origin).href;
+  } catch {
+    return null;
+  }
+}
+
+function capabilityPackSidecarProbeEffectRecord(driverManifest, hostRequest) {
+  const requestBytesChecksum = `sha256:${sha256BytesHex(hostRequest.requestBytes)}`;
+  const requestBytesRef = capabilityPackSidecarProbeBlobRef(hostRequest.requestBytes);
+  return Object.freeze({
+    runId: 'world-host-capability-pack-sidecar-abi-probe-run',
+    branchId: 'main',
+    parentTurnClosureFingerprint: 'world:turn-closure:0000000000000abc',
+    state: 'running',
+    attemptCount: 1,
+    driverId: driverManifest.driverId,
+    driverRecoveryClass: driverManifest.recoveryClass,
+    actuatorRef: hostRequest.actuatorRef,
+    descriptorFingerprint: hostRequest.descriptorFingerprint,
+    actuationClass: hostRequest.actuationClass,
+    responseSchema: hostRequest.responseSchema,
+    idempotencyKey: {
+      format: 'world-idempotency-key-bytes.hex',
+      bytesHex: bytesHex(hostRequest.idempotencyKeyBytes),
+    },
+    idempotencyKeyWorldFingerprint: hostRequest.idempotencyKeyWorldFingerprint,
+    hostRequestFingerprint: hostRequest.hostRequestFingerprint,
+    requestBytes: hostRequest.requestBytes,
+    requestBytesRef,
+    requestBytesChecksum,
+    requestIdentityChecksum: requestBytesChecksum,
+    effectIdentityBytesRef: requestBytesRef,
+    effectIdentityBytes: hostRequest.requestBytes,
+    diagnostics: { worldHostCapabilityPackAbiProbe: true },
+  });
+}
+
+function capabilityPackSidecarProbeBlobRef(bytes) {
+  return Object.freeze({
+    algorithm: 'sha256',
+    checksum: sha256BytesHex(bytes),
+    byteLength: bytes.byteLength,
+  });
+}
+
+function sha256BytesHex(bytes) {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+function bytesHex(bytes) {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function assertCapabilityPackDriverManifestMatches(packManifest, driverManifest) {
   if (driverManifest.packFingerprint !== packManifest.packFingerprint) fail('ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH', 'adapter manifest field mismatch: packFingerprint');
   for (const field of [
     'driverId',
@@ -670,17 +890,24 @@ async function runImport(args, io, storePath, options = {}) {
         const applianceManifest = await importedApplianceManifest(candidate.bundle, application, store, headPreflight.manifestFingerprint, {
           required: !bypassesPreflightRequirements,
         });
-        return preflightCapabilities({
+        const policy = createRunPolicy(preflightOptions.effectPolicy ?? createRunPolicy());
+        const mapped = importedPendingRequestsForPreflight(
+          pendingRequests,
+          preflightOptions.hostRequestMapper ?? worldHostRequestToEffectRequest,
+          policy,
+        );
+        const report = preflightCapabilities({
           application,
           applianceManifest,
           currentHead: candidate.bundle.head,
           currentBranchId: candidate.selectedBranchId,
-          pendingRequests: pendingRequests.map(preflightOptions.hostRequestMapper ?? worldHostRequestToEffectRequest),
+          pendingRequests: mapped.pendingRequests,
           drivers: preflightOptions.effectDrivers ?? [],
-          policy: preflightOptions.effectPolicy ?? createRunPolicy(),
+          policy,
           effectRecords: candidate.bundle.effects ?? [],
           effectResolutionInputs,
         });
+        return importedPreflightReport(report, pendingRequests.length, mapped.unresolvedPendingRequestRoutes);
       },
     });
     io.stdout.write(`${JSON.stringify(redact({
@@ -720,6 +947,74 @@ async function importedEffectResolutionInputs(bundle, store) {
     inputs.set(blobRefKey(effect.resolutionInputRef), bytes);
   }
   return inputs;
+}
+
+function importedPendingRequestsForPreflight(worldRequests, mapper, policy) {
+  const pendingRequests = [];
+  const unresolvedPendingRequestRoutes = [];
+  for (let index = 0; index < worldRequests.length; index += 1) {
+    const worldRequest = worldRequests[index];
+    try {
+      pendingRequests.push(importedMappedHostRequest(mapper(worldRequest), index, worldRequest));
+    } catch (error) {
+      if (policy.allowPartialEffectBatch !== true) throw error;
+      unresolvedPendingRequestRoutes.push(importedUnresolvedPendingRequestRoute(index, worldRequest, error));
+    }
+  }
+  return { pendingRequests, unresolvedPendingRequestRoutes };
+}
+
+function importedMappedHostRequest(hostRequest, index, worldRequest) {
+  const next = { ...hostRequest };
+  if (next.hostRequestFingerprint == null && worldRequest?.requestFingerprint != null) {
+    next.hostRequestFingerprint = worldHostRequestFingerprint(worldRequest);
+  }
+  next.pendingRequestIndex = index;
+  return next;
+}
+
+function importedUnresolvedPendingRequestRoute(index, worldRequest, error) {
+  return {
+    actuatorRef: `world:actuator-ref:${fingerprintString(worldRequest?.actuatorRefFingerprint)}`,
+    descriptorFingerprint: `world:descriptor:${fingerprintString(worldRequest?.expectedResponseDescriptorFingerprint)}`,
+    hostRequestFingerprint: worldHostRequestFingerprint(worldRequest),
+    pendingRequestIndex: index,
+    driverId: null,
+    driverIndex: null,
+    blockers: [error?.code ?? 'ERR_HOST_REQUEST_MAPPER_REJECTED'],
+  };
+}
+
+function importedPreflightReport(report, pendingRequestCount, mapperUnresolvedPendingRequestRoutes) {
+  const unresolvedPendingRequestRoutes = [
+    ...mapperUnresolvedPendingRequestRoutes,
+    ...(report.unresolvedPendingRequestRoutes ?? []),
+  ];
+  if (
+    pendingRequestCount > 0 &&
+    unresolvedPendingRequestRoutes.length > 0 &&
+    (report.selectedPendingRequestRoutes?.length ?? 0) === 0 &&
+    !(report.blockers?.length)
+  ) {
+    fail('ERR_PARTIAL_EFFECT_BATCH_EMPTY', 'partial effect batch has no covered HostRequests', {
+      unresolvedHostRequestCount: unresolvedPendingRequestRoutes.length,
+    });
+  }
+  if (!mapperUnresolvedPendingRequestRoutes.length) return report;
+  return new CapabilityReport({
+    ...report,
+    everyPendingRequestCovered: false,
+    unresolvedPendingRequestRoutes,
+  });
+}
+
+function worldHostRequestFingerprint(worldRequest) {
+  return `world:host-request:${fingerprintString(worldRequest?.requestFingerprint)}`;
+}
+
+function fingerprintString(value) {
+  if (value == null) fail('ERR_REQUIRED_FIELD', 'fingerprint is required');
+  return BigInt(value).toString(16).padStart(16, '0');
 }
 
 function importedHeadPreflight(candidate) {

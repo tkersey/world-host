@@ -142,12 +142,13 @@ export class RunController {
     }));
     const parentClosureBytes = await this.store.getBlob(parentHead.turnClosureRef);
     assertParentHeadMatchesClosure(parentHead, parentClosureBytes);
+    const needsHostEffectPolicy = approvalAwarePendingPreflightPolicy(policy, this.effectContextFactory);
     let needsHostEffectPlan = prepareNeedsHostEffectPlan(
       parentHead,
       parentClosureBytes,
       this.hostRequestMapper,
       this.effectDrivers,
-      policy,
+      needsHostEffectPolicy,
       application,
     );
     if (needsHostEffectPlan?.pending.length > 0) {
@@ -161,12 +162,12 @@ export class RunController {
         currentBranchId: branchId,
         pendingRequests,
         drivers: this.effectDrivers,
-        policy,
+        policy: needsHostEffectPolicy,
         effectRecords,
         effectResolutionInputs,
       });
       assertCapabilityReportAccepted(preflightReport);
-      needsHostEffectPlan = bindEffectPlanToPreflightReport(needsHostEffectPlan, preflightReport, this.effectDrivers, policy);
+      needsHostEffectPlan = bindEffectPlanToPreflightReport(needsHostEffectPlan, preflightReport, this.effectDrivers, needsHostEffectPolicy);
     }
     const imageBytes = await this.store.getBlob(application.executableImageRef);
     const executableHostFingerprint = `sha256:${await sha256Hex(imageBytes)}`;
@@ -315,7 +316,7 @@ export class RunController {
         unresolved.policy = 'allowPartialEffectBatch';
       }
     }
-    const effects = await this.#resolveEffectBatch({
+    const batch = await this.#resolveEffectBatch({
       journal,
       pending: plan.pending,
       run,
@@ -327,11 +328,13 @@ export class RunController {
       options,
       policy,
     });
-    const resolutions = assertEffectTargetsPendingRequests(effects, plan.pending);
+    const effects = batch.effects;
+    const unresolvedHostRequests = [...plan.unresolvedHostRequests, ...batch.unresolvedHostRequests];
+    const resolutions = assertEffectTargetsPendingRequests(effects, batch.pending);
     return {
       journal,
       effects,
-      unresolvedHostRequests: plan.unresolvedHostRequests,
+      unresolvedHostRequests,
       turnInputBytes: encodeRestoreTurnInput({
         manifestFingerprint: plan.parentSummary.manifestFingerprint,
         parentTurnClosureBytes: parentClosureBytes,
@@ -346,10 +349,9 @@ export class RunController {
   }
 
   async #resolveEffectBatch({ journal, pending, run, branchId, application, parentHead, parentClosureBytes, worker, options, policy }) {
-    const effects = new Array(pending.length);
-    const pendingPositions = new Map(pending.map((item, index) => [item, index]));
-    const groups = groupPendingEffects(pending);
-    await runGroupedBounded(groups, policy, async (item) => {
+    const selected = [];
+    const unresolvedHostRequests = [];
+    for (const item of pending) {
       assertSelectedEffectPreContextPolicyAllows(policy);
       const context = await this.effectContextFactory({
         run,
@@ -364,6 +366,32 @@ export class RunController {
         hostRequest: item.hostRequest,
         worldHostRequest: item.worldHostRequest,
       });
+      try {
+        assertSelectedEffectPolicyAllows(item.manifest, item.hostRequest, policy, context?.action, { allowCachedLiveModelReplay: true });
+      } catch (error) {
+        if (policy.allowPartialEffectBatch === true && error?.code === 'ERR_CAPABILITY_APPROVAL_REQUIRED') {
+          unresolvedHostRequests.push({
+            ...unresolvedHostRequestDiagnostic(item.index, item.hostRequest),
+            blockers: [error.code],
+            policy: 'allowPartialEffectBatch',
+          });
+          continue;
+        }
+        throw error;
+      }
+      selected.push({ ...item, context });
+    }
+    if (selected.length === 0 && unresolvedHostRequests.length > 0) {
+      fail('ERR_PARTIAL_EFFECT_BATCH_EMPTY', 'partial effect batch has no covered HostRequests', {
+        unresolvedHostRequestCount: unresolvedHostRequests.length,
+      });
+    }
+    const effects = new Array(selected.length);
+    const pendingPositions = new Map(selected.map((item, index) => [item, index]));
+    const groups = groupPendingEffects(selected);
+    await runGroupedBounded(groups, policy, async (item) => {
+      assertSelectedEffectPreContextPolicyAllows(policy);
+      const context = item.context;
       assertSelectedEffectPolicyAllows(item.manifest, item.hostRequest, policy, context?.action, { allowCachedLiveModelReplay: true });
       const journalHostRequest = journaledHostRequest(item.hostRequest, item.manifest);
       const driver = controllerResolveDriver(item.driver);
@@ -382,7 +410,7 @@ export class RunController {
       );
       effects[pendingPositions.get(item)] = { ...resolved, worldHostRequest: item.worldHostRequest };
     });
-    return effects;
+    return { effects, pending: selected, unresolvedHostRequests };
   }
 }
 
@@ -781,6 +809,16 @@ function capabilityPolicyForSelectedEffect(policy = {}, manifest = {}, hostReque
     allowedCapabilityPacks: [...policySet(policy.allowedCapabilityPacks)],
     deniedCapabilityPacks: [...policySet(policy.deniedCapabilityPacks)],
   };
+}
+
+function approvalAwarePendingPreflightPolicy(policy, effectContextFactory) {
+  if (effectContextFactory === defaultEffectContextFactory) return policy;
+  return createRunPolicy({
+    ...policy,
+    requireApprovalForDestructiveEffects: false,
+    requireApprovalForNetworkEffects: false,
+    requireApprovalForBestEffort: false,
+  });
 }
 
 function modelLiveBudget(policy, model, options) {
@@ -1277,6 +1315,7 @@ function prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, hostRequestM
       unresolvedHostRequests.push(unresolvedHostRequestDiagnostic(index, { diagnostics: { mapperError: error?.message ?? String(error) } }));
       continue;
     }
+    hostRequest = hostRequestWithPendingIndex(hostRequest, index, worldHostRequest);
     const selection = selectEffectDriver(
       effectDrivers,
       hostRequest,
@@ -1336,11 +1375,21 @@ function bindEffectPlanToPreflightReport(plan, report, effectDrivers, policy) {
 }
 
 function preflightRouteKey(route) {
+  if (Number.isSafeInteger(route.pendingRequestIndex)) return ['pending-index', route.pendingRequestIndex].join('\0');
   return [
     route.hostRequestFingerprint ?? '',
     route.actuatorRef ?? '',
     route.descriptorFingerprint ?? '',
   ].join('\0');
+}
+
+function hostRequestWithPendingIndex(hostRequest, index, worldHostRequest = null) {
+  const next = { ...hostRequest };
+  if (next.hostRequestFingerprint == null && worldHostRequest?.requestFingerprint != null) {
+    next.hostRequestFingerprint = `world:host-request:${fingerprintString(worldHostRequest.requestFingerprint)}`;
+  }
+  next.pendingRequestIndex = index;
+  return next;
 }
 
 function selectEffectDriverByPreflightRoute(drivers, hostRequest, policy, route) {

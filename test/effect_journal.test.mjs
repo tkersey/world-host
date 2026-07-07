@@ -786,6 +786,54 @@ describe('EffectJournal', () => {
     }
   });
 
+  it('upgrades raw HTTP identities during direct recovery', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const observed = await journal.observe(httpHostRequest(), { recoveryClass: EffectRecoveryClass.idempotent });
+    const running = await store.putEffectRecord({ ...observed, state: EffectState.running, attemptCount: 1 });
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    try {
+      globalThis.fetch = async (_url, options) => {
+        calls += 1;
+        assert.equal(options.method, 'POST');
+        return new Response('{"ok":true}', { status: 200, headers: { 'x-request-id': 'recover-raw-default-method-1' } });
+      };
+      const recovered = await journal.recover({}, running, new HttpJsonDriver({
+        origins: ['https://allowed.example'],
+        methods: ['POST'],
+      }));
+
+      assert.equal(recovered.record.state, EffectState.resolved);
+      assert.notEqual(recovered.record.requestIdentityChecksum, observed.requestBytesChecksum);
+      assert.equal(recovered.record.diagnostics.requestIdentityCanonicalizedFrom, observed.requestBytesChecksum);
+      assert.equal(calls, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('does not persist transient request bytes during recovery writes', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-recovery-transient-bytes-'));
+    const store = new DirectoryStore(root);
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const observed = await journal.observe(httpHostRequest(), { recoveryClass: EffectRecoveryClass.idempotent });
+    const running = await store.putEffectRecord({ ...observed, state: EffectState.running, attemptCount: 1 });
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => new Response('{"ok":true}', { status: 200, headers: { 'x-request-id': 'recover-no-inline-bytes' } });
+      await journal.recover({}, running, new HttpJsonDriver({ origins: ['https://allowed.example'] }));
+      const [record] = await store.listEffectRecords('run');
+
+      assert.equal(record.state, EffectState.resolved);
+      assert.equal(Object.prototype.hasOwnProperty.call(record, 'requestBytes'), false);
+      assert.equal(Object.prototype.hasOwnProperty.call(record, 'effectIdentityBytes'), false);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('journals configured capability identity during direct resolve', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
@@ -945,6 +993,127 @@ describe('EffectJournal', () => {
       assert.equal(first.reused, false);
       assert.equal(second.reused, true);
       assert.equal(calls, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('canonicalizes raw HTTP driver default methods in effect identity', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const nextJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:1' });
+    const omittedMethodRequest = httpHostRequest({
+      requestBytes: fromUtf8(JSON.stringify({
+        url: 'https://allowed.example/decide',
+        body: { prompt: 'hi' },
+      })),
+      hostRequestFingerprint: 'world:host-request:0000000000000c03',
+    });
+    const explicitMethodRequest = {
+      ...omittedMethodRequest,
+      requestBytes: fromUtf8(JSON.stringify({
+        url: 'https://allowed.example/decide',
+        method: 'POST',
+        body: { prompt: 'hi' },
+      })),
+    };
+    const driver = new HttpJsonDriver({
+      origins: ['https://allowed.example'],
+      methods: ['POST'],
+    });
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    try {
+      globalThis.fetch = async (_url, options) => {
+        calls += 1;
+        assert.equal(options.method, 'POST');
+        return new Response('{"status":"ok"}', {
+          status: 200,
+          headers: { 'x-request-id': 'raw-default-method-1' },
+        });
+      };
+      const first = await journal.resolve({}, omittedMethodRequest, driver);
+
+      globalThis.fetch = async () => {
+        throw new Error('raw defaulted method identity should reuse before fetch');
+      };
+      const second = await nextJournal.resolve({}, explicitMethodRequest, driver);
+
+      assert.equal(first.reused, false);
+      assert.equal(second.reused, true);
+      assert.equal(second.record.parentTurnClosureFingerprint, 'turn:1');
+      assert.equal(calls, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('does not upgrade raw HTTP identities across HostRequest fingerprints', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    await journal.observe(httpHostRequest(), { recoveryClass: EffectRecoveryClass.idempotent });
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    try {
+      globalThis.fetch = async () => {
+        calls += 1;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      await assert.rejects(
+        () => journal.resolve({}, httpHostRequest({
+          hostRequestFingerprint: 'world:host-request:0000000000000b02',
+        }), new HttpJsonDriver({ origins: ['https://allowed.example'] })),
+        { code: 'ERR_EFFECT_IDEMPOTENCY_CONFLICT' },
+      );
+      assert.equal(calls, 0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('does not upgrade legacy raw identities for configured HTTP routes', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const request = httpHostRequest({
+      requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'hi' } })),
+    });
+    await journal.observe(request, { recoveryClass: EffectRecoveryClass.idempotent });
+    const driver = new GenericHttpJsonCapabilityDriver({
+      endpointUrl: 'https://allowed.example/decide',
+      origins: ['https://allowed.example'],
+      methods: ['POST'],
+    });
+
+    await assert.rejects(
+      () => journal.resolve({}, request, driver),
+      { code: 'ERR_EFFECT_IDEMPOTENCY_CONFLICT' },
+    );
+  });
+
+  it('upgrades raw HTTP identities during branch-local reusable outcome scans', async () => {
+    const store = new MemoryStore();
+    const source = new EffectJournal({ store, runId: 'run', branchId: 'source', parentTurnClosureFingerprint: 'turn:source' });
+    const observed = await source.observe(httpHostRequest(), { recoveryClass: EffectRecoveryClass.idempotent });
+    const resolutionInputRef = await store.putBlob(fixtureResolutionInputBytes(httpHostRequest(), fromUtf8('branch-reuse')));
+    await store.putEffectRecord({
+      ...observed,
+      state: EffectState.resolved,
+      resolutionInputRef,
+    });
+    const target = new EffectJournal({ store, runId: 'run', branchId: 'target', parentTurnClosureFingerprint: 'turn:target' });
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    try {
+      globalThis.fetch = async () => {
+        calls += 1;
+        throw new Error('branch-local raw identity upgrade should reuse before fetch');
+      };
+      const reused = await target.resolve({}, httpHostRequest(), new HttpJsonDriver({ origins: ['https://allowed.example'] }));
+
+      assert.equal(reused.reused, true);
+      assert.equal(reused.record.branchId, 'target');
+      assert.notEqual(reused.record.requestIdentityChecksum, reused.record.requestBytesChecksum);
+      assert.equal(calls, 0);
     } finally {
       globalThis.fetch = originalFetch;
     }

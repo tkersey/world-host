@@ -185,12 +185,20 @@ describe('Capability sidecar transport', () => {
             { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
           );
         }
-        const explicitDotenv = await new CapabilitySidecar({
-          command: [process.execPath, '--env-file', path.join(root, '.env'), dotenvPath],
-          timeoutMs: 1000,
-        }).manifest();
-        assert.equal(explicitDotenv.dotenvSecret, 'dotenv-secret');
-        assert.equal(explicitDotenv.bunfigPreload, false);
+        assert.throws(
+          () => new CapabilitySidecar({
+            command: [process.execPath, '--env-file', path.join(root, '.env'), dotenvPath],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+        assert.throws(
+          () => new CapabilitySidecar({
+            command: [process.execPath, '--env-file=.env', dotenvPath],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
         const runtimeOptionDotenv = await new CapabilitySidecar({
           command: [process.execPath, '--smol', dotenvPath, '--env-file', path.join(root, '.env')],
           timeoutMs: 1000,
@@ -242,6 +250,13 @@ describe('Capability sidecar transport', () => {
         assert.throws(
           () => new CapabilitySidecar({
             command: [process.execPath, '--config-file=./bunfig.toml', dotenvPath],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+        assert.throws(
+          () => new CapabilitySidecar({
+            command: [process.execPath, '--config=./bunfig.toml', dotenvPath],
             timeoutMs: 1000,
           }).manifest(),
           { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
@@ -309,6 +324,22 @@ describe('Capability sidecar transport', () => {
           }).manifest(),
           { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
         );
+        for (const command of [
+          [process.execPath, '--print', 'JSON.stringify({})', dotenvPath],
+          [process.execPath, '--print=JSON.stringify({})', dotenvPath],
+          [process.execPath, '-p', 'JSON.stringify({})', dotenvPath],
+          [process.execPath, '-pJSON.stringify({})', dotenvPath],
+          [process.execPath, '--inspect=0', dotenvPath],
+          [process.execPath, '--inspect-brk=0', dotenvPath],
+          [process.execPath, '--inspect-wait=0', dotenvPath],
+          [process.execPath, '--fetch-preconnect=https://denied.example', dotenvPath],
+          [process.execPath, '--fetch-preconnect', 'https://denied.example', dotenvPath],
+        ]) {
+          assert.throws(
+            () => new CapabilitySidecar({ command, timeoutMs: 1000 }).manifest(),
+            { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+          );
+        }
         const shebangPath = path.join(root, 'dotenv-sidecar');
         await writeFile(shebangPath, `#!/usr/bin/env bun
           await new Response(Bun.stdin.stream()).text();

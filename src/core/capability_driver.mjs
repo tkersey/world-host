@@ -102,10 +102,6 @@ export function defaultCapabilityPreflight(manifestLike, hostRequest) {
 }
 
 export function assertCapabilityPreflightReport(value) {
-  if (value instanceof CapabilityPreflightReport) {
-    assertNoWorldEvidenceKeys(value);
-    return value;
-  }
   if (!value || typeof value !== 'object') fail('ERR_CAPABILITY_PREFLIGHT_REPORT_INVALID');
   const report = new CapabilityPreflightReport(value);
   assertNoWorldEvidenceKeys(report);
@@ -113,10 +109,6 @@ export function assertCapabilityPreflightReport(value) {
 }
 
 export function assertDryRunReport(value) {
-  if (value instanceof DryRunReport) {
-    assertNoWorldEvidenceKeys(value);
-    return value;
-  }
   if (!value || typeof value !== 'object') fail('ERR_CAPABILITY_DRY_RUN_REPORT_INVALID');
   const report = new DryRunReport(value);
   assertNoWorldEvidenceKeys(report);
@@ -124,10 +116,6 @@ export function assertDryRunReport(value) {
 }
 
 export function assertShadowReport(value) {
-  if (value instanceof ShadowReport) {
-    assertNoWorldEvidenceKeys(value);
-    return value;
-  }
   if (!value || typeof value !== 'object') fail('ERR_CAPABILITY_SHADOW_REPORT_INVALID');
   const report = new ShadowReport(value);
   assertNoWorldEvidenceKeys(report);
@@ -227,6 +215,7 @@ export function assertNoWorldEvidenceKeys(value, path = [], seen = new WeakSet()
 }
 
 export function capabilityHostClaimBytes(value) {
+  assertNoWorldEvidenceKeys(value);
   return fromUtf8(stableJson({
     kind: 'world-host.capability.host-claim.v0',
     value,

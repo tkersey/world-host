@@ -46,6 +46,7 @@ export class HumanApprovalCapabilityDriver {
   }
 
   dryRun(context, hostRequest) {
+    assertHumanApprovalModeReady(this.mode, this.prompt);
     assertHumanPromptPolicyAllows(context, this.manifest(), hostRequest);
     return new DryRunReport({
       wouldInvoke: this.mode === 'interactive-terminal',

@@ -2063,7 +2063,15 @@ describe('RunController and WorldWorker', () => {
 
         await assert.rejects(
           () => controller.advance(runId, branchId),
-          { code: expectedCode },
+          (error) => {
+            if (expectedCode === 'ERR_CAPABILITY_APPROVAL_REQUIRED') {
+              assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+              assert.ok(error.details?.blockers?.includes('ERR_CAPABILITY_APPROVAL_REQUIRED'));
+              return true;
+            }
+            assert.equal(error.code, expectedCode);
+            return true;
+          },
         );
         assert.equal(fetchCalled, false);
       } finally {
@@ -2247,7 +2255,15 @@ describe('RunController and WorldWorker', () => {
 
         await assert.rejects(
           () => controller.advance(runId, branchId),
-          { code: expectedCode },
+          (error) => {
+            if (expectedCode === 'ERR_CAPABILITY_APPROVAL_REQUIRED') {
+              assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+              assert.ok(error.details?.blockers?.includes('ERR_CAPABILITY_APPROVAL_REQUIRED'));
+              return true;
+            }
+            assert.equal(error.code, expectedCode);
+            return true;
+          },
         );
         assert.equal(fetchCalled, false);
       } finally {
@@ -2305,6 +2321,147 @@ describe('RunController and WorldWorker', () => {
 
       assert.equal(result.status, 'advanced');
       assert.equal(fetchCount, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('binds partial approved raw effect routes with the approval-aware policy', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    try {
+      globalThis.fetch = async () => {
+        fetchCount += 1;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new HttpJsonDriver({
+          origins: ['https://allowed.example'],
+          methods: ['POST'],
+        })],
+        effectPolicy: {
+          allowPartialEffectBatch: true,
+          requireApprovalForNetworkEffects: true,
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+        },
+        effectContextFactory: async (context) => ({
+          ...context,
+          action: { approved: true },
+        }),
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('partial-http-raw-approved-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:partial-http-raw-approved',
+          requestBytes: fromUtf8(JSON.stringify({
+            url: 'https://allowed.example/decide',
+            method: 'POST',
+            body: { prompt: 'partial-approved' },
+          })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fetchCount, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('leaves approval-denied partial routes unresolved before invoking effects', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'partial-approval-key:1', idempotencyKeyFingerprint: 0xa09n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'partial-approval-key:2', idempotencyKeyFingerprint: 0xa19n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    const contextFingerprints = [];
+    try {
+      globalThis.fetch = async () => {
+        fetchCount += 1;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          allowEndpointFromRequest: true,
+          origins: ['https://allowed.example'],
+          methods: ['POST'],
+        })],
+        effectPolicy: {
+          allowPartialEffectBatch: true,
+          requireApprovalForNetworkEffects: true,
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+        },
+        effectContextFactory: async (context) => {
+          contextFingerprints.push(context.hostRequest.hostRequestFingerprint);
+          return {
+            ...context,
+            action: context.hostRequest.hostRequestFingerprint.endsWith('0a01') ? { approved: true } : null,
+            policy: {
+              allowLiveEffects: true,
+              allowNetworkEffects: true,
+              allowedOrigins: ['https://allowed.example'],
+              allowedMethods: ['POST'],
+            },
+          };
+        },
+        hostRequestMapper: (worldHostRequest) => {
+          const second = worldHostRequest.requestFingerprint === 0xa02n;
+          return {
+            actuatorRef: 'http:json',
+            descriptorFingerprint: 'descriptor:http-json',
+            actuationClass: 'http',
+            responseSchema: { status: 'ok' },
+            idempotencyKeyBytes: fromUtf8(second ? 'partial-approval-key:2' : 'partial-approval-key:1'),
+            idempotencyKeyWorldFingerprint: second ? 'world:key:partial-approval:2' : 'world:key:partial-approval:1',
+            requestBytes: fromUtf8(JSON.stringify({
+              url: 'https://allowed.example/decide',
+              method: 'POST',
+              body: { prompt: second ? 'denied' : 'approved' },
+            })),
+            hostRequestFingerprint: second
+              ? 'world:host-request:0000000000000a02'
+              : 'world:host-request:0000000000000a01',
+          };
+        },
+      });
+
+      const result = await controller.advance(runId, branchId);
+      const effects = await store.listEffectRecords(runId);
+
+      assert.equal(result.status, 'advanced');
+      assert.deepEqual(contextFingerprints, [
+        'world:host-request:0000000000000a01',
+        'world:host-request:0000000000000a02',
+      ]);
+      assert.equal(fetchCount, 1);
+      assert.equal(effects.length, 1);
+      assert.equal(effects[0].hostRequestFingerprint, 'world:host-request:0000000000000a01');
+      assert.equal(result.unresolvedHostRequests.length, 1);
+      assert.equal(result.unresolvedHostRequests[0].hostRequestFingerprint, 'world:host-request:0000000000000a02');
+      assert.deepEqual(result.unresolvedHostRequests[0].blockers, ['ERR_CAPABILITY_APPROVAL_REQUIRED']);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -3034,13 +3191,11 @@ describe('RunController and WorldWorker', () => {
           responseSchema: { status: 'ok' },
           idempotencyKeyBytes: fromUtf8(`partial-model-budget-key-${worldHostRequest.requestFingerprint === 0xa01n ? '1' : '2'}`),
           idempotencyKeyWorldFingerprint: `world:key:partial-model-budget-${worldHostRequest.requestFingerprint === 0xa01n ? '1' : '2'}`,
+          pendingRequestIndex: 0,
           requestBytes: fromUtf8(JSON.stringify({
             schema: 'boundary.Agent.DecisionPrompt.v0',
             observation: `goal=partial-model-${worldHostRequest.requestFingerprint.toString(16)}`,
           })),
-          hostRequestFingerprint: worldHostRequest.requestFingerprint === 0xa01n
-            ? 'world:host-request:0000000000000a01'
-            : 'world:host-request:0000000000000a02',
         }),
       });
 

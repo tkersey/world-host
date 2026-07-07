@@ -991,12 +991,12 @@ function unsafeHostGlobalMember(identifier, member, options = {}) {
     return ['Worker', 'SharedWorker'].includes(member);
   }
   if (identifier === 'Bun') {
-    if (['connect', 'fetch', 'listen', 'serve', 'udpSocket'].includes(member)) return !options.allowHostNetwork;
-    if (['file', 'mmap', 'write'].includes(member)) return !options.allowHostFile;
+    if (['connect', 'fetch', 'listen', 'redis', 's3', 'serve', 'sql', 'udpSocket'].includes(member)) return !options.allowHostNetwork;
+    if (['build', 'file', 'Glob', 'mmap', 'resolve', 'resolveSync', 'write'].includes(member)) return !options.allowHostFile;
     return ['$', 'env', 'FFI', 'password', 'spawn', 'spawnSync'].includes(member);
   }
   if (identifier === 'process') {
-    return ['abort', 'binding', 'chdir', 'cwd', 'dlopen', 'env', 'exit', 'kill'].includes(member);
+    return ['abort', 'binding', 'chdir', 'cwd', 'dlopen', 'env', 'exit', 'kill', 'report'].includes(member);
   }
   return false;
 }
@@ -2534,8 +2534,17 @@ function assertSafeSidecarCommandToken(command, index) {
   if (sidecarUnsupportedBunNoConfigOption(command, index)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Bun sidecars do not support --no-config');
   }
+  if (sidecarUnsupportedBunEnvFileOption(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Bun sidecars do not support caller-supplied env files');
+  }
   if (sidecarUnsupportedBunConfigOption(command, index)) {
-    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Bun sidecars only support --config=... for config isolation');
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Bun sidecars do not support caller-supplied config files');
+  }
+  if (sidecarUnsupportedBunCodeLoadingOption(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Bun sidecars do not support inline code or preload options');
+  }
+  if (sidecarUnsupportedBunNetworkOption(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Bun sidecars do not support preconnect options');
   }
   if (index === 0 && SIDECAR_RUNTIME_WRAPPERS.has(executable)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command wraps runtime execution outside checksum coverage: ${value}`);
@@ -2605,11 +2614,44 @@ function sidecarUnsupportedBunNoConfigOption(command, index) {
   return entrypointIndex < 0 || index < entrypointIndex;
 }
 
+function sidecarUnsupportedBunEnvFileOption(command, index) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'bun' || !sidecarRuntimeOptionPosition(command, index)) return false;
+  const value = command[index];
+  if (value !== '--env-file' && !value.startsWith('--env-file=')) return false;
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  return entrypointIndex < 0 || index < entrypointIndex;
+}
+
 function sidecarUnsupportedBunConfigOption(command, index) {
   if (commandBaseName(command[0]).toLowerCase() !== 'bun' || !sidecarRuntimeOptionPosition(command, index)) return false;
   const value = command[index];
-  if (!(value === '--config' || value === '--config-file' || value.startsWith('--config-file=') ||
+  if (!(value === '--config' || value.startsWith('--config=') ||
+    value === '--config-file' || value.startsWith('--config-file=') ||
     value === '-c' || value.startsWith('-c=') || (value.startsWith('-c') && value !== '-c'))) return false;
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  return entrypointIndex < 0 || index < entrypointIndex;
+}
+
+function sidecarUnsupportedBunCodeLoadingOption(command, index) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'bun' || !sidecarRuntimeOptionPosition(command, index)) return false;
+  const value = command[index];
+  if (!(value === '-e' || value === '--eval' || value.startsWith('-e') || value.startsWith('--eval=') ||
+    value === '-p' || value.startsWith('-p') || value === '--print' || value.startsWith('--print=') ||
+    value === '--inspect' || value.startsWith('--inspect=') ||
+    value === '--inspect-brk' || value.startsWith('--inspect-brk=') ||
+    value === '--inspect-wait' || value.startsWith('--inspect-wait=') ||
+    value === '--import' || value.startsWith('--import=') ||
+    value === '-r' || value.startsWith('-r') ||
+    value === '--require' || value.startsWith('--require=') ||
+    value === '--preload' || value.startsWith('--preload='))) return false;
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  return entrypointIndex < 0 || index < entrypointIndex;
+}
+
+function sidecarUnsupportedBunNetworkOption(command, index) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'bun' || !sidecarRuntimeOptionPosition(command, index)) return false;
+  const value = command[index];
+  if (value !== '--fetch-preconnect' && !value.startsWith('--fetch-preconnect=')) return false;
   const entrypointIndex = sidecarEntrypointIndex(command);
   return entrypointIndex < 0 || index < entrypointIndex;
 }

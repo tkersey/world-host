@@ -1165,6 +1165,7 @@ class HumanApprovalCapabilityDriver {
     return new CapabilityPreflightReport({ accepted: blockers.length === 0, blockers });
   }
   dryRun(context, hostRequest) {
+    assertHumanApprovalModeReady(this.mode, this.prompt);
     assertHumanPromptPolicyAllows(context, this.manifest(), hostRequest);
     return new DryRunReport({
       wouldInvoke: this.mode === "interactive-terminal",

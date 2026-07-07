@@ -299,18 +299,12 @@ function sidecarSpawnArgv(argv, cwd = undefined) {
     if (bunShebangArgs) {
       const shebangArgv = ['bun', ...bunShebangArgs, ...argv];
       assertSupportedBunEnvFileOptions(shebangArgv);
-      const isolationArgs = [];
-      if (!bunEnvFileOptionPresent(shebangArgv)) isolationArgs.push(emptyEnvFileArg);
-      if (!bunConfigOptionPresent(shebangArgv)) isolationArgs.push(emptyConfigArg);
-      return [process.execPath, ...isolationArgs, ...bunShebangArgs, ...argv];
+      return [process.execPath, emptyEnvFileArg, emptyConfigArg, ...bunShebangArgs, ...argv];
     }
     return argv;
   }
   assertSupportedBunEnvFileOptions(argv);
-  const isolationArgs = [];
-  if (!bunEnvFileOptionPresent(argv)) isolationArgs.push(emptyEnvFileArg);
-  if (!bunConfigOptionPresent(argv)) isolationArgs.push(emptyConfigArg);
-  return [argv[0], ...isolationArgs, ...argv.slice(1)];
+  return [argv[0], emptyEnvFileArg, emptyConfigArg, ...argv.slice(1)];
 }
 
 function bunWrapperCommand(argv, cwd = undefined) {
@@ -343,11 +337,17 @@ function assertSupportedBunEnvFileOptions(argv) {
     if (value === '--no-config' || value.startsWith('--no-config=')) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars do not support --no-config');
     }
+    if (value === '--env-file' || value.startsWith('--env-file=')) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars do not support caller-supplied env files');
+    }
     if (unsupportedBunConfigOption(value)) {
-      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars only support --config=... for config isolation');
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars do not support caller-supplied config files');
     }
     if (unsupportedBunCodeLoadingOption(value)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars do not support inline code or preload options');
+    }
+    if (unsupportedBunNetworkOption(value)) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars do not support preconnect options');
     }
     if (bunRuntimeOptionValuePosition(argv, index)) continue;
     if (value === 'run') {
@@ -361,37 +361,26 @@ function assertSupportedBunEnvFileOptions(argv) {
   }
 }
 
-function bunEnvFileOptionPresent(argv) {
-  for (let index = 1; index < argv.length; index += 1) {
-    const value = argv[index];
-    if (bunRuntimeOptionValuePosition(argv, index)) continue;
-    if (value === '--env-file' || value.startsWith('--env-file=')) return true;
-    if (!value.startsWith('-') || value === '--') return false;
-  }
-  return false;
-}
-
-function bunConfigOptionPresent(argv) {
-  for (let index = 1; index < argv.length; index += 1) {
-    const value = argv[index];
-    if (bunRuntimeOptionValuePosition(argv, index)) continue;
-    if (value.startsWith('--config=')) return true;
-    if (!value.startsWith('-') || value === '--') return false;
-  }
-  return false;
-}
-
 function unsupportedBunConfigOption(value) {
-  return value === '--config' || value === '--config-file' || value.startsWith('--config-file=') ||
+  return value === '--config' || value.startsWith('--config=') ||
+    value === '--config-file' || value.startsWith('--config-file=') ||
     value === '-c' || value.startsWith('-c=') || (value.startsWith('-c') && value !== '-c');
 }
 
 function unsupportedBunCodeLoadingOption(value) {
   return value === '-e' || value === '--eval' || value.startsWith('-e') || value.startsWith('--eval=') ||
+    value === '-p' || value.startsWith('-p') || value === '--print' || value.startsWith('--print=') ||
+    value === '--inspect' || value.startsWith('--inspect=') ||
+    value === '--inspect-brk' || value.startsWith('--inspect-brk=') ||
+    value === '--inspect-wait' || value.startsWith('--inspect-wait=') ||
     value === '--import' || value.startsWith('--import=') ||
     value === '-r' || value.startsWith('-r') ||
     value === '--require' || value.startsWith('--require=') ||
     value === '--preload' || value.startsWith('--preload=');
+}
+
+function unsupportedBunNetworkOption(value) {
+  return value === '--fetch-preconnect' || value.startsWith('--fetch-preconnect=');
 }
 
 function bunRuntimeOptionValuePosition(argv, index) {

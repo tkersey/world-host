@@ -243,35 +243,35 @@ export class EffectJournal {
     const record = this.#assertRecordInScope(effectRecord);
     const manifest = driver.manifest();
     assertDriverCanRecover(manifest, record);
-    const recordWithRequestBytes = await this.#recordWithRequestBytes(record);
+    let recordWithRequestBytes = await this.#recordWithRequestBytes(record);
     await assertRecoveredRequestWithinLimits(recordWithRequestBytes, manifest, this.policy);
-    await assertRecoveredEffectIdentityMatchesManifest(recordWithRequestBytes, manifest);
+    recordWithRequestBytes = await this.#recordWithRecoveredEffectIdentity(recordWithRequestBytes, manifest);
     const reused = await this.#resolutionFromRecord(recordWithRequestBytes);
     if (reused) {
-      assertResolutionAccepted(reused.resolutionInputBytes, record, manifest, this.policy);
+      assertResolutionAccepted(reused.resolutionInputBytes, recordWithRequestBytes, manifest, this.policy);
       return reused;
     }
 
-    if (record.driverRecoveryClass === EffectRecoveryClass.bestEffort) {
+    if (recordWithRequestBytes.driverRecoveryClass === EffectRecoveryClass.bestEffort) {
       const intervention = await this.#put({
-        ...record,
+        ...recordWithRequestBytes,
         state: EffectState.operatorInterventionRequired,
-        diagnostics: { ...record.diagnostics, recoveryRequired: 'best_effort_unresolved' },
+        diagnostics: { ...recordWithRequestBytes.diagnostics, recoveryRequired: 'best_effort_unresolved' },
       });
       return { record: intervention, resolutionInputBytes: null, reused: false, operatorInterventionRequired: true };
     }
 
     assertManifestResponseWithinPolicy(manifest, this.policy);
-    if (typeof driver.recover === 'function' || canSafelyReResolve(record.driverRecoveryClass)) {
+    if (typeof driver.recover === 'function' || canSafelyReResolve(recordWithRequestBytes.driverRecoveryClass)) {
       const recoveryResult = typeof driver.recover === 'function'
         ? await driver.recover(context, recordWithRequestBytes)
         : await driver.resolve(context, recordWithRequestBytes);
       if (recoveryResult?.operatorInterventionRequired === true) {
         const intervention = await this.#put({
-          ...record,
+          ...recordWithRequestBytes,
           state: EffectState.operatorInterventionRequired,
           diagnostics: {
-            ...record.diagnostics,
+            ...recordWithRequestBytes.diagnostics,
             ...recoveryResult.diagnostics,
             recoveryRequired: recoveryResult.recoveryRequired ?? 'operator_required',
           },
@@ -280,22 +280,22 @@ export class EffectJournal {
       }
       const recovered = normalizeDriverResolution(recoveryResult);
       try {
-        assertResolutionAccepted(recovered.resolutionInputBytes, record, manifest, this.policy);
+        assertResolutionAccepted(recovered.resolutionInputBytes, recordWithRequestBytes, manifest, this.policy);
         assertDriverCarriedBytesAccepted(recovered, manifest, this.policy);
       } catch (error) {
-        const failureState = invalidResolutionFailureState(record.driverRecoveryClass);
+        const failureState = invalidResolutionFailureState(recordWithRequestBytes.driverRecoveryClass);
         await this.#put({
-          ...record,
+          ...recordWithRequestBytes,
           state: failureState,
           diagnostics: {
-            ...record.diagnostics,
+            ...recordWithRequestBytes.diagnostics,
             error: error.message,
             ...resolutionFailureDiagnostics(failureState),
           },
         });
         throw error;
       }
-      return await this.#recordRecoveredResolution(record, recovered);
+      return await this.#recordRecoveredResolution(recordWithRequestBytes, recovered);
     }
 
     fail('ERR_EFFECT_RECOVERY_UNAVAILABLE', 'driver does not expose recovery for unresolved effect');
@@ -379,35 +379,44 @@ export class EffectJournal {
   }
 
   async #reuseOrConflict(existing, prepared) {
-    assertEffectRecord(existing);
-    if (effectIdentityChecksum(existing) !== prepared.requestIdentityChecksum) {
-      fail('ERR_EFFECT_IDEMPOTENCY_CONFLICT', 'same full idempotency key used with different request bytes', {
-        runId: this.runId,
-        idempotencyKeyWorldFingerprint: existing.idempotencyKeyWorldFingerprint,
-      });
+    let current = assertEffectRecord(existing);
+    const currentIdentityChecksum = effectIdentityChecksum(current);
+    if (currentIdentityChecksum !== prepared.requestIdentityChecksum) {
+      if (rawRequestIdentityCanUpgrade(current, prepared)) {
+        current = await this.#put({
+          ...current,
+          requestIdentityChecksum: prepared.requestIdentityChecksum,
+          diagnostics: { ...current.diagnostics, requestIdentityCanonicalizedFrom: currentIdentityChecksum },
+        });
+      } else {
+        fail('ERR_EFFECT_IDEMPOTENCY_CONFLICT', 'same full idempotency key used with different request bytes', {
+          runId: this.runId,
+          idempotencyKeyWorldFingerprint: current.idempotencyKeyWorldFingerprint,
+        });
+      }
     }
-    if (existing.hostRequestFingerprint !== prepared.hostRequestFingerprint) {
+    if (current.hostRequestFingerprint !== prepared.hostRequestFingerprint) {
       fail('ERR_EFFECT_IDEMPOTENCY_CONFLICT', 'same full idempotency key used with different host request identity', {
         runId: this.runId,
-        idempotencyKeyWorldFingerprint: existing.idempotencyKeyWorldFingerprint,
+        idempotencyKeyWorldFingerprint: current.idempotencyKeyWorldFingerprint,
       });
     }
     if (
-      existing.parentTurnClosureFingerprint !== this.parentTurnClosureFingerprint &&
+      current.parentTurnClosureFingerprint !== this.parentTurnClosureFingerprint &&
       (
-        existing.state === EffectState.observed ||
-        existing.state === EffectState.running ||
-        (TERMINAL_WITH_OUTCOME.has(existing.state) && existing.resolutionInputRef)
+        current.state === EffectState.observed ||
+        current.state === EffectState.running ||
+        (TERMINAL_WITH_OUTCOME.has(current.state) && current.resolutionInputRef)
       )
     ) {
       return await this.#put({
-        ...existing,
+        ...current,
         parentTurnClosureFingerprint: this.parentTurnClosureFingerprint,
-        state: existing.state === EffectState.observed || existing.state === EffectState.running ? existing.state : EffectState.resolved,
-        diagnostics: { ...existing.diagnostics, parentReboundFrom: existing.parentTurnClosureFingerprint },
+        state: current.state === EffectState.observed || current.state === EffectState.running ? current.state : EffectState.resolved,
+        diagnostics: { ...current.diagnostics, parentReboundFrom: current.parentTurnClosureFingerprint },
       });
     }
-    return existing;
+    return current;
   }
 
   async #branchLocalReusableRecord(prepared, options = {}) {
@@ -416,23 +425,32 @@ export class EffectJournal {
     for (const record of await this.list()) {
       assertEffectRecord(record);
       if (stableJson(record.idempotencyKey) !== idempotencyKeyJson) continue;
+      let candidate = record;
       if (effectIdentityChecksum(record) !== prepared.requestIdentityChecksum) {
-        fail('ERR_EFFECT_IDEMPOTENCY_CONFLICT', 'same full idempotency key used with different request bytes', {
-          runId: this.runId,
-          idempotencyKeyWorldFingerprint: record.idempotencyKeyWorldFingerprint,
-        });
+        if (rawRequestIdentityCanUpgrade(record, prepared)) {
+          candidate = {
+            ...record,
+            requestIdentityChecksum: prepared.requestIdentityChecksum,
+            diagnostics: { ...record.diagnostics, requestIdentityCanonicalizedFrom: effectIdentityChecksum(record) },
+          };
+        } else {
+          fail('ERR_EFFECT_IDEMPOTENCY_CONFLICT', 'same full idempotency key used with different request bytes', {
+            runId: this.runId,
+            idempotencyKeyWorldFingerprint: record.idempotencyKeyWorldFingerprint,
+          });
+        }
       }
-      if (record.hostRequestFingerprint !== prepared.hostRequestFingerprint) {
+      if (candidate.hostRequestFingerprint !== prepared.hostRequestFingerprint) {
         fail('ERR_EFFECT_IDEMPOTENCY_CONFLICT', 'same full idempotency key used with different host request identity', {
           runId: this.runId,
-          idempotencyKeyWorldFingerprint: record.idempotencyKeyWorldFingerprint,
+          idempotencyKeyWorldFingerprint: candidate.idempotencyKeyWorldFingerprint,
         });
       }
-      const hasOutcome = TERMINAL_WITH_OUTCOME.has(record.state) && record.resolutionInputRef;
+      const hasOutcome = TERMINAL_WITH_OUTCOME.has(candidate.state) && candidate.resolutionInputRef;
       if (hasOutcome && (reusable === null || reusable.state === EffectState.running)) {
-        reusable = record;
-      } else if (!options.outcomesOnly && reusable === null && record.state === EffectState.running) {
-        reusable = record;
+        reusable = candidate;
+      } else if (!options.outcomesOnly && reusable === null && candidate.state === EffectState.running) {
+        reusable = candidate;
       }
     }
     if (reusable) {
@@ -473,7 +491,7 @@ export class EffectJournal {
   }
 
   async #put(record) {
-    return await this.store.putEffectRecord(this.#assertRecordInScope(record));
+    return await this.store.putEffectRecord(createEffectRecord(this.#assertRecordInScope(record)));
   }
 
   #assertRecordInScope(record) {
@@ -498,6 +516,34 @@ export class EffectJournal {
       : withRequestBytes;
   }
 
+  async #recordWithRecoveredEffectIdentity(record, manifest) {
+    const recoveredHostRequest = record.effectIdentityBytes === undefined
+      ? journaledHostRequest(record, manifest)
+      : record;
+    const effectIdentityBytes = recoveredHostRequest.effectIdentityBytes === undefined
+      ? record.requestBytes
+      : assertBytes(recoveredHostRequest.effectIdentityBytes, 'effectIdentityBytes');
+    const requestIdentityChecksum = `sha256:${await sha256Hex(effectIdentityBytes)}`;
+    const currentIdentityChecksum = effectIdentityChecksum(record);
+    if (requestIdentityChecksum === currentIdentityChecksum) return record;
+    if (rawRequestIdentityCanUpgrade(record, {
+      hostRequestFingerprint: record.hostRequestFingerprint,
+      requestBytesChecksum: record.requestBytesChecksum,
+      requestIdentityChecksum,
+      rawRequestIdentityUpgradeAllowed: recoveredHostRequest.effectIdentityCompatibility === 'raw-http-route',
+    })) {
+      const upgraded = await this.#put(createEffectRecord({
+        ...record,
+        requestIdentityChecksum,
+        diagnostics: { ...record.diagnostics, requestIdentityCanonicalizedFrom: currentIdentityChecksum },
+      }));
+      return { ...upgraded, requestBytes: record.requestBytes, effectIdentityBytes: record.effectIdentityBytes };
+    }
+    fail('ERR_EFFECT_IDEMPOTENCY_CONFLICT', 'recovery driver rendered a different effect identity', {
+      idempotencyKeyWorldFingerprint: record.idempotencyKeyWorldFingerprint,
+    });
+  }
+
   async #recordRecoveredResolution(record, recovered) {
     const resolutionInputRef = await this.store.putBlob(recovered.resolutionInputBytes);
     const hostClaimRef = recovered.hostClaimBytes ? await this.store.putBlob(recovered.hostClaimBytes) : record.hostClaimRef;
@@ -515,7 +561,9 @@ export class EffectJournal {
 
 export function journaledHostRequest(hostRequest, manifest) {
   const endpointSource = manifest?.diagnostics?.endpointSource;
-  if (endpointSource !== 'config' && endpointSource !== 'request-or-config') return hostRequest;
+  if (endpointSource !== 'config' && endpointSource !== 'request-or-config') {
+    return canonicalHttpEffectIdentityHostRequest(hostRequest, manifest);
+  }
   const requestRendering = manifest?.diagnostics?.requestRendering ?? null;
   let parsed = {};
   try {
@@ -530,7 +578,7 @@ export function journaledHostRequest(hostRequest, manifest) {
     shouldCanonicalizeDefaultHttpMethod(manifest, hostRequest),
   );
   if (endpointSource === 'request-or-config' && identityRequest?.url !== undefined && identityRequest.method !== undefined) {
-    return requestRendering === null && !hasModelOutputValidation(manifest?.diagnostics) ? hostRequest : {
+    return requestRendering === null && !hasModelOutputValidation(manifest?.diagnostics) && httpIdentityRequestEquivalent(parsed, identityRequest) ? hostRequest : {
       ...hostRequest,
       effectIdentityBytes: fromUtf8(stableJson(effectIdentityPayload(manifest?.diagnostics, identityRequest, null, requestRendering))),
       effectIdentitySource: 'manifest',
@@ -543,6 +591,33 @@ export function journaledHostRequest(hostRequest, manifest) {
     effectIdentityBytes: fromUtf8(stableJson(effectIdentityPayload(manifest?.diagnostics, identityRequest, configuredEndpoint, requestRendering))),
     effectIdentitySource: 'manifest',
   };
+}
+
+function canonicalHttpEffectIdentityHostRequest(hostRequest, manifest) {
+  if (!shouldCanonicalizeDefaultHttpMethod(manifest, hostRequest)) return hostRequest;
+  let parsed = {};
+  try {
+    const requestBytes = hostRequest?.requestBytes ?? fromUtf8(stableJson(hostRequest?.request ?? {}));
+    parsed = JSON.parse(new TextDecoder().decode(requestBytes));
+  } catch {
+    return hostRequest;
+  }
+  const identityRequest = canonicalHttpIdentityRequest(manifest?.diagnostics, parsed, true);
+  if (!httpIdentityRequestHasMethod(identityRequest)) return hostRequest;
+  return {
+    ...hostRequest,
+    effectIdentityBytes: fromUtf8(stableJson(effectIdentityPayload(manifest?.diagnostics, identityRequest, null, null))),
+    effectIdentitySource: 'manifest',
+    effectIdentityCompatibility: 'raw-http-route',
+  };
+}
+
+function httpIdentityRequestHasMethod(request) {
+  return request?.method !== undefined && request.method !== null;
+}
+
+function httpIdentityRequestEquivalent(left, right) {
+  return stableJson(left) === stableJson(right);
 }
 
 function configuredEffectIdentityTarget(manifest, parsed = {}) {
@@ -753,6 +828,7 @@ export async function prepareHostRequest(hostRequest) {
   if (hostRequest.shortIdempotencyKeyHash) fail('ERR_SHORT_IDEMPOTENCY_KEY_FORBIDDEN');
   const requestBytesChecksum = `sha256:${await sha256Hex(requestBytes)}`;
   const requestIdentityChecksum = `sha256:${await sha256Hex(effectIdentityBytes)}`;
+  const rawRequestIdentityUpgradeAllowed = hostRequest.effectIdentityCompatibility === 'raw-http-route';
   const generatedHostRequestHash = await sha256Hex(fromUtf8(stableJson({
     actuatorRef: hostRequest.actuatorRef,
     descriptorFingerprint: hostRequest.descriptorFingerprint,
@@ -772,12 +848,23 @@ export async function prepareHostRequest(hostRequest) {
     effectIdentityBytes: explicitEffectIdentityBytes ? effectIdentityBytes : undefined,
     requestBytesChecksum,
     requestIdentityChecksum,
+    rawRequestIdentityUpgradeAllowed,
     hostRequestFingerprint,
   };
 }
 
 function effectIdentityChecksum(record) {
   return record.requestIdentityChecksum ?? record.requestBytesChecksum;
+}
+
+function rawRequestIdentityCanUpgrade(existing, prepared) {
+  const existingWasRawRequestIdentity = existing.requestIdentityChecksum == null ||
+    existing.requestIdentityChecksum === existing.requestBytesChecksum;
+  return existingWasRawRequestIdentity &&
+    prepared.rawRequestIdentityUpgradeAllowed === true &&
+    existing.hostRequestFingerprint === prepared.hostRequestFingerprint &&
+    existing.requestBytesChecksum === prepared.requestBytesChecksum &&
+    prepared.requestIdentityChecksum !== prepared.requestBytesChecksum;
 }
 
 function normalizePreparedHostRequest(hostRequest, prepared) {
@@ -819,21 +906,6 @@ async function assertRecoveredRequestWithinLimits(record, manifest, policy) {
   if (record.requestBytes.byteLength > manifest.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
   if (policy.maximumRequestBytes !== undefined && record.requestBytes.byteLength > policy.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
   assertHostRequestPromptWithinPolicy(record, manifest, policy);
-}
-
-async function assertRecoveredEffectIdentityMatchesManifest(record, manifest) {
-  const recoveredHostRequest = record.effectIdentityBytes === undefined
-    ? journaledHostRequest(record, manifest)
-    : record;
-  const effectIdentityBytes = recoveredHostRequest.effectIdentityBytes === undefined
-    ? record.requestBytes
-    : assertBytes(recoveredHostRequest.effectIdentityBytes, 'effectIdentityBytes');
-  const checksum = `sha256:${await sha256Hex(effectIdentityBytes)}`;
-  if (checksum !== effectIdentityChecksum(record)) {
-    fail('ERR_EFFECT_IDEMPOTENCY_CONFLICT', 'recovery driver rendered a different effect identity', {
-      idempotencyKeyWorldFingerprint: record.idempotencyKeyWorldFingerprint,
-    });
-  }
 }
 
 function assertManifestResponseWithinPolicy(manifest, policy) {

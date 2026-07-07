@@ -158,6 +158,7 @@ export class GenericHttpJsonModelDriver {
     const manifest = this.manifest();
     assertModelDryRunPolicyAllows(context, manifest, hostRequest);
     const prompt = parseDecisionPrompt(hostRequest.requestBytes);
+    this.http.dryRun(transportContext(context), transportHostRequest(hostRequest));
     const target = modelPolicyTarget(hostRequest, manifest);
     return new DryRunReport({
       wouldInvoke: true,
@@ -166,6 +167,8 @@ export class GenericHttpJsonModelDriver {
   }
 
   shadow(context, hostRequest, recordedResolution) {
+    parseDecisionPrompt(hostRequest.requestBytes);
+    this.http.dryRun(transportContext(context), transportHostRequest(hostRequest));
     return new ShadowReport({
       liveInvoked: false,
       schemaAccepted: Boolean(recordedResolution),

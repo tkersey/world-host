@@ -141,14 +141,25 @@ export function preflightCapabilities({
         }
         blockers.push(...structuralBlockers);
         coveredRequests.push({ actuatorRef: request.actuatorRef, descriptorFingerprint: request.descriptorFingerprint, driverId: structuralRoute.driverId });
-      } else if (manifests.some((manifest) => driverMatchesExceptResponseStatus(manifest, request))) {
-        if (policy.allowPartialEffectBatch === true) {
-          unresolvedPendingRequestRoutes.push(unresolvedPendingRequestRoute(null, request, ['ERR_RESPONSE_STATUS_NOT_SUPPORTED']));
-          continue;
-        }
-        blockers.push('ERR_RESPONSE_STATUS_NOT_SUPPORTED');
       } else {
-        blockers.push(`pending-request-uncovered:${request.hostRequestFingerprint ?? request.actuatorRef}`);
+        const oversizedStructuralRoute = findDriverManifestForOversizedRequest(manifests, request);
+        if (oversizedStructuralRoute) {
+          if (policy.allowPartialEffectBatch === true) {
+            coveredRequests.push({ actuatorRef: request.actuatorRef, descriptorFingerprint: request.descriptorFingerprint, driverId: oversizedStructuralRoute.driverId });
+            unresolvedPendingRequestRoutes.push(unresolvedPendingRequestRoute(oversizedStructuralRoute, request, ['ERR_HOST_REQUEST_TOO_LARGE']));
+            continue;
+          }
+          blockers.push('ERR_HOST_REQUEST_TOO_LARGE');
+          coveredRequests.push({ actuatorRef: request.actuatorRef, descriptorFingerprint: request.descriptorFingerprint, driverId: oversizedStructuralRoute.driverId });
+        } else if (manifests.some((manifest) => driverMatchesExceptResponseStatus(manifest, request))) {
+          if (policy.allowPartialEffectBatch === true) {
+            unresolvedPendingRequestRoutes.push(unresolvedPendingRequestRoute(null, request, ['ERR_RESPONSE_STATUS_NOT_SUPPORTED']));
+            continue;
+          }
+          blockers.push('ERR_RESPONSE_STATUS_NOT_SUPPORTED');
+        } else {
+          blockers.push(`pending-request-uncovered:${request.hostRequestFingerprint ?? request.actuatorRef}`);
+        }
       }
       continue;
     }
@@ -255,6 +266,7 @@ export function preflightCapabilities({
       actuatorRef: request.actuatorRef,
       descriptorFingerprint: request.descriptorFingerprint,
       ...(request.hostRequestFingerprint == null ? {} : { hostRequestFingerprint: request.hostRequestFingerprint }),
+      ...(Number.isSafeInteger(request.pendingRequestIndex) ? { pendingRequestIndex: request.pendingRequestIndex } : {}),
       driverId: manifest.driverId,
       driverIndex: manifest.driverIndex,
     })),
@@ -269,6 +281,7 @@ function sizeLimitBlocker(item) {
     item === 'request-limit-exceeds-policy' ||
     item === 'prompt-limit-exceeds-policy' ||
     item === 'response-limit-exceeds-policy' ||
+    item === 'ERR_HOST_REQUEST_TOO_LARGE' ||
     item === 'ERR_CAPABILITY_REUSABLE_EFFECT_RESPONSE_TOO_LARGE';
 }
 
@@ -324,15 +337,11 @@ function hasReusableEffectOutcome(
     record?.idempotencyKey?.format === 'world-idempotency-key-bytes.hex' &&
     record.idempotencyKey.bytesHex === identity.idempotencyKeyBytesHex
   ));
-  if (sameKeyRecords.some((record) => record.hostRequestFingerprint !== request.hostRequestFingerprint ||
-    (record.requestIdentityChecksum ?? record.requestBytesChecksum) !== identity.requestIdentityChecksum)) {
+  if (sameKeyRecords.some((record) => !reusableRecordIdentityMatches(record, request, identity))) {
     addUniqueBlocker(nonRerunnableReusableEffectBlockers, 'ERR_EFFECT_IDEMPOTENCY_CONFLICT');
     return false;
   }
-  const matchingRecords = sameKeyRecords.filter((record) => (
-    record.hostRequestFingerprint === request.hostRequestFingerprint &&
-    (record.requestIdentityChecksum ?? record.requestBytesChecksum) === identity.requestIdentityChecksum
-  ));
+  const matchingRecords = sameKeyRecords.filter((record) => reusableRecordIdentityMatches(record, request, identity));
   const orderedRecords = currentBranchId
     ? [
         ...matchingRecords.filter((record) => record?.branchId === currentBranchId),
@@ -551,21 +560,43 @@ function reusableRequestIdentity(request, route) {
   try {
     const idempotencyKeyBytes = assertBytes(request.idempotencyKeyBytes, 'idempotencyKeyBytes');
     const requestBytes = assertBytes(request.requestBytes, 'requestBytes');
+    const requestBytesChecksum = `sha256:${createHash('sha256').update(requestBytes).digest('hex')}`;
+    const routeIdentity = request.effectIdentityBytes === undefined ? routeEffectIdentity(request, route) : null;
     const effectIdentityBytes = request.effectIdentityBytes === undefined
-      ? routeEffectIdentityBytes(request, route) ?? requestBytes
+      ? routeIdentity?.bytes ?? requestBytes
       : assertBytes(request.effectIdentityBytes, 'effectIdentityBytes');
     return {
       idempotencyKeyBytesHex: toHex(idempotencyKeyBytes),
+      requestBytesChecksum,
       requestIdentityChecksum: `sha256:${createHash('sha256').update(effectIdentityBytes).digest('hex')}`,
+      rawRequestIdentityUpgradeAllowed: routeIdentity?.rawRequestIdentityUpgradeAllowed === true,
     };
   } catch {
     return null;
   }
 }
 
-function routeEffectIdentityBytes(request, route) {
+function reusableRecordIdentityMatches(record, request, identity) {
+  if (record.hostRequestFingerprint !== request.hostRequestFingerprint) return false;
+  const recordIdentityChecksum = record.requestIdentityChecksum ?? record.requestBytesChecksum;
+  if (recordIdentityChecksum === identity.requestIdentityChecksum) return true;
+  return rawReusableIdentityCanUpgrade(record, identity);
+}
+
+function rawReusableIdentityCanUpgrade(record, identity) {
+  const recordWasRawRequestIdentity = record.requestIdentityChecksum == null ||
+    record.requestIdentityChecksum === record.requestBytesChecksum;
+  return recordWasRawRequestIdentity &&
+    identity.rawRequestIdentityUpgradeAllowed === true &&
+    record.requestBytesChecksum === identity.requestBytesChecksum &&
+    identity.requestIdentityChecksum !== identity.requestBytesChecksum;
+}
+
+function routeEffectIdentity(request, route) {
   const endpointSource = route?.diagnostics?.endpointSource;
-  if (endpointSource !== 'config' && endpointSource !== 'request-or-config') return null;
+  if (endpointSource !== 'config' && endpointSource !== 'request-or-config') {
+    return rawHttpRouteEffectIdentity(request, route);
+  }
   const requestRendering = route?.diagnostics?.requestRendering ?? null;
   let parsed = {};
   try {
@@ -580,13 +611,44 @@ function routeEffectIdentityBytes(request, route) {
     shouldCanonicalizeDefaultHttpMethod(route, request),
   );
   if (endpointSource === 'request-or-config' && identityRequest?.url !== undefined && identityRequest.method !== undefined) {
-    return requestRendering === null && !hasModelOutputValidation(route?.diagnostics)
+    return requestRendering === null && !hasModelOutputValidation(route?.diagnostics) && httpIdentityRequestEquivalent(parsed, identityRequest)
       ? null
-      : fromUtf8(stableJson(effectIdentityPayload(route?.diagnostics, identityRequest, null, requestRendering)));
+      : {
+          bytes: fromUtf8(stableJson(effectIdentityPayload(route?.diagnostics, identityRequest, null, requestRendering))),
+          rawRequestIdentityUpgradeAllowed: false,
+        };
   }
   const configuredEndpoint = configuredEffectIdentityTargetForRoute(route, identityRequest);
   if (!configuredEndpoint && requestRendering === null && !hasModelOutputValidation(route?.diagnostics)) return null;
-  return fromUtf8(stableJson(effectIdentityPayload(route?.diagnostics, identityRequest, configuredEndpoint, requestRendering)));
+  return {
+    bytes: fromUtf8(stableJson(effectIdentityPayload(route?.diagnostics, identityRequest, configuredEndpoint, requestRendering))),
+    rawRequestIdentityUpgradeAllowed: false,
+  };
+}
+
+function rawHttpRouteEffectIdentity(request, route) {
+  if (!shouldCanonicalizeDefaultHttpMethod(route, request)) return null;
+  let parsed = {};
+  try {
+    const requestBytes = assertBytes(request.requestBytes, 'requestBytes');
+    parsed = JSON.parse(new TextDecoder().decode(requestBytes));
+  } catch {
+    return null;
+  }
+  const identityRequest = canonicalHttpIdentityRequest(route?.diagnostics, parsed, true);
+  if (!httpIdentityRequestHasMethod(identityRequest)) return null;
+  return {
+    bytes: fromUtf8(stableJson(effectIdentityPayload(route?.diagnostics, identityRequest, null, null))),
+    rawRequestIdentityUpgradeAllowed: true,
+  };
+}
+
+function httpIdentityRequestHasMethod(request) {
+  return request?.method !== undefined && request.method !== null;
+}
+
+function httpIdentityRequestEquivalent(left, right) {
+  return stableJson(left) === stableJson(right);
 }
 
 function configuredEffectIdentityTargetForRoute(route, parsed = {}) {
@@ -719,7 +781,7 @@ function policyBlockers(route, request, policy) {
   const promptByteLength = requestPolicyPromptByteLength(route, request);
   if (request && policy.maximumPromptBytes !== undefined && promptByteLength > policy.maximumPromptBytes) blockers.push('prompt-limit-exceeds-policy');
   if (policy.maximumResponseBytes !== undefined && route.maximumResponseBytes > policy.maximumResponseBytes) blockers.push('response-limit-exceeds-policy');
-  if (policy.allowPartialEffectBatch === true && request && routeRequiresApproval(route, request, policy)) blockers.push('ERR_CAPABILITY_APPROVAL_REQUIRED');
+  if (request && routeRequiresApproval(route, request, policy)) blockers.push('ERR_CAPABILITY_APPROVAL_REQUIRED');
   const allowedFileRoots = policy.allowedFileRoots ?? new Set();
   if (isFileRoute(route, request)) {
     if (!allowedFileRoots.size) blockers.push('file-root-allowlist-required');
@@ -839,6 +901,19 @@ export function findDriverManifestForRequest(manifests, request, policy = null, 
   return selectPreferredAuthorityManifest(findDriverManifestsForRequest(manifests, request, policy), preferredAuthorityLabels);
 }
 
+function findDriverManifestForOversizedRequest(manifests, request, preferredAuthorityLabels = []) {
+  return selectPreferredAuthorityManifest(manifests.filter((manifest) =>
+    driverMatchesExceptRequestSize(manifest, request)), preferredAuthorityLabels);
+}
+
+function driverMatchesExceptRequestSize(manifest, request) {
+  return manifest.supportedActuatorRefs.includes(request.actuatorRef) &&
+    manifest.supportedDescriptorFingerprints.includes(request.descriptorFingerprint) &&
+    manifest.supportedActuationClasses.includes(request.actuationClass) &&
+    (!request.responseSchema || manifest.supportedResponseStatuses.includes(request.responseSchema.status)) &&
+    request.requestBytes?.byteLength > manifest.maximumRequestBytes;
+}
+
 function findDriverManifestsForRequest(manifests, request, policy = null) {
   const matches = [];
   for (const manifest of manifests) {
@@ -897,6 +972,7 @@ function unresolvedPendingRequestRoute(route, request, blockers) {
     actuatorRef: request.actuatorRef,
     descriptorFingerprint: request.descriptorFingerprint,
     hostRequestFingerprint: request.hostRequestFingerprint ?? null,
+    ...(Number.isSafeInteger(request.pendingRequestIndex) ? { pendingRequestIndex: request.pendingRequestIndex } : {}),
     driverId: route?.driverId ?? null,
     driverIndex: route?.driverIndex ?? null,
     blockers: [...blockers],
@@ -950,9 +1026,65 @@ function requestOriginForRoute(request, route) {
     const value = JSON.parse(text);
     if (fixedConfiguredEndpointRoute(route)) return configuredRouteOrigin(route);
     if (value.url === undefined && configuredEndpointRoute(route)) return configuredRouteOrigin(route);
-    return new URL(value.url).origin;
+    return validatedRequestUrlOrigin(value.url);
   } catch {
     return null;
+  }
+}
+
+function validatedRequestUrlOrigin(value) {
+  const parsed = new URL(value);
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+  if (parsed.username || parsed.password) return null;
+  if (credentialUrlPathOrFragment(parsed) || credentialUrlQuery(parsed)) return null;
+  return parsed.origin;
+}
+
+function credentialUrlPathOrFragment(url) {
+  const pathname = decodeUrlComponent(url.pathname);
+  const hash = decodeUrlComponent(url.hash);
+  if (credentialQueryValue(pathname) || credentialQueryValue(hash) || credentialAssignmentText(pathname) || credentialAssignmentText(hash)) {
+    return true;
+  }
+  const pathSegments = pathname.split('/').filter(Boolean);
+  for (let index = 0; index < pathSegments.length - 1; index += 1) {
+    if (credentialPathKey(pathSegments[index]) && !credentialUrlSentinel(pathSegments[index + 1])) return true;
+  }
+  return false;
+}
+
+function credentialUrlQuery(url) {
+  for (const [key, value] of url.searchParams) {
+    if (credentialQueryKey(key) || credentialQueryValue(value) || credentialAssignmentText(value)) return true;
+  }
+  return false;
+}
+
+function credentialQueryKey(value) {
+  return /credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key/i.test(value);
+}
+
+function credentialQueryValue(value) {
+  return /\b(?:bearer|basic)\s+\S+/i.test(value) || /sk-[A-Za-z0-9_-]{8,}/.test(value);
+}
+
+function credentialAssignmentText(value) {
+  return /(?:^|[\/#?&;,\s{])(?:credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key)\s*[:=]\s*["']?[A-Za-z0-9._~+/-]{8,}={0,2}/i.test(value);
+}
+
+function credentialPathKey(value) {
+  return /^(?:credentials?|authorization|bearer|tokens?|secrets?|password|(?:api|access|private)[_-]?keys?)$/i.test(value);
+}
+
+function credentialUrlSentinel(value) {
+  return /^(?:redacted|opaque|required|none|null|example(?:[-_].*)?|fixture(?:[-_].*)?|no-(?:credentials?|secrets?|tokens?))$/i.test(value);
+}
+
+function decodeUrlComponent(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
   }
 }
 

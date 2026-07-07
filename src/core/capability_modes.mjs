@@ -68,7 +68,9 @@ export async function runCapabilityMode({
   if (mode === CapabilityExecutionMode.approval) {
     assertManifestCoversHostRequest(manifest, hostRequest);
     assertLocalCapabilityPolicyAllows(manifest, hostRequest, livePolicy, 'approval');
-    const proposed = await driver.dryRun({ ...context, policy: livePolicy }, hostRequest);
+    const proposalPolicy = createCapabilityPolicy(policy);
+    const approvedPolicy = createCapabilityPolicy(policy);
+    const proposed = await driver.dryRun({ ...context, policy: proposalPolicy }, hostRequest);
     const decision = await approvalDecision(approval, { manifest, hostRequest, proposed });
     if (decision.approved !== true) return { mode, submittedToWorld: false, approved: false, proposed };
     if (isEffectFreeFixture(manifest) && !journalOptions) {
@@ -76,13 +78,13 @@ export async function runCapabilityMode({
       assertCapabilityPreflightAccepted(await driver.preflight(context, hostRequest));
       const resolved = await driver.resolve(context, hostRequest);
       assertCapabilityResolutionBoundary(resolved);
-      assertResolutionAccepted(resolved.resolutionInputBytes, hostRequest, manifest, livePolicy);
+      assertResolutionAccepted(resolved.resolutionInputBytes, hostRequest, manifest, approvedPolicy);
       return { ...resolved, mode, submittedToWorld: true, approved: true, proposed };
     }
     assertCapabilityPolicyAllows({
       manifest,
       hostRequest: networkPolicyHostRequest(hostRequest, manifest),
-      policy: livePolicy,
+      policy: approvedPolicy,
       mode: 'live',
       action: { approved: true },
       enforceNetworkTarget: shouldEnforceNetworkTarget(hostRequest, manifest),
@@ -90,15 +92,15 @@ export async function runCapabilityMode({
       checkLiveModelBudget: false,
     });
     if (!journalOptions) fail('ERR_CAPABILITY_APPROVAL_JOURNAL_REQUIRED', 'approval mode live effects require EffectJournal options');
-    const journal = journalOptions instanceof EffectJournal ? journalOptions : new EffectJournal({ ...journalOptions, policy: livePolicy });
-    const approvedContext = liveContext(context, livePolicy, { approved: true });
+    const journal = journalOptions instanceof EffectJournal ? journalOptions : new EffectJournal({ ...journalOptions, policy: approvedPolicy });
+    const approvedContext = liveContext(context, approvedPolicy, { approved: true });
     const journalHostRequest = journaledHostRequest(hostRequest, manifest);
     const resolved = await journal.resolve(approvedContext, journalHostRequest, driver, {
       beforeInvoke: async (preflightContext, preflightHostRequest) => {
         assertCapabilityPolicyAllows({
           manifest,
           hostRequest: networkPolicyHostRequest(preflightHostRequest, manifest),
-          policy: livePolicy,
+          policy: approvedPolicy,
           mode: 'live',
           action: { approved: true },
           enforceNetworkTarget: shouldEnforceNetworkTarget(preflightHostRequest, manifest),
@@ -224,7 +226,7 @@ export function networkPolicyHostRequest(hostRequest, manifest) {
     if (endpointSource === 'config' || (endpointSource === 'request-or-config' && parsed?.url === undefined)) {
       return configuredNetworkPolicyHostRequest(hostRequest, manifest, parsed);
     }
-    const policyRequestBytes = hostRequest.policyRequestBytes ?? httpPolicyRequestBytes(parsed, manifest);
+    const policyRequestBytes = hostRequest.policyRequestBytes ?? requestPolicyBytes(hostRequest, parsed, manifest);
     if (parsed?.url === undefined) return hostRequest;
     if (parsed.method !== undefined) return { ...hostRequest, policyRequestBytes };
     const methods = Array.isArray(manifest?.diagnostics?.methods) ? manifest.diagnostics.methods : [];
@@ -245,15 +247,37 @@ function configuredNetworkPolicyHostRequest(hostRequest, manifest, parsed = {}) 
   if (!url || !method) return hostRequest;
   return {
     ...hostRequest,
-    policyRequestBytes: hostRequest?.policyRequestBytes ?? httpPolicyRequestBytes(parsed, manifest),
+    policyRequestBytes: hostRequest?.policyRequestBytes ?? requestPolicyBytes(hostRequest, parsed, manifest),
     requestBytes: fromUtf8(stableJson({ url, method })),
   };
 }
 
+function requestPolicyBytes(hostRequest, parsed, manifest) {
+  if (isLiveModelCall(manifest, hostRequest) || isHumanCall(manifest, hostRequest)) return hostRequest?.requestBytes ?? new Uint8Array();
+  return httpPolicyRequestBytes(parsed, manifest);
+}
+
 function httpPolicyRequestBytes(parsed, manifest) {
+  if (bodylessHttpMethod(policyHttpMethod(parsed, manifest))) return new Uint8Array();
   if (!Object.prototype.hasOwnProperty.call(parsed ?? {}, 'body')) return new Uint8Array();
   const rendered = manifest?.driverId === 'http-json' ? JSON.stringify(parsed.body) : stableJson(parsed.body);
   return rendered === undefined ? new Uint8Array() : fromUtf8(rendered);
+}
+
+function policyHttpMethod(parsed, manifest) {
+  if (parsed?.method !== undefined) return String(parsed.method).toUpperCase();
+  const methods = Array.isArray(manifest?.diagnostics?.methods) ? manifest.diagnostics.methods : [];
+  return String(manifest?.diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : 'GET')).toUpperCase();
+}
+
+function bodylessHttpMethod(method) {
+  return method === 'GET' || method === 'HEAD';
+}
+
+function isHumanCall(manifest, hostRequest) {
+  return hostRequest?.actuationClass === 'human' ||
+    (manifest?.supportedActuationClasses ?? []).includes('human') ||
+    (manifest?.authorityLabels ?? []).some((label) => label.startsWith('human:'));
 }
 
 function assertFixtureModeAllowed(manifest, hostRequest) {
