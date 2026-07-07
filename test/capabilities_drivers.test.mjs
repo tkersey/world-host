@@ -372,6 +372,7 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.unresolvedPendingRequestRoutes[0].hostRequestFingerprint, 'world:host-request:http-credentialed');
     assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('http-origin-denied:unknown'));
     assert.equal(report.everyPendingRequestCovered, false);
+    assert.equal(report.fileNetworkAuthoritiesAllowed, false);
   });
 
   it('checks configured HTTP required actuators against any receiver-allowed method', () => {
@@ -586,7 +587,7 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
     assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('http-method-allowlist-required'));
     assert.equal(report.everyPendingRequestCovered, false);
-    assert.equal(report.fileNetworkAuthoritiesAllowed, true);
+    assert.equal(report.fileNetworkAuthoritiesAllowed, false);
   });
 
   it('leaves driver-oversized requests unresolved in partial preflight', () => {
@@ -618,6 +619,7 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.unresolvedPendingRequestRoutes[0].hostRequestFingerprint, 'world:host-request:driver-size-oversized');
     assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('ERR_HOST_REQUEST_TOO_LARGE'));
     assert.equal(report.everyPendingRequestCovered, false);
+    assert.equal(report.valueSizeLimitsSupported, false);
   });
 
   it('leaves HTTP prompt-limited requests unresolved in partial preflight', () => {
@@ -648,6 +650,7 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
     assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('prompt-limit-exceeds-policy'));
     assert.equal(report.everyPendingRequestCovered, false);
+    assert.equal(report.valueSizeLimitsSupported, false);
   });
 
   it('leaves templated generic HTTP prompt-limited requests unresolved in partial preflight', () => {
@@ -688,6 +691,7 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.unresolvedPendingRequestRoutes[0].driverId, 'generic-http-json');
     assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('prompt-limit-exceeds-policy'));
     assert.equal(report.everyPendingRequestCovered, false);
+    assert.equal(report.valueSizeLimitsSupported, false);
   });
 
   it('charges generic HTTP fallback bodies during partial preflight', () => {
@@ -719,6 +723,7 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.unresolvedPendingRequestRoutes[0].driverId, 'generic-http-json');
     assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('prompt-limit-exceeds-policy'));
     assert.equal(report.everyPendingRequestCovered, false);
+    assert.equal(report.valueSizeLimitsSupported, false);
   });
 
   it('reports HTTP prompt limits as blockers in non-partial preflight', () => {
@@ -2470,7 +2475,7 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
     assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('ERR_RESPONSE_STATUS_NOT_SUPPORTED'));
     assert.equal(report.everyPendingRequestCovered, false);
-    assert.equal(report.responseStatusesSupported, true);
+    assert.equal(report.responseStatusesSupported, false);
   });
 
   it('reports receiver byte-limit policy blockers for otherwise matching drivers', () => {

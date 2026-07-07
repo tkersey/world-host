@@ -250,16 +250,20 @@ export function preflightCapabilities({
   if (!currentHead) warnings.push('current-head-not-provided');
   const everyPendingRequestCovered = unresolvedPendingRequestRoutes.length === 0 &&
     !blockers.some((item) => item.startsWith('pending-request'));
+  const reportBlockers = [
+    ...blockers,
+    ...uniqueFlat(unresolvedPendingRequestRoutes.map((route) => route.blockers ?? [])),
+  ];
 
   return new CapabilityReport({
     executableCompatible: !blockers.some((item) => item.startsWith('required-actuator') || item.startsWith('required-authority')),
     runtimeCompatible: !blockers.some((item) => item.startsWith('runtime-') || item === 'supervision-policy-rejected'),
     everyRequiredActuatorCovered: !blockers.some((item) => item.startsWith('required-actuator') || item.startsWith('required-authority')),
     everyPendingRequestCovered,
-    responseStatusesSupported: !blockers.some(responseStatusBlocker),
-    valueSizeLimitsSupported: !blockers.some(sizeLimitBlocker),
+    responseStatusesSupported: !reportBlockers.some(responseStatusBlocker),
+    valueSizeLimitsSupported: !reportBlockers.some(sizeLimitBlocker),
     recoveryClassSufficient: !blockers.includes('ERR_BEST_EFFORT_REQUIRES_OPERATOR_OPT_IN'),
-    fileNetworkAuthoritiesAllowed: !blockers.some((item) => item.startsWith('authority-denied') || item === 'http-origin-allowlist-required' || item.startsWith('http-origin-denied') || item.startsWith('http-origin-driver-denied') || item === 'http-method-allowlist-required' || item.startsWith('http-method-denied') || item.startsWith('http-method-driver-denied') || item === 'file-root-allowlist-required' || item.startsWith('file-root-denied')),
+    fileNetworkAuthoritiesAllowed: !reportBlockers.some((item) => item.startsWith('authority-denied') || item === 'http-origin-allowlist-required' || item.startsWith('http-origin-denied') || item.startsWith('http-origin-driver-denied') || item === 'http-method-allowlist-required' || item.startsWith('http-method-denied') || item.startsWith('http-method-driver-denied') || item === 'file-root-allowlist-required' || item.startsWith('file-root-denied')),
     supervisionPolicyAccepted: !blockers.includes('supervision-policy-rejected'),
     coveredRequests,
     selectedPendingRequestRoutes: selectedPendingRequestRoutes.map(({ manifest, request }) => ({
