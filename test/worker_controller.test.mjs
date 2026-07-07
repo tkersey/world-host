@@ -3205,6 +3205,7 @@ describe('RunController and WorldWorker', () => {
       assert.equal(fetchCount, 1);
       assert.equal(result.unresolvedHostRequests.length, 1);
       assert.equal(result.unresolvedHostRequests[0].hostRequestFingerprint, 'world:host-request:0000000000000a02');
+      assert.deepEqual(result.unresolvedHostRequests[0].blockers, ['ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED']);
     } finally {
       globalThis.fetch = originalFetch;
     }

@@ -1345,15 +1345,18 @@ function prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, hostRequestM
 function bindEffectPlanToPreflightReport(plan, report, effectDrivers, policy) {
   const selectedRoutes = report.selectedPendingRequestRoutes ?? [];
   const selectedByRequest = new Map(selectedRoutes.map((route) => [preflightRouteKey(route), route]));
-  const unresolvedKeys = new Set((report.unresolvedPendingRequestRoutes ?? []).map(preflightRouteKey));
+  const unresolvedByRequest = new Map((report.unresolvedPendingRequestRoutes ?? []).map((route) => [preflightRouteKey(route), route]));
   const unresolvedHostRequests = [...plan.unresolvedHostRequests];
   const pending = [];
   for (const item of plan.pending) {
     const key = preflightRouteKey(item.hostRequest);
     const route = selectedByRequest.get(key);
     if (!route) {
-      if (unresolvedKeys.has(key)) {
-        unresolvedHostRequests.push(unresolvedHostRequestDiagnostic(item.index, item.hostRequest));
+      const unresolvedRoute = unresolvedByRequest.get(key);
+      if (unresolvedRoute) {
+        const diagnostic = unresolvedHostRequestDiagnostic(item.index, item.hostRequest);
+        if (Array.isArray(unresolvedRoute.blockers) && unresolvedRoute.blockers.length > 0) diagnostic.blockers = [...unresolvedRoute.blockers];
+        unresolvedHostRequests.push(diagnostic);
         continue;
       }
       fail('ERR_HOST_REQUEST_DRIVER_UNAVAILABLE', 'preflight report missing selected HostRequest route', unresolvedHostRequestDiagnostic(item.index, item.hostRequest));
