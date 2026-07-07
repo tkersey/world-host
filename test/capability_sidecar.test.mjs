@@ -146,6 +146,14 @@ describe('Capability sidecar transport', () => {
         }).manifest();
         assert.equal(declared.ambientSecret, null);
         assert.equal(declared.declaredSecret, 'mapped-secret');
+        assert.throws(
+          () => new CapabilitySidecar({
+            command: [process.execPath, envPath],
+            timeoutMs: 1000,
+            env: { NODE_OPTIONS: '--require=./preload.cjs' },
+          }),
+          { code: 'ERR_CAPABILITY_SIDECAR_ENV_INVALID' },
+        );
       } finally {
         if (originalAmbient === undefined) {
           delete process.env.WORLD_HOST_SIDECAR_AMBIENT_SECRET;
@@ -348,12 +356,14 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"fixture-sidecar"}}'
           timeoutMs: 1000,
         }).manifest();
         assert.equal(denoTlsFlag.driverId, 'fixture-sidecar');
-        const denoInlineConfig = await new CapabilitySidecar({
-          command: ['deno', 'run', '--config=deno.json', dotenvPath],
-          env: { PATH: root },
-          timeoutMs: 1000,
-        }).manifest();
-        assert.equal(denoInlineConfig.driverId, 'fixture-sidecar');
+        assert.throws(
+          () => new CapabilitySidecar({
+            command: ['deno', 'run', '--config=deno.json', dotenvPath],
+            env: { PATH: root },
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
         assert.throws(
           () => new CapabilitySidecar({
             command: [process.execPath, '--env-file-if-exists=missing.env', dotenvPath],
@@ -506,10 +516,16 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"fixture-sidecar"}}'
           ['deno', 'run', '--no-config', '--unsafely-ignore-certificate-errors', 'https://example.invalid/sidecar.ts', dotenvPath],
           ['deno', 'run', 'https://example.invalid/sidecar.ts'],
           ['deno', 'run', 'jsr:@example/sidecar'],
+          ['deno', 'run', '--config=deno.json', dotenvPath],
+          ['deno', 'run', '-cdeno.json', dotenvPath],
           ['deno', 'task', 'sidecar'],
           ['deno', '--no-config', 'task', 'start', './sidecar.ts'],
           ['deno', 'run', '--allow-read=.', dotenvPath],
           ['deno', 'run', '-A', dotenvPath],
+          ['python3', '-c', 'print(1)'],
+          ['python3', '-m', 'http.server'],
+          ['perl', '-e', 'print 1'],
+          ['ruby', '-e', 'puts 1'],
         ]) {
           assert.throws(
             () => new CapabilitySidecar({ command, timeoutMs: 1000 }).manifest(),

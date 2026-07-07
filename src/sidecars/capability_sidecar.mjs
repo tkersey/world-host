@@ -134,6 +134,7 @@ const NODE_ALLOWED_FLAG_ONLY_OPTIONS = new Set([
 const DENO_OPTION_VALUE_OPTIONS = new Set(['--cert', '--config', '--config-file', '--location', '-c']);
 const DENO_OPTION_INLINE_VALUE_OPTIONS = new Set([...DENO_OPTION_VALUE_OPTIONS, '--unsafely-ignore-certificate-errors']);
 const DENO_ALLOWED_FLAG_ONLY_OPTIONS = new Set(['--no-config', '--unsafely-ignore-certificate-errors']);
+const NON_JS_INLINE_EVAL_RUNTIMES = new Set(['perl', 'php', 'ruby', 'rscript', 'lua', 'luajit']);
 
 export class CapabilitySidecar {
   constructor({ command, cwd = null, timeoutMs = 5000, maximumFrameBytes = 1024 * 1024, env = {} } = {}) {
@@ -397,6 +398,7 @@ function sidecarSpawnArgv(argv, cwd = undefined, env = undefined) {
     if (bunWrapperCommand(argv, cwd, env?.PATH)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars must not run through command wrappers');
     }
+    assertSupportedNonJavaScriptRuntimeCommand(argv);
     const bunShebangArgs = bunShebangRuntimeArgs(inspectionPath);
     if (bunShebangArgs) {
       const shebangArgv = ['bun', ...bunShebangArgs, ...argv];
@@ -775,6 +777,9 @@ function assertSupportedDenoRuntimeCommand(argv) {
     if (value === 'eval') {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Deno sidecars do not support inline eval commands');
     }
+    if (denoConfigOption(value)) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Deno sidecars must use --no-config instead of caller-supplied config files');
+    }
     if (unsupportedDenoPermissionOption(value)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Deno sidecars do not support permission-granting flags');
     }
@@ -784,11 +789,9 @@ function assertSupportedDenoRuntimeCommand(argv) {
     }
     if (DENO_ALLOWED_FLAG_ONLY_OPTIONS.has(value)) continue;
     if (denoInlineOptionValue(value)) {
-      if (denoConfigOption(value)) configIsolated = true;
       continue;
     }
     if (denoOptionConsumesNext(value)) {
-      if (denoConfigOption(value)) configIsolated = true;
       index += 1;
       continue;
     }
@@ -809,6 +812,31 @@ function assertSupportedDenoRuntimeCommand(argv) {
     fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Deno sidecars do not support this runtime option before the entrypoint');
   }
   fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Deno sidecars require a local entrypoint');
+}
+
+function assertSupportedNonJavaScriptRuntimeCommand(argv) {
+  const runtime = commandBaseName(argv[0]);
+  if (!nonJavaScriptRuntimeSupportsInlineEval(runtime)) return;
+  for (let index = 1; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value === '--') return;
+    if (unsupportedNonJavaScriptRuntimeOption(runtime, value)) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar runtime commands must use path-qualified adapter entrypoints');
+    }
+    if (!value.startsWith('-')) return;
+  }
+}
+
+function nonJavaScriptRuntimeSupportsInlineEval(runtime) {
+  return /^python(?:\d+(?:\.\d+)*)?$/.test(runtime) || /^pypy(?:\d+)?$/.test(runtime) ||
+    NON_JS_INLINE_EVAL_RUNTIMES.has(runtime);
+}
+
+function unsupportedNonJavaScriptRuntimeOption(runtime, value) {
+  if (/^python(?:\d+(?:\.\d+)*)?$/.test(runtime) || /^pypy(?:\d+)?$/.test(runtime)) {
+    return value === '-c' || value.startsWith('-c') || value === '-m' || value.startsWith('-m');
+  }
+  return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=');
 }
 
 function unsupportedDenoPermissionOption(value) {
@@ -956,6 +984,7 @@ function sidecarEnv(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail('ERR_CAPABILITY_SIDECAR_ENV_INVALID');
   return Object.freeze(Object.fromEntries(Object.entries(value).map(([key, child]) => {
     if (typeof key !== 'string' || key.length === 0 || key.includes('\0')) fail('ERR_CAPABILITY_SIDECAR_ENV_INVALID');
+    if (key.toUpperCase() === 'NODE_OPTIONS') fail('ERR_CAPABILITY_SIDECAR_ENV_INVALID', 'sidecar environment must not set NODE_OPTIONS');
     if (typeof child !== 'string') fail('ERR_CAPABILITY_SIDECAR_ENV_INVALID');
     return [key, child];
   })));
