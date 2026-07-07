@@ -1047,6 +1047,7 @@ function skipRegexLiteral(text, index) {
 function unsafeHostGlobalMember(identifier, member, options = {}) {
   if (identifier === 'import.meta') return member === 'env';
   if (identifier === 'import.meta.env') return true;
+  if (HOST_NETWORK_GLOBALS.has(identifier)) return !options.allowHostNetwork;
   if (['globalThis', 'global', 'window', 'self'].includes(identifier)) {
     if (['process', 'Bun'].includes(member)) return true;
     if (['fetch', 'WebSocket', 'EventSource'].includes(member)) return !options.allowHostNetwork;

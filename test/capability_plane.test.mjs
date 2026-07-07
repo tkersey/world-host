@@ -144,7 +144,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': templateImportAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
-    const fetchCallAdapter = fromUtf8("export async function CapabilityDriver() { return await fetch.call(globalThis, 'https://example.test'); }\n");
+    const fetchCallAdapter = fromUtf8("export async function CapabilityDriver() { return await fetch.call(null, 'https://example.test'); }\n");
     const fetchCallAdapterChecksum = `sha256:${await sha256Hex(fetchCallAdapter)}`;
     await assert.rejects(
       () => assertCapabilityPackChecksums({
@@ -154,7 +154,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': fetchCallAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
-    const fetchApplyAdapter = fromUtf8("export async function CapabilityDriver() { return await fetch.apply(globalThis, ['https://example.test']); }\n");
+    const fetchApplyAdapter = fromUtf8("export async function CapabilityDriver() { return await fetch.apply(null, ['https://example.test']); }\n");
     const fetchApplyAdapterChecksum = `sha256:${await sha256Hex(fetchApplyAdapter)}`;
     await assert.rejects(
       () => assertCapabilityPackChecksums({
