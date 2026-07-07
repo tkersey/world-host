@@ -1014,6 +1014,56 @@ describe('EffectJournal', () => {
     }
   });
 
+  it('preserves non-object HTTP payloads while canonicalizing default methods', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const idempotencyKeyBytes = fromUtf8('non-object-default-method-idempotency-key');
+    const primitiveRequest = httpHostRequest({
+      idempotencyKeyBytes,
+      idempotencyKeyWorldFingerprint: 'world:key:non-object-default-method',
+      hostRequestFingerprint: undefined,
+      requestBytes: fromUtf8(JSON.stringify('ab')),
+    });
+    const numericObjectRequest = httpHostRequest({
+      idempotencyKeyBytes,
+      idempotencyKeyWorldFingerprint: 'world:key:non-object-default-method',
+      hostRequestFingerprint: undefined,
+      requestBytes: fromUtf8(JSON.stringify({ 0: 'a', 1: 'b' })),
+    });
+    const driver = new GenericHttpJsonCapabilityDriver({
+      endpointUrl: 'https://allowed.example/decide',
+      origins: ['https://allowed.example'],
+      methods: ['POST'],
+    });
+    const context = {
+      mode: 'live',
+      policy: {
+        allowLiveEffects: true,
+        allowNetworkEffects: true,
+        allowedOrigins: ['https://allowed.example'],
+        allowedMethods: ['POST'],
+      },
+    };
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    try {
+      globalThis.fetch = async () => {
+        calls += 1;
+        return new Response('{"action":{"variant":"final","text":"primitive"}}', { status: 200 });
+      };
+
+      await journal.resolve(context, primitiveRequest, driver);
+      await assert.rejects(
+        () => journal.resolve(context, numericObjectRequest, driver),
+        { code: 'ERR_EFFECT_IDEMPOTENCY_CONFLICT' },
+      );
+
+      assert.equal(calls, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('canonicalizes raw HTTP driver default methods in effect identity', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });

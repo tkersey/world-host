@@ -4799,6 +4799,31 @@ describe('Capability Plane v0.2 core contracts', () => {
         { code: 'ERR_HTTP_URL_CREDENTIALS_FORBIDDEN' },
       );
       assert.equal(credentialUrlFetchCalled, false);
+      let terminalTokenUrl = null;
+      globalThis.fetch = async (url) => {
+        terminalTokenUrl = String(url);
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const terminalTokenResult = await new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        allowEndpointFromRequest: true,
+        origins: ['https://allowed.example'],
+      }).resolve({
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      }, {
+        ...httpRequest(),
+        hostRequestFingerprint: 'world:host-request:00000000000000ae',
+        idempotencyKeyBytes: fromUtf8('http-key-terminal-token-endpoint'),
+        idempotencyKeyWorldFingerprint: 'world:key:http-terminal-token-endpoint',
+        requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/oauth/token', method: 'POST', body: { prompt: 'hi' } })),
+      });
+      assert.equal(terminalTokenUrl, 'https://allowed.example/oauth/token');
+      assert.equal(decodeResolutionInputBytes(terminalTokenResult.resolutionInputBytes).status, 0);
       await assert.rejects(
         () => new GenericHttpJsonCapabilityDriver({
           endpointUrl: 'https://allowed.example/decide',

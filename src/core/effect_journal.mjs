@@ -662,6 +662,7 @@ function shouldCanonicalizeDefaultHttpMethod(manifest, hostRequest) {
 }
 
 function canonicalHttpIdentityRequest(diagnostics, request, defaultMethodAllowed) {
+  if (!plainHttpIdentityObject(request)) return request;
   if (request?.method !== undefined) return normalizedHttpMethodRequest(request);
   if (!defaultMethodAllowed) return normalizedHttpMethodRequest(request);
   const method = defaultHttpMethodForDiagnostics(diagnostics);
@@ -674,8 +675,13 @@ function defaultHttpMethodForDiagnostics(diagnostics) {
 }
 
 function normalizedHttpMethodRequest(request) {
+  if (!plainHttpIdentityObject(request)) return request;
   if (request?.method === undefined) return request;
   return { ...request, method: normalizedHttpMethod(request.method) };
+}
+
+function plainHttpIdentityObject(request) {
+  return request !== null && typeof request === 'object' && !Array.isArray(request);
 }
 
 function normalizedHttpMethod(method) {

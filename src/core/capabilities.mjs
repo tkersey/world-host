@@ -677,6 +677,7 @@ function shouldCanonicalizeDefaultHttpMethod(route, request) {
 }
 
 function canonicalHttpIdentityRequest(diagnostics, request, defaultMethodAllowed) {
+  if (!plainHttpIdentityObject(request)) return request;
   if (request?.method !== undefined) return normalizedHttpMethodRequest(request);
   if (!defaultMethodAllowed) return normalizedHttpMethodRequest(request);
   const method = defaultHttpMethodForDiagnostics(diagnostics);
@@ -689,8 +690,13 @@ function defaultHttpMethodForDiagnostics(diagnostics) {
 }
 
 function normalizedHttpMethodRequest(request) {
+  if (!plainHttpIdentityObject(request)) return request;
   if (request?.method === undefined) return request;
   return { ...request, method: normalizedHttpMethod(request.method) };
+}
+
+function plainHttpIdentityObject(request) {
+  return request !== null && typeof request === 'object' && !Array.isArray(request);
 }
 
 function normalizedHttpMethod(method) {
@@ -1047,7 +1053,7 @@ function credentialUrlPathOrFragment(url) {
     return true;
   }
   const pathSegments = pathname.split('/').filter(Boolean);
-  for (let index = 0; index < pathSegments.length; index += 1) {
+  for (let index = 0; index < pathSegments.length - 1; index += 1) {
     if (credentialPathKey(pathSegments[index]) && !credentialUrlSentinel(pathSegments[index + 1])) return true;
   }
   return false;
