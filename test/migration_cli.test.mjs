@@ -2007,9 +2007,11 @@ describe('migration, branching, and CLI diagnostics', () => {
       await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
       const adapterBytes = fromUtf8(`
         export class CapabilityDriver {
+          constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
           manifest() {
             return {
               driverId: 'fixture-agent-model',
+              packFingerprint: this.packFingerprint,
               supportedActuatorRefs: ['fixture:agent-model'],
               supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
               supportedActuationClasses: ['model'],
@@ -2024,6 +2026,7 @@ describe('migration, branching, and CLI diagnostics', () => {
           preflight() { return { accepted: true }; }
           dryRun() { return { wouldInvoke: false }; }
           shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          resolve() { return { resolutionInputBytes: new Uint8Array() }; }
           recover() { return { operatorInterventionRequired: true }; }
         }
       `);
@@ -2048,7 +2051,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       });
 
       assert.notEqual(result.status, 0);
-      assert.match(`${result.stdout}${result.stderr}`, /ERR_ACTUATOR_DRIVER_RESOLVE_REQUIRED/);
+      assert.match(`${result.stdout}${result.stderr}`, /truncated wire bytes/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -2112,15 +2115,20 @@ describe('migration, branching, and CLI diagnostics', () => {
         ? { ...item, checksum: `sha256:${createHash('sha256').update(receiptBytes).digest('hex')}` }
         : item);
       await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-      assert.equal(await runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
-        stdout: { write() {} },
-        stderr: { write() {} },
-      }), 0);
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        /truncated wire bytes/,
+      );
       const adapterBytes = fromUtf8(`
         export class CapabilityDriver {
+          constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
           manifest() {
             return {
               driverId: 'fixture-agent-model',
+              packFingerprint: this.packFingerprint,
               supportedActuatorRefs: ['fixture:agent-model'],
               supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
               supportedActuationClasses: ['model'],

@@ -109,7 +109,7 @@ async function assertAdapterManifestMatchesPack(packManifest, artifacts, name, p
   ]) {
     assertSameManifestField(name, field, packManifest[field], driverManifest[field]);
   }
-  if (sidecar) await assertSidecarCommands(packManifest, driver, capabilityDriver, driverManifest);
+  await assertAdapterProbeCommands(packManifest, capabilityDriver, driverManifest);
 }
 
 async function sidecarManifest(sidecarDriver, packManifest) {
@@ -119,7 +119,7 @@ async function sidecarManifest(sidecarDriver, packManifest) {
   return raw.packFingerprint == null ? manifest : Object.freeze({ ...manifest, packFingerprint: raw.packFingerprint });
 }
 
-async function assertSidecarCommands(packManifest, sidecarDriver, capabilityDriver, driverManifest) {
+async function assertAdapterProbeCommands(packManifest, capabilityDriver, driverManifest) {
   const hostRequest = sidecarProbeHostRequest(driverManifest);
   const policy = sidecarProbePolicy(driverManifest, hostRequest);
   const context = { worldHostCapabilityPackAbiProbe: true, policy };
@@ -130,7 +130,7 @@ async function assertSidecarCommands(packManifest, sidecarDriver, capabilityDriv
   await capabilityDriver.dryRun(context, hostRequest);
   await capabilityDriver.shadow(context, hostRequest, { worldHostCapabilityPackAbiProbe: true });
   assertSidecarProbeResolution(
-    (await sidecarDriver.request(CapabilitySidecarCommand.resolve, { context, hostRequest })).payload,
+    await capabilityDriver.resolve(context, hostRequest),
     hostRequest,
     driverManifest,
     policy,
@@ -241,7 +241,7 @@ function sidecarProbeRequestBytes(driverManifest, actuationClass) {
   if (actuationClass === 'model') {
     return fromUtf8(stableJson({
       schema: 'boundary.Agent.DecisionPrompt.v0',
-      observation: 'world-host capability pack sidecar ABI probe',
+      observation: 'goal=fixture',
     }));
   }
   if (actuationClass === 'human') {

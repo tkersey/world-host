@@ -167,7 +167,7 @@ async function assertCapabilityPackAdapterAbi(packManifest, artifacts, packRoot)
     ? await capabilityPackSidecarManifest(driver, packManifest)
     : capabilityDriver.manifest();
   assertCapabilityPackDriverManifestMatches(packManifest, driverManifest);
-  if (sidecar) await assertCapabilityPackSidecarCommands(packManifest, driver, capabilityDriver, driverManifest);
+  await assertCapabilityPackAdapterProbe(packManifest, capabilityDriver, driverManifest);
 }
 
 async function capabilityPackSidecarManifest(sidecarDriver, packManifest) {
@@ -179,7 +179,7 @@ async function capabilityPackSidecarManifest(sidecarDriver, packManifest) {
   return raw.packFingerprint == null ? manifest : Object.freeze({ ...manifest, packFingerprint: raw.packFingerprint });
 }
 
-async function assertCapabilityPackSidecarCommands(packManifest, sidecarDriver, capabilityDriver, driverManifest) {
+async function assertCapabilityPackAdapterProbe(packManifest, capabilityDriver, driverManifest) {
   const hostRequest = capabilityPackSidecarProbeHostRequest(driverManifest);
   const policy = capabilityPackSidecarProbePolicy(driverManifest, hostRequest);
   const context = { worldHostCapabilityPackAbiProbe: true, policy };
@@ -190,7 +190,7 @@ async function assertCapabilityPackSidecarCommands(packManifest, sidecarDriver, 
   await capabilityDriver.dryRun(context, hostRequest);
   await capabilityDriver.shadow(context, hostRequest, { worldHostCapabilityPackAbiProbe: true });
   assertCapabilityPackSidecarProbeResolution(
-    (await sidecarDriver.request(CapabilitySidecarCommand.resolve, { context, hostRequest })).payload,
+    await capabilityDriver.resolve(context, hostRequest),
     hostRequest,
     driverManifest,
     policy,
@@ -303,7 +303,7 @@ function capabilityPackSidecarProbeRequestBytes(driverManifest, actuationClass) 
   if (actuationClass === 'model') {
     return fromUtf8(stableJson({
       schema: 'boundary.Agent.DecisionPrompt.v0',
-      observation: 'world-host capability pack sidecar ABI probe',
+      observation: 'goal=fixture',
     }));
   }
   if (actuationClass === 'human') {
