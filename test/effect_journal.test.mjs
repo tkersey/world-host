@@ -61,6 +61,13 @@ describe('EffectJournal', () => {
       parentTurnClosureFingerprint: 'turn:0',
       policy: { maximumRequestBytes: 4096, maximumPromptBytes: 4 },
     });
+    const limitedTarget = new EffectJournal({
+      store,
+      runId: 'run',
+      branchId: 'target',
+      parentTurnClosureFingerprint: 'turn:target',
+      policy: { maximumRequestBytes: 4096, maximumPromptBytes: 4 },
+    });
 
     await permissive.resolve({}, request, driver);
     let preflightCalled = false;
@@ -78,6 +85,15 @@ describe('EffectJournal', () => {
 
     assert.equal(preflightCalled, false);
     assert.equal(driver.calls, 1);
+
+    await assert.rejects(
+      () => limitedTarget.resolve({}, request, driver),
+      { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+    );
+
+    const records = await store.listEffectRecords('run');
+    assert.equal(records.length, 1);
+    assert.equal(records[0].branchId, 'main');
   });
 
   it('reruns safely recoverable effects when a terminal reusable outcome is invalid', async () => {

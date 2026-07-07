@@ -75,16 +75,22 @@ export class EffectJournal {
     if (existing) {
       const current = await this.#reuseOrConflict(existing, prepared);
       if (options.createIfMissing === false && reusablePlaceholderCanYieldToOutcome(current)) {
-        const reusable = await this.#branchLocalReusableRecord(prepared, { outcomesOnly: true });
+        const reusable = await this.#branchLocalReusableRecord(prepared, {
+          outcomesOnly: true,
+          beforeReuse: options.beforeBranchLocalReuse,
+        });
         if (reusable) return reusable;
       }
       return current;
     }
     if (options.createIfMissing === false) {
-      return await this.#branchLocalReusableRecord(prepared, { outcomesOnly: true });
+      return await this.#branchLocalReusableRecord(prepared, {
+        outcomesOnly: true,
+        beforeReuse: options.beforeBranchLocalReuse,
+      });
     }
 
-    const reusable = await this.#branchLocalReusableRecord(prepared);
+    const reusable = await this.#branchLocalReusableRecord(prepared, { beforeReuse: options.beforeBranchLocalReuse });
     if (reusable) return reusable;
 
     const manifest = options.manifest ? normalizeManifest(options.manifest) : null;
@@ -132,7 +138,11 @@ export class EffectJournal {
     assertDurableRecoveryAllowed(manifest.recoveryClass, this.policy);
     return await withEffectKeyLock(this.store, effectLockKey(this.runId, prepared.idempotencyKey), async () => {
       const assertPromptWithinPolicy = () => assertHostRequestPromptWithinPolicy(normalizedHostRequest, manifest, this.policy);
-      let observed = await this.#observePrepared(journalHostRequest, prepared, { manifest, createIfMissing: false });
+      let observed = await this.#observePrepared(journalHostRequest, prepared, {
+        manifest,
+        createIfMissing: false,
+        beforeBranchLocalReuse: assertPromptWithinPolicy,
+      });
       const existingOutcome = observed ? await this.#nonInvokingResolution(observed, normalizedHostRequest, manifest) : null;
       if (existingOutcome?.retryRequired) {
         observed = existingOutcome.record;
@@ -142,7 +152,12 @@ export class EffectJournal {
       }
       if (typeof options.beforeInvoke === 'function') await options.beforeInvoke(context, normalizedHostRequest);
       assertPromptWithinPolicy();
-      if (!observed) observed = await this.#observePrepared(journalHostRequest, prepared, { manifest });
+      if (!observed) {
+        observed = await this.#observePrepared(journalHostRequest, prepared, {
+          manifest,
+          beforeBranchLocalReuse: assertPromptWithinPolicy,
+        });
+      }
       const observedOutcome = await this.#nonInvokingResolution(observed, normalizedHostRequest, manifest);
       if (observedOutcome?.retryRequired) {
         observed = observedOutcome.record;
@@ -454,6 +469,7 @@ export class EffectJournal {
       }
     }
     if (reusable) {
+      if (typeof options.beforeReuse === 'function') options.beforeReuse();
       return await this.#put({
         ...reusable,
         branchId: this.branchId,
