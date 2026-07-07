@@ -2555,6 +2555,9 @@ function assertSafeSidecarCommandToken(command, index) {
   if (index === 0 && pathQualifiedJavaScriptEntrypoint(value)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'sidecar JavaScript entrypoints must use an explicit runtime command');
   }
+  if (index === 0 && pathQualifiedSidecarRuntime(value)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar runtime command must not be path-qualified: ${value}`);
+  }
   if (index === 0 && ['bunx', 'npx', 'pnpx'].includes(executable)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command executes packages outside checksum coverage: ${value}`);
   }
@@ -2665,6 +2668,10 @@ function sidecarRuntimeEvalFlag(command, index) {
   if (!evalFlag) return false;
   const entrypointIndex = sidecarEntrypointIndex(command);
   return entrypointIndex < 0 || index < entrypointIndex;
+}
+
+function pathQualifiedSidecarRuntime(value) {
+  return (value.includes('/') || value.includes('\\')) && SIDECAR_JS_RUNTIMES.has(commandBaseName(value).toLowerCase());
 }
 
 function sidecarRuntimeModuleLoaderOption(command, index) {

@@ -2463,6 +2463,18 @@ describe('Capability Plane v0.2 core contracts', () => {
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
+        adapter: { kind: 'sidecar', command: ['./bun', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: './bun', checksum: sidecarChecksum },
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+        ],
+      }, { './bun': sidecar, 'sidecar.mjs': sidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
         adapter: { kind: 'sidecar', command: ['env', 'node', '--import=evil-package', 'sidecar.mjs'] },
         docs: [],
         checksums: [{ path: 'sidecar.mjs', checksum: sidecarChecksum }],
