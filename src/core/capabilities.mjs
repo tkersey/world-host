@@ -1047,7 +1047,7 @@ function credentialUrlPathOrFragment(url) {
     return true;
   }
   const pathSegments = pathname.split('/').filter(Boolean);
-  for (let index = 0; index < pathSegments.length - 1; index += 1) {
+  for (let index = 0; index < pathSegments.length; index += 1) {
     if (credentialPathKey(pathSegments[index]) && !credentialUrlSentinel(pathSegments[index + 1])) return true;
   }
   return false;

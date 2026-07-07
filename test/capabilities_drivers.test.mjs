@@ -342,10 +342,14 @@ describe('capability preflight and reference drivers', () => {
       hostRequestFingerprint: 'world:host-request:http-credentialed',
       requestBytes: fromUtf8(stableJson({ url: 'https://user:pass@allowed.example/decide', body: { prompt: 'hi' } })),
     };
+    const terminalCredentialPathRequest = {
+      ...httpRequest('https://allowed.example/token', 'POST'),
+      hostRequestFingerprint: 'world:host-request:http-terminal-token',
+    };
     const report = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },
       currentHead: { generation: 0 },
-      pendingRequests: [allowedRequest, credentialedRequest],
+      pendingRequests: [allowedRequest, credentialedRequest, terminalCredentialPathRequest],
       drivers: [new GenericHttpJsonCapabilityDriver({
         endpointUrl: 'https://fallback.example/decide',
         allowEndpointFromRequest: true,
@@ -363,9 +367,11 @@ describe('capability preflight and reference drivers', () => {
     assert.deepEqual(report.blockers, []);
     assert.equal(report.selectedPendingRequestRoutes.length, 1);
     assert.equal(report.selectedPendingRequestRoutes[0].hostRequestFingerprint, 'world:host-request:http-allowed');
-    assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
+    assert.equal(report.unresolvedPendingRequestRoutes.length, 2);
     assert.equal(report.unresolvedPendingRequestRoutes[0].hostRequestFingerprint, 'world:host-request:http-credentialed');
     assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('http-origin-denied:unknown'));
+    assert.equal(report.unresolvedPendingRequestRoutes[1].hostRequestFingerprint, 'world:host-request:http-terminal-token');
+    assert.ok(report.unresolvedPendingRequestRoutes[1].blockers.includes('http-origin-denied:unknown'));
     assert.equal(report.everyPendingRequestCovered, false);
   });
 
