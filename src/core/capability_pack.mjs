@@ -3057,7 +3057,7 @@ function assertNoCredentialKeyMaterial(key) {
 function concreteSecretValue(value) {
   return (
     /\b(?:bearer|basic)\s+\S+/i.test(value) ||
-    /(?:^|[?&;,\s{])(?:credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key)\s*[:=]\s*\S+/i.test(value)
+    /(?:^|[?&;,\s{]|-{1,2})(?:credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key)\s*[:=]\s*\S+/i.test(value)
   );
 }
 

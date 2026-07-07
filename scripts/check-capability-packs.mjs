@@ -123,7 +123,9 @@ async function assertSidecarCommands(packManifest, sidecarDriver, capabilityDriv
   const policy = sidecarProbePolicy(driverManifest, hostRequest);
   const context = { worldHostCapabilityPackAbiProbe: true, policy };
   const preflight = await capabilityDriver.preflight(context, hostRequest);
-  if (preflight.accepted !== true) throw new Error(`ERR_CAPABILITY_PACK_ADAPTER_PREFLIGHT:${preflight.blockers.join(',')}`);
+  if (preflight.accepted !== true || preflight.blockers.length > 0) {
+    throw new Error(`ERR_CAPABILITY_PACK_ADAPTER_PREFLIGHT:${preflight.blockers.join(',')}`);
+  }
   await capabilityDriver.dryRun(context, hostRequest);
   await capabilityDriver.shadow(context, hostRequest, { worldHostCapabilityPackAbiProbe: true });
   assertSidecarProbeResolution(

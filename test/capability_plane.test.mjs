@@ -2996,6 +2996,13 @@ describe('Capability Plane v0.2 core contracts', () => {
       () => assertCapabilityManifest({ ...manifest, metadata: { 'sk-abcdefghijklmnop': true } }),
       { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
     );
+    assert.throws(
+      () => assertCapabilityManifest({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['bun', 'sidecar.mjs', '--api-key=abcdefghijklmnop'] },
+      }),
+      { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
+    );
     const credentialKeyError = captureThrown(
       () => assertCapabilityManifest({ ...manifest, metadata: { 'Bearer persisted-token-value': true } }),
     );
@@ -3493,6 +3500,34 @@ describe('Capability Plane v0.2 core contracts', () => {
       hostRequest: {
         ...httpRequest(),
         requestBytes: fromUtf8(stableJson({ url: 'https://user:pass@allowed.example/decide', method: 'POST' })),
+      },
+      policy: {
+        allowLiveEffects: true,
+        allowNetworkEffects: true,
+        allowedOrigins: ['https://allowed.example'],
+        allowedMethods: ['POST'],
+      },
+      mode: 'live',
+    }), { code: 'ERR_CAPABILITY_NETWORK_TARGET_REQUIRED' });
+    assert.throws(() => assertCapabilityPolicyAllows({
+      manifest: { ...manifest, recoveryClass: EffectRecoveryClass.idempotent },
+      hostRequest: {
+        ...httpRequest(),
+        requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/decide?api_key=abcdefghijklmnop', method: 'POST' })),
+      },
+      policy: {
+        allowLiveEffects: true,
+        allowNetworkEffects: true,
+        allowedOrigins: ['https://allowed.example'],
+        allowedMethods: ['POST'],
+      },
+      mode: 'live',
+    }), { code: 'ERR_CAPABILITY_NETWORK_TARGET_REQUIRED' });
+    assert.throws(() => assertCapabilityPolicyAllows({
+      manifest: { ...manifest, recoveryClass: EffectRecoveryClass.idempotent },
+      hostRequest: {
+        ...httpRequest(),
+        requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/token/abcdefghijklmnop', method: 'POST' })),
       },
       policy: {
         allowLiveEffects: true,

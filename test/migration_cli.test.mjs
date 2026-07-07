@@ -1695,6 +1695,25 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.notEqual(result.status, 0);
       assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_PREFLIGHT/);
 
+      const acceptedWithBlockersSidecarBytes = fromUtf8((await bytesToUtf8(preflightDeniedSidecarBytes)).replace(
+        "preflight: { accepted: false, blockers: ['probe-denied'] }",
+        "preflight: { accepted: true, blockers: ['probe-denied'] }",
+      ));
+      await writeSidecarPack(acceptedWithBlockersSidecarBytes);
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_PREFLIGHT' },
+      );
+      result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_PREFLIGHT/);
+
       const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
         targetHostRequestFingerprint: 0xabcn,
         status: 0,

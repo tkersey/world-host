@@ -183,7 +183,7 @@ async function assertCapabilityPackSidecarCommands(packManifest, sidecarDriver, 
   const policy = capabilityPackSidecarProbePolicy(driverManifest, hostRequest);
   const context = { worldHostCapabilityPackAbiProbe: true, policy };
   const preflight = await capabilityDriver.preflight(context, hostRequest);
-  if (preflight.accepted !== true) {
+  if (preflight.accepted !== true || preflight.blockers.length > 0) {
     fail('ERR_CAPABILITY_PACK_ADAPTER_PREFLIGHT', 'sidecar adapter ABI probe preflight rejected', { blockers: preflight.blockers });
   }
   await capabilityDriver.dryRun(context, hostRequest);

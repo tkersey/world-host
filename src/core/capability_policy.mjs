@@ -227,6 +227,9 @@ function assertOriginAndMethodAllowed(hostRequest, policy) {
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') fail('ERR_CAPABILITY_NETWORK_TARGET_REQUIRED', 'network target must be http(s)');
   if (url.username || url.password) fail('ERR_CAPABILITY_NETWORK_TARGET_REQUIRED', 'network target must not include credentials');
+  if (credentialUrlPathOrFragment(url) || credentialUrlQuery(url)) {
+    fail('ERR_CAPABILITY_NETWORK_TARGET_REQUIRED', 'network target must not include credentials');
+  }
   const origin = url.origin;
   if (!policy.allowedOrigins.size) fail('ERR_CAPABILITY_ORIGIN_ALLOWLIST_REQUIRED');
   if (!policy.allowedOrigins.has(origin)) fail('ERR_CAPABILITY_ORIGIN_DENIED', `origin denied: ${origin}`);
@@ -239,6 +242,55 @@ function assertOriginAndMethodAllowed(hostRequest, policy) {
 function assertNetworkAllowlistsPresent(policy) {
   if (!policy.allowedOrigins.size) fail('ERR_CAPABILITY_ORIGIN_ALLOWLIST_REQUIRED');
   if (!policy.allowedMethods.size) fail('ERR_CAPABILITY_METHOD_ALLOWLIST_REQUIRED');
+}
+
+function credentialUrlPathOrFragment(url) {
+  const pathname = decodeURIComponentSafe(url.pathname);
+  const hash = decodeURIComponentSafe(url.hash);
+  if (credentialQueryValue(pathname) || credentialQueryValue(hash) || credentialAssignmentText(pathname) || credentialAssignmentText(hash)) {
+    return true;
+  }
+  const pathSegments = pathname.split('/').filter(Boolean);
+  for (let index = 0; index < pathSegments.length; index += 1) {
+    if (credentialPathKey(pathSegments[index]) && !credentialUrlSentinel(pathSegments[index + 1])) return true;
+  }
+  return false;
+}
+
+function credentialUrlQuery(url) {
+  for (const [key, value] of url.searchParams.entries()) {
+    if (credentialQueryKey(key) || credentialQueryValue(value) || credentialAssignmentText(value)) return true;
+  }
+  return false;
+}
+
+function decodeURIComponentSafe(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function credentialQueryKey(value) {
+  return /credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key/i.test(value);
+}
+
+function credentialQueryValue(value) {
+  return /sk-[A-Za-z0-9_-]{8,}/.test(value) ||
+    /\b(?:bearer|basic)\s+[A-Za-z0-9._~+/-]{8,}={0,2}/i.test(value);
+}
+
+function credentialAssignmentText(value) {
+  return /(?:^|[\/#?&;,\s{])(?:credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key)\s*[:=]\s*["']?[A-Za-z0-9._~+/-]{8,}={0,2}/i.test(value);
+}
+
+function credentialPathKey(value) {
+  return /^(?:credentials?|authorization|bearer|tokens?|secrets?|password|(?:api|access|private)[_-]?keys?)$/i.test(value);
+}
+
+function credentialUrlSentinel(value) {
+  return /^(?:redacted|opaque|required|none|null|example(?:[-_].*)?|fixture(?:[-_].*)?|no-(?:credentials?|secrets?|tokens?))$/i.test(value);
 }
 
 function assertFileRootAllowed(manifest, hostRequest, policy) {
