@@ -1638,6 +1638,22 @@ describe('capability preflight and reference drivers', () => {
       () => missingPromptDriver.resolve(context, humanRequest),
       { code: 'ERR_HUMAN_APPROVAL_PROMPT_REQUIRED' },
     );
+    assert.throws(
+      () => missingPromptDriver.shadow(context, humanRequest, { resolutionInputBytes: fromUtf8('recorded') }),
+      { code: 'ERR_HUMAN_APPROVAL_PROMPT_REQUIRED' },
+    );
+    assert.throws(
+      () => unsupportedModeDriver.shadow(context, humanRequest, { resolutionInputBytes: fromUtf8('recorded') }),
+      { code: 'ERR_HUMAN_APPROVAL_MODE_UNSUPPORTED' },
+    );
+    assert.throws(
+      () => new HumanApprovalCapabilityDriver({ mode: 'noninteractive-deny' }).shadow(
+        context,
+        { ...humanRequest, responseSchema: { status: 'ok' } },
+        { resolutionInputBytes: fromUtf8('recorded') },
+      ),
+      { code: 'ERR_HUMAN_APPROVAL_RESPONSE_SCHEMA_UNSUPPORTED' },
+    );
   });
 
   it('binds cached model replay budget exemptions to output validation policy', () => {

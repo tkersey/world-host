@@ -56,6 +56,8 @@ export class HumanApprovalCapabilityDriver {
   }
 
   shadow(context, hostRequest, recordedResolution) {
+    this.dryRun(context, hostRequest);
+    assertFixedModeSupportsResponseSchema(this.mode, hostRequest);
     return new ShadowReport({ liveInvoked: false, schemaAccepted: Boolean(recordedResolution) });
   }
 

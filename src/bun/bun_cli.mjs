@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
+import { inspect as inspectValue } from 'node:util';
 
 import { createApplicationRecord } from '../core/application.mjs';
 import { assertDriverManifest } from '../core/actuator.mjs';
@@ -16,7 +17,7 @@ import { encodeCanonicalValueImage, fingerprintValueImage } from '../protocol/wo
 import { inspectTurnOutput, summarizeTurnClosureForRunHead } from '../protocol/world_universal_appliance_codec.mjs';
 import { carrierVersionSummary } from '../protocol/world_manifest.mjs';
 import { EffectJournal, EffectState, assertResolutionAccepted } from '../core/effect_journal.mjs';
-import { assertCapabilityResolutionBoundary, defineCapabilityDriver } from '../core/capability_driver.mjs';
+import { assertCapabilityResolutionBoundary, assertNoWorldEvidenceKeys, defineCapabilityDriver } from '../core/capability_driver.mjs';
 import { FixtureAgentModelDriver } from '../drivers/fixture_agent_model_driver.mjs';
 import { SandboxFileDriver } from '../drivers/sandbox_file_driver.mjs';
 import { CapabilitySidecar, CapabilitySidecarCommand } from '../sidecars/capability_sidecar.mjs';
@@ -30,6 +31,8 @@ const AGENT_FILE_ACTUATOR = 'world:actuator-ref:d5e4b1b427522cf2';
 const AGENT_FILE_DESCRIPTOR = 'world:descriptor:74afc8c3b2fe4c33';
 const AGENT_FILE_ACTUATION_CLASS = 'world:actuation-class:1';
 const AGENT_RUNTIME_FIXTURE_OUTPUT = 'actuate updated the fixture';
+const CAPABILITY_PACK_PROBE_SETTLE_MS = 25;
+let capabilityPackProbeGlobalLock = Promise.resolve();
 export async function runBunCli(args, io, options = {}) {
   const command = args[0] ?? 'help';
   if (command === '--version' || command === 'version') {
@@ -148,26 +151,34 @@ function pathInside(root, target) {
 }
 
 async function assertCapabilityPackAdapterAbi(packManifest, artifacts, packRoot) {
-  let driver;
-  let sidecar = false;
-  if (packManifest.adapter.kind === 'in_process') {
-    const module = await import(await capabilityPackAdapterImportUrl(packManifest, artifacts));
-    const Driver = module[packManifest.adapter.exportName];
-    if (typeof Driver !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_EXPORT');
-    driver = new Driver(capabilityPackAdapterOptions(packManifest));
-  } else if (packManifest.adapter.kind === 'sidecar') {
-    driver = new CapabilitySidecar({ command: packManifest.adapter.command, cwd: packRoot });
-    sidecar = true;
-  } else {
-    return;
-  }
-  const capabilityDriver = defineCapabilityDriver(driver);
-  if (packManifest.canRecover === true && typeof driver.recover !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_RECOVER');
-  const driverManifest = sidecar
-    ? await capabilityPackSidecarManifest(driver, packManifest)
-    : capabilityDriver.manifest();
-  assertCapabilityPackDriverManifestMatches(packManifest, driverManifest);
-  await assertCapabilityPackAdapterProbe(packManifest, capabilityDriver, driverManifest);
+  await withDeterministicCapabilityPackProbeNetwork(packManifest, null, async (probeNetwork) => {
+    let driver;
+    let sidecar = false;
+    if (packManifest.adapter.kind === 'in_process') {
+      const module = await import(await capabilityPackAdapterImportUrl(packManifest, artifacts));
+      await probeNetwork?.assertNoViolations();
+      const Driver = module[packManifest.adapter.exportName];
+      if (typeof Driver !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_EXPORT');
+      driver = new Driver(capabilityPackAdapterOptions(packManifest));
+      await probeNetwork?.assertNoViolations();
+    } else if (packManifest.adapter.kind === 'sidecar') {
+      if (externalCapabilityPackEffectProbe(packManifest, null)) {
+        fail('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED', 'network sidecar probes must not perform live external effects');
+      }
+      driver = new CapabilitySidecar({ command: packManifest.adapter.command, cwd: packRoot });
+      sidecar = true;
+    } else {
+      return;
+    }
+    const capabilityDriver = defineCapabilityDriver(driver);
+    if (packManifest.canRecover === true && typeof driver.recover !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_RECOVER');
+    const driverManifest = sidecar
+      ? await capabilityPackSidecarManifest(driver, packManifest)
+      : capabilityDriver.manifest();
+    await probeNetwork?.assertNoViolations();
+    assertCapabilityPackDriverManifestMatches(packManifest, driverManifest);
+    await assertCapabilityPackAdapterProbe(packManifest, capabilityDriver, driverManifest, { driver, sidecar, probeNetwork });
+  });
 }
 
 async function capabilityPackSidecarManifest(sidecarDriver, packManifest) {
@@ -179,29 +190,542 @@ async function capabilityPackSidecarManifest(sidecarDriver, packManifest) {
   return raw.packFingerprint == null ? manifest : Object.freeze({ ...manifest, packFingerprint: raw.packFingerprint });
 }
 
-async function assertCapabilityPackAdapterProbe(packManifest, capabilityDriver, driverManifest) {
+async function assertCapabilityPackAdapterProbe(packManifest, capabilityDriver, driverManifest, { driver, sidecar = false, probeNetwork = null } = {}) {
   const hostRequest = capabilityPackSidecarProbeHostRequest(driverManifest);
   const policy = capabilityPackSidecarProbePolicy(driverManifest, hostRequest);
   const context = { worldHostCapabilityPackAbiProbe: true, policy };
+  if (sidecar && externalCapabilityPackEffectProbe(driverManifest, hostRequest)) {
+    fail('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED', 'network sidecar probes must not perform live external effects');
+  }
+  probeNetwork?.setNetworkAllowed(networkCapabilityPackEffectProbe(driverManifest, hostRequest));
+  probeNetwork?.setPhase('preflight');
   const preflight = await capabilityDriver.preflight(context, hostRequest);
+  await probeNetwork?.assertNoViolations();
   if (preflight.accepted !== true || preflight.blockers.length > 0) {
     fail('ERR_CAPABILITY_PACK_ADAPTER_PREFLIGHT', 'sidecar adapter ABI probe preflight rejected', { blockers: preflight.blockers });
   }
+  probeNetwork?.setPhase('dryRun');
   await capabilityDriver.dryRun(context, hostRequest);
+  await probeNetwork?.assertNoViolations();
+  probeNetwork?.setPhase('shadow');
   await capabilityDriver.shadow(context, hostRequest, { worldHostCapabilityPackAbiProbe: true });
+  await probeNetwork?.assertNoViolations();
+  probeNetwork?.setPhase('resolve');
+  const resolution = driver.resolve(context, hostRequest);
+  probeNetwork?.allowReturnedPromise(resolution);
+  if (isThenable(resolution)) {
+    probeNetwork?.setPhase('resolve-await');
+  } else {
+    probeNetwork?.setPhase('resolve-returned');
+  }
+  const resolvedResolution = await resolution;
+  probeNetwork?.setPhase('resolve-returned');
   assertCapabilityPackSidecarProbeResolution(
-    await capabilityDriver.resolve(context, hostRequest),
+    resolvedResolution,
     hostRequest,
     driverManifest,
     policy,
   );
+  await probeNetwork?.assertNoViolations();
   if (packManifest.canRecover === true) {
     if (typeof capabilityDriver.recover !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_RECOVER');
-    const recovery = await capabilityDriver.recover(context, capabilityPackSidecarProbeEffectRecord(driverManifest, hostRequest));
+    probeNetwork?.setPhase('recover');
+    const recoveryResult = driver.recover(context, capabilityPackSidecarProbeEffectRecord(driverManifest, hostRequest));
+    probeNetwork?.allowReturnedPromise(recoveryResult);
+    if (isThenable(recoveryResult)) {
+      probeNetwork?.setPhase('recover-await');
+    } else {
+      probeNetwork?.setPhase('recover-returned');
+    }
+    const recovery = await recoveryResult;
+    probeNetwork?.setPhase('recover-returned');
     if (recovery?.operatorInterventionRequired !== true) {
       assertCapabilityPackSidecarProbeResolution(recovery, hostRequest, driverManifest, policy);
+    } else {
+      assertNoWorldEvidenceKeys(recovery);
+    }
+    await probeNetwork?.assertNoViolations();
+  }
+}
+
+async function withDeterministicCapabilityPackProbeNetwork(driverManifest, hostRequest, fn) {
+  if (!networkCapabilityPackEffectProbe(driverManifest, hostRequest)) {
+    return await withCapabilityPackProbeGlobalLock(fn);
+  }
+  return await withCapabilityPackProbeGlobalLock(async () => {
+  const previousGlobals = {
+    fetch: globalThis.fetch,
+    WebSocket: globalThis.WebSocket,
+    EventSource: globalThis.EventSource,
+    setTimeout: globalThis.setTimeout,
+    clearTimeout: globalThis.clearTimeout,
+    setInterval: globalThis.setInterval,
+    clearInterval: globalThis.clearInterval,
+    setImmediate: globalThis.setImmediate,
+    clearImmediate: globalThis.clearImmediate,
+    bunSleep: globalThis.Bun?.sleep,
+    promiseResolve: globalThis.Promise?.resolve,
+    queueMicrotask: globalThis.queueMicrotask,
+  };
+  const hadGlobals = {
+    fetch: Object.prototype.hasOwnProperty.call(globalThis, 'fetch'),
+    WebSocket: Object.prototype.hasOwnProperty.call(globalThis, 'WebSocket'),
+    EventSource: Object.prototype.hasOwnProperty.call(globalThis, 'EventSource'),
+    setTimeout: Object.prototype.hasOwnProperty.call(globalThis, 'setTimeout'),
+    clearTimeout: Object.prototype.hasOwnProperty.call(globalThis, 'clearTimeout'),
+    setInterval: Object.prototype.hasOwnProperty.call(globalThis, 'setInterval'),
+    clearInterval: Object.prototype.hasOwnProperty.call(globalThis, 'clearInterval'),
+    setImmediate: Object.prototype.hasOwnProperty.call(globalThis, 'setImmediate'),
+    clearImmediate: Object.prototype.hasOwnProperty.call(globalThis, 'clearImmediate'),
+    bunSleep: globalThis.Bun != null && Object.prototype.hasOwnProperty.call(globalThis.Bun, 'sleep'),
+    promiseResolve: globalThis.Promise != null && Object.prototype.hasOwnProperty.call(globalThis.Promise, 'resolve'),
+    queueMicrotask: Object.prototype.hasOwnProperty.call(globalThis, 'queueMicrotask'),
+  };
+  const deterministicFetch = async () => new Response(stableJson({ worldHostCapabilityPackAbiProbe: true }), {
+    status: 200,
+    headers: {
+      'content-type': 'application/json',
+      'x-request-id': 'world-host-capability-pack-abi-probe',
+    },
+  });
+  const deterministicNetwork = deterministicCapabilityPackProbeNetwork({
+    fetch: deterministicFetch,
+    setTimeout: previousGlobals.setTimeout.bind(globalThis),
+    clearTimeout: previousGlobals.clearTimeout.bind(globalThis),
+    setInterval: previousGlobals.setInterval.bind(globalThis),
+    clearInterval: previousGlobals.clearInterval.bind(globalThis),
+    setImmediate: typeof previousGlobals.setImmediate === 'function' ? previousGlobals.setImmediate.bind(globalThis) : null,
+    clearImmediate: typeof previousGlobals.clearImmediate === 'function' ? previousGlobals.clearImmediate.bind(globalThis) : null,
+    sleep: typeof previousGlobals.bunSleep === 'function' ? previousGlobals.bunSleep.bind(globalThis.Bun) : null,
+    promiseResolve: previousGlobals.promiseResolve.bind(globalThis.Promise),
+    queueMicrotask: previousGlobals.queueMicrotask.bind(globalThis),
+    failNetworkEffect: (api) => fail(
+      'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED',
+      `${api} is only supported during deterministic resolve/recover capability pack probes`,
+    ),
+  });
+  globalThis.fetch = deterministicNetwork.fetch;
+  if (hadGlobals.WebSocket) globalThis.WebSocket = deterministicNetwork.WebSocket;
+  if (hadGlobals.EventSource) globalThis.EventSource = deterministicNetwork.EventSource;
+  globalThis.setTimeout = deterministicNetwork.setTimeout;
+  globalThis.clearTimeout = deterministicNetwork.clearTimeout;
+  globalThis.setInterval = deterministicNetwork.setInterval;
+  globalThis.clearInterval = deterministicNetwork.clearInterval;
+  if (typeof previousGlobals.setImmediate === 'function') globalThis.setImmediate = deterministicNetwork.setImmediate;
+  if (typeof previousGlobals.clearImmediate === 'function') globalThis.clearImmediate = deterministicNetwork.clearImmediate;
+  if (globalThis.Bun && typeof previousGlobals.bunSleep === 'function') globalThis.Bun.sleep = deterministicNetwork.sleep;
+  globalThis.Promise.resolve = deterministicNetwork.promiseResolve;
+  globalThis.queueMicrotask = deterministicNetwork.queueMicrotask;
+  let result;
+  let fnError = null;
+  try {
+    result = await fn(deterministicNetwork);
+  } catch (error) {
+    fnError = error;
+  } finally {
+    try {
+      deterministicNetwork.setPhase('closed');
+      await deterministicNetwork.assertNoViolations();
+    } finally {
+      restoreCapabilityPackProbeGlobal('fetch', previousGlobals.fetch, hadGlobals.fetch);
+      restoreCapabilityPackProbeGlobal('WebSocket', previousGlobals.WebSocket, hadGlobals.WebSocket);
+      restoreCapabilityPackProbeGlobal('EventSource', previousGlobals.EventSource, hadGlobals.EventSource);
+      restoreCapabilityPackProbeGlobal('setTimeout', previousGlobals.setTimeout, hadGlobals.setTimeout);
+      restoreCapabilityPackProbeGlobal('clearTimeout', previousGlobals.clearTimeout, hadGlobals.clearTimeout);
+      restoreCapabilityPackProbeGlobal('setInterval', previousGlobals.setInterval, hadGlobals.setInterval);
+      restoreCapabilityPackProbeGlobal('clearInterval', previousGlobals.clearInterval, hadGlobals.clearInterval);
+      restoreCapabilityPackProbeGlobal('setImmediate', previousGlobals.setImmediate, hadGlobals.setImmediate);
+      restoreCapabilityPackProbeGlobal('clearImmediate', previousGlobals.clearImmediate, hadGlobals.clearImmediate);
+      if (globalThis.Bun) restoreCapabilityPackProbeGlobalProperty(globalThis.Bun, 'sleep', previousGlobals.bunSleep, hadGlobals.bunSleep);
+      restoreCapabilityPackProbeGlobalProperty(globalThis.Promise, 'resolve', previousGlobals.promiseResolve, hadGlobals.promiseResolve);
+      restoreCapabilityPackProbeGlobal('queueMicrotask', previousGlobals.queueMicrotask, hadGlobals.queueMicrotask);
     }
   }
+  if (fnError) throw fnError;
+  return result;
+  });
+}
+
+async function withCapabilityPackProbeGlobalLock(fn) {
+  const previous = capabilityPackProbeGlobalLock;
+  let release;
+  capabilityPackProbeGlobalLock = new Promise((resolve) => {
+    release = resolve;
+  });
+  await previous.catch(() => {});
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
+function deterministicCapabilityPackProbeNetwork({ fetch, setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate, sleep, promiseResolve, queueMicrotask, failNetworkEffect }) {
+  let phase = 'capture';
+  let phaseToken = 0;
+  let networkAllowed = false;
+  let violations = [];
+  const pendingTimeouts = new Set();
+  const pendingIntervals = new Set();
+  const pendingImmediates = new Set();
+  const assertAllowed = (api) => {
+    if (((phase === 'resolve' || phase === 'recover') || asyncContinuationNetworkAllowedDepth > 0) && networkAllowed === true) return;
+    violations.push(api);
+    if (phase === 'closed' || phase === 'resolve-await' || phase === 'resolve-returned' ||
+      phase === 'recover-await' || phase === 'recover-returned') return;
+    failNetworkEffect(api);
+  };
+  const cancelPendingTimers = () => {
+    for (const timer of pendingTimeouts) clearTimeout(timer);
+    for (const timer of pendingIntervals) clearInterval(timer);
+    if (typeof clearImmediate === 'function') {
+      for (const immediate of pendingImmediates) clearImmediate(immediate);
+    }
+    pendingTimeouts.clear();
+    pendingIntervals.clear();
+    pendingImmediates.clear();
+  };
+  const recordPendingTimers = () => {
+    if (pendingTimeouts.size === 0 && pendingIntervals.size === 0 && pendingImmediates.size === 0) return;
+    violations.push('async-timer');
+    cancelPendingTimers();
+  };
+  const trackedPromiseStates = new WeakMap();
+  let asyncContinuationNetworkAllowedDepth = 0;
+  const runAsyncContinuation = (callback, value, { allowNetwork = false } = {}) => {
+    const previousPhase = phase;
+    const effectiveAllowNetwork = allowNetwork || asyncContinuationNetworkAllowedDepth > 0;
+    const phaseChanged = !effectiveAllowNetwork;
+    let restoreDeferred = false;
+    if (effectiveAllowNetwork) {
+      asyncContinuationNetworkAllowedDepth += 1;
+    } else {
+      phase = 'closed';
+    }
+    const restoreContinuation = () => {
+      if (phaseChanged) phase = previousPhase;
+      if (effectiveAllowNetwork) asyncContinuationNetworkAllowedDepth = Math.max(0, asyncContinuationNetworkAllowedDepth - 1);
+    };
+    try {
+      const result = callback(value);
+      if (effectiveAllowNetwork && isThenable(result)) {
+        restoreDeferred = true;
+        promiseResolve(result).then(restoreContinuation, restoreContinuation);
+      }
+      return result;
+    } catch (error) {
+      if (!effectiveAllowNetwork) violations.push('async-callback');
+      throw error;
+    } finally {
+      if (!restoreDeferred) restoreContinuation();
+    }
+  };
+  const trackedPromise = (promise, state = { allowNetwork: false }) => {
+    const wrapped = {
+      then(onFulfilled, onRejected) {
+        const childState = { allowNetwork: state.allowNetwork };
+        return trackedPromise(promise.then(
+          typeof onFulfilled === 'function' ? (value) => runAsyncContinuation(onFulfilled, value, childState) : onFulfilled,
+          typeof onRejected === 'function' ? (reason) => runAsyncContinuation(onRejected, reason, childState) : onRejected,
+        ), childState);
+      },
+      catch(onRejected) {
+        return this.then(undefined, onRejected);
+      },
+      finally(onFinally) {
+        return this.then(
+          (value) => promiseResolve(typeof onFinally === 'function' ? runAsyncContinuation(onFinally, undefined, state) : undefined).then(() => value),
+          (reason) => promiseResolve(typeof onFinally === 'function' ? runAsyncContinuation(onFinally, undefined, state) : undefined).then(() => { throw reason; }),
+        );
+      },
+      [Symbol.toStringTag]: 'Promise',
+    };
+    trackedPromiseStates.set(wrapped, state);
+    return wrapped;
+  };
+
+  class DeterministicWebSocket {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSING = 2;
+    static CLOSED = 3;
+
+    constructor(url, protocols = '') {
+      assertAllowed('WebSocket');
+      this.url = String(url);
+      this.protocol = Array.isArray(protocols) ? String(protocols[0] ?? '') : String(protocols ?? '');
+      this.extensions = '';
+      this.binaryType = 'blob';
+      this.readyState = DeterministicWebSocket.CLOSED;
+      this.worldHostCapabilityPackAbiProbe = true;
+    }
+
+    close() {
+      this.readyState = DeterministicWebSocket.CLOSED;
+    }
+
+    send() {
+      fail('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED', 'WebSocket send is not supported during deterministic capability pack probes');
+    }
+
+    addEventListener() {}
+    removeEventListener() {}
+    dispatchEvent() { return true; }
+  }
+
+  class DeterministicEventSource {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSED = 2;
+
+    constructor(url) {
+      assertAllowed('EventSource');
+      this.url = String(url);
+      this.readyState = DeterministicEventSource.CLOSED;
+      this.withCredentials = false;
+      this.worldHostCapabilityPackAbiProbe = true;
+    }
+
+    close() {
+      this.readyState = DeterministicEventSource.CLOSED;
+    }
+
+    addEventListener() {}
+    removeEventListener() {}
+    dispatchEvent() { return true; }
+  }
+
+  return {
+    setNetworkAllowed(allowed) {
+      networkAllowed = allowed === true;
+    },
+    setPhase(nextPhase) {
+      phase = nextPhase;
+      phaseToken += 1;
+    },
+    allowReturnedPromise(value) {
+      const state = trackedPromiseStates.get(value);
+      if (state) {
+        state.allowNetwork = true;
+        return;
+      }
+      if (!(value instanceof Promise) || !inspectValue(value).includes('<pending>')) return;
+      asyncContinuationNetworkAllowedDepth += 1;
+      promiseResolve(value).then(
+        () => { asyncContinuationNetworkAllowedDepth = Math.max(0, asyncContinuationNetworkAllowedDepth - 1); },
+        () => { asyncContinuationNetworkAllowedDepth = Math.max(0, asyncContinuationNetworkAllowedDepth - 1); },
+      );
+    },
+    promiseResolve(value) {
+      return trackedPromise(promiseResolve(value), { allowNetwork: asyncContinuationNetworkAllowedDepth > 0 });
+    },
+    queueMicrotask(callback) {
+      return queueMicrotask(() => runAsyncContinuation(callback));
+    },
+    async assertNoViolations() {
+      await promiseResolve();
+      await new Promise((resolve) => setTimeout(resolve, CAPABILITY_PACK_PROBE_SETTLE_MS));
+      recordPendingTimers();
+      if (violations.length === 0) return;
+      const blockedApis = [...new Set(violations)].join(',');
+      violations = [];
+      failNetworkEffect(blockedApis);
+    },
+    fetch: (...args) => {
+      assertAllowed('fetch');
+      return fetch(...args);
+    },
+    sleep: () => {
+      assertAllowed('Bun.sleep');
+      const scheduledPhase = phase;
+      const scheduledPhaseToken = phaseToken;
+      let timer;
+      const runContinuation = (callback, value) => {
+        const previousPhase = phase;
+        if (scheduledPhaseToken === phaseToken) {
+          phase = scheduledPhase;
+        } else {
+          violations.push('async-callback');
+          phase = 'closed';
+        }
+        try {
+          return callback(value);
+        } catch {
+          violations.push('async-callback');
+          return undefined;
+        } finally {
+          phase = previousPhase;
+        }
+      };
+      const promise = new Promise((resolve) => {
+        timer = setTimeout(() => {
+          pendingTimeouts.delete(timer);
+          const previousPhase = phase;
+          if (scheduledPhaseToken === phaseToken) {
+            phase = scheduledPhase;
+          } else {
+            violations.push('async-callback');
+            phase = 'closed';
+          }
+          try {
+            resolve();
+          } finally {
+            phase = previousPhase;
+          }
+        }, 0);
+        pendingTimeouts.add(timer);
+      });
+      return {
+        then(onFulfilled, onRejected) {
+          return promise.then(
+            typeof onFulfilled === 'function' ? (value) => runContinuation(onFulfilled, value) : onFulfilled,
+            typeof onRejected === 'function' ? (reason) => runContinuation(onRejected, reason) : onRejected,
+          );
+        },
+        catch(onRejected) {
+          return this.then(undefined, onRejected);
+        },
+        finally(onFinally) {
+          return this.then(
+            (value) => promiseResolve(typeof onFinally === 'function' ? runContinuation(onFinally) : undefined).then(() => value),
+            (reason) => promiseResolve(typeof onFinally === 'function' ? runContinuation(onFinally) : undefined).then(() => { throw reason; }),
+          );
+        },
+        [Symbol.toStringTag]: 'Promise',
+      };
+    },
+    setTimeout: (callback, delay, ...args) => {
+      if (typeof callback !== 'function') return setTimeout(callback, delay, ...args);
+      const scheduledPhase = phase;
+      const scheduledPhaseToken = phaseToken;
+      let timer;
+      timer = setTimeout((...callbackArgs) => {
+        pendingTimeouts.delete(timer);
+        const previousPhase = phase;
+        if (scheduledPhaseToken === phaseToken) {
+          phase = scheduledPhase;
+        } else {
+          violations.push('async-callback');
+          phase = 'closed';
+        }
+        try {
+          return callback(...callbackArgs);
+        } catch {
+          violations.push('async-callback');
+        } finally {
+          phase = previousPhase;
+        }
+      }, delay, ...args);
+      pendingTimeouts.add(timer);
+      return timer;
+    },
+    clearTimeout: (timer) => {
+      pendingTimeouts.delete(timer);
+      return clearTimeout(timer);
+    },
+    setInterval: (callback, delay, ...args) => {
+      if (typeof callback !== 'function') return setInterval(callback, delay, ...args);
+      const scheduledPhase = phase;
+      const scheduledPhaseToken = phaseToken;
+      const timer = setInterval((...callbackArgs) => {
+        const previousPhase = phase;
+        if (scheduledPhaseToken === phaseToken) {
+          phase = scheduledPhase;
+        } else {
+          violations.push('async-callback');
+          phase = 'closed';
+        }
+        try {
+          return callback(...callbackArgs);
+        } catch {
+          violations.push('async-callback');
+        } finally {
+          phase = previousPhase;
+        }
+      }, delay, ...args);
+      pendingIntervals.add(timer);
+      return timer;
+    },
+    clearInterval: (timer) => {
+      pendingIntervals.delete(timer);
+      return clearInterval(timer);
+    },
+    setImmediate: (callback, ...args) => {
+      if (typeof setImmediate !== 'function') return undefined;
+      if (typeof callback !== 'function') return setImmediate(callback, ...args);
+      const scheduledPhase = phase;
+      const scheduledPhaseToken = phaseToken;
+      let immediate;
+      immediate = setImmediate((...callbackArgs) => {
+        pendingImmediates.delete(immediate);
+        const previousPhase = phase;
+        if (scheduledPhaseToken === phaseToken) {
+          phase = scheduledPhase;
+        } else {
+          violations.push('async-callback');
+          phase = 'closed';
+        }
+        try {
+          return callback(...callbackArgs);
+        } catch {
+          violations.push('async-callback');
+        } finally {
+          phase = previousPhase;
+        }
+      }, ...args);
+      pendingImmediates.add(immediate);
+      return immediate;
+    },
+    clearImmediate: (immediate) => {
+      pendingImmediates.delete(immediate);
+      if (typeof clearImmediate !== 'function') return undefined;
+      return clearImmediate(immediate);
+    },
+    WebSocket: DeterministicWebSocket,
+    EventSource: DeterministicEventSource,
+  };
+}
+
+function restoreCapabilityPackProbeGlobal(name, value, hadOwnProperty) {
+  if (hadOwnProperty) {
+    globalThis[name] = value;
+  } else {
+    delete globalThis[name];
+  }
+}
+
+function restoreCapabilityPackProbeGlobalProperty(target, name, value, hadOwnProperty) {
+  if (hadOwnProperty) {
+    target[name] = value;
+  } else {
+    delete target[name];
+  }
+}
+
+function externalCapabilityPackEffectProbe(driverManifest, hostRequest) {
+  return manifestNetworkCapabilityPackEffectProbe(driverManifest);
+}
+
+function networkCapabilityPackEffectProbe(driverManifest, hostRequest = null) {
+  if (hostRequest?.actuationClass === 'http') return true;
+  if (hostRequest?.actuationClass === 'model') {
+    return networkCapabilityPackAuthorityLabel(driverManifest);
+  }
+  if (hostRequest) return false;
+  return manifestNetworkCapabilityPackEffectProbe(driverManifest);
+}
+
+function isThenable(value) {
+  return value != null && typeof value.then === 'function';
+}
+
+function manifestNetworkCapabilityPackEffectProbe(driverManifest) {
+  return (driverManifest.supportedActuationClasses ?? []).includes('http') ||
+    networkCapabilityPackAuthorityLabel(driverManifest);
+}
+
+function networkCapabilityPackAuthorityLabel(driverManifest) {
+  return (driverManifest.authorityLabels ?? []).some((label) => label === 'model:http-json' || (typeof label === 'string' && label.startsWith('network:')));
 }
 
 function assertCapabilityPackSidecarProbeResolution(value, hostRequest, driverManifest, policy) {

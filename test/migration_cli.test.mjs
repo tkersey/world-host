@@ -1449,9 +1449,10 @@ describe('migration, branching, and CLI diagnostics', () => {
       await rm(path.join(pack, 'adapter.mjs'));
       await rm(path.join(pack, 'conformance.json'));
 
-      async function writeSidecarPack(sidecarBytes) {
+      async function writeSidecarPack(sidecarBytes, manifestOverrides = {}) {
         await writeFile(path.join(pack, 'sidecar.mjs'), sidecarBytes);
         const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+        Object.assign(manifest, manifestOverrides);
         manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
         manifest.conformanceCorpusFingerprint = null;
         manifest.checksums = manifest.checksums
@@ -1634,6 +1635,1183 @@ describe('migration, branching, and CLI diagnostics', () => {
       });
       assert.notEqual(result.status, 0);
       assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_SIDECAR_RESPONSE_COMMAND/);
+
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects network sidecar probes during trusted capability pack checks', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-network-sidecar-probe-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'adapter.mjs'));
+      await rm(path.join(pack, 'conformance.json'));
+      const sidecarBytes = fromUtf8(`
+        throw new Error('network sidecar command should not run');
+        const frame = {};
+        const driverManifest = {
+          driverId: 'generic-http-json',
+          supportedActuatorRefs: ['fixture:agent-model', 'http:json'],
+          supportedDescriptorFingerprints: ['descriptor:fixture-agent-model', 'descriptor:http-json'],
+          supportedActuationClasses: ['model', 'http'],
+          supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+          maximumRequestBytes: 1048576,
+          maximumResponseBytes: 1048576,
+          recoveryClass: 'idempotent',
+          concurrencyLimit: 1,
+          authorityLabels: ['network:http'],
+          packFingerprint: frame.payload?.packFingerprint,
+          diagnostics: {
+            origins: ['https://example.invalid'],
+            methods: ['POST'],
+            configuredEndpointUrl: 'https://example.invalid/decide',
+            configuredOrigin: 'https://example.invalid',
+            defaultMethod: 'POST'
+          }
+        };
+        const responses = {
+          manifest: driverManifest,
+          preflight: { accepted: true, blockers: [] },
+          'dry-run': { wouldInvoke: true },
+          shadow: { liveInvoked: false, schemaAccepted: false },
+          resolve: {},
+          recover: {}
+        };
+        process.stdout.write(JSON.stringify({ command: frame.command, payload: responses[frame.command] ?? driverManifest }) + '\\n');
+      `);
+      await writeFile(path.join(pack, 'sidecar.mjs'), sidecarBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      Object.assign(manifest, {
+        driverId: 'generic-http-json',
+        supportedActuatorRefs: ['fixture:agent-model', 'http:json'],
+        supportedDescriptorFingerprints: ['descriptor:fixture-agent-model', 'descriptor:http-json'],
+        supportedActuationClasses: ['model', 'http'],
+        supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+        recoveryClass: 'idempotent',
+        authorityLabels: ['network:http'],
+        policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
+      });
+      manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.checksums = manifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json', 'sidecar.mjs'].includes(item.path))
+        .concat({ path: 'sidecar.mjs', checksum: `sha256:${createHash('sha256').update(sidecarBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED' },
+      );
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED/);
+      assert.doesNotMatch(`${result.stdout}${result.stderr}`, /network sidecar command should not run/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('stubs captured in-process network fetches during trusted capability pack checks', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-network-fetch-probe-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('captured-network-fetch-probe'),
+      })).toString('base64');
+      const adapterBytes = fromUtf8(`
+        const capturedFetch = fetch;
+        const capturedWebSocket = WebSocket;
+        const capturedEventSource = typeof EventSource === 'undefined' ? null : EventSource;
+        const resolutionInputBytes = new Uint8Array(Buffer.from('${validResolutionBase64}', 'base64'));
+        async function assertDeterministicFetch(fetchFn) {
+          const response = await fetchFn('https://example.invalid/world-host-capability-pack-abi-probe');
+          const payload = await response.json();
+          if (payload.worldHostCapabilityPackAbiProbe !== true) throw new Error('non-deterministic probe fetch');
+        }
+        function assertDeterministicNetworkConstructors() {
+          const socket = new capturedWebSocket('wss://example.invalid/world-host-capability-pack-abi-probe');
+          if (socket.worldHostCapabilityPackAbiProbe !== true) throw new Error('non-deterministic probe WebSocket');
+          socket.close();
+          if (capturedEventSource) {
+            const events = new capturedEventSource('https://example.invalid/world-host-capability-pack-abi-probe/events');
+            if (events.worldHostCapabilityPackAbiProbe !== true) throw new Error('non-deterministic probe EventSource');
+            events.close();
+          }
+        }
+        export class CapabilityDriver {
+          constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
+          manifest() {
+            return {
+              driverId: 'generic-http-json',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: ['http:json'],
+              supportedDescriptorFingerprints: ['descriptor:http-json'],
+              supportedActuationClasses: ['http'],
+              supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'idempotent',
+              concurrencyLimit: 1,
+              authorityLabels: ['network:http'],
+              diagnostics: {
+                origins: ['https://example.invalid'],
+                methods: ['POST'],
+                configuredEndpointUrl: 'https://example.invalid/decide',
+                configuredOrigin: 'https://example.invalid',
+                defaultMethod: 'POST'
+              }
+            };
+          }
+          preflight() { return { accepted: true, blockers: [] }; }
+          dryRun() { return { wouldInvoke: true }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          async resolve() {
+            assertDeterministicNetworkConstructors();
+            await assertDeterministicFetch(capturedFetch);
+            return { resolutionInputBytes };
+          }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      Object.assign(manifest, {
+        driverId: 'generic-http-json',
+        supportedActuatorRefs: ['http:json'],
+        supportedDescriptorFingerprints: ['descriptor:http-json'],
+        supportedActuationClasses: ['http'],
+        supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+        recoveryClass: 'idempotent',
+        authorityLabels: ['network:http'],
+        policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
+      });
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.checksums = manifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
+        .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      assert.equal(await runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      }), 0);
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects post-resolution async timer network effects during trusted capability pack checks', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-post-resolution-network-probe-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('post-resolution-network-probe'),
+      })).toString('base64');
+      const adapterBytes = fromUtf8(`
+        const capturedFetch = fetch;
+        const resolutionInputBytes = new Uint8Array(Buffer.from('${validResolutionBase64}', 'base64'));
+        export class CapabilityDriver {
+          constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
+          manifest() {
+            return {
+              driverId: 'generic-http-json',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: ['http:json'],
+              supportedDescriptorFingerprints: ['descriptor:http-json'],
+              supportedActuationClasses: ['http'],
+              supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'idempotent',
+              concurrencyLimit: 1,
+              authorityLabels: ['network:http'],
+              diagnostics: {
+                origins: ['https://example.invalid'],
+                methods: ['POST'],
+                configuredEndpointUrl: 'https://example.invalid/decide',
+                configuredOrigin: 'https://example.invalid',
+                defaultMethod: 'POST'
+              }
+            };
+          }
+          preflight() { return { accepted: true, blockers: [] }; }
+          dryRun() { return { wouldInvoke: true }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          async resolve() {
+            await Promise.resolve();
+            setTimeout(() => {
+              capturedFetch('https://example.invalid/world-host-capability-pack-abi-probe-after-resolution');
+            }, 0);
+            return { resolutionInputBytes };
+          }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      Object.assign(manifest, {
+        driverId: 'generic-http-json',
+        supportedActuatorRefs: ['http:json'],
+        supportedDescriptorFingerprints: ['descriptor:http-json'],
+        supportedActuationClasses: ['http'],
+        supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+        recoveryClass: 'idempotent',
+        authorityLabels: ['network:http'],
+        policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
+      });
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.checksums = manifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
+        .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED' },
+      );
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      assert.notEqual(result.status, 0, `${result.stdout}${result.stderr}`);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects post-resolution setImmediate network effects during trusted capability pack checks', async () => {
+    assert.equal(typeof globalThis.setImmediate, 'function');
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-post-immediate-network-probe-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('post-immediate-network-probe'),
+      })).toString('base64');
+      const adapterBytes = fromUtf8(`
+        const capturedFetch = fetch;
+        const capturedSetImmediate = setImmediate;
+        const resolutionInputBytes = new Uint8Array(Buffer.from('${validResolutionBase64}', 'base64'));
+        export class CapabilityDriver {
+          constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
+          manifest() {
+            return {
+              driverId: 'generic-http-json',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: ['http:json'],
+              supportedDescriptorFingerprints: ['descriptor:http-json'],
+              supportedActuationClasses: ['http'],
+              supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'idempotent',
+              concurrencyLimit: 1,
+              authorityLabels: ['network:http'],
+              diagnostics: {
+                origins: ['https://example.invalid'],
+                methods: ['POST'],
+                configuredEndpointUrl: 'https://example.invalid/decide',
+                configuredOrigin: 'https://example.invalid',
+                defaultMethod: 'POST'
+              }
+            };
+          }
+          preflight() { return { accepted: true, blockers: [] }; }
+          dryRun() { return { wouldInvoke: true }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          async resolve() {
+            await Promise.resolve();
+            capturedSetImmediate(() => {
+              capturedFetch('https://example.invalid/world-host-capability-pack-abi-probe-after-immediate');
+            });
+            return { resolutionInputBytes };
+          }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      Object.assign(manifest, {
+        driverId: 'generic-http-json',
+        supportedActuatorRefs: ['http:json'],
+        supportedDescriptorFingerprints: ['descriptor:http-json'],
+        supportedActuationClasses: ['http'],
+        supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+        recoveryClass: 'idempotent',
+        authorityLabels: ['network:http'],
+        policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
+      });
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.checksums = manifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
+        .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED' },
+      );
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      assert.notEqual(result.status, 0, `${result.stdout}${result.stderr}`);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects post-resolution Bun.sleep network effects during trusted capability pack checks', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-post-sleep-network-probe-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('post-sleep-network-probe'),
+      })).toString('base64');
+      const adapterBytes = fromUtf8(`
+        const capturedFetch = fetch;
+        const capturedSleep = Bun.sleep;
+        const resolutionInputBytes = new Uint8Array(Buffer.from('${validResolutionBase64}', 'base64'));
+        export class CapabilityDriver {
+          constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
+          manifest() {
+            return {
+              driverId: 'generic-http-json',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: ['http:json'],
+              supportedDescriptorFingerprints: ['descriptor:http-json'],
+              supportedActuationClasses: ['http'],
+              supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'idempotent',
+              concurrencyLimit: 1,
+              authorityLabels: ['network:http'],
+              diagnostics: {
+                origins: ['https://example.invalid'],
+                methods: ['POST'],
+                configuredEndpointUrl: 'https://example.invalid/decide',
+                configuredOrigin: 'https://example.invalid',
+                defaultMethod: 'POST'
+              }
+            };
+          }
+          preflight() { return { accepted: true, blockers: [] }; }
+          dryRun() { return { wouldInvoke: true }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          resolve() {
+            capturedSleep(100).then(() => {
+              capturedFetch('https://example.invalid/world-host-capability-pack-abi-probe-after-sleep');
+            });
+            return { resolutionInputBytes };
+          }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      Object.assign(manifest, {
+        driverId: 'generic-http-json',
+        supportedActuatorRefs: ['http:json'],
+        supportedDescriptorFingerprints: ['descriptor:http-json'],
+        supportedActuationClasses: ['http'],
+        supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+        recoveryClass: 'idempotent',
+        authorityLabels: ['network:http'],
+        policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
+      });
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.checksums = manifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
+        .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED' },
+      );
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      assert.notEqual(result.status, 0, `${result.stdout}${result.stderr}`);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects post-resolution microtask network effects during trusted capability pack checks', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-post-microtask-network-probe-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('post-microtask-network-probe'),
+      })).toString('base64');
+      const adapterBytes = fromUtf8(`
+        const capturedFetch = fetch;
+        const resolutionInputBytes = new Uint8Array(Buffer.from('${validResolutionBase64}', 'base64'));
+        export class CapabilityDriver {
+          constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
+          manifest() {
+            return {
+              driverId: 'generic-http-json',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: ['http:json'],
+              supportedDescriptorFingerprints: ['descriptor:http-json'],
+              supportedActuationClasses: ['http'],
+              supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'idempotent',
+              concurrencyLimit: 1,
+              authorityLabels: ['network:http'],
+              diagnostics: {
+                origins: ['https://example.invalid'],
+                methods: ['POST'],
+                configuredEndpointUrl: 'https://example.invalid/decide',
+                configuredOrigin: 'https://example.invalid',
+                defaultMethod: 'POST'
+              }
+            };
+          }
+          preflight() { return { accepted: true, blockers: [] }; }
+          dryRun() { return { wouldInvoke: true }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          resolve() {
+            Promise.resolve().then(() => {
+              capturedFetch('https://example.invalid/world-host-capability-pack-abi-probe-after-microtask');
+            });
+            queueMicrotask(() => {
+              capturedFetch('https://example.invalid/world-host-capability-pack-abi-probe-after-queued-microtask');
+            });
+            return { resolutionInputBytes };
+          }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      Object.assign(manifest, {
+        driverId: 'generic-http-json',
+        supportedActuatorRefs: ['http:json'],
+        supportedDescriptorFingerprints: ['descriptor:http-json'],
+        supportedActuationClasses: ['http'],
+        supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+        recoveryClass: 'idempotent',
+        authorityLabels: ['network:http'],
+        policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
+      });
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.checksums = manifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
+        .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED' },
+      );
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      assert.notEqual(result.status, 0, `${result.stdout}${result.stderr}`);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects native Promise network effects after trusted probe resolution settles', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-native-promise-network-probe-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('post-native-promise-network-probe'),
+      })).toString('base64');
+      const adapterBytes = fromUtf8(`
+        const capturedFetch = fetch;
+        const resolutionInputBytes = new Uint8Array(Buffer.from('${validResolutionBase64}', 'base64'));
+        export class CapabilityDriver {
+          constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
+          manifest() {
+            return {
+              driverId: 'generic-http-json',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: ['http:json'],
+              supportedDescriptorFingerprints: ['descriptor:http-json'],
+              supportedActuationClasses: ['http'],
+              supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'idempotent',
+              concurrencyLimit: 1,
+              authorityLabels: ['network:http'],
+              diagnostics: {
+                origins: ['https://example.invalid'],
+                methods: ['POST'],
+                configuredEndpointUrl: 'https://example.invalid/decide',
+                configuredOrigin: 'https://example.invalid',
+                defaultMethod: 'POST'
+              }
+            };
+          }
+          preflight() { return { accepted: true, blockers: [] }; }
+          dryRun() { return { wouldInvoke: true }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          resolve() {
+            return new Promise((resolve) => {
+              resolve({ resolutionInputBytes });
+              new Promise((queue) => queue()).then(() => {
+                capturedFetch('https://example.invalid/world-host-capability-pack-abi-probe-after-native-promise');
+              });
+            });
+          }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      Object.assign(manifest, {
+        driverId: 'generic-http-json',
+        supportedActuatorRefs: ['http:json'],
+        supportedDescriptorFingerprints: ['descriptor:http-json'],
+        supportedActuationClasses: ['http'],
+        supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+        recoveryClass: 'idempotent',
+        authorityLabels: ['network:http'],
+        policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
+      });
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.checksums = manifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
+        .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED' },
+      );
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      assert.notEqual(result.status, 0, `${result.stdout}${result.stderr}`);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('allows model network-authority probes to use deterministic network', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-model-http-json-probe-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('model-http-json-probe'),
+      })).toString('base64');
+      const adapterBytes = fromUtf8(`
+        const capturedFetch = fetch;
+        const resolutionInputBytes = new Uint8Array(Buffer.from('${validResolutionBase64}', 'base64'));
+        export class CapabilityDriver {
+          constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
+          manifest() {
+            return {
+              driverId: 'fixture-agent-model',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: ['fixture:agent-model'],
+              supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+              supportedActuationClasses: ['model'],
+              supportedResponseStatuses: ['ok', 'final'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'pure',
+              concurrencyLimit: 1,
+              authorityLabels: ['network:openai']
+            };
+          }
+          preflight() { return { accepted: true, blockers: [] }; }
+          dryRun() { return { wouldInvoke: true }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          resolve() {
+            return Promise.resolve().then(async () => {
+              const caught = await Promise.resolve()
+                .then(() => { throw new Error('expected adapter rejection'); })
+                .catch(() => true);
+              if (caught !== true) throw new Error('adapter promise rejection was not preserved');
+              const response = await capturedFetch('https://example.invalid/world-host-capability-pack-abi-probe');
+              const payload = await response.json();
+              if (payload.worldHostCapabilityPackAbiProbe !== true) throw new Error('non-deterministic model fetch');
+              return { resolutionInputBytes };
+            });
+          }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      Object.assign(manifest, {
+        driverId: 'fixture-agent-model',
+        supportedActuatorRefs: ['fixture:agent-model'],
+        supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+        supportedActuationClasses: ['model'],
+        supportedResponseStatuses: ['ok', 'final'],
+        recoveryClass: 'pure',
+        authorityLabels: ['network:openai'],
+        policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
+      });
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.checksums = manifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
+        .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      assert.equal(await runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      }), 0);
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('serializes non-network trusted probes while network probes patch globals', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-concurrent-probe-lock-'));
+    const networkPack = path.join(root, 'network-pack');
+    const fixturePack = path.join(root, 'fixture-pack');
+    const hostSetTimeout = globalThis.setTimeout;
+    const quiet = {
+      stdout: { write() {} },
+      stderr: { write() {} },
+    };
+    try {
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), networkPack, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), fixturePack, { recursive: true });
+      await rm(path.join(networkPack, 'conformance.json'));
+      await rm(path.join(fixturePack, 'conformance.json'));
+      const networkResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('concurrent-network-probe'),
+      })).toString('base64');
+      const fixtureResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('concurrent-fixture-probe'),
+      })).toString('base64');
+      const networkAdapterBytes = fromUtf8(`
+        const resolutionInputBytes = new Uint8Array(Buffer.from('${networkResolutionBase64}', 'base64'));
+        export class CapabilityDriver {
+          constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
+          manifest() {
+            return {
+              driverId: 'generic-http-json',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: ['http:json'],
+              supportedDescriptorFingerprints: ['descriptor:http-json'],
+              supportedActuationClasses: ['http'],
+              supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'idempotent',
+              concurrencyLimit: 1,
+              authorityLabels: ['network:http'],
+              diagnostics: {
+                origins: ['https://example.invalid'],
+                methods: ['POST'],
+                configuredEndpointUrl: 'https://example.invalid/decide',
+                configuredOrigin: 'https://example.invalid',
+                defaultMethod: 'POST'
+              }
+            };
+          }
+          preflight() { return { accepted: true, blockers: [] }; }
+          dryRun() { return { wouldInvoke: true }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          resolve() {
+            globalThis.__worldHostProbeLockStarted = true;
+            return Promise.resolve()
+              .then(() => new Promise((resolve) => setTimeout(resolve, 75)))
+              .then(() => ({ resolutionInputBytes }));
+          }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      const fixtureAdapterBytes = fromUtf8(`
+        const capturedTimerSource = String(setTimeout);
+        const resolutionInputBytes = new Uint8Array(Buffer.from('${fixtureResolutionBase64}', 'base64'));
+        export class CapabilityDriver {
+          constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
+          manifest() {
+            return {
+              driverId: 'fixture-agent-model',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: ['fixture:agent-model'],
+              supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+              supportedActuationClasses: ['model'],
+              supportedResponseStatuses: ['ok', 'final'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'pure',
+              concurrencyLimit: 1,
+              authorityLabels: ['model:fixture-agent']
+            };
+          }
+          preflight() { return { accepted: true, blockers: [] }; }
+          dryRun() { return { wouldInvoke: true }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          resolve() {
+            if (capturedTimerSource.includes('pendingTimeouts') || capturedTimerSource.includes('scheduledPhase')) {
+              throw new Error('captured deterministic probe timer');
+            }
+            return { resolutionInputBytes };
+          }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      await writeFile(path.join(networkPack, 'adapter.mjs'), networkAdapterBytes);
+      await writeFile(path.join(fixturePack, 'adapter.mjs'), fixtureAdapterBytes);
+
+      const networkManifest = JSON.parse(await readFile(path.join(networkPack, 'manifest.json'), 'utf8'));
+      Object.assign(networkManifest, {
+        driverId: 'generic-http-json',
+        supportedActuatorRefs: ['http:json'],
+        supportedDescriptorFingerprints: ['descriptor:http-json'],
+        supportedActuationClasses: ['http'],
+        supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+        recoveryClass: 'idempotent',
+        authorityLabels: ['network:http'],
+        policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
+      });
+      networkManifest.conformanceCorpusFingerprint = null;
+      networkManifest.checksums = networkManifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
+        .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(networkAdapterBytes).digest('hex')}` });
+      networkManifest.packFingerprint = await capabilityPackFingerprint(networkManifest);
+      await writeFile(path.join(networkPack, 'manifest.json'), `${JSON.stringify(networkManifest, null, 2)}\n`);
+
+      const fixtureManifest = JSON.parse(await readFile(path.join(fixturePack, 'manifest.json'), 'utf8'));
+      fixtureManifest.conformanceCorpusFingerprint = null;
+      fixtureManifest.checksums = fixtureManifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
+        .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(fixtureAdapterBytes).digest('hex')}` });
+      fixtureManifest.packFingerprint = await capabilityPackFingerprint(fixtureManifest);
+      await writeFile(path.join(fixturePack, 'manifest.json'), `${JSON.stringify(fixtureManifest, null, 2)}\n`);
+
+      delete globalThis.__worldHostProbeLockStarted;
+      const networkRun = runBunCli(['capability', 'check-pack', '--pack', networkPack, '--trusted-execute-adapters'], quiet)
+        .then((result) => ({ result }), (error) => ({ error }));
+      for (let attempt = 0; attempt < 50 && globalThis.__worldHostProbeLockStarted !== true; attempt += 1) {
+        await new Promise((resolve) => hostSetTimeout(resolve, 5));
+      }
+      assert.equal(globalThis.__worldHostProbeLockStarted, true);
+      const fixtureRun = runBunCli(['capability', 'check-pack', '--pack', fixturePack, '--trusted-execute-adapters'], quiet)
+        .then((result) => ({ result }), (error) => ({ error }));
+      const [networkResult, fixtureResult] = await Promise.all([networkRun, fixtureRun]);
+      if (networkResult.error) throw networkResult.error;
+      if (fixtureResult.error) throw fixtureResult.error;
+      assert.equal(networkResult.result, 0);
+      assert.equal(fixtureResult.result, 0);
+    } finally {
+      delete globalThis.__worldHostProbeLockStarted;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects network fetches when a multi-class trusted probe selects a non-network request', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-non-network-selected-probe-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('selected-non-network-probe'),
+      })).toString('base64');
+      const adapterBytes = fromUtf8(`
+        const capturedFetch = fetch;
+        const resolutionInputBytes = new Uint8Array(Buffer.from('${validResolutionBase64}', 'base64'));
+        export class CapabilityDriver {
+          constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
+          manifest() {
+            return {
+              driverId: 'generic-http-json',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: ['fixture:agent-model', 'http:json'],
+              supportedDescriptorFingerprints: ['descriptor:fixture-agent-model', 'descriptor:http-json'],
+              supportedActuationClasses: ['model', 'http'],
+              supportedResponseStatuses: ['ok', 'final', 'http_error', 'failed', 'deferred'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'idempotent',
+              concurrencyLimit: 1,
+              authorityLabels: ['model:fixture-agent'],
+              diagnostics: {
+                origins: ['https://example.invalid'],
+                methods: ['POST'],
+                configuredEndpointUrl: 'https://example.invalid/decide',
+                configuredOrigin: 'https://example.invalid',
+                defaultMethod: 'POST'
+              }
+            };
+          }
+          preflight() { return { accepted: true, blockers: [] }; }
+          dryRun() { return { wouldInvoke: true }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          async resolve() {
+            await capturedFetch('https://example.invalid/world-host-capability-pack-abi-probe');
+            return { resolutionInputBytes };
+          }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      Object.assign(manifest, {
+        driverId: 'generic-http-json',
+        supportedActuatorRefs: ['fixture:agent-model', 'http:json'],
+        supportedDescriptorFingerprints: ['descriptor:fixture-agent-model', 'descriptor:http-json'],
+        supportedActuationClasses: ['model', 'http'],
+        supportedResponseStatuses: ['ok', 'final', 'http_error', 'failed', 'deferred'],
+        recoveryClass: 'idempotent',
+        authorityLabels: ['model:fixture-agent'],
+        policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
+      });
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.checksums = manifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
+        .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED' },
+      );
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      assert.notEqual(result.status, 0, `${result.stdout}${result.stderr}`);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects in-process network fetches before resolve during trusted capability pack checks', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-network-dry-run-probe-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('captured-network-dry-run-probe'),
+      })).toString('base64');
+      const adapterBytes = fromUtf8(`
+        const capturedFetch = fetch;
+        const resolutionInputBytes = new Uint8Array(Buffer.from('${validResolutionBase64}', 'base64'));
+        export class CapabilityDriver {
+          constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
+          manifest() {
+            return {
+              driverId: 'generic-http-json',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: ['http:json'],
+              supportedDescriptorFingerprints: ['descriptor:http-json'],
+              supportedActuationClasses: ['http'],
+              supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'idempotent',
+              concurrencyLimit: 1,
+              authorityLabels: ['network:http'],
+              diagnostics: {
+                origins: ['https://example.invalid'],
+                methods: ['POST'],
+                configuredEndpointUrl: 'https://example.invalid/decide',
+                configuredOrigin: 'https://example.invalid',
+                defaultMethod: 'POST'
+              }
+            };
+          }
+          preflight() { return { accepted: true, blockers: [] }; }
+          dryRun() {
+            setTimeout(() => {
+              try {
+                capturedFetch('https://example.invalid/world-host-capability-pack-abi-probe-dry-run');
+              } catch {}
+              try {
+                globalThis.fetch('https://example.invalid/world-host-capability-pack-abi-probe-dry-run-global');
+              } catch {}
+            }, 0);
+            return { wouldInvoke: true };
+          }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          resolve() { return { resolutionInputBytes }; }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      Object.assign(manifest, {
+        driverId: 'generic-http-json',
+        supportedActuatorRefs: ['http:json'],
+        supportedDescriptorFingerprints: ['descriptor:http-json'],
+        supportedActuationClasses: ['http'],
+        supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+        recoveryClass: 'idempotent',
+        authorityLabels: ['network:http'],
+        policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
+      });
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.checksums = manifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
+        .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED' },
+      );
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      assert.notEqual(result.status, 0, `${result.stdout}${result.stderr}`);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps deterministic network installed after trusted probe failures', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-network-failure-probe-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const adapterBytes = fromUtf8(`
+        export class CapabilityDriver {
+          constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
+          manifest() {
+            return {
+              driverId: 'generic-http-json',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: ['http:json'],
+              supportedDescriptorFingerprints: ['descriptor:http-json'],
+              supportedActuationClasses: ['http'],
+              supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'idempotent',
+              concurrencyLimit: 1,
+              authorityLabels: ['network:http'],
+              diagnostics: {
+                origins: ['https://example.invalid'],
+                methods: ['POST'],
+                configuredEndpointUrl: 'https://example.invalid/decide',
+                configuredOrigin: 'https://example.invalid',
+                defaultMethod: 'POST'
+              }
+            };
+          }
+          preflight() {
+            try {
+              Bun.sleep(100).then(() => globalThis.fetch('https://example.invalid/world-host-capability-pack-abi-probe-sleep'));
+            } catch {}
+            setTimeout(() => {
+              try {
+                globalThis.fetch('https://example.invalid/world-host-capability-pack-abi-probe-failure');
+              } catch {}
+            }, 100);
+            throw new Error('preflight failed after scheduling network');
+          }
+          dryRun() { return { wouldInvoke: true }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          resolve() { return { operatorInterventionRequired: true }; }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      Object.assign(manifest, {
+        driverId: 'generic-http-json',
+        supportedActuatorRefs: ['http:json'],
+        supportedDescriptorFingerprints: ['descriptor:http-json'],
+        supportedActuationClasses: ['http'],
+        supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+        recoveryClass: 'idempotent',
+        authorityLabels: ['network:http'],
+        policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
+      });
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.checksums = manifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
+        .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED' },
+      );
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      assert.notEqual(result.status, 0, `${result.stdout}${result.stderr}`);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1917,14 +3095,13 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
-  it('matches sidecar probe bytes to the selected actuation class', async () => {
-    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-sidecar-selected-class-'));
+  it('matches in-process adapter probe bytes to the selected actuation class', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-adapter-selected-class-'));
     const packs = path.join(root, 'capability-packs');
     const pack = path.join(packs, 'capability-pack-v0.2-fixture');
     try {
       await mkdir(packs, { recursive: true });
       await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
-      await rm(path.join(pack, 'adapter.mjs'));
       await rm(path.join(pack, 'conformance.json'));
       const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
         targetHostRequestFingerprint: 0xabcn,
@@ -1932,55 +3109,56 @@ describe('migration, branching, and CLI diagnostics', () => {
         responseValueImageBytes: fromUtf8('probe-response'),
         hostClaimBytes: new Uint8Array(),
         attemptNumber: 1,
-        metadata: fromUtf8('selected-class-sidecar'),
+        metadata: fromUtf8('selected-class-adapter'),
       })).toString('base64');
-      const sidecarBytes = fromUtf8(`
-        const input = await new Response(Bun.stdin.stream()).text();
-        const frame = JSON.parse(input);
+      const adapterBytes = fromUtf8(`
         function decodedBytes(value) {
-          if (value?.__world_host_sidecar_type !== 'bytes') return '';
-          return Buffer.from(value.base64, 'base64').toString('utf8');
+          return new TextDecoder().decode(value ?? new Uint8Array());
         }
-        const hostRequest = frame.payload?.hostRequest;
-        const modelProbe = hostRequest?.actuationClass === 'model' &&
-          decodedBytes(hostRequest?.requestBytes).includes('boundary.Agent.DecisionPrompt.v0');
-        const driverManifest = {
-          driverId: 'fixture-agent-model',
-          supportedActuatorRefs: ['fixture:agent-model'],
-          supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
-          supportedActuationClasses: ['model', 'http'],
-          supportedResponseStatuses: ['ok', 'final'],
-          maximumRequestBytes: 1048576,
-          maximumResponseBytes: 1048576,
-          recoveryClass: 'pure',
-          concurrencyLimit: 1,
-          authorityLabels: ['model:fixture-agent'],
-          packFingerprint: frame.payload?.packFingerprint
-        };
-        const resolution = {
-          resolutionInputBytes: {
-            __world_host_sidecar_type: 'bytes',
-            base64: '${validResolutionBase64}'
+        const resolutionInputBytes = new Uint8Array(Buffer.from('${validResolutionBase64}', 'base64'));
+        function modelProbe(hostRequest) {
+          return hostRequest?.actuationClass === 'model' &&
+            decodedBytes(hostRequest?.requestBytes).includes('boundary.Agent.DecisionPrompt.v0');
+        }
+        export class CapabilityDriver {
+          constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
+          manifest() {
+            return {
+              driverId: 'fixture-agent-model',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: ['fixture:agent-model'],
+              supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+              supportedActuationClasses: ['model', 'http'],
+              supportedResponseStatuses: ['ok', 'final'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'pure',
+              concurrencyLimit: 1,
+              authorityLabels: ['model:fixture-agent']
+            };
           }
-        };
-        const responses = {
-          manifest: driverManifest,
-          preflight: { accepted: modelProbe, blockers: modelProbe ? [] : ['selected-class-probe-mismatch'] },
-          'dry-run': { wouldInvoke: false },
-          shadow: { liveInvoked: false, schemaAccepted: false },
-          resolve: resolution,
-          recover: { operatorInterventionRequired: true }
-        };
-        process.stdout.write(JSON.stringify({ command: frame.command, payload: responses[frame.command] ?? driverManifest }) + '\\n');
+          preflight(context, hostRequest) {
+            return modelProbe(hostRequest)
+              ? { accepted: true, blockers: [] }
+              : { accepted: false, blockers: ['selected-class-probe-mismatch'] };
+          }
+          dryRun() { return { wouldInvoke: false }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          resolve(context, hostRequest) {
+            return modelProbe(hostRequest)
+              ? { resolutionInputBytes }
+              : { resolutionInputBytes: new Uint8Array() };
+          }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
       `);
-      await writeFile(path.join(pack, 'sidecar.mjs'), sidecarBytes);
+      await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
       const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
-      manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
       manifest.conformanceCorpusFingerprint = null;
       manifest.supportedActuationClasses = ['model', 'http'];
       manifest.checksums = manifest.checksums
-        .filter((item) => !['adapter.mjs', 'conformance.json', 'sidecar.mjs'].includes(item.path))
-        .concat({ path: 'sidecar.mjs', checksum: `sha256:${createHash('sha256').update(sidecarBytes).digest('hex')}` });
+        .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
+        .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
       manifest.packFingerprint = await capabilityPackFingerprint(manifest);
       await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 

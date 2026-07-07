@@ -125,8 +125,40 @@ export function assertShadowReport(value) {
 export function assertCapabilityResolutionBoundary(value) {
   if (!value || typeof value !== 'object') fail('ERR_CAPABILITY_RESOLUTION_INVALID');
   assertNoWorldEvidenceKeys(value);
-  decodeResolutionInputBytes(assertBytes(value.resolutionInputBytes, 'resolutionInputBytes'));
+  assertNoCarriedResolutionWorldEvidence(value);
+  const decoded = decodeResolutionInputBytes(assertBytes(value.resolutionInputBytes, 'resolutionInputBytes'));
+  assertNoDecodedResolutionWorldEvidence(decoded);
   return true;
+}
+
+function assertNoCarriedResolutionWorldEvidence(value) {
+  for (const field of ['hostClaimBytes', 'metadata']) {
+    const payload = parseJsonBytes(value[field]);
+    if (payload !== null) assertNoWorldEvidenceKeys(payload);
+  }
+}
+
+function assertNoDecodedResolutionWorldEvidence(decoded) {
+  for (const field of ['hostClaimBytes', 'metadata']) {
+    const payload = parseJsonBytes(decoded[field]);
+    if (payload !== null) assertNoWorldEvidenceKeys(payload);
+  }
+}
+
+function parseJsonBytes(value) {
+  if (!(value instanceof Uint8Array) || value.byteLength === 0) return null;
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(value).trim();
+  } catch {
+    return null;
+  }
+  if (!text || !/^[\[{]/.test(text)) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
 function cloneReportPayload(value, seen = new WeakMap()) {

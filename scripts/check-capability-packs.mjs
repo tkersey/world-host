@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
+import { inspect as inspectValue } from 'node:util';
 
 import {
   assertCapabilityConformanceReceipt,
@@ -11,13 +12,15 @@ import {
   validateCapabilityPackManifest,
 } from '../src/core/capability_pack.mjs';
 import { assertDriverManifest } from '../src/core/actuator.mjs';
-import { assertCapabilityResolutionBoundary, defineCapabilityDriver } from '../src/core/capability_driver.mjs';
+import { assertCapabilityResolutionBoundary, assertNoWorldEvidenceKeys, defineCapabilityDriver } from '../src/core/capability_driver.mjs';
 import { assertResolutionAccepted } from '../src/core/effect_journal.mjs';
 import { fromUtf8, stableJson } from '../src/core/store.mjs';
 import { CapabilitySidecar, CapabilitySidecarCommand } from '../src/sidecars/capability_sidecar.mjs';
 
 const trustedExecuteAdapters = process.argv.includes('--trusted-execute-adapters');
 const root = path.resolve('capability-packs');
+const PROBE_SETTLE_MS = 25;
+let probeGlobalLock = Promise.resolve();
 const names = (await readdir(root).catch(() => [])).filter((name) => name.startsWith('capability-pack-v0.2-')).sort();
 if (!names.length) {
   console.error('no capability packs found');
@@ -77,39 +80,47 @@ function pathInside(rootPath, target) {
 }
 
 async function assertAdapterManifestMatchesPack(packManifest, artifacts, name, packRoot) {
-  let driver;
-  let sidecar = false;
-  if (packManifest.adapter.kind === 'in_process') {
-    const module = await import(await adapterImportUrl(packManifest, artifacts));
-    const Driver = module[packManifest.adapter.exportName];
-    if (typeof Driver !== 'function') throw new Error(`ERR_CAPABILITY_PACK_ADAPTER_EXPORT:${name}`);
-    driver = new Driver(adapterOptions(packManifest));
-  } else if (packManifest.adapter.kind === 'sidecar') {
-    driver = new CapabilitySidecar({ command: packManifest.adapter.command, cwd: packRoot });
-    sidecar = true;
-  } else {
-    return;
-  }
-  const capabilityDriver = defineCapabilityDriver(driver);
-  if (packManifest.canRecover === true && typeof driver.recover !== 'function') throw new Error(`ERR_CAPABILITY_PACK_ADAPTER_RECOVER:${name}`);
-  const driverManifest = sidecar
-    ? await sidecarManifest(driver, packManifest)
-    : capabilityDriver.manifest();
-  if (driverManifest.packFingerprint !== packManifest.packFingerprint) throw new Error(`ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH:${name}:packFingerprint`);
-  for (const field of [
-    'driverId',
-    'supportedActuatorRefs',
-    'supportedDescriptorFingerprints',
-    'supportedActuationClasses',
-    'supportedResponseStatuses',
-    'recoveryClass',
-    'maximumRequestBytes',
-    'maximumResponseBytes',
-    'authorityLabels',
-  ]) {
-    assertSameManifestField(name, field, packManifest[field], driverManifest[field]);
-  }
-  await assertAdapterProbeCommands(packManifest, capabilityDriver, driverManifest);
+  await withDeterministicProbeNetwork(packManifest, null, async (probeNetwork) => {
+    let driver;
+    let sidecar = false;
+    if (packManifest.adapter.kind === 'in_process') {
+      const module = await import(await adapterImportUrl(packManifest, artifacts));
+      await probeNetwork?.assertNoViolations();
+      const Driver = module[packManifest.adapter.exportName];
+      if (typeof Driver !== 'function') throw new Error(`ERR_CAPABILITY_PACK_ADAPTER_EXPORT:${name}`);
+      driver = new Driver(adapterOptions(packManifest));
+      await probeNetwork?.assertNoViolations();
+    } else if (packManifest.adapter.kind === 'sidecar') {
+      if (externalEffectProbe(packManifest, null)) {
+        throw new Error('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED:network sidecar probes must not perform live external effects');
+      }
+      driver = new CapabilitySidecar({ command: packManifest.adapter.command, cwd: packRoot });
+      sidecar = true;
+    } else {
+      return;
+    }
+    const capabilityDriver = defineCapabilityDriver(driver);
+    if (packManifest.canRecover === true && typeof driver.recover !== 'function') throw new Error(`ERR_CAPABILITY_PACK_ADAPTER_RECOVER:${name}`);
+    const driverManifest = sidecar
+      ? await sidecarManifest(driver, packManifest)
+      : capabilityDriver.manifest();
+    await probeNetwork?.assertNoViolations();
+    if (driverManifest.packFingerprint !== packManifest.packFingerprint) throw new Error(`ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH:${name}:packFingerprint`);
+    for (const field of [
+      'driverId',
+      'supportedActuatorRefs',
+      'supportedDescriptorFingerprints',
+      'supportedActuationClasses',
+      'supportedResponseStatuses',
+      'recoveryClass',
+      'maximumRequestBytes',
+      'maximumResponseBytes',
+      'authorityLabels',
+    ]) {
+      assertSameManifestField(name, field, packManifest[field], driverManifest[field]);
+    }
+    await assertAdapterProbeCommands(packManifest, capabilityDriver, driverManifest, { driver, sidecar, probeNetwork });
+  });
 }
 
 async function sidecarManifest(sidecarDriver, packManifest) {
@@ -119,27 +130,541 @@ async function sidecarManifest(sidecarDriver, packManifest) {
   return raw.packFingerprint == null ? manifest : Object.freeze({ ...manifest, packFingerprint: raw.packFingerprint });
 }
 
-async function assertAdapterProbeCommands(packManifest, capabilityDriver, driverManifest) {
+async function assertAdapterProbeCommands(packManifest, capabilityDriver, driverManifest, { driver, sidecar = false, probeNetwork = null } = {}) {
   const hostRequest = sidecarProbeHostRequest(driverManifest);
   const policy = sidecarProbePolicy(driverManifest, hostRequest);
   const context = { worldHostCapabilityPackAbiProbe: true, policy };
+  if (sidecar && externalEffectProbe(driverManifest, hostRequest)) {
+    throw new Error('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED:network sidecar probes must not perform live external effects');
+  }
+  probeNetwork?.setNetworkAllowed(networkEffectProbe(driverManifest, hostRequest));
+  probeNetwork?.setPhase('preflight');
   const preflight = await capabilityDriver.preflight(context, hostRequest);
+  await probeNetwork?.assertNoViolations();
   if (preflight.accepted !== true || preflight.blockers.length > 0) {
     throw new Error(`ERR_CAPABILITY_PACK_ADAPTER_PREFLIGHT:${preflight.blockers.join(',')}`);
   }
+  probeNetwork?.setPhase('dryRun');
   await capabilityDriver.dryRun(context, hostRequest);
+  await probeNetwork?.assertNoViolations();
+  probeNetwork?.setPhase('shadow');
   await capabilityDriver.shadow(context, hostRequest, { worldHostCapabilityPackAbiProbe: true });
+  await probeNetwork?.assertNoViolations();
+  probeNetwork?.setPhase('resolve');
+  const resolution = driver.resolve(context, hostRequest);
+  probeNetwork?.allowReturnedPromise(resolution);
+  if (isThenable(resolution)) {
+    probeNetwork?.setPhase('resolve-await');
+  } else {
+    probeNetwork?.setPhase('resolve-returned');
+  }
+  const resolvedResolution = await resolution;
+  probeNetwork?.setPhase('resolve-returned');
   assertSidecarProbeResolution(
-    await capabilityDriver.resolve(context, hostRequest),
+    resolvedResolution,
     hostRequest,
     driverManifest,
     policy,
   );
+  await probeNetwork?.assertNoViolations();
   if (packManifest.canRecover === true) {
     if (typeof capabilityDriver.recover !== 'function') throw new Error('ERR_CAPABILITY_PACK_ADAPTER_RECOVER');
-    const recovery = await capabilityDriver.recover(context, sidecarProbeEffectRecord(driverManifest, hostRequest));
-    if (recovery?.operatorInterventionRequired !== true) assertSidecarProbeResolution(recovery, hostRequest, driverManifest, policy);
+    probeNetwork?.setPhase('recover');
+    const recoveryResult = driver.recover(context, sidecarProbeEffectRecord(driverManifest, hostRequest));
+    probeNetwork?.allowReturnedPromise(recoveryResult);
+    if (isThenable(recoveryResult)) {
+      probeNetwork?.setPhase('recover-await');
+    } else {
+      probeNetwork?.setPhase('recover-returned');
+    }
+    const recovery = await recoveryResult;
+    probeNetwork?.setPhase('recover-returned');
+    if (recovery?.operatorInterventionRequired !== true) {
+      assertSidecarProbeResolution(recovery, hostRequest, driverManifest, policy);
+    } else {
+      assertNoWorldEvidenceKeys(recovery);
+    }
+    await probeNetwork?.assertNoViolations();
   }
+}
+
+async function withDeterministicProbeNetwork(driverManifest, hostRequest, fn) {
+  if (!networkEffectProbe(driverManifest, hostRequest)) {
+    return await withProbeGlobalLock(fn);
+  }
+  return await withProbeGlobalLock(async () => {
+  const previousGlobals = {
+    fetch: globalThis.fetch,
+    WebSocket: globalThis.WebSocket,
+    EventSource: globalThis.EventSource,
+    setTimeout: globalThis.setTimeout,
+    clearTimeout: globalThis.clearTimeout,
+    setInterval: globalThis.setInterval,
+    clearInterval: globalThis.clearInterval,
+    setImmediate: globalThis.setImmediate,
+    clearImmediate: globalThis.clearImmediate,
+    bunSleep: globalThis.Bun?.sleep,
+    promiseResolve: globalThis.Promise?.resolve,
+    queueMicrotask: globalThis.queueMicrotask,
+  };
+  const hadGlobals = {
+    fetch: Object.prototype.hasOwnProperty.call(globalThis, 'fetch'),
+    WebSocket: Object.prototype.hasOwnProperty.call(globalThis, 'WebSocket'),
+    EventSource: Object.prototype.hasOwnProperty.call(globalThis, 'EventSource'),
+    setTimeout: Object.prototype.hasOwnProperty.call(globalThis, 'setTimeout'),
+    clearTimeout: Object.prototype.hasOwnProperty.call(globalThis, 'clearTimeout'),
+    setInterval: Object.prototype.hasOwnProperty.call(globalThis, 'setInterval'),
+    clearInterval: Object.prototype.hasOwnProperty.call(globalThis, 'clearInterval'),
+    setImmediate: Object.prototype.hasOwnProperty.call(globalThis, 'setImmediate'),
+    clearImmediate: Object.prototype.hasOwnProperty.call(globalThis, 'clearImmediate'),
+    bunSleep: globalThis.Bun != null && Object.prototype.hasOwnProperty.call(globalThis.Bun, 'sleep'),
+    promiseResolve: globalThis.Promise != null && Object.prototype.hasOwnProperty.call(globalThis.Promise, 'resolve'),
+    queueMicrotask: Object.prototype.hasOwnProperty.call(globalThis, 'queueMicrotask'),
+  };
+  const deterministicFetch = async () => new Response(stableJson({ worldHostCapabilityPackAbiProbe: true }), {
+    status: 200,
+    headers: {
+      'content-type': 'application/json',
+      'x-request-id': 'world-host-capability-pack-abi-probe',
+    },
+  });
+  const deterministicNetwork = deterministicProbeNetwork({
+    fetch: deterministicFetch,
+    setTimeout: previousGlobals.setTimeout.bind(globalThis),
+    clearTimeout: previousGlobals.clearTimeout.bind(globalThis),
+    setInterval: previousGlobals.setInterval.bind(globalThis),
+    clearInterval: previousGlobals.clearInterval.bind(globalThis),
+    setImmediate: typeof previousGlobals.setImmediate === 'function' ? previousGlobals.setImmediate.bind(globalThis) : null,
+    clearImmediate: typeof previousGlobals.clearImmediate === 'function' ? previousGlobals.clearImmediate.bind(globalThis) : null,
+    sleep: typeof previousGlobals.bunSleep === 'function' ? previousGlobals.bunSleep.bind(globalThis.Bun) : null,
+    promiseResolve: previousGlobals.promiseResolve.bind(globalThis.Promise),
+    queueMicrotask: previousGlobals.queueMicrotask.bind(globalThis),
+    failNetworkEffect: (api) => {
+      throw new Error(`ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED:${api} is only supported during deterministic resolve/recover capability pack probes`);
+    },
+  });
+  globalThis.fetch = deterministicNetwork.fetch;
+  if (hadGlobals.WebSocket) globalThis.WebSocket = deterministicNetwork.WebSocket;
+  if (hadGlobals.EventSource) globalThis.EventSource = deterministicNetwork.EventSource;
+  globalThis.setTimeout = deterministicNetwork.setTimeout;
+  globalThis.clearTimeout = deterministicNetwork.clearTimeout;
+  globalThis.setInterval = deterministicNetwork.setInterval;
+  globalThis.clearInterval = deterministicNetwork.clearInterval;
+  if (typeof previousGlobals.setImmediate === 'function') globalThis.setImmediate = deterministicNetwork.setImmediate;
+  if (typeof previousGlobals.clearImmediate === 'function') globalThis.clearImmediate = deterministicNetwork.clearImmediate;
+  if (globalThis.Bun && typeof previousGlobals.bunSleep === 'function') globalThis.Bun.sleep = deterministicNetwork.sleep;
+  globalThis.Promise.resolve = deterministicNetwork.promiseResolve;
+  globalThis.queueMicrotask = deterministicNetwork.queueMicrotask;
+  let result;
+  let fnError = null;
+  try {
+    result = await fn(deterministicNetwork);
+  } catch (error) {
+    fnError = error;
+  } finally {
+    try {
+      deterministicNetwork.setPhase('closed');
+      await deterministicNetwork.assertNoViolations();
+    } finally {
+      restoreProbeGlobal('fetch', previousGlobals.fetch, hadGlobals.fetch);
+      restoreProbeGlobal('WebSocket', previousGlobals.WebSocket, hadGlobals.WebSocket);
+      restoreProbeGlobal('EventSource', previousGlobals.EventSource, hadGlobals.EventSource);
+      restoreProbeGlobal('setTimeout', previousGlobals.setTimeout, hadGlobals.setTimeout);
+      restoreProbeGlobal('clearTimeout', previousGlobals.clearTimeout, hadGlobals.clearTimeout);
+      restoreProbeGlobal('setInterval', previousGlobals.setInterval, hadGlobals.setInterval);
+      restoreProbeGlobal('clearInterval', previousGlobals.clearInterval, hadGlobals.clearInterval);
+      restoreProbeGlobal('setImmediate', previousGlobals.setImmediate, hadGlobals.setImmediate);
+      restoreProbeGlobal('clearImmediate', previousGlobals.clearImmediate, hadGlobals.clearImmediate);
+      if (globalThis.Bun) restoreProbeGlobalProperty(globalThis.Bun, 'sleep', previousGlobals.bunSleep, hadGlobals.bunSleep);
+      restoreProbeGlobalProperty(globalThis.Promise, 'resolve', previousGlobals.promiseResolve, hadGlobals.promiseResolve);
+      restoreProbeGlobal('queueMicrotask', previousGlobals.queueMicrotask, hadGlobals.queueMicrotask);
+    }
+  }
+  if (fnError) throw fnError;
+  return result;
+  });
+}
+
+async function withProbeGlobalLock(fn) {
+  const previous = probeGlobalLock;
+  let release;
+  probeGlobalLock = new Promise((resolve) => {
+    release = resolve;
+  });
+  await previous.catch(() => {});
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
+function deterministicProbeNetwork({ fetch, setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate, sleep, promiseResolve, queueMicrotask, failNetworkEffect }) {
+  let phase = 'capture';
+  let phaseToken = 0;
+  let networkAllowed = false;
+  let violations = [];
+  const pendingTimeouts = new Set();
+  const pendingIntervals = new Set();
+  const pendingImmediates = new Set();
+  const assertAllowed = (api) => {
+    if (((phase === 'resolve' || phase === 'recover') || asyncContinuationNetworkAllowedDepth > 0) && networkAllowed === true) return;
+    violations.push(api);
+    if (phase === 'closed' || phase === 'resolve-await' || phase === 'resolve-returned' ||
+      phase === 'recover-await' || phase === 'recover-returned') return;
+    failNetworkEffect(api);
+  };
+  const cancelPendingTimers = () => {
+    for (const timer of pendingTimeouts) clearTimeout(timer);
+    for (const timer of pendingIntervals) clearInterval(timer);
+    if (typeof clearImmediate === 'function') {
+      for (const immediate of pendingImmediates) clearImmediate(immediate);
+    }
+    pendingTimeouts.clear();
+    pendingIntervals.clear();
+    pendingImmediates.clear();
+  };
+  const recordPendingTimers = () => {
+    if (pendingTimeouts.size === 0 && pendingIntervals.size === 0 && pendingImmediates.size === 0) return;
+    violations.push('async-timer');
+    cancelPendingTimers();
+  };
+  const trackedPromiseStates = new WeakMap();
+  let asyncContinuationNetworkAllowedDepth = 0;
+  const runAsyncContinuation = (callback, value, { allowNetwork = false } = {}) => {
+    const previousPhase = phase;
+    const effectiveAllowNetwork = allowNetwork || asyncContinuationNetworkAllowedDepth > 0;
+    const phaseChanged = !effectiveAllowNetwork;
+    let restoreDeferred = false;
+    if (effectiveAllowNetwork) {
+      asyncContinuationNetworkAllowedDepth += 1;
+    } else {
+      phase = 'closed';
+    }
+    const restoreContinuation = () => {
+      if (phaseChanged) phase = previousPhase;
+      if (effectiveAllowNetwork) asyncContinuationNetworkAllowedDepth = Math.max(0, asyncContinuationNetworkAllowedDepth - 1);
+    };
+    try {
+      const result = callback(value);
+      if (effectiveAllowNetwork && isThenable(result)) {
+        restoreDeferred = true;
+        promiseResolve(result).then(restoreContinuation, restoreContinuation);
+      }
+      return result;
+    } catch (error) {
+      if (!effectiveAllowNetwork) violations.push('async-callback');
+      throw error;
+    } finally {
+      if (!restoreDeferred) restoreContinuation();
+    }
+  };
+  const trackedPromise = (promise, state = { allowNetwork: false }) => {
+    const wrapped = {
+      then(onFulfilled, onRejected) {
+        const childState = { allowNetwork: state.allowNetwork };
+        return trackedPromise(promise.then(
+          typeof onFulfilled === 'function' ? (value) => runAsyncContinuation(onFulfilled, value, childState) : onFulfilled,
+          typeof onRejected === 'function' ? (reason) => runAsyncContinuation(onRejected, reason, childState) : onRejected,
+        ), childState);
+      },
+      catch(onRejected) {
+        return this.then(undefined, onRejected);
+      },
+      finally(onFinally) {
+        return this.then(
+          (value) => promiseResolve(typeof onFinally === 'function' ? runAsyncContinuation(onFinally, undefined, state) : undefined).then(() => value),
+          (reason) => promiseResolve(typeof onFinally === 'function' ? runAsyncContinuation(onFinally, undefined, state) : undefined).then(() => { throw reason; }),
+        );
+      },
+      [Symbol.toStringTag]: 'Promise',
+    };
+    trackedPromiseStates.set(wrapped, state);
+    return wrapped;
+  };
+
+  class DeterministicWebSocket {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSING = 2;
+    static CLOSED = 3;
+
+    constructor(url, protocols = '') {
+      assertAllowed('WebSocket');
+      this.url = String(url);
+      this.protocol = Array.isArray(protocols) ? String(protocols[0] ?? '') : String(protocols ?? '');
+      this.extensions = '';
+      this.binaryType = 'blob';
+      this.readyState = DeterministicWebSocket.CLOSED;
+      this.worldHostCapabilityPackAbiProbe = true;
+    }
+
+    close() {
+      this.readyState = DeterministicWebSocket.CLOSED;
+    }
+
+    send() {
+      throw new Error('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED:WebSocket send is not supported during deterministic capability pack probes');
+    }
+
+    addEventListener() {}
+    removeEventListener() {}
+    dispatchEvent() { return true; }
+  }
+
+  class DeterministicEventSource {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSED = 2;
+
+    constructor(url) {
+      assertAllowed('EventSource');
+      this.url = String(url);
+      this.readyState = DeterministicEventSource.CLOSED;
+      this.withCredentials = false;
+      this.worldHostCapabilityPackAbiProbe = true;
+    }
+
+    close() {
+      this.readyState = DeterministicEventSource.CLOSED;
+    }
+
+    addEventListener() {}
+    removeEventListener() {}
+    dispatchEvent() { return true; }
+  }
+
+  return {
+    setNetworkAllowed(allowed) {
+      networkAllowed = allowed === true;
+    },
+    setPhase(nextPhase) {
+      phase = nextPhase;
+      phaseToken += 1;
+    },
+    allowReturnedPromise(value) {
+      const state = trackedPromiseStates.get(value);
+      if (state) {
+        state.allowNetwork = true;
+        return;
+      }
+      if (!(value instanceof Promise) || !inspectValue(value).includes('<pending>')) return;
+      asyncContinuationNetworkAllowedDepth += 1;
+      promiseResolve(value).then(
+        () => { asyncContinuationNetworkAllowedDepth = Math.max(0, asyncContinuationNetworkAllowedDepth - 1); },
+        () => { asyncContinuationNetworkAllowedDepth = Math.max(0, asyncContinuationNetworkAllowedDepth - 1); },
+      );
+    },
+    promiseResolve(value) {
+      return trackedPromise(promiseResolve(value), { allowNetwork: asyncContinuationNetworkAllowedDepth > 0 });
+    },
+    queueMicrotask(callback) {
+      return queueMicrotask(() => runAsyncContinuation(callback));
+    },
+    async assertNoViolations() {
+      await promiseResolve();
+      await new Promise((resolve) => setTimeout(resolve, PROBE_SETTLE_MS));
+      recordPendingTimers();
+      if (violations.length === 0) return;
+      const blockedApis = [...new Set(violations)].join(',');
+      violations = [];
+      failNetworkEffect(blockedApis);
+    },
+    fetch: (...args) => {
+      assertAllowed('fetch');
+      return fetch(...args);
+    },
+    sleep: () => {
+      assertAllowed('Bun.sleep');
+      const scheduledPhase = phase;
+      const scheduledPhaseToken = phaseToken;
+      let timer;
+      const runContinuation = (callback, value) => {
+        const previousPhase = phase;
+        if (scheduledPhaseToken === phaseToken) {
+          phase = scheduledPhase;
+        } else {
+          violations.push('async-callback');
+          phase = 'closed';
+        }
+        try {
+          return callback(value);
+        } catch {
+          violations.push('async-callback');
+          return undefined;
+        } finally {
+          phase = previousPhase;
+        }
+      };
+      const promise = new Promise((resolve) => {
+        timer = setTimeout(() => {
+          pendingTimeouts.delete(timer);
+          const previousPhase = phase;
+          if (scheduledPhaseToken === phaseToken) {
+            phase = scheduledPhase;
+          } else {
+            violations.push('async-callback');
+            phase = 'closed';
+          }
+          try {
+            resolve();
+          } finally {
+            phase = previousPhase;
+          }
+        }, 0);
+        pendingTimeouts.add(timer);
+      });
+      return {
+        then(onFulfilled, onRejected) {
+          return promise.then(
+            typeof onFulfilled === 'function' ? (value) => runContinuation(onFulfilled, value) : onFulfilled,
+            typeof onRejected === 'function' ? (reason) => runContinuation(onRejected, reason) : onRejected,
+          );
+        },
+        catch(onRejected) {
+          return this.then(undefined, onRejected);
+        },
+        finally(onFinally) {
+          return this.then(
+            (value) => promiseResolve(typeof onFinally === 'function' ? runContinuation(onFinally) : undefined).then(() => value),
+            (reason) => promiseResolve(typeof onFinally === 'function' ? runContinuation(onFinally) : undefined).then(() => { throw reason; }),
+          );
+        },
+        [Symbol.toStringTag]: 'Promise',
+      };
+    },
+    setTimeout: (callback, delay, ...args) => {
+      if (typeof callback !== 'function') return setTimeout(callback, delay, ...args);
+      const scheduledPhase = phase;
+      const scheduledPhaseToken = phaseToken;
+      let timer;
+      timer = setTimeout((...callbackArgs) => {
+        pendingTimeouts.delete(timer);
+        const previousPhase = phase;
+        if (scheduledPhaseToken === phaseToken) {
+          phase = scheduledPhase;
+        } else {
+          violations.push('async-callback');
+          phase = 'closed';
+        }
+        try {
+          return callback(...callbackArgs);
+        } catch {
+          violations.push('async-callback');
+        } finally {
+          phase = previousPhase;
+        }
+      }, delay, ...args);
+      pendingTimeouts.add(timer);
+      return timer;
+    },
+    clearTimeout: (timer) => {
+      pendingTimeouts.delete(timer);
+      return clearTimeout(timer);
+    },
+    setInterval: (callback, delay, ...args) => {
+      if (typeof callback !== 'function') return setInterval(callback, delay, ...args);
+      const scheduledPhase = phase;
+      const scheduledPhaseToken = phaseToken;
+      const timer = setInterval((...callbackArgs) => {
+        const previousPhase = phase;
+        if (scheduledPhaseToken === phaseToken) {
+          phase = scheduledPhase;
+        } else {
+          violations.push('async-callback');
+          phase = 'closed';
+        }
+        try {
+          return callback(...callbackArgs);
+        } catch {
+          violations.push('async-callback');
+        } finally {
+          phase = previousPhase;
+        }
+      }, delay, ...args);
+      pendingIntervals.add(timer);
+      return timer;
+    },
+    clearInterval: (timer) => {
+      pendingIntervals.delete(timer);
+      return clearInterval(timer);
+    },
+    setImmediate: (callback, ...args) => {
+      if (typeof setImmediate !== 'function') return undefined;
+      if (typeof callback !== 'function') return setImmediate(callback, ...args);
+      const scheduledPhase = phase;
+      const scheduledPhaseToken = phaseToken;
+      let immediate;
+      immediate = setImmediate((...callbackArgs) => {
+        pendingImmediates.delete(immediate);
+        const previousPhase = phase;
+        if (scheduledPhaseToken === phaseToken) {
+          phase = scheduledPhase;
+        } else {
+          violations.push('async-callback');
+          phase = 'closed';
+        }
+        try {
+          return callback(...callbackArgs);
+        } catch {
+          violations.push('async-callback');
+        } finally {
+          phase = previousPhase;
+        }
+      }, ...args);
+      pendingImmediates.add(immediate);
+      return immediate;
+    },
+    clearImmediate: (immediate) => {
+      pendingImmediates.delete(immediate);
+      if (typeof clearImmediate !== 'function') return undefined;
+      return clearImmediate(immediate);
+    },
+    WebSocket: DeterministicWebSocket,
+    EventSource: DeterministicEventSource,
+  };
+}
+
+function restoreProbeGlobal(name, value, hadOwnProperty) {
+  if (hadOwnProperty) {
+    globalThis[name] = value;
+  } else {
+    delete globalThis[name];
+  }
+}
+
+function restoreProbeGlobalProperty(target, name, value, hadOwnProperty) {
+  if (hadOwnProperty) {
+    target[name] = value;
+  } else {
+    delete target[name];
+  }
+}
+
+function externalEffectProbe(driverManifest, hostRequest) {
+  return manifestNetworkEffectProbe(driverManifest);
+}
+
+function networkEffectProbe(driverManifest, hostRequest = null) {
+  if (hostRequest?.actuationClass === 'http') return true;
+  if (hostRequest?.actuationClass === 'model') {
+    return networkAuthorityLabel(driverManifest);
+  }
+  if (hostRequest) return false;
+  return manifestNetworkEffectProbe(driverManifest);
+}
+
+function isThenable(value) {
+  return value != null && typeof value.then === 'function';
+}
+
+function manifestNetworkEffectProbe(driverManifest) {
+  return (driverManifest.supportedActuationClasses ?? []).includes('http') ||
+    networkAuthorityLabel(driverManifest);
+}
+
+function networkAuthorityLabel(driverManifest) {
+  return (driverManifest.authorityLabels ?? []).some((label) => label === 'model:http-json' || (typeof label === 'string' && label.startsWith('network:')));
 }
 
 function assertSidecarProbeResolution(value, hostRequest, driverManifest, policy) {

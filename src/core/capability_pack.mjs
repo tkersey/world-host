@@ -83,7 +83,6 @@ const SIDECAR_INLINE_EVAL_RUNTIMES = new Set([
   'rscript',
 ]);
 const SIDECAR_RUNTIME_VALUE_OPTIONS = new Set([
-  '--conditions',
   '--config',
   '--config-file',
   '-C',
@@ -101,12 +100,74 @@ const SIDECAR_RUNTIME_VALUE_OPTIONS = new Set([
   '--watch-path',
   '--cert',
 ]);
+const SIDECAR_RUNTIME_NON_ARTIFACT_VALUE_OPTIONS = new Set([
+  '--conditions',
+]);
+const SIDECAR_RUNTIME_NON_ARTIFACT_INLINE_VALUE_OPTIONS = new Set([
+  ...SIDECAR_RUNTIME_NON_ARTIFACT_VALUE_OPTIONS,
+  '--unsafely-ignore-certificate-errors',
+]);
 const SIDECAR_MODULE_LOADER_OPTIONS = new Set([
   '--test-reporter',
 ]);
 const SIDECAR_RUNTIME_FLAG_ONLY_OPTIONS = new Set([
+  '--enable-source-maps',
+  '--experimental-strip-types',
   '--no-warnings',
   '--trace-warnings',
+  '--unsafely-ignore-certificate-errors',
+]);
+const NODE_RUNTIME_FLAG_ONLY_OPTIONS = new Set([
+  '--enable-source-maps',
+  '--experimental-strip-types',
+  '--no-warnings',
+  '--trace-warnings',
+]);
+const DENO_RUNTIME_VALUE_OPTIONS = new Set(['--cert', '--config', '--config-file', '--location', '-c']);
+const DENO_RUNTIME_INLINE_VALUE_OPTIONS = new Set([...DENO_RUNTIME_VALUE_OPTIONS, '--unsafely-ignore-certificate-errors']);
+const DENO_RUNTIME_FLAG_ONLY_OPTIONS = new Set(['--no-config', '--unsafely-ignore-certificate-errors']);
+const BUN_UNSUPPORTED_SUBCOMMANDS = new Set([
+  'a',
+  'add',
+  'audit',
+  'build',
+  'bun',
+  'c',
+  'ci',
+  'completions',
+  'create',
+  'dev',
+  'dlx',
+  'discord',
+  'exec',
+  'feedback',
+  'getcompletes',
+  'help',
+  'i',
+  'info',
+  'init',
+  'install',
+  'link',
+  'outdated',
+  'patch',
+  'patch-commit',
+  'pm',
+  'publish',
+  'rebuild',
+  'remove',
+  'repl',
+  'restart',
+  'rm',
+  'run',
+  'run-script',
+  'start',
+  'stop',
+  'test',
+  'unlink',
+  'update',
+  'upgrade',
+  'why',
+  'x',
 ]);
 const DENO_CONFIG_IMPORT_MAP_KEYS = new Set(['imports', 'importMap', 'scopes']);
 const SIDECAR_PACKAGE_MANAGER_VALUE_OPTIONS = new Set([
@@ -535,7 +596,8 @@ function adapterScannerOptionsForManifest(manifest) {
   const actuationClasses = manifest?.supportedActuationClasses ?? [];
   return {
     allowHostFile: actuationClasses.includes('file') || authorityLabels.some((label) => label.startsWith('file:')),
-    allowHostNetwork: actuationClasses.includes('http') || authorityLabels.some((label) => label.startsWith('network:')),
+    allowHostNetwork: actuationClasses.includes('http') ||
+      authorityLabels.some((label) => label === 'model:http-json' || label.startsWith('network:')),
   };
 }
 
@@ -991,7 +1053,7 @@ function unsafeHostGlobalMember(identifier, member, options = {}) {
     return ['Worker', 'SharedWorker'].includes(member);
   }
   if (identifier === 'Bun') {
-    if (['connect', 'fetch', 'listen', 'redis', 's3', 'serve', 'sql', 'udpSocket'].includes(member)) return !options.allowHostNetwork;
+    if (['connect', 'fetch', 'listen', 'redis', 's3', 'serve', 'sql', 'udpSocket'].includes(member)) return true;
     if (['build', 'file', 'Glob', 'mmap', 'resolve', 'resolveSync', 'write'].includes(member)) return !options.allowHostFile;
     return ['$', 'env', 'FFI', 'password', 'spawn', 'spawnSync'].includes(member);
   }
@@ -2026,7 +2088,15 @@ function sidecarCommandEntrypointNeedsJavaScriptScan(artifactPath, packArtifacts
 }
 
 function artifactHasJavaScriptRuntimeShebang(artifactPath, packArtifacts) {
-  return sidecarShebangRuntimeCommand([artifactPath], packArtifacts) !== null;
+  return artifactJavaScriptRuntimeShebang(artifactPath, packArtifacts) != null;
+}
+
+function artifactJavaScriptRuntimeShebang(artifactPath, packArtifacts) {
+  const firstLine = artifactShebangFirstLine(artifactPath, packArtifacts);
+  if (!firstLine) return null;
+  return sidecarShebangTokens(firstLine)
+    .map((token) => commandBaseName(token).toLowerCase())
+    .find((runtime) => SIDECAR_JS_RUNTIMES.has(runtime)) ?? null;
 }
 
 function artifactHasScannableText(artifactPath, packArtifacts) {
@@ -2040,8 +2110,7 @@ function artifactHasScannableText(artifactPath, packArtifacts) {
 }
 
 function artifactHasBunShebang(artifactPath, packArtifacts) {
-  const firstLine = artifactShebangFirstLine(artifactPath, packArtifacts);
-  return firstLine ? /(?:^|[/\s])bun(?:\s|$)/i.test(firstLine) : false;
+  return artifactJavaScriptRuntimeShebang(artifactPath, packArtifacts) === 'bun';
 }
 
 function sidecarShebangRuntimeCommand(command, packArtifacts) {
@@ -2055,6 +2124,10 @@ function sidecarShebangRuntimeCommand(command, packArtifacts) {
   if (runtimeIndex < 0) {
     assertSafePackageManagerShebang(tokens, entrypoint, command.slice(1));
     return null;
+  }
+  const runtime = commandBaseName(tokens[runtimeIndex]).toLowerCase();
+  if (runtime === 'node' || runtime === 'deno') {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'sidecar Node and Deno shebang entrypoints must use explicit runtime commands');
   }
   assertSafeShebangRuntimePrefix(tokens, runtimeIndex);
   return [tokens[runtimeIndex], ...tokens.slice(runtimeIndex + 1), entrypoint, ...command.slice(1)];
@@ -2092,7 +2165,28 @@ function sidecarShebangTokens(firstLine) {
   if (/["'\\]/.test(body)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'sidecar shebang arguments must not use quotes or escapes');
   }
-  return body.split(/\s+/).filter(Boolean);
+  return expandEnvSplitStringShebangTokens(body.split(/\s+/).filter(Boolean));
+}
+
+function expandEnvSplitStringShebangTokens(tokens) {
+  if (commandBaseName(tokens[0] ?? '').toLowerCase() !== 'env') return tokens;
+  const splitOption = tokens[1] ?? '';
+  if (splitOption === '-S') return tokens;
+  if (splitOption === '--split-string') return [tokens[0], '-S', ...tokens.slice(2)];
+  if (splitOption.startsWith('-S') && splitOption !== '-S') {
+    return [tokens[0], '-S', ...splitEnvString(splitOption.slice(2)), ...tokens.slice(2)];
+  }
+  if (splitOption.startsWith('--split-string=')) {
+    return [tokens[0], '-S', ...splitEnvString(splitOption.slice('--split-string='.length)), ...tokens.slice(2)];
+  }
+  return tokens;
+}
+
+function splitEnvString(value) {
+  if (/["'\\]/.test(value)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'sidecar env -S arguments must not use quotes or escapes');
+  }
+  return value.trim().split(/\s+/).filter(Boolean);
 }
 
 function artifactShebangFirstLine(artifactPath, packArtifacts) {
@@ -2482,6 +2576,7 @@ function sidecarOptionArtifact(value, { allowPreload = true } = {}) {
       fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar preload option must reference a pack-relative checksum-covered artifact: ${value}`);
     }
   }
+  if (SIDECAR_RUNTIME_NON_ARTIFACT_INLINE_VALUE_OPTIONS.has(option)) return null;
   if (SIDECAR_RUNTIME_VALUE_OPTIONS.has(option) && !sidecarCommandArtifact(candidate)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar runtime option must reference a pack-relative checksum-covered artifact: ${value}`);
   }
@@ -2545,6 +2640,21 @@ function assertSafeSidecarCommandToken(command, index) {
   }
   if (sidecarUnsupportedBunNetworkOption(command, index)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Bun sidecars do not support preconnect options');
+  }
+  if (sidecarUnsupportedBunTlsOption(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Bun sidecars do not support disabling TLS certificate verification');
+  }
+  if (sidecarUnsupportedBunInstallOption(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Bun sidecars do not support package auto-install');
+  }
+  if (sidecarUnsupportedBunSubcommand(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Bun sidecars do not support package or execution subcommands');
+  }
+  if (sidecarUnsupportedNodeRuntimeOption(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `Node sidecars do not support this runtime option before the entrypoint: ${value}`);
+  }
+  if (sidecarUnsupportedDenoRuntimeOption(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `Deno sidecars do not support this runtime option before the entrypoint: ${value}`);
   }
   if (index === 0 && SIDECAR_RUNTIME_WRAPPERS.has(executable)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command wraps runtime execution outside checksum coverage: ${value}`);
@@ -2659,6 +2769,82 @@ function sidecarUnsupportedBunNetworkOption(command, index) {
   return entrypointIndex < 0 || index < entrypointIndex;
 }
 
+function sidecarUnsupportedBunTlsOption(command, index) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'bun' || !sidecarRuntimeOptionPosition(command, index)) return false;
+  const value = command[index];
+  if (value !== '--unsafely-ignore-certificate-errors' && !value.startsWith('--unsafely-ignore-certificate-errors=')) return false;
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  return entrypointIndex < 0 || index < entrypointIndex;
+}
+
+function sidecarUnsupportedBunInstallOption(command, index) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'bun' || !sidecarRuntimeOptionPosition(command, index)) return false;
+  const value = command[index];
+  if (value !== '-i' && value !== '--install' && !value.startsWith('--install=')) return false;
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  return entrypointIndex < 0 || index < entrypointIndex;
+}
+
+function sidecarUnsupportedBunSubcommand(command, index) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'bun' || !sidecarRuntimeOptionPosition(command, index)) return false;
+  if (sidecarRuntimeOptionValuePosition(command, index)) return false;
+  const value = command[index];
+  if (!BUN_UNSUPPORTED_SUBCOMMANDS.has(value)) return false;
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  return entrypointIndex < 0 || index < entrypointIndex;
+}
+
+function sidecarUnsupportedNodeRuntimeOption(command, index) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'node' || !sidecarRuntimeOptionPosition(command, index)) return false;
+  const value = command[index];
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  if (entrypointIndex >= 0 && index > entrypointIndex) return false;
+  if (value === 'inspect') return true;
+  if (!value.startsWith('-') || value === '--') return false;
+  if (value === '--conditions' || value.startsWith('--conditions=')) return false;
+  if (NODE_RUNTIME_FLAG_ONLY_OPTIONS.has(value)) return false;
+  return true;
+}
+
+function sidecarUnsupportedDenoRuntimeOption(command, index) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'deno' || !sidecarRuntimeOptionPosition(command, index)) return false;
+  if (sidecarRuntimeOptionValuePosition(command, index)) return false;
+  const value = command[index];
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  if (entrypointIndex >= 0 && index > entrypointIndex) return false;
+  if (value === '--') return false;
+  if (value === 'run' && !denoRunSubcommandBefore(command, index)) return false;
+  if (value === 'eval') return true;
+  if (!value.startsWith('-')) return !denoRunSubcommandBefore(command, index);
+  if (DENO_RUNTIME_FLAG_ONLY_OPTIONS.has(value)) return false;
+  if (denoRuntimeInlineOptionValue(value)) return false;
+  if (DENO_RUNTIME_VALUE_OPTIONS.has(value)) return false;
+  return true;
+}
+
+function denoRunSubcommandBefore(command, index) {
+  for (let cursor = 1; cursor < index; cursor += 1) {
+    if (sidecarRuntimeOptionValuePosition(command, cursor)) continue;
+    const value = command[cursor];
+    if (value === 'run') return true;
+    if (value === '--') continue;
+    if (DENO_RUNTIME_FLAG_ONLY_OPTIONS.has(value) || denoRuntimeInlineOptionValue(value)) continue;
+    if (DENO_RUNTIME_VALUE_OPTIONS.has(value)) {
+      cursor += 1;
+      continue;
+    }
+    return false;
+  }
+  return false;
+}
+
+function denoRuntimeInlineOptionValue(value) {
+  if (value.startsWith('-c') && value !== '-c' && !value.startsWith('--')) return true;
+  const separator = value.indexOf('=');
+  if (separator < 0) return false;
+  return DENO_RUNTIME_INLINE_VALUE_OPTIONS.has(value.slice(0, separator));
+}
+
 function sidecarRuntimeEvalFlag(command, index) {
   if (index < 1) return false;
   const runtime = commandBaseName(command[0]).toLowerCase();
@@ -2740,6 +2926,7 @@ function sidecarInlineEvalFlag(runtime, value) {
 
 function sidecarRuntimeRemoteEntrypoint(command, index) {
   if (!sidecarRuntimeOptionPosition(command, index)) return false;
+  if (sidecarRuntimeOptionValuePosition(command, index)) return false;
   if (!sidecarRemoteCommandTarget(command[index])) return false;
   const entrypointIndex = sidecarEntrypointIndex(command);
   return entrypointIndex < 0 || index < entrypointIndex;
@@ -2786,13 +2973,16 @@ function sidecarRuntimeOptionValuePosition(command, index) {
     if (previous === '--no-config') return false;
     if (sidecarDenoConfigOptionConsumesNext(previous)) return true;
     if (sidecarDenoConfigOptionArtifact(previous, undefined)) return false;
+    if (DENO_RUNTIME_VALUE_OPTIONS.has(previous)) return true;
   }
   return sidecarOptionConsumesNextValue(previous) || sidecarUnknownRuntimeOptionValuePosition(command, index);
 }
 
 function sidecarOptionConsumesNextValue(value) {
   if (typeof value !== 'string' || !value.startsWith('-') || value.includes('=')) return false;
-  return sidecarPreloadOptionConsumesNext(value) || SIDECAR_RUNTIME_VALUE_OPTIONS.has(value);
+  return sidecarPreloadOptionConsumesNext(value) ||
+    SIDECAR_RUNTIME_VALUE_OPTIONS.has(value) ||
+    SIDECAR_RUNTIME_NON_ARTIFACT_VALUE_OPTIONS.has(value);
 }
 
 function sidecarUnknownRuntimeOptionValuePosition(command, index) {

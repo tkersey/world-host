@@ -50,8 +50,90 @@ const BUN_RUNTIME_VALUE_OPTIONS = new Set([
   '-F',
   '-r',
 ]);
-const BUN_ARGV_WRAPPER_COMMANDS = new Set(['env', 'gtimeout', 'ionice', 'nice', 'nohup', 'setsid', 'stdbuf', 'timeout']);
-const BUN_SHELL_WRAPPER_COMMANDS = new Set(['bash', 'dash', 'fish', 'sh', 'zsh']);
+const BUN_ARGV_WRAPPER_COMMANDS = new Set(['command', 'env', 'gtimeout', 'ionice', 'nice', 'nohup', 'setsid', 'stdbuf', 'time', 'timeout']);
+const BUN_SHELL_WRAPPER_COMMANDS = new Set(['bash', 'cmd', 'cmd.exe', 'csh', 'dash', 'fish', 'ksh', 'powershell', 'powershell.exe', 'pwsh', 'sh', 'tcsh', 'zsh']);
+const BUN_UNSUPPORTED_SUBCOMMANDS = new Set([
+  'a',
+  'add',
+  'audit',
+  'build',
+  'bun',
+  'c',
+  'ci',
+  'completions',
+  'create',
+  'dev',
+  'dlx',
+  'discord',
+  'exec',
+  'feedback',
+  'getcompletes',
+  'help',
+  'i',
+  'info',
+  'init',
+  'install',
+  'link',
+  'outdated',
+  'patch',
+  'patch-commit',
+  'pm',
+  'publish',
+  'rebuild',
+  'remove',
+  'repl',
+  'restart',
+  'rm',
+  'run',
+  'run-script',
+  'start',
+  'stop',
+  'test',
+  'unlink',
+  'update',
+  'upgrade',
+  'why',
+  'x',
+]);
+const JS_RUNTIMES = new Set(['bun', 'node', 'deno']);
+const NODE_UNSUPPORTED_VALUE_OPTIONS = new Set([
+  '--env-file',
+  '--env-file-if-exists',
+  '--experimental-config-file',
+  '--experimental-policy',
+  '--experimental-loader',
+  '--import',
+  '--input-type',
+  '--loader',
+  '--openssl-config',
+  '--require',
+  '--run',
+  '-r',
+]);
+const NODE_UNSUPPORTED_FLAG_PREFIXES = [
+  '--env-file=',
+  '--env-file-if-exists=',
+  '--experimental-config-file=',
+  '--experimental-policy=',
+  '--experimental-loader=',
+  '--import=',
+  '--loader=',
+  '--openssl-config=',
+  '--require=',
+  '--run=',
+];
+const NODE_UNSUPPORTED_EVAL_PREFIXES = ['-e', '-p', '--eval=', '--print='];
+const NODE_ALLOWED_VALUE_OPTIONS = new Set(['--conditions']);
+const NODE_ALLOWED_VALUE_PREFIXES = ['--conditions='];
+const NODE_ALLOWED_FLAG_ONLY_OPTIONS = new Set([
+  '--enable-source-maps',
+  '--experimental-strip-types',
+  '--no-warnings',
+  '--trace-warnings',
+]);
+const DENO_OPTION_VALUE_OPTIONS = new Set(['--cert', '--config', '--config-file', '--location', '-c']);
+const DENO_OPTION_INLINE_VALUE_OPTIONS = new Set([...DENO_OPTION_VALUE_OPTIONS, '--unsafely-ignore-certificate-errors']);
+const DENO_ALLOWED_FLAG_ONLY_OPTIONS = new Set(['--no-config', '--unsafely-ignore-certificate-errors']);
 
 export class CapabilitySidecar {
   constructor({ command, cwd = null, timeoutMs = 5000, maximumFrameBytes = 1024 * 1024, env = {} } = {}) {
@@ -67,8 +149,19 @@ export class CapabilitySidecar {
     if (pathQualifiedJavaScriptEntrypoint(command[0])) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar JavaScript entrypoints must use an explicit runtime command');
     }
-    if (pathResolvedBunShebangEntrypoint(command[0], env.PATH ?? sidecarPath())) {
+    const resolvedShebangRuntime = pathResolvedJavaScriptRuntimeShebang(command[0], env.PATH ?? sidecarPath(), cwd ?? undefined);
+    if (resolvedShebangRuntime === 'bun') {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar Bun shebang entrypoints must be path-qualified');
+    }
+    if (resolvedShebangRuntime === 'node' || resolvedShebangRuntime === 'deno') {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar Node and Deno shebang entrypoints must use explicit runtime commands');
+    }
+    const directShebangRuntime = javascriptRuntimeShebangRuntime(commandInspectionPath(command[0], cwd ?? undefined));
+    if (directShebangRuntime === 'node' || directShebangRuntime === 'deno') {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar Node and Deno shebang entrypoints must use explicit runtime commands');
+    }
+    if (pathQualifiedSidecarRuntime(command[0])) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar runtime commands must not be path-qualified');
     }
     this.command = command;
     this.cwd = cwd == null ? undefined : path.resolve(cwd);
@@ -184,7 +277,7 @@ export function decodeSidecarFrame(bytes, maximumFrameBytes = 1024 * 1024) {
 
 async function runSidecarCommand({ argv, input, timeoutMs, maximumFrameBytes, env, cwd }) {
   return await new Promise((resolve, reject) => {
-    const spawnArgv = sidecarSpawnArgv(argv, cwd);
+      const spawnArgv = sidecarSpawnArgv(argv, cwd, env);
     const child = spawn(spawnArgv[0], spawnArgv.slice(1), {
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: false,
@@ -266,7 +359,7 @@ async function runSidecarCommand({ argv, input, timeoutMs, maximumFrameBytes, en
 }
 
 function runSidecarCommandSync({ argv, input, timeoutMs, maximumFrameBytes, env, cwd }) {
-  const spawnArgv = sidecarSpawnArgv(argv, cwd);
+  const spawnArgv = sidecarSpawnArgv(argv, cwd, env);
   const result = spawnSync(spawnArgv[0], spawnArgv.slice(1), {
     input: Buffer.from(input),
     timeout: timeoutMs,
@@ -288,14 +381,23 @@ function runSidecarCommandSync({ argv, input, timeoutMs, maximumFrameBytes, env,
   return decodeSidecarFrame(stdout, maximumFrameBytes);
 }
 
-function sidecarSpawnArgv(argv, cwd = undefined) {
+function sidecarSpawnArgv(argv, cwd = undefined, env = undefined) {
   const emptyEnvFileArg = `--env-file=${EMPTY_BUN_ENV_FILE}`;
   const emptyConfigArg = `--config=${EMPTY_BUN_CONFIG_FILE}`;
   if (commandBaseName(argv[0]) !== 'bun') {
-    if (bunWrapperCommand(argv, cwd)) {
+    const inspectionPath = commandInspectionPath(argv[0], cwd);
+    const shebangRuntime = javascriptRuntimeShebangRuntime(inspectionPath);
+    if (shebangRuntime === 'node' || shebangRuntime === 'deno') {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar Node and Deno shebang entrypoints must use explicit runtime commands');
+    }
+    assertSupportedDirectRuntimeCommand(argv);
+    if (wrappedJavaScriptRuntimeCommand(argv, cwd, env?.PATH)) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar JavaScript runtimes must not run through command wrappers');
+    }
+    if (bunWrapperCommand(argv, cwd, env?.PATH)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars must not run through command wrappers');
     }
-    const bunShebangArgs = bunShebangRuntimeArgs(commandInspectionPath(argv[0], cwd));
+    const bunShebangArgs = bunShebangRuntimeArgs(inspectionPath);
     if (bunShebangArgs) {
       const shebangArgv = ['bun', ...bunShebangArgs, ...argv];
       assertSupportedBunEnvFileOptions(shebangArgv);
@@ -307,16 +409,229 @@ function sidecarSpawnArgv(argv, cwd = undefined) {
   return [argv[0], emptyEnvFileArg, emptyConfigArg, ...argv.slice(1)];
 }
 
-function bunWrapperCommand(argv, cwd = undefined) {
+function bunWrapperCommand(argv, cwd = undefined, searchPath = undefined) {
   const command = commandBaseName(argv[0]);
   if (BUN_SHELL_WRAPPER_COMMANDS.has(command)) return true;
   if (!BUN_ARGV_WRAPPER_COMMANDS.has(command)) return false;
-  return argv.slice(1).some((value) => bunCommandArgument(value, cwd));
+  return wrapperCommandArguments(argv, cwd, searchPath).some(({ value, cwd: argumentCwd, searchPath: argumentSearchPath }) =>
+    BUN_SHELL_WRAPPER_COMMANDS.has(commandBaseName(value)) || bunCommandArgument(value, argumentCwd, argumentSearchPath));
 }
 
-function bunCommandArgument(value, cwd = undefined) {
+function wrappedJavaScriptRuntimeCommand(argv, cwd = undefined, searchPath = undefined) {
+  const command = commandBaseName(argv[0]);
+  if (BUN_SHELL_WRAPPER_COMMANDS.has(command)) return true;
+  if (!BUN_ARGV_WRAPPER_COMMANDS.has(command)) return false;
+  return wrapperCommandArguments(argv, cwd, searchPath).some(({ value, cwd: argumentCwd, searchPath: argumentSearchPath }) =>
+    BUN_SHELL_WRAPPER_COMMANDS.has(commandBaseName(value)) || javascriptRuntimeCommandArgument(value, argumentCwd, argumentSearchPath));
+}
+
+function wrapperCommandArguments(argv, cwd = undefined, searchPath = undefined) {
+  const command = commandBaseName(argv[0]);
+  if (command === 'command') return commandWrapperCommandArguments(argv, cwd, searchPath);
+  if (command === 'env') return envWrapperCommandArguments(argv, cwd, searchPath);
+  if (command === 'gtimeout' || command === 'timeout') return timeoutWrapperCommandArguments(argv, cwd, searchPath);
+  if (command === 'ionice') return optionWrapperCommandArguments(argv, cwd, searchPath, new Set(['-c', '--class', '-n', '--classdata', '-p', '--pid', '-P', '--pgid', '-u', '--uid']));
+  if (command === 'nice') return niceWrapperCommandArguments(argv, cwd, searchPath);
+  if (command === 'nohup') return nohupWrapperCommandArguments(argv, cwd, searchPath);
+  if (command === 'setsid') return optionWrapperCommandArguments(argv, cwd, searchPath);
+  if (command === 'stdbuf') return stdbufWrapperCommandArguments(argv, cwd, searchPath);
+  if (command === 'time') return optionWrapperCommandArguments(argv, cwd, searchPath, new Set(['-f', '--format', '-o', '--output']));
+  return wrapperCommandFromIndex(argv, 1, cwd, searchPath);
+}
+
+function commandWrapperCommandArguments(argv, cwd = undefined, searchPath = undefined) {
+  let index = 1;
+  for (; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value === '--') {
+      index += 1;
+      break;
+    }
+    if (value === '-p') continue;
+    if (value.startsWith('-')) continue;
+    break;
+  }
+  return wrapperCommandFromIndex(argv, index, cwd, searchPath);
+}
+
+function envWrapperCommandArguments(argv, cwd = undefined, searchPath = undefined) {
+  let effectiveCwd = cwd;
+  let effectiveSearchPath = searchPath;
+  for (let index = 1; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value === '--') continue;
+    const assignment = envAssignment(value);
+    if (assignment) {
+      if (assignment.name === 'PATH') effectiveSearchPath = assignment.value;
+      continue;
+    }
+    if (value === '-i' || value === '--ignore-environment' || value === '-0' || value === '--null' ||
+      value === '-v' || value === '--debug' || value === '--list-signal-handling') continue;
+    if (value === '-S' || value === '--split-string') {
+      index += 1;
+      return wrapperCommandArguments(['env', ...splitEnvString(argv[index] ?? ''), ...argv.slice(index + 1)], effectiveCwd, effectiveSearchPath);
+    }
+    if (value.startsWith('-S') && value !== '-S') {
+      return wrapperCommandArguments(['env', ...splitEnvString(value.slice(2)), ...argv.slice(index + 1)], effectiveCwd, effectiveSearchPath);
+    }
+    if (value.startsWith('--split-string=')) {
+      return wrapperCommandArguments(['env', ...splitEnvString(value.slice('--split-string='.length)), ...argv.slice(index + 1)], effectiveCwd, effectiveSearchPath);
+    }
+    if (value === '-u' || value === '--unset') {
+      index += 1;
+      continue;
+    }
+    if (value === '-P') {
+      effectiveSearchPath = argv[index + 1] ?? effectiveSearchPath;
+      index += 1;
+      continue;
+    }
+    if (value.startsWith('-P') && value !== '-P') {
+      effectiveSearchPath = value.slice(2);
+      continue;
+    }
+    if (value === '-C' || value === '--chdir') {
+      effectiveCwd = envChdirCwd(argv[index + 1], effectiveCwd);
+      index += 1;
+      continue;
+    }
+    if (value.startsWith('--unset=')) continue;
+    if (value === '--argv0') {
+      index += 1;
+      continue;
+    }
+    if (value.startsWith('--argv0=') || value.startsWith('--block-signal') ||
+      value.startsWith('--default-signal') || value.startsWith('--ignore-signal')) continue;
+    if (value.startsWith('--chdir=')) {
+      effectiveCwd = envChdirCwd(value.slice('--chdir='.length), effectiveCwd);
+      continue;
+    }
+    if (value.startsWith('-')) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', `sidecar env wrapper option is unsupported: ${value}`);
+    }
+    return wrapperCommandFromIndex(argv, index, effectiveCwd, effectiveSearchPath);
+  }
+  return [];
+}
+
+function timeoutWrapperCommandArguments(argv, cwd = undefined, searchPath = undefined) {
+  let index = 1;
+  let optionsTerminated = false;
+  for (; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (!optionsTerminated && value === '--') {
+      optionsTerminated = true;
+      continue;
+    }
+    if (!optionsTerminated && (value === '-k' || value === '--kill-after' || value === '-s' || value === '--signal')) {
+      index += 1;
+      continue;
+    }
+    if (!optionsTerminated && value.startsWith('-') && !value.match(/^-?\d/)) continue;
+    index += 1;
+    break;
+  }
+  return wrapperCommandFromIndex(argv, index, cwd, searchPath);
+}
+
+function niceWrapperCommandArguments(argv, cwd = undefined, searchPath = undefined) {
+  let index = 1;
+  for (; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value === '--') {
+      index += 1;
+      break;
+    }
+    if (value === '-n' || value === '--adjustment') {
+      index += 1;
+      continue;
+    }
+    if (/^-\d+$/.test(value) || value.startsWith('-n') || value.startsWith('--adjustment=')) continue;
+    if (value.startsWith('-')) continue;
+    break;
+  }
+  return wrapperCommandFromIndex(argv, index, cwd, searchPath);
+}
+
+function optionWrapperCommandArguments(argv, cwd = undefined, searchPath = undefined, valueOptions = new Set()) {
+  let index = 1;
+  for (; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value === '--') {
+      index += 1;
+      break;
+    }
+    if (valueOptions.has(value)) {
+      index += 1;
+      continue;
+    }
+    if (value.startsWith('-')) continue;
+    break;
+  }
+  return wrapperCommandFromIndex(argv, index, cwd, searchPath);
+}
+
+function nohupWrapperCommandArguments(argv, cwd = undefined, searchPath = undefined) {
+  return wrapperCommandFromIndex(argv, argv[1] === '--' ? 2 : 1, cwd, searchPath);
+}
+
+function stdbufWrapperCommandArguments(argv, cwd = undefined, searchPath = undefined) {
+  let index = 1;
+  for (; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value === '--') {
+      index += 1;
+      break;
+    }
+    if (value === '-i' || value === '--input' || value === '-o' || value === '--output' || value === '-e' || value === '--error') {
+      index += 1;
+      continue;
+    }
+    if (/^-[ioe]/.test(value) || value.startsWith('--input=') || value.startsWith('--output=') || value.startsWith('--error=')) continue;
+    if (value.startsWith('-')) continue;
+    break;
+  }
+  return wrapperCommandFromIndex(argv, index, cwd, searchPath);
+}
+
+function wrapperCommandFromIndex(argv, index, cwd = undefined, searchPath = undefined) {
+  const value = argv[index];
+  if (!value) return [];
+  const command = commandBaseName(value);
+  if (BUN_ARGV_WRAPPER_COMMANDS.has(command)) {
+    return wrapperCommandArguments(argv.slice(index), cwd, searchPath);
+  }
+  return [{ value, cwd, searchPath }];
+}
+
+function envChdirCwd(value, cwd = undefined) {
+  if (!value) return cwd;
+  return path.isAbsolute(value) ? value : path.resolve(cwd ?? process.cwd(), value);
+}
+
+function envAssignment(value) {
+  const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(value);
+  return match ? { name: match[1], value: match[2] } : null;
+}
+
+function splitEnvString(value) {
+  if (/["'\\]/.test(value)) {
+    fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar env -S arguments must not use quotes or escapes');
+  }
+  return value.trim().split(/\s+/).filter(Boolean);
+}
+
+function javascriptRuntimeCommandArgument(value, cwd = undefined, searchPath = undefined) {
+  if (JS_RUNTIMES.has(commandBaseName(value))) return true;
+  if ((value.includes('/') || value.includes('\\')) && javascriptRuntimeShebangEntrypoint(commandInspectionPath(value, cwd))) return true;
+  if (JS_RUNTIMES.has(pathResolvedJavaScriptRuntimeShebang(value, searchPath, cwd))) return true;
+  return /(?:^|[\s"'=:;|&()<>])(?:bun|node|deno)(?:\.exe)?(?:$|[\s"':;|&()<>])/.test(value.toLowerCase());
+}
+
+function bunCommandArgument(value, cwd = undefined, searchPath = undefined) {
   if (commandBaseName(value) === 'bun') return true;
   if ((value.includes('/') || value.includes('\\')) && bunShebangEntrypoint(commandInspectionPath(value, cwd))) return true;
+  if (pathResolvedJavaScriptRuntimeShebang(value, searchPath, cwd) === 'bun') return true;
   return /(?:^|[\s"'=:;|&()<>])bun(?:\.exe)?(?:$|[\s"':;|&()<>])/.test(value.toLowerCase());
 }
 
@@ -349,9 +664,15 @@ function assertSupportedBunEnvFileOptions(argv) {
     if (unsupportedBunNetworkOption(value)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars do not support preconnect options');
     }
+    if (unsupportedBunTlsOption(value)) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars do not support disabling TLS certificate verification');
+    }
+    if (unsupportedBunInstallOption(value)) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars do not support package auto-install');
+    }
     if (bunRuntimeOptionValuePosition(argv, index)) continue;
-    if (value === 'run') {
-      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars do not support package script commands');
+    if (unsupportedBunSubcommand(value)) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars do not support package or execution subcommands');
     }
     if (value === '--env-file-if-exists' || value.startsWith('--env-file-if-exists=')) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars do not support --env-file-if-exists');
@@ -383,9 +704,146 @@ function unsupportedBunNetworkOption(value) {
   return value === '--fetch-preconnect' || value.startsWith('--fetch-preconnect=');
 }
 
+function unsupportedBunTlsOption(value) {
+  return value === '--unsafely-ignore-certificate-errors' || value.startsWith('--unsafely-ignore-certificate-errors=');
+}
+
+function unsupportedBunInstallOption(value) {
+  return value === '-i' || value === '--install' || value.startsWith('--install=');
+}
+
+function unsupportedBunSubcommand(value) {
+  return BUN_UNSUPPORTED_SUBCOMMANDS.has(value);
+}
+
 function bunRuntimeOptionValuePosition(argv, index) {
   const previous = argv[index - 1];
   return typeof previous === 'string' && BUN_RUNTIME_VALUE_OPTIONS.has(previous);
+}
+
+function assertSupportedDirectRuntimeCommand(argv) {
+  const runtime = commandBaseName(argv[0]);
+  if (runtime === 'node') {
+    assertSupportedNodeRuntimeCommand(argv);
+    return;
+  }
+  if (runtime === 'deno') {
+    assertSupportedDenoRuntimeCommand(argv);
+  }
+}
+
+function assertSupportedNodeRuntimeCommand(argv) {
+  for (let index = 1; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value === '--') return;
+    if (unsupportedNodeRuntimeOption(value)) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Node sidecars do not support env-file, inline code, or preload options');
+    }
+    if (NODE_ALLOWED_VALUE_OPTIONS.has(value)) {
+      index += 1;
+      continue;
+    }
+    if (NODE_ALLOWED_VALUE_PREFIXES.some((prefix) => value.startsWith(prefix))) continue;
+    if (NODE_ALLOWED_FLAG_ONLY_OPTIONS.has(value)) continue;
+    if (value.startsWith('-')) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Node sidecars do not support this runtime option before the entrypoint');
+    }
+    if (!value.startsWith('-')) return;
+  }
+}
+
+function unsupportedNodeRuntimeOption(value) {
+  return value === 'inspect' || value === '-e' || value === '-p' || value === '--eval' || value === '--print' ||
+    value.startsWith('--inspect') || value === '--debug-port' || value.startsWith('--debug-port=') ||
+    NODE_UNSUPPORTED_EVAL_PREFIXES.some((prefix) => value.startsWith(prefix)) ||
+    NODE_UNSUPPORTED_VALUE_OPTIONS.has(value) ||
+    NODE_UNSUPPORTED_FLAG_PREFIXES.some((prefix) => value.startsWith(prefix));
+}
+
+function assertSupportedDenoRuntimeCommand(argv) {
+  let runSubcommandSeen = false;
+  let configIsolated = false;
+  for (let index = 1; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value === '--') {
+      if (!runSubcommandSeen) {
+        fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Deno sidecars require a local entrypoint');
+      }
+      continue;
+    }
+    if (denoOptionValuePosition(argv, index)) continue;
+    if (value === 'eval') {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Deno sidecars do not support inline eval commands');
+    }
+    if (unsupportedDenoPermissionOption(value)) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Deno sidecars do not support permission-granting flags');
+    }
+    if (value === '--no-config') {
+      configIsolated = true;
+      continue;
+    }
+    if (DENO_ALLOWED_FLAG_ONLY_OPTIONS.has(value)) continue;
+    if (denoInlineOptionValue(value)) {
+      if (denoConfigOption(value)) configIsolated = true;
+      continue;
+    }
+    if (denoOptionConsumesNext(value)) {
+      if (denoConfigOption(value)) configIsolated = true;
+      index += 1;
+      continue;
+    }
+    if (value === 'run' && !runSubcommandSeen) {
+      runSubcommandSeen = true;
+      continue;
+    }
+    if (!value.startsWith('-')) {
+      if (!runSubcommandSeen) {
+        fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Deno sidecars must use the run subcommand');
+      }
+      if (!configIsolated) {
+        fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Deno sidecars must disable or pin config before the entrypoint');
+      }
+      assertLocalDenoEntrypoint(value);
+      return;
+    }
+    fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Deno sidecars do not support this runtime option before the entrypoint');
+  }
+  fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Deno sidecars require a local entrypoint');
+}
+
+function unsupportedDenoPermissionOption(value) {
+  const option = value.includes('=') ? value.slice(0, value.indexOf('=')) : value;
+  return option === '-A' || option === '-E' || option === '-F' || option === '-N' ||
+    option === '-P' || option === '-R' || option === '-S' || option === '-W' ||
+    option === '--allow-all' || option === '--permission-set' || option.startsWith('--allow-');
+}
+
+function denoOptionConsumesNext(value) {
+  return DENO_OPTION_VALUE_OPTIONS.has(value);
+}
+
+function denoOptionValuePosition(argv, index) {
+  return DENO_OPTION_VALUE_OPTIONS.has(argv[index - 1]);
+}
+
+function denoInlineOptionValue(value) {
+  if (value.startsWith('-c') && value !== '-c' && !value.startsWith('--')) return true;
+  const separator = value.indexOf('=');
+  if (separator < 0) return false;
+  return DENO_OPTION_INLINE_VALUE_OPTIONS.has(value.slice(0, separator));
+}
+
+function denoConfigOption(value) {
+  return value === '--config' || value.startsWith('--config=') ||
+    value === '--config-file' || value.startsWith('--config-file=') ||
+    value === '-c' || value.startsWith('-c=') ||
+    (value.startsWith('-c') && value !== '-c' && !value.startsWith('--'));
+}
+
+function assertLocalDenoEntrypoint(value) {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value)) {
+    fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Deno sidecars require local entrypoints');
+  }
 }
 
 function bareScriptEntrypoint(value) {
@@ -402,18 +860,34 @@ function commandBaseName(value) {
   return value.split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, '');
 }
 
-function bunShebangEntrypoint(value) {
+function pathQualifiedSidecarRuntime(value) {
   if (!value.includes('/') && !value.includes('\\')) return false;
+  if (!JS_RUNTIMES.has(commandBaseName(value))) return false;
+  return path.resolve(value) !== path.resolve(process.execPath);
+}
+
+function bunShebangEntrypoint(value) {
+  return javascriptRuntimeShebangRuntime(value) === 'bun';
+}
+
+function javascriptRuntimeShebangEntrypoint(value) {
+  return javascriptRuntimeShebangRuntime(value) != null;
+}
+
+function javascriptRuntimeShebangRuntime(value) {
+  if (!value.includes('/') && !value.includes('\\')) return null;
   const firstLine = shebangFirstLine(value);
-  if (!firstLine) return false;
-  return shebangTokens(firstLine).some((token) => commandBaseName(token) === 'bun');
+  if (!firstLine) return null;
+  return shebangRuntimeTokens(firstLine)
+    .map((token) => commandBaseName(token))
+    .find((runtime) => JS_RUNTIMES.has(runtime)) ?? null;
 }
 
 function bunShebangRuntimeArgs(value) {
   if (!value.includes('/') && !value.includes('\\')) return null;
   const firstLine = shebangFirstLine(value);
   if (!firstLine) return null;
-  const tokens = shebangTokens(firstLine);
+  const tokens = shebangRuntimeTokens(firstLine);
   const bunIndex = tokens.findIndex((token) => commandBaseName(token) === 'bun');
   return bunIndex < 0 ? null : tokens.slice(bunIndex + 1);
 }
@@ -433,25 +907,40 @@ function shebangFirstLine(value) {
   }
 }
 
-function shebangTokens(firstLine) {
+function shebangRuntimeTokens(firstLine) {
   const body = firstLine.slice(2).trim();
   if (/["'\\]/.test(body)) {
-    fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar Bun shebang arguments must not use quotes or escapes');
+    fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar shebang arguments must not use quotes or escapes');
   }
-  return body.split(/\s+/).filter(Boolean);
+  return expandEnvSplitStringTokens(body.split(/\s+/).filter(Boolean));
 }
 
-function pathResolvedBunShebangEntrypoint(value, searchPath) {
+function expandEnvSplitStringTokens(tokens) {
+  if (commandBaseName(tokens[0] ?? '') !== 'env') return tokens;
+  const splitOption = tokens[1] ?? '';
+  if (splitOption === '-S') return tokens;
+  if (splitOption === '--split-string') return [tokens[0], '-S', ...tokens.slice(2)];
+  if (splitOption.startsWith('-S') && splitOption !== '-S') {
+    return [tokens[0], '-S', ...splitEnvString(splitOption.slice(2)), ...tokens.slice(2)];
+  }
+  if (splitOption.startsWith('--split-string=')) {
+    return [tokens[0], '-S', ...splitEnvString(splitOption.slice('--split-string='.length)), ...tokens.slice(2)];
+  }
+  return tokens;
+}
+
+function pathResolvedJavaScriptRuntimeShebang(value, searchPath, cwd = undefined) {
   if (value.includes('/') || value.includes('\\')) return false;
-  const resolved = resolvePathCommand(value, searchPath);
-  return resolved ? bunShebangEntrypoint(resolved) : false;
+  const resolved = resolvePathCommand(value, searchPath, cwd);
+  return resolved ? javascriptRuntimeShebangRuntime(resolved) : null;
 }
 
-function resolvePathCommand(value, searchPath) {
+function resolvePathCommand(value, searchPath, cwd = undefined) {
   if (!value || value.includes('\0') || value.includes('/') || value.includes('\\')) return null;
   for (const directory of String(searchPath ?? '').split(path.delimiter)) {
     if (!directory) continue;
-    const candidate = path.join(directory, value);
+    const searchDirectory = path.isAbsolute(directory) ? directory : path.resolve(cwd ?? process.cwd(), directory);
+    const candidate = path.join(searchDirectory, value);
     try {
       const fd = openSync(candidate, 'r');
       closeSync(fd);
@@ -487,6 +976,20 @@ function encodeBytes(value) {
     };
   }
   if (Array.isArray(value)) return value.map(encodeBytes);
+  if (value instanceof Set) return [...value].map(encodeBytes);
+  if (value instanceof Map) {
+    const encoded = Object.fromEntries([...value.entries()].map(([key, child], index) => [
+      typeof key === 'string' ? key : `map:${index}`,
+      encodeBytes(child),
+    ]));
+    if (reservedSidecarObject(encoded)) {
+      return {
+        [BYTES_SENTINEL_KEY]: OBJECT_SENTINEL_VALUE,
+        [OBJECT_SENTINEL_PAYLOAD]: encoded,
+      };
+    }
+    return encoded;
+  }
   if (!value || typeof value !== 'object') return value;
   const encoded = Object.fromEntries(Object.entries(value).map(([key, child]) => [key, encodeBytes(child)]));
   if (reservedSidecarObject(value)) {
