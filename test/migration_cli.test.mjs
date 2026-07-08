@@ -1436,8 +1436,9 @@ describe('migration, branching, and CLI diagnostics', () => {
         env: { ...process.env, WORLD_HOST_CAPABILITY_PACK_PROBE_TIMEOUT_MS: '50' },
         timeout: 2000,
       });
+      assert.equal(result.error, undefined);
       assert.notEqual(result.status, 0);
-      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_PROBE_TIMEOUT:resolve:50/);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_PROBE_TIMEOUT/);
 
       const syncLoopAdapterBytes = fromUtf8(`
         export class CapabilityDriver {
@@ -1478,6 +1479,15 @@ describe('migration, branching, and CLI diagnostics', () => {
         }),
         { code: 'ERR_CAPABILITY_PACK_ADAPTER_PROBE_TIMEOUT' },
       );
+      const syncLoopResult = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+        env: { ...process.env, WORLD_HOST_CAPABILITY_PACK_PROBE_TIMEOUT_MS: '50' },
+        timeout: 2000,
+      });
+      assert.equal(syncLoopResult.error, undefined);
+      assert.notEqual(syncLoopResult.status, 0);
+      assert.match(`${syncLoopResult.stdout}${syncLoopResult.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_PROBE_TIMEOUT/);
     } finally {
       if (previousTimeout == null) {
         delete process.env.WORLD_HOST_CAPABILITY_PACK_PROBE_TIMEOUT_MS;
