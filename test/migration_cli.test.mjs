@@ -1350,6 +1350,75 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('bounds never-settling trusted capability pack probes', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-probe-timeout-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    const previousTimeout = process.env.WORLD_HOST_CAPABILITY_PACK_PROBE_TIMEOUT_MS;
+    try {
+      process.env.WORLD_HOST_CAPABILITY_PACK_PROBE_TIMEOUT_MS = '50';
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const adapterBytes = fromUtf8(`
+        export class CapabilityDriver {
+          constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
+          manifest() {
+            return {
+              driverId: 'fixture-agent-model',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: ['fixture:agent-model'],
+              supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+              supportedActuationClasses: ['model'],
+              supportedResponseStatuses: ['ok', 'final'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'pure',
+              concurrencyLimit: 1,
+              authorityLabels: ['model:fixture-agent']
+            };
+          }
+          preflight() { return { accepted: true, blockers: [] }; }
+          dryRun() { return { wouldInvoke: false }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          resolve() { return new Promise(() => {}); }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.checksums = manifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
+        .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_PROBE_TIMEOUT' },
+      );
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+        env: { ...process.env, WORLD_HOST_CAPABILITY_PACK_PROBE_TIMEOUT_MS: '50' },
+        timeout: 2000,
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_PROBE_TIMEOUT:resolve:50/);
+    } finally {
+      if (previousTimeout == null) {
+        delete process.env.WORLD_HOST_CAPABILITY_PACK_PROBE_TIMEOUT_MS;
+      } else {
+        process.env.WORLD_HOST_CAPABILITY_PACK_PROBE_TIMEOUT_MS = previousTimeout;
+      }
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('does not execute capability pack adapters during default CLI check-pack', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-no-exec-'));
     const pack = path.join(root, 'capability-pack-v0.2-fixture');

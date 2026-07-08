@@ -1,5 +1,5 @@
-import { lstatSync, readFileSync, realpathSync } from 'node:fs';
-import { lstat, readFile, realpath } from 'node:fs/promises';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from 'node:fs';
+import { lstat, open, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
 import { EnvSecretProvider, SecretAccessReport, SecretDescriptor, SecretProvider } from '../core/secrets.mjs';
@@ -20,16 +20,25 @@ export class FileSecretProvider extends SecretProvider {
   }
 
   has(name) {
+    let handle;
     try {
-      return normalizeFileSecretValue(readFileSync(this.#safePathSync(name), 'utf8')).length > 0;
+      handle = this.#openSafeSync(name);
+      return normalizeFileSecretValue(readFileSync(handle, 'utf8')).length > 0;
     } catch {
       return false;
+    } finally {
+      if (handle != null) closeSync(handle);
     }
   }
 
   async get(name, purpose = 'capability') {
-    const file = await this.#safePath(name);
-    const value = normalizeFileSecretValue(await readFile(file, 'utf8'));
+    const handle = await this.#openSafe(name);
+    let value;
+    try {
+      value = normalizeFileSecretValue(await handle.readFile('utf8'));
+    } finally {
+      await handle.close();
+    }
     if (!value.length) fail('ERR_SECRET_MISSING', `empty secret: ${name}`, { name, purpose });
     return value;
   }
@@ -48,24 +57,44 @@ export class FileSecretProvider extends SecretProvider {
     return file;
   }
 
-  async #safePath(name) {
+  async #openSafe(name) {
     const file = this.#path(name);
     const info = await lstat(file).catch(() => fail('ERR_SECRET_MISSING', `missing secret: ${name}`));
     if (info.isSymbolicLink() || !info.isFile()) fail('ERR_SECRET_FILE_PATH_INVALID');
     const root = await realpath(this.root).catch(() => fail('ERR_SECRET_FILE_ROOT_INVALID'));
     const actual = await realpath(file).catch(() => fail('ERR_SECRET_MISSING', `missing secret: ${name}`));
     if (!pathInside(root, actual)) fail('ERR_SECRET_FILE_PATH_INVALID');
-    return actual;
+    const handle = await open(actual, constants.O_RDONLY | constants.O_NOFOLLOW).catch((error) => {
+      if (error?.code === 'ELOOP') fail('ERR_SECRET_FILE_PATH_INVALID');
+      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') fail('ERR_SECRET_MISSING', `missing secret: ${name}`);
+      throw error;
+    });
+    try {
+      const opened = await handle.stat();
+      if (!opened.isFile()) fail('ERR_SECRET_FILE_PATH_INVALID');
+      return handle;
+    } catch (error) {
+      await handle.close().catch(() => {});
+      throw error;
+    }
   }
 
-  #safePathSync(name) {
+  #openSafeSync(name) {
     const file = this.#path(name);
     const info = lstatSync(file);
     if (info.isSymbolicLink() || !info.isFile()) fail('ERR_SECRET_FILE_PATH_INVALID');
     const root = realpathSync(this.root);
     const actual = realpathSync(file);
     if (!pathInside(root, actual)) fail('ERR_SECRET_FILE_PATH_INVALID');
-    return actual;
+    const handle = openSync(actual, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const opened = fstatSync(handle);
+      if (!opened.isFile()) fail('ERR_SECRET_FILE_PATH_INVALID');
+      return handle;
+    } catch (error) {
+      closeSync(handle);
+      throw error;
+    }
   }
 }
 

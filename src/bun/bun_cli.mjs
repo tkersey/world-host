@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
+import { clearTimeout as clearHostTimeout, setTimeout as setHostTimeout } from 'node:timers';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { inspect as inspectValue } from 'node:util';
 
@@ -32,6 +33,7 @@ const AGENT_FILE_ACTUATOR = 'world:actuator-ref:d5e4b1b427522cf2';
 const AGENT_FILE_DESCRIPTOR = 'world:descriptor:74afc8c3b2fe4c33';
 const AGENT_FILE_ACTUATION_CLASS = 'world:actuation-class:1';
 const AGENT_RUNTIME_FIXTURE_OUTPUT = 'actuate updated the fixture';
+const DEFAULT_CAPABILITY_PACK_PROBE_TIMEOUT_MS = 5000;
 const CAPABILITY_PACK_PROBE_SETTLE_MS = 25;
 const CAPABILITY_PACK_PROBE_CHILD_ARG = '--world-host-capability-probe-child';
 let capabilityPackProbeGlobalLock = Promise.resolve();
@@ -226,7 +228,7 @@ async function assertCapabilityPackAdapterAbi(packManifest, artifacts, packRoot)
     let driver;
     let sidecar = false;
     if (packManifest.adapter.kind === 'in_process') {
-      const module = await import(await capabilityPackAdapterImportUrl(packManifest, artifacts));
+      const module = await withCapabilityPackProbeTimeout('import', import(await capabilityPackAdapterImportUrl(packManifest, artifacts)));
       await probeNetwork?.assertNoViolations();
       const Driver = module[packManifest.adapter.exportName];
       if (typeof Driver !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_EXPORT');
@@ -244,7 +246,7 @@ async function assertCapabilityPackAdapterAbi(packManifest, artifacts, packRoot)
     const capabilityDriver = defineCapabilityDriver(driver);
     if (packManifest.canRecover === true && typeof driver.recover !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_RECOVER');
     const driverManifest = sidecar
-      ? await capabilityPackSidecarManifest(driver, packManifest)
+      ? await withCapabilityPackProbeTimeout('manifest', capabilityPackSidecarManifest(driver, packManifest))
       : capabilityDriver.manifest();
     await probeNetwork?.assertNoViolations();
     assertCapabilityPackDriverManifestMatches(packManifest, driverManifest);
@@ -270,16 +272,16 @@ async function assertCapabilityPackAdapterProbe(packManifest, capabilityDriver, 
   }
   probeNetwork?.setNetworkAllowed(networkCapabilityPackEffectProbe(driverManifest, hostRequest));
   probeNetwork?.setPhase('preflight');
-  const preflight = await capabilityDriver.preflight(context, hostRequest);
+  const preflight = await withCapabilityPackProbeTimeout('preflight', capabilityDriver.preflight(context, hostRequest));
   await probeNetwork?.assertNoViolations();
   if (preflight.accepted !== true || preflight.blockers.length > 0) {
     fail('ERR_CAPABILITY_PACK_ADAPTER_PREFLIGHT', 'sidecar adapter ABI probe preflight rejected', { blockers: preflight.blockers });
   }
   probeNetwork?.setPhase('dryRun');
-  await capabilityDriver.dryRun(context, hostRequest);
+  await withCapabilityPackProbeTimeout('dryRun', capabilityDriver.dryRun(context, hostRequest));
   await probeNetwork?.assertNoViolations();
   probeNetwork?.setPhase('shadow');
-  await capabilityDriver.shadow(context, hostRequest, { worldHostCapabilityPackAbiProbe: true });
+  await withCapabilityPackProbeTimeout('shadow', capabilityDriver.shadow(context, hostRequest, { worldHostCapabilityPackAbiProbe: true }));
   await probeNetwork?.assertNoViolations();
   probeNetwork?.setPhase('resolve');
   const resolution = driver.resolve(context, hostRequest);
@@ -289,7 +291,7 @@ async function assertCapabilityPackAdapterProbe(packManifest, capabilityDriver, 
   } else {
     probeNetwork?.setPhase('resolve-returned');
   }
-  const resolvedResolution = await resolution;
+  const resolvedResolution = await withCapabilityPackProbeTimeout('resolve', resolution);
   probeNetwork?.setPhase('resolve-returned');
   assertCapabilityPackSidecarProbeResolution(
     resolvedResolution,
@@ -308,7 +310,7 @@ async function assertCapabilityPackAdapterProbe(packManifest, capabilityDriver, 
     } else {
       probeNetwork?.setPhase('recover-returned');
     }
-    const recovery = await recoveryResult;
+    const recovery = await withCapabilityPackProbeTimeout('recover', recoveryResult);
     probeNetwork?.setPhase('recover-returned');
     if (recovery?.operatorInterventionRequired !== true) {
       assertCapabilityPackSidecarProbeResolution(recovery, hostRequest, driverManifest, policy);
@@ -317,6 +319,33 @@ async function assertCapabilityPackAdapterProbe(packManifest, capabilityDriver, 
     }
     await probeNetwork?.assertNoViolations();
   }
+}
+
+async function withCapabilityPackProbeTimeout(phase, value) {
+  const timeoutMs = capabilityPackProbeTimeoutMs();
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setHostTimeout(() => reject(capabilityPackProbeTimeoutError(phase, timeoutMs)), timeoutMs);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([Promise.resolve(value), timeout]);
+  } finally {
+    clearHostTimeout(timer);
+  }
+}
+
+function capabilityPackProbeTimeoutMs() {
+  const parsed = Number.parseInt(process.env.WORLD_HOST_CAPABILITY_PACK_PROBE_TIMEOUT_MS ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_CAPABILITY_PACK_PROBE_TIMEOUT_MS;
+}
+
+function capabilityPackProbeTimeoutError(phase, timeoutMs) {
+  return Object.assign(new Error(`capability pack adapter probe timed out during ${phase}`), {
+    code: 'ERR_CAPABILITY_PACK_ADAPTER_PROBE_TIMEOUT',
+    phase,
+    timeoutMs,
+  });
 }
 
 async function withDeterministicCapabilityPackProbeNetwork(driverManifest, hostRequest, fn) {
