@@ -3748,6 +3748,33 @@ describe('Capability Plane v0.2 core contracts', () => {
       new TextDecoder().decode(configuredHttpPolicyRequest.policyRequestBytes),
       stableJson({ prompt: 'ok' }),
     );
+    const fallbackPayload = {
+      url: 'https://allowed.example/decide',
+      method: 'POST',
+      metadata: 'fallback prompt body',
+    };
+    const fallbackHttpPolicyRequest = networkPolicyHostRequest({
+      ...httpRequest(),
+      requestBytes: fromUtf8(stableJson(fallbackPayload)),
+    }, new GenericHttpJsonCapabilityDriver({
+      endpointUrl: 'https://fallback.example/decide',
+      allowEndpointFromRequest: true,
+      origins: ['https://allowed.example', 'https://fallback.example'],
+      methods: ['POST'],
+    }).manifest());
+    assert.equal(
+      new TextDecoder().decode(fallbackHttpPolicyRequest.policyRequestBytes),
+      stableJson(fallbackPayload),
+    );
+    const templatePolicyBody = { prompt: 'template prompt body' };
+    const templateHttpPolicyRequest = networkPolicyHostRequest({
+      ...httpRequest(),
+      requestBytes: fromUtf8(stableJson({ body: 'short' })),
+    }, new GenericHttpJsonCapabilityDriver({
+      endpointUrl: 'https://allowed.example/decide',
+      requestTemplate: templatePolicyBody,
+    }).manifest());
+    assert.equal(templateHttpPolicyRequest.policyRequestBytes.byteLength, fromUtf8(stableJson(templatePolicyBody)).byteLength);
     const configuredModelPromptRequest = genericHttpModelRequest(
       `goal=${'model-prompt'.repeat(16)}`,
       'configured-model-policy-key',
@@ -4071,6 +4098,51 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.equal(fileDryRun.submittedToWorld, false);
     assert.equal(fileDryRun.dryRun.proposedAction.path, 'out.txt');
     assert.equal(fileDryRunDriver.dryRunCalled, true);
+    const renderedPromptDryRunDriver = genericHttpPolicyProbeDriver();
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'dry-run',
+        driver: renderedPromptDryRunDriver,
+        hostRequest: {
+          ...httpRequest(),
+          requestBytes: fromUtf8(stableJson({
+            url: 'https://allowed.example/decide',
+            method: 'POST',
+            metadata: 'fallback prompt exceeds policy',
+          })),
+        },
+        policy: {
+          maximumRequestBytes: 4096,
+          maximumPromptBytes: 8,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      }),
+      { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+    );
+    assert.equal(renderedPromptDryRunDriver.dryRunCalled, false);
+    const templatePromptShadowDriver = genericHttpPolicyProbeDriver({
+      requestTemplate: { prompt: 'template prompt exceeds policy' },
+    });
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'shadow',
+        driver: templatePromptShadowDriver,
+        hostRequest: { ...httpRequest(), requestBytes: fromUtf8(stableJson({ body: 'ok' })) },
+        context: { allowShadowNetwork: true },
+        recordedResolution: null,
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          maximumRequestBytes: 4096,
+          maximumPromptBytes: 8,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      }),
+      { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+    );
+    assert.equal(templatePromptShadowDriver.shadowCalled, false);
     const deniedFileDryRunDriver = dryRunFileProbeDriver('/dry-run-root');
     await assert.rejects(
       () => runCapabilityMode({
@@ -5376,11 +5448,7 @@ describe('Capability Plane v0.2 core contracts', () => {
             allowedMethods: ['POST'],
           },
         }),
-        (error) => {
-          assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
-          assert.ok(error.details?.blockers?.includes('ERR_CAPABILITY_PROMPT_TOO_LARGE'));
-          return true;
-        },
+        { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
       );
       assert.equal(promptLimitedFetchCalled, false);
 
@@ -7415,6 +7483,44 @@ function policyProbeDriver({ packFingerprint } = {}) {
       error.code = 'ERR_POLICY_BYPASS_EFFECT';
       throw error;
     },
+  };
+}
+
+function genericHttpPolicyProbeDriver({ requestTemplate = null } = {}) {
+  const probe = policyProbeDriver();
+  const requestTemplateBytes = requestTemplate == null ? null : fromUtf8(stableJson(requestTemplate));
+  const requestRendering = requestTemplateBytes == null ? null : {
+    requestTemplateFingerprint: `sha256:${createHash('sha256').update(requestTemplateBytes).digest('hex')}`,
+    requestTemplateBodyBytes: requestTemplateBytes.byteLength,
+  };
+  return {
+    get resolveCalled() {
+      return probe.resolveCalled;
+    },
+    get shadowCalled() {
+      return probe.shadowCalled;
+    },
+    get dryRunCalled() {
+      return probe.dryRunCalled;
+    },
+    manifest() {
+      return {
+        ...probe.manifest(),
+        driverId: 'generic-http-json',
+        diagnostics: {
+          origins: ['https://allowed.example'],
+          methods: ['POST'],
+          defaultMethod: 'POST',
+          endpointSource: 'request-or-config',
+          configuredEndpointUrl: 'https://allowed.example/decide',
+          ...(requestRendering ? { requestRendering } : {}),
+        },
+      };
+    },
+    preflight: (...args) => probe.preflight(...args),
+    dryRun: (...args) => probe.dryRun(...args),
+    shadow: (...args) => probe.shadow(...args),
+    resolve: (...args) => probe.resolve(...args),
   };
 }
 

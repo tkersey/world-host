@@ -259,9 +259,21 @@ function requestPolicyBytes(hostRequest, parsed, manifest) {
 
 function httpPolicyRequestBytes(parsed, manifest) {
   if (bodylessHttpMethod(policyHttpMethod(parsed, manifest))) return new Uint8Array();
-  if (!Object.prototype.hasOwnProperty.call(parsed ?? {}, 'body')) return new Uint8Array();
-  const rendered = manifest?.driverId === 'http-json' ? JSON.stringify(parsed.body) : stableJson(parsed.body);
+  const requestTemplateBytes = genericHttpRequestTemplatePolicyBytes(manifest);
+  if (requestTemplateBytes) return requestTemplateBytes;
+  const hasBody = Object.prototype.hasOwnProperty.call(parsed ?? {}, 'body');
+  const rendered = manifest?.driverId === 'http-json'
+    ? (hasBody ? JSON.stringify(parsed.body) : undefined)
+    : stableJson(hasBody ? parsed.body : parsed ?? {});
   return rendered === undefined ? new Uint8Array() : fromUtf8(rendered);
+}
+
+function genericHttpRequestTemplatePolicyBytes(manifest) {
+  if (manifest?.driverId !== 'generic-http-json') return null;
+  const rendering = manifest?.diagnostics?.requestRendering;
+  if (!rendering?.requestTemplateFingerprint) return null;
+  const byteLength = rendering.requestTemplateBodyBytes;
+  return Number.isSafeInteger(byteLength) && byteLength >= 0 ? new Uint8Array(byteLength) : null;
 }
 
 function policyHttpMethod(parsed, manifest) {
