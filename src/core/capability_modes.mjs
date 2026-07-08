@@ -273,7 +273,11 @@ function genericHttpRequestTemplatePolicyBytes(manifest) {
   const rendering = manifest?.diagnostics?.requestRendering;
   if (!rendering?.requestTemplateFingerprint) return null;
   const byteLength = rendering.requestTemplateBodyBytes;
-  return Number.isSafeInteger(byteLength) && byteLength >= 0 ? new Uint8Array(byteLength) : null;
+  return Number.isSafeInteger(byteLength) && byteLength >= 0 ? byteLengthView(byteLength) : null;
+}
+
+function byteLengthView(byteLength) {
+  return Object.freeze({ byteLength });
 }
 
 function policyHttpMethod(parsed, manifest) {

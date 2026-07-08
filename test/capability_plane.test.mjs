@@ -3776,6 +3776,43 @@ describe('Capability Plane v0.2 core contracts', () => {
       requestTemplate: templatePolicyBody,
     }).manifest());
     assert.equal(templateHttpPolicyRequest.policyRequestBytes.byteLength, fromUtf8(stableJson(templatePolicyBody)).byteLength);
+    const oversizedTemplateDriver = new GenericHttpJsonCapabilityDriver({
+      endpointUrl: 'https://allowed.example/decide',
+      requestTemplate: { prompt: 'template prompt body' },
+    });
+    const oversizedTemplateManifest = oversizedTemplateDriver.manifest();
+    const oversizedTemplatePolicyManifest = {
+      ...oversizedTemplateManifest,
+      diagnostics: {
+        ...oversizedTemplateManifest.diagnostics,
+        requestRendering: {
+          ...oversizedTemplateManifest.diagnostics.requestRendering,
+          requestTemplateBodyBytes: Number.MAX_SAFE_INTEGER,
+        },
+      },
+    };
+    const oversizedTemplatePolicyRequest = networkPolicyHostRequest({
+      ...httpRequest(),
+      requestBytes: fromUtf8(stableJson({ body: 'short' })),
+    }, oversizedTemplatePolicyManifest);
+    assert.equal(oversizedTemplatePolicyRequest.policyRequestBytes.byteLength, Number.MAX_SAFE_INTEGER);
+    assert.throws(
+      () => assertCapabilityPolicyAllows({
+        manifest: oversizedTemplatePolicyManifest,
+        hostRequest: oversizedTemplatePolicyRequest,
+        policy: {
+          maximumRequestBytes: 4096,
+          maximumPromptBytes: 4096,
+        },
+        mode: 'dry-run',
+        requireEffectOptIn: false,
+        checkNetworkTarget: false,
+        checkFileRoot: false,
+        checkRecoveryClass: false,
+        enforceApprovalRequirements: false,
+      }),
+      { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+    );
     const configuredModelPromptRequest = genericHttpModelRequest(
       `goal=${'model-prompt'.repeat(16)}`,
       'configured-model-policy-key',
