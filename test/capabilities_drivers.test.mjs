@@ -1737,6 +1737,48 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.valueSizeLimitsSupported, false);
   });
 
+  it('charges rendered generic HTTP model request templates during receiver preflight', () => {
+    const modelRequest = {
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClass: 'model',
+      responseSchema: { status: 'ok' },
+      idempotencyKeyBytes: fromUtf8('model-template-prompt-limit-key'),
+      idempotencyKeyWorldFingerprint: 'world:key:model-template-prompt-limit',
+      requestBytes: fromUtf8(stableJson({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: 'small' })),
+      hostRequestFingerprint: 'world:host-request:0000000000000b02',
+    };
+    const driver = new GenericHttpJsonModelDriver({
+      endpointUrl: 'https://allowed.example/decide',
+      requestTemplate: { prompt: 'x'.repeat(128) },
+    });
+    const promptLimit = modelRequest.requestBytes.byteLength + 8;
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [modelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowPartialEffectBatch: true,
+        allowedAuthorityLabels: ['model:http-json', 'network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+        maximumLiveModelCalls: 1,
+        maximumRequestBytes: 4096,
+        maximumPromptBytes: promptLimit,
+      }),
+    });
+
+    assert.equal(modelRequest.requestBytes.byteLength <= promptLimit, true);
+    assert.equal(driver.manifest().diagnostics.requestRendering.requestTemplateBodyBytes > promptLimit, true);
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.selectedPendingRequestRoutes.length, 0);
+    assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
+    assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('prompt-limit-exceeds-policy'));
+    assert.equal(report.everyPendingRequestCovered, false);
+    assert.equal(report.valueSizeLimitsSupported, false);
+  });
+
   it('rejects invalid human approval modes during driver preflight', async () => {
     const humanRequest = {
       actuatorRef: 'human:approval',

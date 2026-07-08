@@ -857,8 +857,13 @@ function requestPolicyPromptByteLength(route, request) {
 export function hostRequestPolicyPromptByteLength(manifest, hostRequest) {
   if (!hostRequest) return undefined;
   if (hostRequest.policyRequestBytes) return hostRequest.policyRequestBytes.byteLength;
-  if (isLiveModelRoute(manifest, hostRequest) || isHumanRoute(manifest, hostRequest)) return hostRequest.requestBytes?.byteLength;
-  if (isHttpRoute(manifest, hostRequest)) return httpRequestBodyPolicyByteLength(manifest, hostRequest);
+  const httpBodyByteLength = isHttpRoute(manifest, hostRequest)
+    ? httpRequestBodyPolicyByteLength(manifest, hostRequest)
+    : undefined;
+  if (isLiveModelRoute(manifest, hostRequest) || isHumanRoute(manifest, hostRequest)) {
+    return maxSafeByteLength(hostRequest.requestBytes?.byteLength, httpBodyByteLength);
+  }
+  if (isHttpRoute(manifest, hostRequest)) return httpBodyByteLength;
   return undefined;
 }
 
@@ -876,7 +881,7 @@ function maxSafeByteLength(...values) {
 
 function httpRequestBodyPolicyByteLength(route, request) {
   if (bodylessHttpMethod(requestMethodForRoute(request, route))) return 0;
-  if (route?.driverId === 'generic-http-json' && route?.diagnostics?.requestRendering?.requestTemplateFingerprint) {
+  if (route?.diagnostics?.requestRendering?.requestTemplateFingerprint) {
     return requestTemplateBodyByteLength(route.diagnostics.requestRendering);
   }
   try {
