@@ -805,12 +805,16 @@ function policyBlockers(route, request, policy) {
       ? new Set(route.diagnostics.methods.map((item) => String(item).toUpperCase()))
       : null;
     if (!request) {
-      if (!driverOrigins?.size) blockers.push('http-origin-denied:unknown');
+      const configuredOrigin = configuredRouteOrigin(route);
+      const requestlessOrigins = driverOrigins?.size ? driverOrigins : (configuredOrigin ? new Set([configuredOrigin]) : null);
+      const configuredMethod = configuredRouteMethod(route);
+      const requestlessMethods = driverMethods?.size ? driverMethods : (configuredMethod ? new Set([configuredMethod]) : null);
+      if (!requestlessOrigins?.size) blockers.push('http-origin-denied:unknown');
       else if (!policy.allowedHttpOrigins.size) blockers.push('http-origin-allowlist-required');
-      else if (!setsIntersect(driverOrigins, policy.allowedHttpOrigins)) blockers.push(`http-origin-denied:${[...driverOrigins].join(',')}`);
-      if (!driverMethods?.size) blockers.push('http-method-denied:unknown');
+      else if (!setsIntersect(requestlessOrigins, policy.allowedHttpOrigins)) blockers.push(`http-origin-denied:${[...requestlessOrigins].join(',')}`);
+      if (!requestlessMethods?.size) blockers.push('http-method-denied:unknown');
       else if (!policy.allowedHttpMethods.size) blockers.push('http-method-allowlist-required');
-      else if (!setsIntersect(driverMethods, policy.allowedHttpMethods)) blockers.push(`http-method-denied:${[...driverMethods].join(',')}`);
+      else if (!setsIntersect(requestlessMethods, policy.allowedHttpMethods)) blockers.push(`http-method-denied:${[...requestlessMethods].join(',')}`);
     } else {
       const origin = requestOriginForRoute(request, route);
       if (driverOrigins && (!origin || !driverOrigins.has(origin))) blockers.push(`http-origin-driver-denied:${origin ?? 'unknown'}`);

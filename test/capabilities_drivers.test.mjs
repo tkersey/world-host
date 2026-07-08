@@ -523,6 +523,49 @@ describe('capability preflight and reference drivers', () => {
     }]);
   });
 
+  it('derives configured HTTP endpoint origins and default methods without pending requests', () => {
+    const driver = {
+      manifest() {
+        return {
+          driverId: 'configured-url-default-post',
+          supportedActuatorRefs: ['http:json'],
+          supportedDescriptorFingerprints: ['descriptor:http-json'],
+          supportedActuationClasses: ['http'],
+          supportedResponseStatuses: ['ok'],
+          maximumRequestBytes: 4096,
+          maximumResponseBytes: 4096,
+          recoveryClass: EffectRecoveryClass.idempotent,
+          concurrencyLimit: 1,
+          authorityLabels: ['network:http'],
+          diagnostics: {
+            endpointSource: 'config',
+            configuredEndpointUrl: 'https://allowed.example/decide',
+            defaultMethod: 'POST',
+          },
+        };
+      },
+    };
+
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [{ actuatorRef: 'http:json', descriptorFingerprint: 'descriptor:http-json' }],
+        requiredHostAuthorityLabels: ['network:http'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.everyRequiredActuatorCovered, true);
+    assert.equal(report.fileNetworkAuthoritiesAllowed, true);
+  });
+
   it('checks configured HTTP endpoint method coverage against explicit payload methods', () => {
     const request = {
       ...httpRequest('https://payload.example/not-target'),
