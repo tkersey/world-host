@@ -97,9 +97,13 @@ describe('Capability sidecar transport', () => {
 
       const custom = await sidecar.resolve({
         policy: { allowedOrigins: ['https://custom.example'] },
+        trace: true,
+        parentClosureBytes: { redacted: false },
         worldHostRequest: { requestFingerprint: '0xc01' },
       }, { actuatorRef: 'http:json' });
-      assert.deepEqual(custom.contextKeys, ['policy', 'worldHostRequest']);
+      assert.deepEqual(custom.contextKeys, ['policy', 'trace']);
+      assert.deepEqual(custom.context.policy, { allowedOrigins: ['https://custom.example'] });
+      assert.equal(custom.context.trace, true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -135,7 +139,7 @@ describe('Capability sidecar transport', () => {
               ok: true,
               actuatorRef: frame.payload.hostRequest?.actuatorRef ?? null,
               legacyRequest: frame.payload.request ?? null,
-              contextRequestFingerprint: frame.payload.context?.worldHostRequest?.requestFingerprint ?? null
+              contextRequestFingerprint: frame.payload.context?.requestFingerprint ?? null
             }
           }) + '\\n');
         } else {
@@ -163,7 +167,7 @@ describe('Capability sidecar transport', () => {
       assert.equal(resolved.ok, true);
       assert.equal(resolved.actuatorRef, 'http:json');
       const resolvedWithBigIntContext = await sidecar.resolve(
-        { worldHostRequest: { requestFingerprint: 0x12n } },
+        { requestFingerprint: 0x12n },
         { actuatorRef: 'http:json' },
       );
       assert.equal(resolvedWithBigIntContext.contextRequestFingerprint, '0x12');
