@@ -787,7 +787,8 @@ function policyBlockers(route, request, policy) {
   }
   const deniedLabels = route.authorityLabels.filter((label) => policy.allowedAuthorityLabels.size && !policy.allowedAuthorityLabels.has(label));
   if (deniedLabels.length) blockers.push(`authority-denied:${deniedLabels.join(',')}`);
-  if (request && policy.maximumRequestBytes !== undefined && request.requestBytes?.byteLength > policy.maximumRequestBytes) blockers.push('request-limit-exceeds-policy');
+  const requestByteLength = requestPolicyRequestByteLength(route, request);
+  if (request && policy.maximumRequestBytes !== undefined && requestByteLength > policy.maximumRequestBytes) blockers.push('request-limit-exceeds-policy');
   const promptByteLength = requestPolicyPromptByteLength(route, request);
   if (request && policy.maximumPromptBytes !== undefined && promptByteLength > policy.maximumPromptBytes) blockers.push('prompt-limit-exceeds-policy');
   if (policy.maximumResponseBytes !== undefined && route.maximumResponseBytes > policy.maximumResponseBytes) blockers.push('response-limit-exceeds-policy');
@@ -806,7 +807,9 @@ function policyBlockers(route, request, policy) {
       : null;
     if (!request) {
       const configuredOrigin = configuredRouteOrigin(route);
-      const requestlessOrigins = driverOrigins?.size ? driverOrigins : (configuredOrigin ? new Set([configuredOrigin]) : null);
+      const requestlessOrigins = fixedConfiguredEndpointRoute(route)
+        ? (configuredOrigin ? new Set([configuredOrigin]) : null)
+        : (driverOrigins?.size ? driverOrigins : (configuredOrigin ? new Set([configuredOrigin]) : null));
       const configuredMethod = configuredRouteMethod(route);
       const requestlessMethods = driverMethods?.size ? driverMethods : (configuredMethod ? new Set([configuredMethod]) : null);
       if (!requestlessOrigins?.size) blockers.push('http-origin-denied:unknown');
@@ -857,6 +860,18 @@ export function hostRequestPolicyPromptByteLength(manifest, hostRequest) {
   if (isLiveModelRoute(manifest, hostRequest) || isHumanRoute(manifest, hostRequest)) return hostRequest.requestBytes?.byteLength;
   if (isHttpRoute(manifest, hostRequest)) return httpRequestBodyPolicyByteLength(manifest, hostRequest);
   return undefined;
+}
+
+function requestPolicyRequestByteLength(route, request) {
+  if (!request) return undefined;
+  const rawByteLength = request.requestBytes?.byteLength;
+  if (!isHttpRoute(route, request)) return rawByteLength;
+  return maxSafeByteLength(rawByteLength, httpRequestBodyPolicyByteLength(route, request));
+}
+
+function maxSafeByteLength(...values) {
+  const byteLengths = values.filter((value) => Number.isSafeInteger(value) && value >= 0);
+  return byteLengths.length ? Math.max(...byteLengths) : undefined;
 }
 
 function httpRequestBodyPolicyByteLength(route, request) {

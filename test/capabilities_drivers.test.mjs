@@ -566,6 +566,50 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.fileNetworkAuthoritiesAllowed, true);
   });
 
+  it('binds requestless fixed configured HTTP endpoint policy to the configured origin', () => {
+    const driver = {
+      manifest() {
+        return {
+          driverId: 'configured-url-extra-origin',
+          supportedActuatorRefs: ['http:json'],
+          supportedDescriptorFingerprints: ['descriptor:http-json'],
+          supportedActuationClasses: ['http'],
+          supportedResponseStatuses: ['ok'],
+          maximumRequestBytes: 4096,
+          maximumResponseBytes: 4096,
+          recoveryClass: EffectRecoveryClass.idempotent,
+          concurrencyLimit: 1,
+          authorityLabels: ['network:http'],
+          diagnostics: {
+            endpointSource: 'config',
+            configuredEndpointUrl: 'https://safe.example/decide',
+            origins: ['https://allowed.example'],
+            methods: ['POST'],
+          },
+        };
+      },
+    };
+
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [{ actuatorRef: 'http:json', descriptorFingerprint: 'descriptor:http-json' }],
+        requiredHostAuthorityLabels: ['network:http'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.ok(report.blockers.includes('required-actuator-policy-blocked:http:json'));
+    assert.ok(report.blockers.includes('http-origin-denied:https://safe.example'));
+    assert.equal(report.everyRequiredActuatorCovered, false);
+  });
+
   it('checks configured HTTP endpoint method coverage against explicit payload methods', () => {
     const request = {
       ...httpRequest('https://payload.example/not-target'),
@@ -733,6 +777,40 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
     assert.equal(report.unresolvedPendingRequestRoutes[0].driverId, 'generic-http-json');
     assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('prompt-limit-exceeds-policy'));
+    assert.equal(report.everyPendingRequestCovered, false);
+    assert.equal(report.valueSizeLimitsSupported, false);
+  });
+
+  it('leaves rendered generic HTTP request-limited bodies unresolved in partial preflight', () => {
+    const requestTemplate = { prompt: 'template exceeds receiver request policy' };
+    const request = {
+      ...httpRequest('https://allowed.example/path', 'POST'),
+      requestBytes: fromUtf8(stableJson({})),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        requestTemplate,
+      })],
+      policy: createRunPolicy({
+        allowPartialEffectBatch: true,
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+        maximumRequestBytes: 8,
+        maximumPromptBytes: 4096,
+      }),
+    });
+
+    assert.equal(request.requestBytes.byteLength <= 8, true);
+    assert.equal(fromUtf8(stableJson(requestTemplate)).byteLength > 8, true);
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
+    assert.equal(report.unresolvedPendingRequestRoutes[0].driverId, 'generic-http-json');
+    assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('request-limit-exceeds-policy'));
     assert.equal(report.everyPendingRequestCovered, false);
     assert.equal(report.valueSizeLimitsSupported, false);
   });
