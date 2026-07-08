@@ -4638,6 +4638,20 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.deepEqual(driver.manifest().supportedResponseStatuses, ['ok', 'http_error', 'failed', 'deferred']);
       const packDriver = new HttpJsonPackCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' });
       assert.deepEqual(packDriver.manifest().supportedResponseStatuses, ['ok', 'http_error', 'failed', 'deferred']);
+      globalThis.fetch = async () => new Response('transport failed', { status: 500 });
+      await assert.rejects(
+        () => packDriver.resolve({
+          policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+        }, httpRequest()),
+        { code: 'ERR_HTTP_ERROR_STATUS_UNSUPPORTED' },
+      );
+      globalThis.fetch = async (url, options) => {
+        observedHeaders = options.headers;
+        return new Response('{"action":{"variant":"final","text":"ok"}}', {
+          status: 200,
+          headers: { 'x-request-id': 'request-1' },
+        });
+      };
       const renderingPackDriver = new HttpJsonPackCapabilityDriver({
         endpointUrl: 'https://allowed.example/decide',
         secretHeaders: { Authorization: 'API_TOKEN' },
@@ -5264,6 +5278,7 @@ describe('Capability Plane v0.2 core contracts', () => {
         hostRequestFingerprint: 'world:host-request:00000000000000a7',
         idempotencyKeyBytes: fromUtf8('http-key-error-body'),
         idempotencyKeyWorldFingerprint: 'world:key:http-error-body',
+        responseSchema: { status: 'http_error' },
       });
       assert.equal(decodeResolutionInputBytes(httpError.resolutionInputBytes).status, 1);
       assert.equal(errorBodyPulled, true);
@@ -7476,6 +7491,19 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(failedSchemaResolution.status, 2);
       assert.equal(failedSchemaMetadata.status, 'failed');
       assert.equal(failedSchemaMetadata.transportStatus, 'http_error');
+      globalThis.fetch = async () => new Response('transport failed', { status: 500 });
+      await assert.rejects(
+        () => driver.resolve({
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            maximumLiveModelCalls: 1,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }, { ...genericHttpModelRequest('goal=invoke', 'model-http-key-error-ok'), responseSchema: { status: 'ok' } }),
+        { code: 'ERR_HTTP_ERROR_STATUS_UNSUPPORTED' },
+      );
 
       let failedLiveFetchCount = 0;
       globalThis.fetch = async () => {

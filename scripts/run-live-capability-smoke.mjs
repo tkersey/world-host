@@ -45,7 +45,6 @@ const hostRequest = {
   actuatorRef: 'http:json',
   descriptorFingerprint: 'descriptor:http-json',
   actuationClass: 'http',
-  responseSchema: { status: 'ok' },
   requestBytes: fromUtf8(stableJson({ body: config.body ?? {}, method: requestMethod })),
 };
 

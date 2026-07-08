@@ -48,10 +48,11 @@ export class HttpJsonDriver {
       };
       const response = await fetch(url, { method, headers, body, signal: controller.signal, redirect: 'manual' });
       if (response.status >= 300 && response.status < 400 && response.headers.get('location')) fail('ERR_HTTP_REDIRECT_REJECTED');
-      const responseStatus = response.ok ? 'ok' : 'http_error';
+      if (!response.ok) await discardResponseBody(response);
+      const responseStatus = response.ok ? 'ok' : httpErrorResponseStatus(hostRequest);
       const bytes = response.ok
         ? await readResponseBytes(response, this.maximumResponseBytes)
-        : await discardResponseBody(response);
+        : new Uint8Array();
       const text = response.ok ? new TextDecoder().decode(bytes) : '';
       return {
         resolutionInputBytes: encodeResolutionInputBytes({
@@ -79,6 +80,7 @@ export class HttpJsonDriver {
       descriptorFingerprint: effectRecord.descriptorFingerprint,
       actuationClass: 'http',
       requestBytes: effectRecord.requestBytes,
+      responseSchema: effectRecord.responseSchema,
       idempotencyKeyWorldFingerprint: effectRecord.idempotencyKeyWorldFingerprint,
       hostRequestFingerprint: effectRecord.hostRequestFingerprint,
     });
@@ -91,6 +93,12 @@ function defaultHttpJsonMethod(methods) {
 
 function bodylessHttpMethod(method) {
   return method === 'GET' || method === 'HEAD';
+}
+
+function httpErrorResponseStatus(hostRequest) {
+  const status = hostRequest?.responseSchema?.status;
+  if (status == null || status === 'http_error') return 'http_error';
+  fail('ERR_HTTP_ERROR_STATUS_UNSUPPORTED', 'HTTP error response cannot satisfy fixed response schema');
 }
 
 async function discardResponseBody(response) {

@@ -527,7 +527,10 @@ function assertRenderedRequestWithinPolicy(request, inputPolicy) {
 }
 
 function httpErrorResponseStatus(hostRequest) {
-  return hostRequest?.responseSchema?.status === 'failed' ? 'failed' : 'http_error';
+  const status = hostRequest?.responseSchema?.status;
+  if (status == null || status === 'http_error') return 'http_error';
+  if (status === 'failed') return 'failed';
+  fail('ERR_HTTP_ERROR_STATUS_UNSUPPORTED', 'HTTP error response cannot satisfy fixed response schema');
 }
 
 function timeoutResponseStatus(hostRequest) {

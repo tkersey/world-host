@@ -912,7 +912,8 @@ function unsupportedNonJavaScriptRuntimeOption(runtime, value) {
   }
   if (runtime === 'perl') {
     return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=') ||
-      value === '-m' || value.startsWith('-m') || value === '-M' || value.startsWith('-M');
+      value === '-m' || value.startsWith('-m') || value === '-M' || value.startsWith('-M') ||
+      value === '-c' || value.startsWith('-c') || value === '-d' || value.startsWith('-d');
   }
   return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=');
 }
@@ -1096,6 +1097,7 @@ function unsupportedSidecarPreloadEnvKey(key) {
     normalized === 'PERL5OPT' ||
     normalized === 'PYTHONPATH' ||
     normalized === 'PYTHONHOME' ||
+    normalized === 'PYTHONUSERBASE' ||
     normalized === 'PYTHONSTARTUP' ||
     normalized === 'LUA_INIT' ||
     normalized.startsWith('LUA_INIT_') ||

@@ -2962,6 +2962,21 @@ describe('capability preflight and reference drivers', () => {
       const failedDecoded = decodeResolutionInputBytes(failed.resolutionInputBytes);
       assert.equal(failedDecoded.status, 1);
       assert.equal(failedDecoded.responseValueImageBytes.byteLength, 0);
+      await assert.rejects(
+        () => driver.resolve({}, httpRequest('https://allowed.example/fail-ok')),
+        { code: 'ERR_HTTP_ERROR_STATUS_UNSUPPORTED' },
+      );
+      let rejectedErrorBodyCancelled = false;
+      globalThis.fetch = async () => new Response(new ReadableStream({
+        cancel() {
+          rejectedErrorBodyCancelled = true;
+        },
+      }), { status: 500 });
+      await assert.rejects(
+        () => driver.resolve({}, httpRequest('https://allowed.example/fail-ok-drain')),
+        { code: 'ERR_HTTP_ERROR_STATUS_UNSUPPORTED' },
+      );
+      assert.equal(rejectedErrorBodyCancelled, true);
       const failedSmall = new HttpJsonDriver({ origins: ['https://allowed.example'], maximumResponseBytes: 4 });
       globalThis.fetch = async () => new Response('too-large-error-body', { status: 500 });
       const failedSmallResult = await failedSmall.resolve({}, httpRequest('https://allowed.example/fail-small', 'GET', { status: 'http_error' }));

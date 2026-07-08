@@ -1,6 +1,6 @@
 {
   "driverId": "generic-http-json",
-  "packFingerprint": "sha256:2fa573a65ccf1bf83fe75691402c13039452049f5064c9075af1320681ca8263",
+  "packFingerprint": "sha256:157dfd8b205abba951709e4f78d4f6661e3fdc02ec44508de982f453e92d9c61",
   "corpusFingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
   "vectors": [
     {
