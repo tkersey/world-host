@@ -3315,7 +3315,7 @@ function packageName(value) {
 
 function optionalRelativePath(value, field) {
   requiredString(value, field);
-  if (value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value) || value.includes('\0')) {
+  if (value.startsWith('/') || value.startsWith('\\') || /^[A-Za-z]:[\\/]/.test(value) || value.includes('\0')) {
     fail('ERR_CAPABILITY_HOST_PATH_FORBIDDEN', `${field} must be a relative artifact path`);
   }
   if (value.split(/[\\/]+/).includes('..')) fail('ERR_CAPABILITY_HOST_PATH_FORBIDDEN', `${field} must not escape the pack root`);

@@ -98,6 +98,14 @@ describe('Capability Plane v0.2 core contracts', () => {
       () => validateCapabilityPackManifest(changedChecksumManifest, { verifyFingerprint: true }),
       { code: 'ERR_CAPABILITY_PACK_FINGERPRINT_MISMATCH' },
     );
+    const rootedArtifactChecksum = `sha256:${await sha256Hex(artifact)}`;
+    await assert.rejects(
+      () => validateCapabilityPackManifest({
+        ...manifest,
+        checksums: [{ path: '\\\\server\\share\\adapter.mjs', checksum: rootedArtifactChecksum }],
+      }),
+      { code: 'ERR_CAPABILITY_HOST_PATH_FORBIDDEN' },
+    );
     const externalAdapter = fromUtf8("export { CapabilityDriver } from '../../src/drivers/model_capability_driver.mjs';");
     const externalAdapterChecksum = `sha256:${await sha256Hex(externalAdapter)}`;
     await assert.rejects(
@@ -7015,6 +7023,19 @@ describe('Capability Plane v0.2 core contracts', () => {
       );
       assert.equal(authorityDeniedPreflight.accepted, false);
       assert.equal(authorityDeniedPreflight.blockers.includes('ERR_CAPABILITY_AUTHORITY_DENIED'), true);
+      assert.throws(
+        () => driver.shadow({
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            maximumLiveModelCalls: 1,
+            allowedAuthorityLabels: ['network:http'],
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }, genericHttpModelRequest('goal=invoke', 'model-authority-shadow-key'), fromUtf8('recorded')),
+        { code: 'ERR_CAPABILITY_AUTHORITY_DENIED' },
+      );
       await assert.rejects(
         () => driver.resolve({
           policy: {

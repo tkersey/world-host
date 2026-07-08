@@ -168,11 +168,13 @@ export class GenericHttpJsonModelDriver {
   }
 
   shadow(context, hostRequest, recordedResolution) {
+    const manifest = this.manifest();
+    assertModelDryRunPolicyAllows(context, manifest, hostRequest);
     parseDecisionPrompt(hostRequest.requestBytes);
     this.http.dryRun(transportContext(context), transportHostRequest(hostRequest));
     return new ShadowReport({
       liveInvoked: false,
-      schemaAccepted: recordedResolutionAccepted(recordedResolution, hostRequest, this.manifest(), context?.policy ?? {}),
+      schemaAccepted: recordedResolutionAccepted(recordedResolution, hostRequest, manifest, context?.policy ?? {}),
     });
   }
 }
