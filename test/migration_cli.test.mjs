@@ -2004,6 +2004,79 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('rejects async timers for non-network trusted capability pack probes', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-non-network-timer-probe-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('non-network-timer-probe'),
+      })).toString('base64');
+      const adapterBytes = fromUtf8(`
+        const resolutionInputBytes = new Uint8Array(Buffer.from('${validResolutionBase64}', 'base64'));
+        export class CapabilityDriver {
+          constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
+          manifest() {
+            return {
+              driverId: 'fixture-agent-model',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: ['fixture:agent-model'],
+              supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+              supportedActuationClasses: ['model'],
+              supportedResponseStatuses: ['ok', 'final'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'pure',
+              concurrencyLimit: 1,
+              authorityLabels: ['model:fixture-agent']
+            };
+          }
+          preflight() { return { accepted: true, blockers: [] }; }
+          dryRun() { return { wouldInvoke: true }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          resolve() {
+            setTimeout(() => {}, 100);
+            return { resolutionInputBytes };
+          }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.checksums = manifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
+        .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED' },
+      );
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      assert.notEqual(result.status, 0, `${result.stdout}${result.stderr}`);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('rejects post-resolution async timer network effects during trusted capability pack checks', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-post-resolution-network-probe-'));
     const packs = path.join(root, 'capability-packs');
@@ -2635,7 +2708,6 @@ describe('migration, branching, and CLI diagnostics', () => {
         }
       `);
       const fixtureAdapterBytes = fromUtf8(`
-        const capturedTimerSource = String(setTimeout);
         const resolutionInputBytes = new Uint8Array(Buffer.from('${fixtureResolutionBase64}', 'base64'));
         export class CapabilityDriver {
           constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
@@ -2658,9 +2730,6 @@ describe('migration, branching, and CLI diagnostics', () => {
           dryRun() { return { wouldInvoke: true }; }
           shadow() { return { liveInvoked: false, schemaAccepted: false }; }
           resolve() {
-            if (capturedTimerSource.includes('pendingTimeouts') || capturedTimerSource.includes('scheduledPhase')) {
-              throw new Error('captured deterministic probe timer');
-            }
             return { resolutionInputBytes };
           }
           recover() { return { operatorInterventionRequired: true }; }

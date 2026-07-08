@@ -426,100 +426,100 @@ function capabilityPackProbeTimeoutError(phase, timeoutMs) {
 }
 
 async function withDeterministicCapabilityPackProbeNetwork(driverManifest, hostRequest, fn) {
-  if (!networkCapabilityPackEffectProbe(driverManifest, hostRequest)) {
+  if (driverManifest?.adapter?.kind === 'sidecar') {
     return await withCapabilityPackProbeGlobalLock(fn);
   }
   return await withCapabilityPackProbeGlobalLock(async () => {
-  const previousGlobals = {
-    fetch: globalThis.fetch,
-    WebSocket: globalThis.WebSocket,
-    EventSource: globalThis.EventSource,
-    setTimeout: globalThis.setTimeout,
-    clearTimeout: globalThis.clearTimeout,
-    setInterval: globalThis.setInterval,
-    clearInterval: globalThis.clearInterval,
-    setImmediate: globalThis.setImmediate,
-    clearImmediate: globalThis.clearImmediate,
-    bunSleep: globalThis.Bun?.sleep,
-    promiseResolve: globalThis.Promise?.resolve,
-    queueMicrotask: globalThis.queueMicrotask,
-  };
-  const hadGlobals = {
-    fetch: Object.prototype.hasOwnProperty.call(globalThis, 'fetch'),
-    WebSocket: Object.prototype.hasOwnProperty.call(globalThis, 'WebSocket'),
-    EventSource: Object.prototype.hasOwnProperty.call(globalThis, 'EventSource'),
-    setTimeout: Object.prototype.hasOwnProperty.call(globalThis, 'setTimeout'),
-    clearTimeout: Object.prototype.hasOwnProperty.call(globalThis, 'clearTimeout'),
-    setInterval: Object.prototype.hasOwnProperty.call(globalThis, 'setInterval'),
-    clearInterval: Object.prototype.hasOwnProperty.call(globalThis, 'clearInterval'),
-    setImmediate: Object.prototype.hasOwnProperty.call(globalThis, 'setImmediate'),
-    clearImmediate: Object.prototype.hasOwnProperty.call(globalThis, 'clearImmediate'),
-    bunSleep: globalThis.Bun != null && Object.prototype.hasOwnProperty.call(globalThis.Bun, 'sleep'),
-    promiseResolve: globalThis.Promise != null && Object.prototype.hasOwnProperty.call(globalThis.Promise, 'resolve'),
-    queueMicrotask: Object.prototype.hasOwnProperty.call(globalThis, 'queueMicrotask'),
-  };
-  const deterministicFetch = async () => new Response(stableJson({ worldHostCapabilityPackAbiProbe: true }), {
-    status: 200,
-    headers: {
-      'content-type': 'application/json',
-      'x-request-id': 'world-host-capability-pack-abi-probe',
-    },
-  });
-  const deterministicNetwork = deterministicCapabilityPackProbeNetwork({
-    fetch: deterministicFetch,
-    setTimeout: previousGlobals.setTimeout.bind(globalThis),
-    clearTimeout: previousGlobals.clearTimeout.bind(globalThis),
-    setInterval: previousGlobals.setInterval.bind(globalThis),
-    clearInterval: previousGlobals.clearInterval.bind(globalThis),
-    setImmediate: typeof previousGlobals.setImmediate === 'function' ? previousGlobals.setImmediate.bind(globalThis) : null,
-    clearImmediate: typeof previousGlobals.clearImmediate === 'function' ? previousGlobals.clearImmediate.bind(globalThis) : null,
-    sleep: typeof previousGlobals.bunSleep === 'function' ? previousGlobals.bunSleep.bind(globalThis.Bun) : null,
-    promiseResolve: previousGlobals.promiseResolve.bind(globalThis.Promise),
-    queueMicrotask: previousGlobals.queueMicrotask.bind(globalThis),
-    failNetworkEffect: (api) => fail(
-      'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED',
-      `${api} is only supported during deterministic resolve/recover capability pack probes`,
-    ),
-  });
-  globalThis.fetch = deterministicNetwork.fetch;
-  if (hadGlobals.WebSocket) globalThis.WebSocket = deterministicNetwork.WebSocket;
-  if (hadGlobals.EventSource) globalThis.EventSource = deterministicNetwork.EventSource;
-  globalThis.setTimeout = deterministicNetwork.setTimeout;
-  globalThis.clearTimeout = deterministicNetwork.clearTimeout;
-  globalThis.setInterval = deterministicNetwork.setInterval;
-  globalThis.clearInterval = deterministicNetwork.clearInterval;
-  if (typeof previousGlobals.setImmediate === 'function') globalThis.setImmediate = deterministicNetwork.setImmediate;
-  if (typeof previousGlobals.clearImmediate === 'function') globalThis.clearImmediate = deterministicNetwork.clearImmediate;
-  if (globalThis.Bun && typeof previousGlobals.bunSleep === 'function') globalThis.Bun.sleep = deterministicNetwork.sleep;
-  globalThis.Promise.resolve = deterministicNetwork.promiseResolve;
-  globalThis.queueMicrotask = deterministicNetwork.queueMicrotask;
-  let result;
-  let fnError = null;
-  try {
-    result = await fn(deterministicNetwork);
-  } catch (error) {
-    fnError = error;
-  } finally {
+    const previousGlobals = {
+      fetch: globalThis.fetch,
+      WebSocket: globalThis.WebSocket,
+      EventSource: globalThis.EventSource,
+      setTimeout: globalThis.setTimeout,
+      clearTimeout: globalThis.clearTimeout,
+      setInterval: globalThis.setInterval,
+      clearInterval: globalThis.clearInterval,
+      setImmediate: globalThis.setImmediate,
+      clearImmediate: globalThis.clearImmediate,
+      bunSleep: globalThis.Bun?.sleep,
+      promiseResolve: globalThis.Promise?.resolve,
+      queueMicrotask: globalThis.queueMicrotask,
+    };
+    const hadGlobals = {
+      fetch: Object.prototype.hasOwnProperty.call(globalThis, 'fetch'),
+      WebSocket: Object.prototype.hasOwnProperty.call(globalThis, 'WebSocket'),
+      EventSource: Object.prototype.hasOwnProperty.call(globalThis, 'EventSource'),
+      setTimeout: Object.prototype.hasOwnProperty.call(globalThis, 'setTimeout'),
+      clearTimeout: Object.prototype.hasOwnProperty.call(globalThis, 'clearTimeout'),
+      setInterval: Object.prototype.hasOwnProperty.call(globalThis, 'setInterval'),
+      clearInterval: Object.prototype.hasOwnProperty.call(globalThis, 'clearInterval'),
+      setImmediate: Object.prototype.hasOwnProperty.call(globalThis, 'setImmediate'),
+      clearImmediate: Object.prototype.hasOwnProperty.call(globalThis, 'clearImmediate'),
+      bunSleep: globalThis.Bun != null && Object.prototype.hasOwnProperty.call(globalThis.Bun, 'sleep'),
+      promiseResolve: globalThis.Promise != null && Object.prototype.hasOwnProperty.call(globalThis.Promise, 'resolve'),
+      queueMicrotask: Object.prototype.hasOwnProperty.call(globalThis, 'queueMicrotask'),
+    };
+    const deterministicFetch = async () => new Response(stableJson({ worldHostCapabilityPackAbiProbe: true }), {
+      status: 200,
+      headers: {
+        'content-type': 'application/json',
+        'x-request-id': 'world-host-capability-pack-abi-probe',
+      },
+    });
+    const deterministicNetwork = deterministicCapabilityPackProbeNetwork({
+      fetch: deterministicFetch,
+      setTimeout: previousGlobals.setTimeout.bind(globalThis),
+      clearTimeout: previousGlobals.clearTimeout.bind(globalThis),
+      setInterval: previousGlobals.setInterval.bind(globalThis),
+      clearInterval: previousGlobals.clearInterval.bind(globalThis),
+      setImmediate: typeof previousGlobals.setImmediate === 'function' ? previousGlobals.setImmediate.bind(globalThis) : null,
+      clearImmediate: typeof previousGlobals.clearImmediate === 'function' ? previousGlobals.clearImmediate.bind(globalThis) : null,
+      sleep: typeof previousGlobals.bunSleep === 'function' ? previousGlobals.bunSleep.bind(globalThis.Bun) : null,
+      promiseResolve: previousGlobals.promiseResolve.bind(globalThis.Promise),
+      queueMicrotask: previousGlobals.queueMicrotask.bind(globalThis),
+      failNetworkEffect: (api) => fail(
+        'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED',
+        `${api} is only supported during deterministic resolve/recover capability pack probes`,
+      ),
+    });
+    globalThis.fetch = deterministicNetwork.fetch;
+    if (hadGlobals.WebSocket) globalThis.WebSocket = deterministicNetwork.WebSocket;
+    if (hadGlobals.EventSource) globalThis.EventSource = deterministicNetwork.EventSource;
+    globalThis.setTimeout = deterministicNetwork.setTimeout;
+    globalThis.clearTimeout = deterministicNetwork.clearTimeout;
+    globalThis.setInterval = deterministicNetwork.setInterval;
+    globalThis.clearInterval = deterministicNetwork.clearInterval;
+    if (typeof previousGlobals.setImmediate === 'function') globalThis.setImmediate = deterministicNetwork.setImmediate;
+    if (typeof previousGlobals.clearImmediate === 'function') globalThis.clearImmediate = deterministicNetwork.clearImmediate;
+    if (globalThis.Bun && typeof previousGlobals.bunSleep === 'function') globalThis.Bun.sleep = deterministicNetwork.sleep;
+    globalThis.Promise.resolve = deterministicNetwork.promiseResolve;
+    globalThis.queueMicrotask = deterministicNetwork.queueMicrotask;
+    let result;
+    let fnError = null;
     try {
-      deterministicNetwork.setPhase('closed');
-      await deterministicNetwork.assertNoViolations();
+      result = await fn(deterministicNetwork);
+    } catch (error) {
+      fnError = error;
     } finally {
-      restoreCapabilityPackProbeGlobal('fetch', previousGlobals.fetch, hadGlobals.fetch);
-      restoreCapabilityPackProbeGlobal('WebSocket', previousGlobals.WebSocket, hadGlobals.WebSocket);
-      restoreCapabilityPackProbeGlobal('EventSource', previousGlobals.EventSource, hadGlobals.EventSource);
-      restoreCapabilityPackProbeGlobal('setTimeout', previousGlobals.setTimeout, hadGlobals.setTimeout);
-      restoreCapabilityPackProbeGlobal('clearTimeout', previousGlobals.clearTimeout, hadGlobals.clearTimeout);
-      restoreCapabilityPackProbeGlobal('setInterval', previousGlobals.setInterval, hadGlobals.setInterval);
-      restoreCapabilityPackProbeGlobal('clearInterval', previousGlobals.clearInterval, hadGlobals.clearInterval);
-      restoreCapabilityPackProbeGlobal('setImmediate', previousGlobals.setImmediate, hadGlobals.setImmediate);
-      restoreCapabilityPackProbeGlobal('clearImmediate', previousGlobals.clearImmediate, hadGlobals.clearImmediate);
-      if (globalThis.Bun) restoreCapabilityPackProbeGlobalProperty(globalThis.Bun, 'sleep', previousGlobals.bunSleep, hadGlobals.bunSleep);
-      restoreCapabilityPackProbeGlobalProperty(globalThis.Promise, 'resolve', previousGlobals.promiseResolve, hadGlobals.promiseResolve);
-      restoreCapabilityPackProbeGlobal('queueMicrotask', previousGlobals.queueMicrotask, hadGlobals.queueMicrotask);
+      try {
+        deterministicNetwork.setPhase('closed');
+        await deterministicNetwork.assertNoViolations();
+      } finally {
+        restoreCapabilityPackProbeGlobal('fetch', previousGlobals.fetch, hadGlobals.fetch);
+        restoreCapabilityPackProbeGlobal('WebSocket', previousGlobals.WebSocket, hadGlobals.WebSocket);
+        restoreCapabilityPackProbeGlobal('EventSource', previousGlobals.EventSource, hadGlobals.EventSource);
+        restoreCapabilityPackProbeGlobal('setTimeout', previousGlobals.setTimeout, hadGlobals.setTimeout);
+        restoreCapabilityPackProbeGlobal('clearTimeout', previousGlobals.clearTimeout, hadGlobals.clearTimeout);
+        restoreCapabilityPackProbeGlobal('setInterval', previousGlobals.setInterval, hadGlobals.setInterval);
+        restoreCapabilityPackProbeGlobal('clearInterval', previousGlobals.clearInterval, hadGlobals.clearInterval);
+        restoreCapabilityPackProbeGlobal('setImmediate', previousGlobals.setImmediate, hadGlobals.setImmediate);
+        restoreCapabilityPackProbeGlobal('clearImmediate', previousGlobals.clearImmediate, hadGlobals.clearImmediate);
+        if (globalThis.Bun) restoreCapabilityPackProbeGlobalProperty(globalThis.Bun, 'sleep', previousGlobals.bunSleep, hadGlobals.bunSleep);
+        restoreCapabilityPackProbeGlobalProperty(globalThis.Promise, 'resolve', previousGlobals.promiseResolve, hadGlobals.promiseResolve);
+        restoreCapabilityPackProbeGlobal('queueMicrotask', previousGlobals.queueMicrotask, hadGlobals.queueMicrotask);
+      }
     }
-  }
-  if (fnError) throw fnError;
-  return result;
+    if (fnError) throw fnError;
+    return result;
   });
 }
 
