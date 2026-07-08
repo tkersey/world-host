@@ -576,6 +576,7 @@ export class EffectJournal {
 }
 
 export function journaledHostRequest(hostRequest, manifest) {
+  if (hostRequest?.effectIdentityBytes !== undefined && hostRequest?.effectIdentitySource !== 'manifest') return hostRequest;
   const endpointSource = manifest?.diagnostics?.endpointSource;
   if (endpointSource !== 'config' && endpointSource !== 'request-or-config') {
     return canonicalHttpEffectIdentityHostRequest(hostRequest, manifest);

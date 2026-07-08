@@ -733,6 +733,41 @@ describe('EffectJournal', () => {
     assert.deepEqual(await store.getBlob(running.effectIdentityBytesRef), fromUtf8('explicit-effect-identity'));
   });
 
+  it('preserves explicit effect identity bytes for configured reusable effects', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = new GenericHttpJsonCapabilityDriver({
+      endpointUrl: 'https://allowed.example/decide',
+      origins: ['https://allowed.example'],
+      methods: ['POST'],
+    });
+    const request = httpHostRequest({
+      idempotencyKeyBytes: fromUtf8('explicit-configured-http-key'),
+      idempotencyKeyWorldFingerprint: 'world:key:explicit-configured-http',
+      requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'cached configured request' } })),
+      effectIdentityBytes: fromUtf8('explicit-configured-http-identity'),
+      hostRequestFingerprint: 'world:host-request:0000000000000c22',
+    });
+    const journaled = journaledHostRequest(request, driver.manifest());
+
+    assert.deepEqual(journaled.effectIdentityBytes, request.effectIdentityBytes);
+    const observed = await journal.observe(request, { manifest: driver.manifest(), recoveryClass: EffectRecoveryClass.idempotent });
+    const resolutionInputBytes = fixtureResolutionInputBytes(request, fromUtf8('cached configured response'));
+    const resolutionInputRef = await store.putBlob(resolutionInputBytes);
+    await store.putEffectRecord({
+      ...observed,
+      state: EffectState.resolved,
+      resolutionInputRef,
+      attemptCount: 1,
+    });
+
+    const resolved = await journal.resolve({}, request, driver);
+
+    assert.equal(resolved.reused, true);
+    assert.deepEqual(resolved.resolutionInputBytes, resolutionInputBytes);
+    assert.deepEqual(await store.getBlob(observed.effectIdentityBytesRef), request.effectIdentityBytes);
+  });
+
   it('serializes concurrent direct recovery for the same effect key', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
