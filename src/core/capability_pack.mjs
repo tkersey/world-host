@@ -33,6 +33,7 @@ const SEMANTIC_FIELDS = Object.freeze([
   'maximumRequestBytes',
   'maximumResponseBytes',
   'conformanceCorpusFingerprint',
+  'conformanceReceiptFingerprint',
   'metadataBytes',
   'adapter',
 ]);
@@ -327,6 +328,7 @@ export function assertCapabilityManifest(input, options = {}) {
     maximumRequestBytes: requiredPositiveSafeInteger(input.maximumRequestBytes, 'maximumRequestBytes'),
     maximumResponseBytes: requiredPositiveSafeInteger(input.maximumResponseBytes, 'maximumResponseBytes'),
     conformanceCorpusFingerprint: optionalFingerprint(input.conformanceCorpusFingerprint, 'conformanceCorpusFingerprint'),
+    conformanceReceiptFingerprint: optionalFingerprint(input.conformanceReceiptFingerprint, 'conformanceReceiptFingerprint'),
     metadataBytes: normalizeMetadataBytes(input.metadataBytes ?? ''),
     adapter: normalizeAdapter(input.adapter ?? {}),
     checksums: normalizeChecksums(input.checksums ?? []),
@@ -335,6 +337,12 @@ export function assertCapabilityManifest(input, options = {}) {
   assertNoCredentialMaterial(manifest);
   assertNoMetadataCredentialMaterial(manifest.metadataBytes);
   assertNoOperationLabelAuthority(manifest);
+  if (manifest.conformanceCorpusFingerprint != null && manifest.conformanceReceiptFingerprint == null) {
+    fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_FINGERPRINT_REQUIRED', 'conformance receipt fingerprint is required when conformance corpus is declared');
+  }
+  if (manifest.conformanceCorpusFingerprint == null && manifest.conformanceReceiptFingerprint != null) {
+    fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_FINGERPRINT_UNEXPECTED', 'conformance receipt fingerprint requires a conformance corpus');
+  }
   if (options.requirePackFingerprint && !manifest.packFingerprint) fail('ERR_CAPABILITY_PACK_FINGERPRINT_REQUIRED');
   return manifest;
 }
@@ -374,6 +382,17 @@ export function capabilityDescriptorFromManifest(manifestLike) {
 
 export function assertCapabilityConformanceReceipt(input) {
   return new CapabilityConformanceReceipt(input);
+}
+
+export async function capabilityConformanceReceiptFingerprint(input) {
+  const receipt = assertCapabilityConformanceReceipt(input);
+  return `sha256:${await sha256Hex(fromUtf8(stableJson({
+    kind: 'world-host.capability.conformance-receipt.v1',
+    driverId: receipt.driverId,
+    corpusFingerprint: receipt.corpusFingerprint,
+    vectors: receipt.vectors,
+    nonClaims: receipt.nonClaims,
+  })))}`;
 }
 
 export async function assertCapabilityPackChecksums(manifestLike, artifacts = {}) {

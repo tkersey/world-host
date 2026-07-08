@@ -102,6 +102,7 @@ async function runCapabilityCommand(args, io, options = {}) {
     const {
       assertCapabilityConformanceReceipt,
       assertCapabilityPackChecksums,
+      capabilityConformanceReceiptFingerprint,
       validateCapabilityPackManifest,
     } = await import('../core/capability_pack.mjs');
     const manifest = JSON.parse(await readPackFile(pack, 'manifest.json', 'utf8'));
@@ -121,6 +122,9 @@ async function runCapabilityCommand(args, io, options = {}) {
       if (receipt.driverId !== checked.driverId) fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH', 'conformance receipt driverId does not match manifest');
       if (receipt.packFingerprint !== checked.packFingerprint) fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH', 'conformance receipt packFingerprint does not match manifest');
       if (receipt.corpusFingerprint !== checked.conformanceCorpusFingerprint) fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH', 'conformance receipt corpusFingerprint does not match manifest');
+      if (await capabilityConformanceReceiptFingerprint(receipt) !== checked.conformanceReceiptFingerprint) {
+        fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH', 'conformance receipt fingerprint does not match manifest');
+      }
     }
     io.stdout.write(`${JSON.stringify(redact({
       command: 'capability check-pack',

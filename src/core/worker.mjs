@@ -1068,7 +1068,7 @@ function requestOriginForManifest(hostRequest, manifest) {
     const request = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
     if (fixedConfiguredEndpointManifest(manifest)) return configuredManifestOrigin(manifest);
     if (request.url === undefined && configuredEndpointManifest(manifest)) return configuredManifestOrigin(manifest);
-    return new URL(request.url).origin;
+    return validatedRequestUrlOrigin(request.url);
   } catch {
     return null;
   }
@@ -1095,16 +1095,72 @@ function configuredEndpointManifest(manifest) {
 }
 
 function configuredManifestOrigin(manifest) {
-  if (manifest?.diagnostics?.configuredOrigin) return manifest.diagnostics.configuredOrigin;
+  if (manifest?.diagnostics?.configuredOrigin) return validatedRequestUrlOrigin(manifest.diagnostics.configuredOrigin);
   if (manifest?.diagnostics?.configuredEndpointUrl) {
     try {
-      return new URL(manifest.diagnostics.configuredEndpointUrl).origin;
+      return validatedRequestUrlOrigin(manifest.diagnostics.configuredEndpointUrl);
     } catch {
       return null;
     }
   }
   const origins = Array.isArray(manifest?.diagnostics?.origins) ? manifest.diagnostics.origins : [];
-  return origins.length === 1 ? origins[0] : null;
+  return origins.length === 1 ? validatedRequestUrlOrigin(origins[0]) : null;
+}
+
+function validatedRequestUrlOrigin(value) {
+  const parsed = new URL(value);
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+  if (parsed.username || parsed.password) return null;
+  if (credentialUrlPathOrFragment(parsed) || credentialUrlQuery(parsed)) return null;
+  return parsed.origin;
+}
+
+function credentialUrlPathOrFragment(url) {
+  const pathname = decodeUrlComponent(url.pathname);
+  const hash = decodeUrlComponent(url.hash);
+  if (credentialQueryValue(pathname) || credentialQueryValue(hash) || credentialAssignmentText(pathname) || credentialAssignmentText(hash)) {
+    return true;
+  }
+  const pathSegments = pathname.split('/').filter(Boolean);
+  for (let index = 0; index < pathSegments.length - 1; index += 1) {
+    if (credentialPathKey(pathSegments[index]) && !credentialUrlSentinel(pathSegments[index + 1])) return true;
+  }
+  return false;
+}
+
+function credentialUrlQuery(url) {
+  for (const [key, value] of url.searchParams) {
+    if (credentialQueryKey(key) || credentialQueryValue(value) || credentialAssignmentText(value)) return true;
+  }
+  return false;
+}
+
+function credentialQueryKey(value) {
+  return /credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key/i.test(value);
+}
+
+function credentialQueryValue(value) {
+  return /\b(?:bearer|basic)\s+\S+/i.test(value) || /sk-[A-Za-z0-9_-]{8,}/.test(value);
+}
+
+function credentialAssignmentText(value) {
+  return /(?:^|[\/#?&;,\s{])(?:credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key)\s*[:=]\s*["']?[A-Za-z0-9._~+/-]{8,}={0,2}/i.test(value);
+}
+
+function credentialPathKey(value) {
+  return /^(?:credentials?|authorization|bearer|tokens?|secrets?|password|(?:api|access|private)[_-]?keys?)$/i.test(value);
+}
+
+function credentialUrlSentinel(value) {
+  return /^(?:redacted|opaque|required|none|null|example(?:[-_].*)?|fixture(?:[-_].*)?|no-(?:credentials?|secrets?|tokens?))$/i.test(value);
+}
+
+function decodeUrlComponent(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 function configuredManifestMethod(manifest) {

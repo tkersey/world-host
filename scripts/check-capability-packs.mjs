@@ -10,6 +10,7 @@ import { inspect as inspectValue } from 'node:util';
 import {
   assertCapabilityConformanceReceipt,
   assertCapabilityPackChecksums,
+  capabilityConformanceReceiptFingerprint,
   validateCapabilityPackManifest,
 } from '../src/core/capability_pack.mjs';
 import { assertDriverManifest } from '../src/core/actuator.mjs';
@@ -45,6 +46,9 @@ for (const name of names) {
     if (receipt.packFingerprint !== checked.packFingerprint) throw new Error(`ERR_CAPABILITY_CONFORMANCE_PACK_FINGERPRINT:${name}`);
     if (receipt.driverId !== checked.driverId) throw new Error(`ERR_CAPABILITY_CONFORMANCE_DRIVER:${name}`);
     if (receipt.corpusFingerprint !== checked.conformanceCorpusFingerprint) throw new Error(`ERR_CAPABILITY_CONFORMANCE_CORPUS:${name}`);
+    if (await capabilityConformanceReceiptFingerprint(receipt) !== checked.conformanceReceiptFingerprint) {
+      throw new Error(`ERR_CAPABILITY_CONFORMANCE_RECEIPT_FINGERPRINT:${name}`);
+    }
   }
   results.push({
     pack: name,

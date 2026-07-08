@@ -168,7 +168,8 @@ export class GenericHttpJsonCapabilityDriver {
       });
     } catch (error) {
       if (error?.name === 'AbortError') {
-        return this.#resolution(hostRequest, { status: 'deferred', reason: 'timeout' }, 4, null);
+        const status = timeoutResponseStatus(hostRequest);
+        return this.#resolution(hostRequest, { status, reason: 'timeout', failureCode: 'ERR_HTTP_TIMEOUT' }, ResponseStatusCode[status], null);
       }
       throw error;
     }
@@ -527,6 +528,13 @@ function assertRenderedRequestWithinPolicy(request, inputPolicy) {
 
 function httpErrorResponseStatus(hostRequest) {
   return hostRequest?.responseSchema?.status === 'failed' ? 'failed' : 'http_error';
+}
+
+function timeoutResponseStatus(hostRequest) {
+  const status = hostRequest?.responseSchema?.status;
+  if (status == null || status === 'deferred') return 'deferred';
+  if (status === 'failed' || status === 'http_error') return status;
+  fail('ERR_HTTP_TIMEOUT_STATUS_UNSUPPORTED', 'HTTP timeout cannot satisfy fixed response schema');
 }
 
 function extractPath(value, path) {

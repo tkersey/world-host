@@ -1,5 +1,9 @@
 const DEFAULT_ACTUATOR_REF = 'fixture:agent-model';
 const DEFAULT_DESCRIPTOR = 'descriptor:fixture-agent-model';
+const ResponseStatusCode = Object.freeze({
+  ok: 0,
+  final: 0,
+});
 
 class CarrierError extends Error {
   constructor(code, message = code) {
@@ -100,6 +104,110 @@ function resolutionTarget(hostRequest = {}) {
   const match = String(value).match(/(?:0x)?([0-9a-f]+)$/i);
   if (!match) fail('ERR_HOST_REQUEST_FINGERPRINT_REQUIRED');
   return BigInt(`0x${match[1]}`);
+}
+
+function recordedResolutionAccepted(recordedResolution, hostRequest, manifest, policy = {}) {
+  const resolutionInputBytes = recordedResolutionInputBytes(recordedResolution);
+  if (!resolutionInputBytes) return false;
+  try {
+    assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, policy);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function recordedResolutionInputBytes(recordedResolution) {
+  if (recordedResolution instanceof Uint8Array) return recordedResolution;
+  if (recordedResolution?.resolutionInputBytes instanceof Uint8Array) return recordedResolution.resolutionInputBytes;
+  return null;
+}
+
+function assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, policy = {}) {
+  const resolution = decodeResolutionInputBytes(resolutionInputBytes);
+  if (resolution.targetHostRequestFingerprint !== resolutionTarget(hostRequest)) {
+    fail('ERR_EFFECT_RESOLUTION_TARGET_MISMATCH');
+  }
+  assertResolutionStatusAccepted(resolution.status, hostRequest, manifest);
+  if (resolution.status === 0 && resolution.responseValueImageBytes.byteLength === 0) fail('ERR_EFFECT_RESPONSE_REQUIRED');
+  if (resolution.status !== 0 && resolution.responseValueImageBytes.byteLength !== 0) fail('ERR_EFFECT_RESPONSE_FORBIDDEN');
+  const maximumResponseBytes = policy.maximumResponseBytes === undefined ? manifest.maximumResponseBytes : Math.min(manifest.maximumResponseBytes, policy.maximumResponseBytes);
+  if (maximumResponseBytes !== Number.MAX_SAFE_INTEGER && (
+    resolutionInputBytes.byteLength > maximumResponseBytes ||
+    resolution.responseValueImageBytes.byteLength > maximumResponseBytes ||
+    resolution.hostClaimBytes.byteLength > maximumResponseBytes ||
+    resolution.metadata.byteLength > maximumResponseBytes
+  )) {
+    fail('ERR_EFFECT_RESPONSE_TOO_LARGE');
+  }
+}
+
+function assertResolutionStatusAccepted(status, hostRequest, manifest) {
+  const expectedStatus = hostRequest.responseSchema?.status;
+  if (expectedStatus === undefined) {
+    const manifestStatuses = new Set((manifest.supportedResponseStatuses ?? []).map((item) => ResponseStatusCode[item]));
+    if (!manifestStatuses.has(status)) fail('ERR_RESPONSE_STATUS_NOT_SUPPORTED');
+    return;
+  }
+  const expectedWireStatus = ResponseStatusCode[expectedStatus];
+  if (expectedWireStatus === undefined || status !== expectedWireStatus) fail('ERR_RESPONSE_STATUS_NOT_SUPPORTED');
+}
+
+function decodeResolutionInputBytes(value) {
+  const reader = new ResolutionInputReader(value);
+  const version = reader.u32();
+  if (version !== 1) fail('ERR_RESOLUTION_INPUT_VERSION');
+  const out = {
+    targetHostRequestFingerprint: reader.u64(),
+    status: reader.u8(),
+    responseValueImageBytes: reader.bytes(),
+    hostClaimBytes: reader.bytes(),
+    attemptNumber: reader.u32(),
+    metadata: reader.bytes(),
+  };
+  reader.done();
+  return out;
+}
+
+class ResolutionInputReader {
+  constructor(value) {
+    this.bytesValue = bytesOf(value);
+    this.offset = 0;
+  }
+
+  u8() {
+    if (this.offset + 1 > this.bytesValue.byteLength) fail('ERR_RESOLUTION_INPUT_TRUNCATED');
+    const value = this.bytesValue[this.offset];
+    this.offset += 1;
+    return value;
+  }
+
+  u32() {
+    if (this.offset + 4 > this.bytesValue.byteLength) fail('ERR_RESOLUTION_INPUT_TRUNCATED');
+    const value = new DataView(this.bytesValue.buffer, this.bytesValue.byteOffset + this.offset, 4).getUint32(0, true);
+    this.offset += 4;
+    return value;
+  }
+
+  u64() {
+    if (this.offset + 8 > this.bytesValue.byteLength) fail('ERR_RESOLUTION_INPUT_TRUNCATED');
+    const view = new DataView(this.bytesValue.buffer, this.bytesValue.byteOffset + this.offset, 8);
+    const value = BigInt(view.getUint32(0, true)) | (BigInt(view.getUint32(4, true)) << 32n);
+    this.offset += 8;
+    return value;
+  }
+
+  bytes() {
+    const length = this.u32();
+    if (this.offset + length > this.bytesValue.byteLength) fail('ERR_RESOLUTION_INPUT_TRUNCATED');
+    const out = this.bytesValue.slice(this.offset, this.offset + length);
+    this.offset += length;
+    return out;
+  }
+
+  done() {
+    if (this.offset !== this.bytesValue.byteLength) fail('ERR_RESOLUTION_INPUT_TRAILING_BYTES');
+  }
 }
 
 function encodeResolutionInputBytes(value) {
@@ -413,7 +521,7 @@ export class CapabilityDriver {
     }
     return {
       liveInvoked: false,
-      schemaAccepted: Boolean(recordedResolution),
+      schemaAccepted: recordedResolutionAccepted(recordedResolution, hostRequest, this.manifest(), context?.policy ?? {}),
       diagnostics: { driver: 'fixture-agent-model' },
     };
   }

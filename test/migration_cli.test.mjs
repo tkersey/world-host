@@ -1326,6 +1326,33 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('rejects tampered capability conformance receipt contents during CLI check-pack', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-conformance-tamper-'));
+    const pack = path.join(root, 'capability-pack-v0.2-fixture');
+    try {
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      const receipt = JSON.parse(await readFile(path.join(pack, 'conformance.json'), 'utf8'));
+      receipt.vectors = [{ name: 'different-vector', status: 'passed' }];
+      const receiptBytes = fromUtf8(`${JSON.stringify(receipt, null, 2)}\n`);
+      await writeFile(path.join(pack, 'conformance.json'), receiptBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.checksums = manifest.checksums.map((item) => item.path === 'conformance.json'
+        ? { ...item, checksum: `sha256:${createHash('sha256').update(receiptBytes).digest('hex')}` }
+        : item);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH' },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('allows receipt-less capability packs during CLI check-pack', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-receiptless-'));
     const pack = path.join(root, 'capability-pack-v0.2-fixture');
@@ -1334,6 +1361,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       await rm(path.join(pack, 'conformance.json'));
       const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
       manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
       manifest.checksums = manifest.checksums.filter((item) => item.path !== 'conformance.json');
       manifest.packFingerprint = await capabilityPackFingerprint(manifest);
       await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -1388,6 +1416,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
       const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
       manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
       manifest.checksums = manifest.checksums
         .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
         .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
@@ -1498,6 +1527,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
       const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
       manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
       manifest.checksums = manifest.checksums
         .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
         .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
@@ -1597,6 +1627,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
       manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
       manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
       manifest.checksums = manifest.checksums
         .filter((item) => item.path !== 'adapter.mjs' && item.path !== 'conformance.json')
         .concat({ path: 'sidecar.mjs', checksum: `sha256:${createHash('sha256').update(sidecarBytes).digest('hex')}` });
@@ -1631,6 +1662,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         Object.assign(manifest, manifestOverrides);
         manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
         manifest.conformanceCorpusFingerprint = null;
+        manifest.conformanceReceiptFingerprint = null;
         manifest.checksums = manifest.checksums
           .filter((item) => !['adapter.mjs', 'conformance.json', 'sidecar.mjs'].includes(item.path))
           .concat({ path: 'sidecar.mjs', checksum: `sha256:${createHash('sha256').update(sidecarBytes).digest('hex')}` });
@@ -1873,6 +1905,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       });
       manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
       manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
       manifest.checksums = manifest.checksums
         .filter((item) => !['adapter.mjs', 'conformance.json', 'sidecar.mjs'].includes(item.path))
         .concat({ path: 'sidecar.mjs', checksum: `sha256:${createHash('sha256').update(sidecarBytes).digest('hex')}` });
@@ -1983,6 +2016,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
       });
       manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
       manifest.checksums = manifest.checksums
         .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
         .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
@@ -2052,6 +2086,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
       const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
       manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
       manifest.checksums = manifest.checksums
         .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
         .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
@@ -2146,6 +2181,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
       });
       manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
       manifest.checksums = manifest.checksums
         .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
         .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
@@ -2242,6 +2278,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
       });
       manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
       manifest.checksums = manifest.checksums
         .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
         .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
@@ -2336,6 +2373,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
       });
       manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
       manifest.checksums = manifest.checksums
         .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
         .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
@@ -2432,6 +2470,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
       });
       manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
       manifest.checksums = manifest.checksums
         .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
         .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
@@ -2527,6 +2566,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
       });
       manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
       manifest.checksums = manifest.checksums
         .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
         .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
@@ -2619,6 +2659,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
       });
       manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
       manifest.checksums = manifest.checksums
         .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
         .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
@@ -2750,6 +2791,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
       });
       networkManifest.conformanceCorpusFingerprint = null;
+      networkManifest.conformanceReceiptFingerprint = null;
       networkManifest.checksums = networkManifest.checksums
         .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
         .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(networkAdapterBytes).digest('hex')}` });
@@ -2758,6 +2800,7 @@ describe('migration, branching, and CLI diagnostics', () => {
 
       const fixtureManifest = JSON.parse(await readFile(path.join(fixturePack, 'manifest.json'), 'utf8'));
       fixtureManifest.conformanceCorpusFingerprint = null;
+      fixtureManifest.conformanceReceiptFingerprint = null;
       fixtureManifest.checksums = fixtureManifest.checksums
         .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
         .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(fixtureAdapterBytes).digest('hex')}` });
@@ -2854,6 +2897,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
       });
       manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
       manifest.checksums = manifest.checksums
         .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
         .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
@@ -2952,6 +2996,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
       });
       manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
       manifest.checksums = manifest.checksums
         .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
         .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
@@ -3040,6 +3085,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
       });
       manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
       manifest.checksums = manifest.checksums
         .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
         .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
@@ -3080,6 +3126,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
         manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
         manifest.conformanceCorpusFingerprint = null;
+        manifest.conformanceReceiptFingerprint = null;
         manifest.checksums = manifest.checksums
           .filter((item) => !['adapter.mjs', 'conformance.json', 'sidecar.mjs'].includes(item.path))
           .concat({ path: 'sidecar.mjs', checksum: `sha256:${createHash('sha256').update(sidecarBytes).digest('hex')}` });
@@ -3244,6 +3291,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
       manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
       manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
       manifest.checksums = manifest.checksums
         .filter((item) => !['adapter.mjs', 'conformance.json', 'sidecar.mjs'].includes(item.path))
         .concat({ path: 'sidecar.mjs', checksum: `sha256:${createHash('sha256').update(sidecarBytes).digest('hex')}` });
@@ -3322,6 +3370,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
       manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
       manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
       manifest.supportedResponseStatuses = ['failed', 'ok'];
       manifest.checksums = manifest.checksums
         .filter((item) => !['adapter.mjs', 'conformance.json', 'sidecar.mjs'].includes(item.path))
@@ -3403,6 +3452,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
       const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
       manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
       manifest.supportedActuationClasses = ['model', 'http'];
       manifest.checksums = manifest.checksums
         .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))

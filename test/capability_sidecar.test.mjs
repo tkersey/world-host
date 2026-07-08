@@ -154,6 +154,11 @@ describe('Capability sidecar transport', () => {
       assert.equal((await sidecar.request(CapabilitySidecarCommand.manifest)).payload.driverId, 'fixture-sidecar');
       assert.equal((await sidecar.manifest()).driverId, 'fixture-sidecar');
       assert.equal(defineCapabilityDriver(sidecar).manifest().driverId, 'fixture-sidecar');
+      const mutableCommand = [process.execPath, sidecarPath];
+      const copiedCommandSidecar = new CapabilitySidecar({ command: mutableCommand, timeoutMs: 1000 });
+      mutableCommand[0] = '/tmp/world-host-untrusted-runtime';
+      mutableCommand[1] = '/tmp/world-host-untrusted-sidecar.mjs';
+      assert.equal((await copiedCommandSidecar.manifest()).driverId, 'fixture-sidecar');
       const resolved = await sidecar.resolve({ trace: true }, { actuatorRef: 'http:json' });
       assert.equal(resolved.ok, true);
       assert.equal(resolved.actuatorRef, 'http:json');
@@ -203,6 +208,12 @@ describe('Capability sidecar transport', () => {
           { PATH: root },
           { RUBYOPT: '-r./preload.rb' },
           { PERL5OPT: '-MPreload' },
+          { PYTHONPATH: './preload-dir' },
+          { PYTHONHOME: './python-home' },
+          { LUA_INIT: '@./preload.lua' },
+          { LUA_INIT_5_4: '@./preload.lua' },
+          { PHPRC: './php-ini-dir' },
+          { PHP_INI_SCAN_DIR: './php-ini-scan-dir' },
         ]) {
           assert.throws(
             () => new CapabilitySidecar({
@@ -229,7 +240,8 @@ describe('Capability sidecar transport', () => {
           command: 'manifest',
           payload: {
             dotenvSecret: process.env.WORLD_HOST_SIDECAR_DOTENV_SECRET ?? null,
-            bunfigPreload: globalThis.__worldHostAmbientBunfigPreload === true
+            bunfigPreload: globalThis.__worldHostAmbientBunfigPreload === true,
+            execArgv: process.execArgv
           }
         }) + '\\n');
       `);
@@ -242,6 +254,7 @@ describe('Capability sidecar transport', () => {
         const dotenvIsolated = await new CapabilitySidecar({ command: [process.execPath, dotenvPath], timeoutMs: 1000 }).manifest();
         assert.equal(dotenvIsolated.dotenvSecret, null);
         assert.equal(dotenvIsolated.bunfigPreload, false);
+        assert.ok(dotenvIsolated.execArgv.includes('--no-install'));
         assert.throws(
           () => new CapabilitySidecar({
             command: ['env', 'bun', dotenvPath],
@@ -570,6 +583,7 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
           ['time', 'node', '--env-file=.env', dotenvPath],
           ['command', 'node', '--env-file=.env', dotenvPath],
           ['env', 'node', '--env-file=.env', dotenvPath],
+          ['env', 'NODE_OPTIONS=--require=./preload.cjs', 'node', dotenvPath],
           ['ksh', '-c', `node --env-file=.env ${dotenvPath}`],
           ['pwsh', '-Command', `node --env-file=.env ${dotenvPath}`],
           ['nice', 'deno', 'eval', 'console.log(1)'],
@@ -595,12 +609,29 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
           ['python3', '--'],
           ['python3', '-c', 'print(1)'],
           ['python3', '-m', 'http.server'],
+          ['python3', '-W', 'ignore', '-c', 'print(1)'],
           ['env', 'python3', '-c', 'print(1)'],
+          ['env', 'PYTHONPATH=./preload-dir', 'python3', './adapter.py'],
           ['timeout', '1', 'python3', '-c', 'print(1)'],
           ['perl', '-e', 'print 1'],
           ['perl', '-MPreload', './adapter.pl'],
           ['ruby', '-e', 'puts 1'],
           ['ruby', '-r./preload.rb', './adapter.rb'],
+          ['env', 'RUBYOPT=-r./preload.rb', 'ruby', './adapter.rb'],
+          ['php', '-r', 'echo 1;'],
+          ['php', '-B', 'echo 1;', './adapter.php'],
+          ['php', '-d', 'auto_prepend_file=./preload.php', './adapter.php'],
+          ['php', '-c', './php.ini', './adapter.php'],
+          ['env', 'PHPRC=./php-ini-dir', 'php', './adapter.php'],
+          ['env', 'PHP_INI_SCAN_DIR=./php-ini-scan-dir', 'php', './adapter.php'],
+          ['lua', '-e', 'print(1)'],
+          ['lua', '-l', 'preload', './adapter.lua'],
+          ['env', 'LUA_INIT=@./preload.lua', 'lua', './adapter.lua'],
+          ['npx', 'unchecked-package'],
+          ['npm', 'exec', 'unchecked-package'],
+          ['corepack', 'pnpm', 'dlx', 'unchecked-package'],
+          ['env', 'npx', 'unchecked-package'],
+          ['timeout', '1', 'npx', 'unchecked-package'],
         ]) {
           assert.throws(
             () => new CapabilitySidecar({ command, timeoutMs: 1000 }).manifest(),
@@ -646,6 +677,9 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
           [process.execPath, '--inspect-wait=0', dotenvPath],
           [process.execPath, '--fetch-preconnect=https://denied.example', dotenvPath],
           [process.execPath, '--fetch-preconnect', 'https://denied.example', dotenvPath],
+          [process.execPath, '--redis-preconnect', dotenvPath],
+          [process.execPath, '--watch', dotenvPath],
+          [process.execPath, '--hot', dotenvPath],
           [process.execPath, '--unsafely-ignore-certificate-errors', dotenvPath],
           [process.execPath, '--unsafely-ignore-certificate-errors=example.invalid', dotenvPath],
         ]) {

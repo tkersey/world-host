@@ -1108,11 +1108,95 @@ function defaultCapabilityPreflight(manifestLike, hostRequest) {
   }
 }
 function capabilityHostClaimBytes(value) {
+  assertNoWorldEvidenceKeys(value);
   return fromUtf8(stableJson({
     kind: "world-host.capability.host-claim.v0",
     value,
     worldAuthoredEvidence: false
   }));
+}
+function assertCapabilityResolutionBoundary(value) {
+  if (!value || typeof value !== "object")
+    fail("ERR_CAPABILITY_RESOLUTION_INVALID");
+  assertNoWorldEvidenceKeys(value);
+  for (const field of ["hostClaimBytes", "metadata", "responseValueImageBytes"])
+    assertNoWorldEvidenceByteField(value[field]);
+  const resolutionInputBytes = value.resolutionInputBytes;
+  if (!(resolutionInputBytes instanceof Uint8Array))
+    fail("ERR_CAPABILITY_RESOLUTION_INVALID");
+  const decoded = decodeResolutionInputBytes(resolutionInputBytes);
+  for (const field of ["hostClaimBytes", "metadata", "responseValueImageBytes"])
+    assertNoWorldEvidenceByteField(decoded[field]);
+  return true;
+}
+function assertNoWorldEvidenceByteField(value) {
+  const payload = parseBoundaryJsonBytes(value);
+  if (payload !== null)
+    assertNoWorldEvidenceKeys(payload);
+  const valueImagePayload = parseCanonicalValueImagePayload(value);
+  if (valueImagePayload !== null) {
+    const decodedPayload = parseBoundaryJsonBytes(valueImagePayload);
+    if (decodedPayload !== null)
+      assertNoWorldEvidenceKeys(decodedPayload);
+  }
+}
+function parseBoundaryJsonBytes(value) {
+  if (!(value instanceof Uint8Array) || value.byteLength === 0)
+    return null;
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(value).trim();
+  } catch {
+    return null;
+  }
+  if (!text || !/^[\[{]/.test(text))
+    return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+function parseCanonicalValueImagePayload(value) {
+  if (!(value instanceof Uint8Array) || value.byteLength === 0)
+    return null;
+  try {
+    return decodeCanonicalValueImage(value).payload;
+  } catch {
+    return null;
+  }
+}
+function assertNoWorldEvidenceKeys(value, path = [], seen = new WeakSet) {
+  if (value == null || typeof value !== "object")
+    return true;
+  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value))
+    return true;
+  if (seen.has(value))
+    return true;
+  seen.add(value);
+  if (value instanceof Map) {
+    let index = 0;
+    for (const [key, child] of value.entries()) {
+      const entryPath = [...path, `map:${index}`];
+      if (typeof key === "string" && FORBIDDEN_WORLD_EVIDENCE_KEYS.has(key))
+        fail("ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN", `capability driver must not author ${key}`, { path: [...path, key].join(".") });
+      assertNoWorldEvidenceKeys(key, [...entryPath, "key"], seen);
+      assertNoWorldEvidenceKeys(child, typeof key === "string" ? [...path, key] : [...entryPath, "value"], seen);
+      index += 1;
+    }
+  } else if (value instanceof Set) {
+    let index = 0;
+    for (const child of value.values()) {
+      assertNoWorldEvidenceKeys(child, [...path, `set:${index}`], seen);
+      index += 1;
+    }
+  }
+  for (const [key, child] of Object.entries(value)) {
+    if (FORBIDDEN_WORLD_EVIDENCE_KEYS.has(key))
+      fail("ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN", `capability driver must not author ${key}`, { path: [...path, key].join(".") });
+    assertNoWorldEvidenceKeys(child, [...path, key], seen);
+  }
+  return true;
 }
 
 // src/core/capability_policy.mjs
@@ -1481,7 +1565,8 @@ class GenericHttpJsonCapabilityDriver {
       });
     } catch (error) {
       if (error?.name === "AbortError") {
-        return this.#resolution(hostRequest, { status: "deferred", reason: "timeout" }, 4, null);
+        const status = timeoutResponseStatus(hostRequest);
+        return this.#resolution(hostRequest, { status, reason: "timeout", failureCode: "ERR_HTTP_TIMEOUT" }, ResponseStatusCode[status], null);
       }
       throw error;
     }
@@ -1828,6 +1913,12 @@ function assertRenderedRequestWithinPolicy(request, inputPolicy) {
 function httpErrorResponseStatus(hostRequest) {
   return hostRequest?.responseSchema?.status === "failed" ? "failed" : "http_error";
 }
+function timeoutResponseStatus(hostRequest) {
+  const status = hostRequest?.responseSchema?.status;
+  if (status == null || status === "deferred") return "deferred";
+  if (status === "failed" || status === "http_error") return status;
+  fail("ERR_HTTP_TIMEOUT_STATUS_UNSUPPORTED", "HTTP timeout cannot satisfy fixed response schema");
+}
 function extractPath(value, path) {
   if (!path)
     return value;
@@ -1862,6 +1953,7 @@ function recordedResolutionAccepted(recordedResolution, hostRequest, manifest, p
   if (!resolutionInputBytes)
     return false;
   try {
+    assertCapabilityResolutionBoundary({ resolutionInputBytes });
     assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, policy);
     return true;
   } catch {

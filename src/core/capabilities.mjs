@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { EffectRecoveryClass, ResponseStatusCode, assertDriverCanResolve, assertDriverManifest, assertDurableRecoveryAllowed } from './actuator.mjs';
+import { assertCapabilityResolutionBoundary } from './capability_driver.mjs';
 import { assertBytes, fail, fromUtf8, stableJson, toHex } from './store.mjs';
 import { decodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
 import { decodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
@@ -418,6 +419,7 @@ function assertReusableRecoveryClassAccepted(record, route) {
 function assertReusableResolutionAccepted(resolutionInputBytes, request, route, policy) {
   let resolution;
   try {
+    assertCapabilityResolutionBoundary({ resolutionInputBytes });
     resolution = decodeResolutionInputBytes(resolutionInputBytes);
   } catch (error) {
     fail('ERR_CAPABILITY_REUSABLE_EFFECT_INVALID', 'reusable effect ResolutionInput is invalid', { error: String(error?.message ?? error) });
@@ -1149,16 +1151,16 @@ function requestRoutedEndpointRoute(route) {
 }
 
 function configuredRouteOrigin(route) {
-  if (route?.diagnostics?.configuredOrigin) return route.diagnostics.configuredOrigin;
+  if (route?.diagnostics?.configuredOrigin) return validatedRequestUrlOrigin(route.diagnostics.configuredOrigin);
   if (route?.diagnostics?.configuredEndpointUrl) {
     try {
-      return new URL(route.diagnostics.configuredEndpointUrl).origin;
+      return validatedRequestUrlOrigin(route.diagnostics.configuredEndpointUrl);
     } catch {
       return null;
     }
   }
   const origins = Array.isArray(route?.diagnostics?.origins) ? route.diagnostics.origins : [];
-  return origins.length === 1 ? origins[0] : null;
+  return origins.length === 1 ? validatedRequestUrlOrigin(origins[0]) : null;
 }
 
 function configuredRouteMethod(route) {

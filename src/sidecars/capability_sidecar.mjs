@@ -53,6 +53,7 @@ const BUN_RUNTIME_VALUE_OPTIONS = new Set([
 ]);
 const BUN_ARGV_WRAPPER_COMMANDS = new Set(['command', 'env', 'gtimeout', 'ionice', 'nice', 'nohup', 'setsid', 'stdbuf', 'time', 'timeout']);
 const BUN_SHELL_WRAPPER_COMMANDS = new Set(['bash', 'cmd', 'cmd.exe', 'csh', 'dash', 'fish', 'ksh', 'powershell', 'powershell.exe', 'pwsh', 'sh', 'tcsh', 'zsh']);
+const PACKAGE_MANAGER_COMMANDS = new Set(['bunx', 'corepack', 'npm', 'npx', 'pnpm', 'pnpx', 'yarn']);
 const BUN_UNSUPPORTED_SUBCOMMANDS = new Set([
   'a',
   'add',
@@ -166,7 +167,7 @@ export class CapabilitySidecar {
     if (pathQualifiedSidecarRuntime(command[0])) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar runtime commands must not be path-qualified');
     }
-    this.command = command;
+    this.command = Object.freeze([...command]);
     this.cwd = cwd == null ? undefined : path.resolve(cwd);
     this.timeoutMs = timeoutMs;
     this.maximumFrameBytes = maximumFrameBytes;
@@ -390,6 +391,7 @@ function runSidecarCommandSync({ argv, input, timeoutMs, maximumFrameBytes, env,
 function sidecarSpawnArgv(argv, cwd = undefined, env = undefined) {
   const emptyEnvFileArg = `--env-file=${EMPTY_BUN_ENV_FILE}`;
   const emptyConfigArg = `--config=${EMPTY_BUN_CONFIG_FILE}`;
+  const noInstallArg = '--no-install';
   if (commandBaseName(argv[0]) !== 'bun') {
     const inspectionPath = commandInspectionPath(argv[0], cwd);
     const shebangRuntime = javascriptRuntimeShebangRuntime(inspectionPath);
@@ -403,18 +405,19 @@ function sidecarSpawnArgv(argv, cwd = undefined, env = undefined) {
     if (bunWrapperCommand(argv, cwd, env?.PATH)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars must not run through command wrappers');
     }
+    assertNoPackageManagerCommand(argv, cwd, env?.PATH);
     assertSupportedNonJavaScriptRuntimeCommand(argv);
     assertSupportedWrappedNonJavaScriptRuntimeCommands(argv, cwd, env?.PATH);
     const bunShebangArgs = bunShebangRuntimeArgs(inspectionPath);
     if (bunShebangArgs) {
       const shebangArgv = ['bun', ...bunShebangArgs, ...argv];
       assertSupportedBunEnvFileOptions(shebangArgv);
-      return [process.execPath, emptyEnvFileArg, emptyConfigArg, ...bunShebangArgs, ...argv];
+      return [process.execPath, emptyEnvFileArg, emptyConfigArg, noInstallArg, ...bunShebangArgs, ...argv];
     }
     return argv;
   }
   assertSupportedBunEnvFileOptions(argv);
-  return [argv[0], emptyEnvFileArg, emptyConfigArg, ...argv.slice(1)];
+  return [argv[0], emptyEnvFileArg, emptyConfigArg, noInstallArg, ...argv.slice(1)];
 }
 
 function bunWrapperCommand(argv, cwd = undefined, searchPath = undefined) {
@@ -470,6 +473,9 @@ function envWrapperCommandArguments(argv, cwd = undefined, searchPath = undefine
     if (value === '--') continue;
     const assignment = envAssignment(value);
     if (assignment) {
+      if (unsupportedSidecarPreloadEnvKey(assignment.name)) {
+        fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar env wrapper assignments must not set runtime preload options');
+      }
       if (assignment.name === 'PATH') effectiveSearchPath = assignment.value;
       continue;
     }
@@ -675,6 +681,9 @@ function assertSupportedBunEnvFileOptions(argv) {
     if (unsupportedBunTlsOption(value)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars do not support disabling TLS certificate verification');
     }
+    if (unsupportedBunWatchOption(value)) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars do not support watch or hot reload options');
+    }
     if (unsupportedBunInstallOption(value)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars do not support package auto-install');
     }
@@ -709,11 +718,16 @@ function unsupportedBunCodeLoadingOption(value) {
 }
 
 function unsupportedBunNetworkOption(value) {
-  return value === '--fetch-preconnect' || value.startsWith('--fetch-preconnect=');
+  return value === '--fetch-preconnect' || value.startsWith('--fetch-preconnect=') ||
+    value === '--redis-preconnect' || value.startsWith('--redis-preconnect=');
 }
 
 function unsupportedBunTlsOption(value) {
   return value === '--unsafely-ignore-certificate-errors' || value.startsWith('--unsafely-ignore-certificate-errors=');
+}
+
+function unsupportedBunWatchOption(value) {
+  return value === '--watch' || value.startsWith('--watch=') || value === '--hot' || value.startsWith('--hot=');
 }
 
 function unsupportedBunInstallOption(value) {
@@ -731,6 +745,9 @@ function bunRuntimeOptionValuePosition(argv, index) {
 
 function assertSupportedDirectRuntimeCommand(argv) {
   const runtime = commandBaseName(argv[0]);
+  if (PACKAGE_MANAGER_COMMANDS.has(runtime)) {
+    fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar commands must use a path-qualified adapter entrypoint, not a package manager');
+  }
   if (runtime === 'node') {
     assertSupportedNodeRuntimeCommand(argv);
     return;
@@ -839,6 +856,10 @@ function assertSupportedNonJavaScriptRuntimeCommand(argv) {
     if (unsupportedNonJavaScriptRuntimeOption(runtime, value)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar runtime commands must use path-qualified adapter entrypoints');
     }
+    if (nonJavaScriptRuntimeOptionConsumesNext(runtime, value)) {
+      index += 1;
+      continue;
+    }
     if (!value.startsWith('-')) return;
   }
   fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar runtime commands must use path-qualified adapter entrypoints');
@@ -852,6 +873,19 @@ function assertSupportedWrappedNonJavaScriptRuntimeCommands(argv, cwd = undefine
   }
 }
 
+function assertNoPackageManagerCommand(argv, cwd = undefined, searchPath = undefined) {
+  const command = commandBaseName(argv[0]);
+  if (PACKAGE_MANAGER_COMMANDS.has(command)) {
+    fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar commands must not execute package managers');
+  }
+  if (!BUN_ARGV_WRAPPER_COMMANDS.has(command)) return;
+  for (const candidate of wrapperCommandArguments(argv, cwd, searchPath)) {
+    if (PACKAGE_MANAGER_COMMANDS.has(commandBaseName(candidate.value))) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar commands must not execute package managers');
+    }
+  }
+}
+
 function nonJavaScriptRuntimeSupportsInlineEval(runtime) {
   return /^python(?:\d+(?:\.\d+)*)?$/.test(runtime) || /^pypy(?:\d+)?$/.test(runtime) ||
     NON_JS_INLINE_EVAL_RUNTIMES.has(runtime);
@@ -860,6 +894,17 @@ function nonJavaScriptRuntimeSupportsInlineEval(runtime) {
 function unsupportedNonJavaScriptRuntimeOption(runtime, value) {
   if (/^python(?:\d+(?:\.\d+)*)?$/.test(runtime) || /^pypy(?:\d+)?$/.test(runtime)) {
     return value === '-c' || value.startsWith('-c') || value === '-m' || value.startsWith('-m');
+  }
+  if (runtime === 'php') {
+    return value === '-r' || value.startsWith('-r') ||
+      value === '-B' || value.startsWith('-B') ||
+      value === '-R' || value.startsWith('-R') ||
+      value === '-E' || value.startsWith('-E') ||
+      value === '-d' || value.startsWith('-d') ||
+      value === '-c' || value.startsWith('-c');
+  }
+  if (runtime === 'lua' || runtime === 'luajit') {
+    return value === '-e' || value.startsWith('-e') || value === '-l' || value.startsWith('-l');
   }
   if (runtime === 'ruby' || runtime === 'rscript') {
     return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=') ||
@@ -870,6 +915,13 @@ function unsupportedNonJavaScriptRuntimeOption(runtime, value) {
       value === '-m' || value.startsWith('-m') || value === '-M' || value.startsWith('-M');
   }
   return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=');
+}
+
+function nonJavaScriptRuntimeOptionConsumesNext(runtime, value) {
+  if (/^python(?:\d+(?:\.\d+)*)?$/.test(runtime) || /^pypy(?:\d+)?$/.test(runtime)) {
+    return value === '-W' || value === '-X';
+  }
+  return false;
 }
 
 function unsupportedDenoPermissionOption(value) {
@@ -1029,13 +1081,26 @@ function sidecarEnv(value) {
 function sidecarUserEnv(value) {
   const env = sidecarEnv(value);
   for (const key of Object.keys(env)) {
-    const normalized = key.toUpperCase();
-    if (normalized === 'PATH') fail('ERR_CAPABILITY_SIDECAR_ENV_INVALID', 'sidecar environment must not override PATH');
-    if (normalized === 'NODE_OPTIONS' || normalized === 'RUBYOPT' || normalized === 'PERL5OPT') {
+    if (key.toUpperCase() === 'PATH') fail('ERR_CAPABILITY_SIDECAR_ENV_INVALID', 'sidecar environment must not override PATH');
+    if (unsupportedSidecarPreloadEnvKey(key)) {
       fail('ERR_CAPABILITY_SIDECAR_ENV_INVALID', 'sidecar environment must not set runtime preload options');
     }
   }
   return env;
+}
+
+function unsupportedSidecarPreloadEnvKey(key) {
+  const normalized = key.toUpperCase();
+  return normalized === 'NODE_OPTIONS' ||
+    normalized === 'RUBYOPT' ||
+    normalized === 'PERL5OPT' ||
+    normalized === 'PYTHONPATH' ||
+    normalized === 'PYTHONHOME' ||
+    normalized === 'PYTHONSTARTUP' ||
+    normalized === 'LUA_INIT' ||
+    normalized.startsWith('LUA_INIT_') ||
+    normalized === 'PHPRC' ||
+    normalized === 'PHP_INI_SCAN_DIR';
 }
 
 function sidecarPath() {

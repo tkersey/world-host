@@ -11,6 +11,7 @@ import {
   assertCapabilityManifest,
   assertCapabilityConformanceReceipt,
   assertCapabilityPackChecksums,
+  capabilityConformanceReceiptFingerprint,
   capabilityPackFingerprint,
   validateCapabilityPackManifest,
   world_host_capability_driver_abi_version,
@@ -65,6 +66,20 @@ describe('Capability Plane v0.2 core contracts', () => {
     const withFingerprint = { ...withChecksums, packFingerprint };
     assert.equal((await validateCapabilityPackManifest(withFingerprint, { verifyFingerprint: true })).packFingerprint, packFingerprint);
     assert.equal(await assertCapabilityPackChecksums(withFingerprint, { 'adapter.mjs': artifact, 'README.md': readme }), true);
+    const conformanceReceipt = {
+      driverId: manifest.driverId,
+      packFingerprint,
+      corpusFingerprint: 'sha256:'.concat('1'.repeat(64)),
+      vectors: [{ name: 'passed-vector', status: 'passed' }],
+    };
+    assert.equal(
+      await capabilityConformanceReceiptFingerprint({ ...conformanceReceipt, packFingerprint: 'sha256:'.concat('2'.repeat(64)) }),
+      await capabilityConformanceReceiptFingerprint(conformanceReceipt),
+    );
+    assert.notEqual(
+      await capabilityConformanceReceiptFingerprint({ ...conformanceReceipt, vectors: [{ name: 'different-vector', status: 'passed' }] }),
+      await capabilityConformanceReceiptFingerprint(conformanceReceipt),
+    );
     assert.throws(
       () => assertCapabilityManifest({ ...manifest, supportedWorldProtocolVersion: 'v999.0.0' }),
       { code: 'ERR_CAPABILITY_VERSION_UNSUPPORTED' },
@@ -3865,6 +3880,87 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.ok(requestlessHttpReport.blockers.includes('required-authority-policy-blocked:network:http'));
     assert.ok(requestlessHttpReport.blockers.includes('http-origin-allowlist-required'));
     assert.ok(requestlessHttpReport.blockers.includes('http-method-allowlist-required'));
+    const credentialConfiguredEndpointReport = preflightCapabilities({
+      application: {
+        requiredActuators: [{ actuatorRef: 'http:json', descriptorFingerprint: 'descriptor:http-json' }],
+      },
+      drivers: [{
+        manifest: () => ({
+          driverId: 'credential-configured-http',
+          supportedActuatorRefs: ['http:json'],
+          supportedDescriptorFingerprints: ['descriptor:http-json'],
+          supportedActuationClasses: ['http'],
+          supportedResponseStatuses: ['ok'],
+          maximumRequestBytes: 1024,
+          maximumResponseBytes: 1024,
+          recoveryClass: EffectRecoveryClass.idempotent,
+          concurrencyLimit: 1,
+          authorityLabels: ['network:http'],
+          diagnostics: {
+            endpointSource: 'config',
+            configuredEndpointUrl: 'https://user:pass@allowed.example/decide',
+            methods: ['POST'],
+          },
+        }),
+      }],
+      policy: {
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      },
+    });
+    assert.ok(credentialConfiguredEndpointReport.blockers.includes('required-actuator-policy-blocked:http:json'));
+    assert.ok(credentialConfiguredEndpointReport.blockers.includes('http-origin-denied:unknown'));
+    const reusableBoundaryRequest = {
+      ...genericHttpModelRequest('goal=reusable-boundary', 'model-reusable-boundary-key'),
+      effectIdentityBytes: fromUtf8('model-reusable-boundary-identity'),
+    };
+    const reusableBoundaryResolution = encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xa1n,
+      status: 0,
+      responseValueImageBytes: encodeCanonicalValueImage({
+        bytes: fromUtf8(stableJson({
+          schema: 'boundary.Agent.Action.v0',
+          action: { variant: 'tool', toolId: 'actuate', payload: '' },
+        })),
+        dynamicSize: true,
+      }),
+      hostClaimBytes: fromUtf8(stableJson({ runHead: { generation: 1 } })),
+      attemptNumber: 1,
+      metadata: fromUtf8('reusable-boundary'),
+    });
+    const reusableBoundaryResolutionRef = {
+      algorithm: 'sha256',
+      checksum: createHash('sha256').update(reusableBoundaryResolution).digest('hex'),
+      byteLength: reusableBoundaryResolution.byteLength,
+    };
+    const reusableBoundaryReport = preflightCapabilities({
+      pendingRequests: [reusableBoundaryRequest],
+      drivers: [new GenericHttpJsonModelDriver({ endpointUrl: 'https://allowed.example/decide' })],
+      policy: {
+        maximumLiveModelCalls: 0,
+        allowedAuthorityLabels: ['model:http-json', 'network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      },
+      effectRecords: [{
+        state: EffectState.resolved,
+        driverRecoveryClass: EffectRecoveryClass.idempotent,
+        hostRequestFingerprint: reusableBoundaryRequest.hostRequestFingerprint,
+        idempotencyKey: {
+          format: 'world-idempotency-key-bytes.hex',
+          bytesHex: toHex(reusableBoundaryRequest.idempotencyKeyBytes),
+        },
+        requestBytesChecksum: `sha256:${createHash('sha256').update(reusableBoundaryRequest.requestBytes).digest('hex')}`,
+        requestIdentityChecksum: `sha256:${createHash('sha256').update(reusableBoundaryRequest.effectIdentityBytes).digest('hex')}`,
+        resolutionInputRef: reusableBoundaryResolutionRef,
+      }],
+      effectResolutionInputs: new Map([
+        [`${reusableBoundaryResolutionRef.algorithm}:${reusableBoundaryResolutionRef.checksum}:${reusableBoundaryResolutionRef.byteLength}`, reusableBoundaryResolution],
+      ]),
+    });
+    assert.ok(reusableBoundaryReport.blockers.includes('ERR_CAPABILITY_REUSABLE_EFFECT_INVALID'));
+    assert.ok(reusableBoundaryReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
     assert.throws(() => assertCapabilityPolicyAllows({
       manifest: {
         driverId: 'http',
@@ -4981,6 +5077,15 @@ describe('Capability Plane v0.2 core contracts', () => {
         metadata: fromUtf8('wrong-target-http-shadow'),
       });
       assert.equal(driver.shadow({}, httpRequest(), wrongTargetHttpResolution).schemaAccepted, false);
+      const worldEvidenceHttpResolution = encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xa2n,
+        status: 0,
+        responseValueImageBytes: encodeCanonicalValueImage({ bytes: fromUtf8(stableJson({ status: 'ok' })), dynamicSize: true }),
+        hostClaimBytes: fromUtf8(stableJson({ runHead: { generation: 1 } })),
+        attemptNumber: 1,
+        metadata: fromUtf8('world-evidence-http-shadow'),
+      });
+      assert.equal(packDriver.shadow({}, httpRequest(), worldEvidenceHttpResolution).schemaAccepted, false);
       const queryDryRunRequest = {
         ...httpRequest(),
         requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/decide?mode=delete', method: 'POST', body: { prompt: 'hi' } })),
@@ -5210,7 +5315,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(directPostResponseFailureFetchCount, 1);
 
       let stalledBodyAborted = false;
-      globalThis.fetch = async (url, options) => new Response(new ReadableStream({
+      const stalledBodyFetch = async (url, options) => new Response(new ReadableStream({
         start(controller) {
           controller.enqueue(fromUtf8('{"status":'));
           options.signal.addEventListener('abort', () => {
@@ -5222,6 +5327,7 @@ describe('Capability Plane v0.2 core contracts', () => {
         status: 200,
         headers: { 'x-request-id': 'request-body-timeout' },
       });
+      globalThis.fetch = stalledBodyFetch;
       const stalledBodyTimeout = await new GenericHttpJsonCapabilityDriver({
         endpointUrl: 'https://allowed.example/decide',
         timeoutMs: 5,
@@ -5229,12 +5335,59 @@ describe('Capability Plane v0.2 core contracts', () => {
         policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
       }, {
         ...httpRequest(),
+        responseSchema: { status: 'deferred' },
         hostRequestFingerprint: 'world:host-request:00000000000000aa',
         idempotencyKeyBytes: fromUtf8('http-key-body-timeout'),
         idempotencyKeyWorldFingerprint: 'world:key:http-body-timeout',
       });
       assert.equal(decodeResolutionInputBytes(stalledBodyTimeout.resolutionInputBytes).status, 4);
       assert.equal(stalledBodyAborted, true);
+      globalThis.fetch = stalledBodyFetch;
+      const fixedFailedTimeout = await new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        timeoutMs: 5,
+      }).resolve({
+        policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+      }, {
+        ...httpRequest(),
+        responseSchema: { status: 'failed' },
+        hostRequestFingerprint: 'world:host-request:00000000000000ab',
+        idempotencyKeyBytes: fromUtf8('http-key-body-timeout-failed'),
+        idempotencyKeyWorldFingerprint: 'world:key:http-body-timeout-failed',
+      });
+      assert.equal(decodeResolutionInputBytes(fixedFailedTimeout.resolutionInputBytes).status, 2);
+      assert.equal(fixedFailedTimeout.diagnostics.status, 'failed');
+      globalThis.fetch = stalledBodyFetch;
+      await assert.rejects(
+        () => new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          timeoutMs: 5,
+        }).resolve({
+          policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+        }, {
+          ...httpRequest(),
+          responseSchema: { status: 'ok' },
+          hostRequestFingerprint: 'world:host-request:00000000000000ac',
+          idempotencyKeyBytes: fromUtf8('http-key-body-timeout-ok'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-body-timeout-ok',
+        }),
+        { code: 'ERR_HTTP_TIMEOUT_STATUS_UNSUPPORTED' },
+      );
+      globalThis.fetch = stalledBodyFetch;
+      const packFixedFailedTimeout = await new HttpJsonPackCapabilityDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        timeoutMs: 5,
+      }).resolve({
+        policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+      }, {
+        ...httpRequest(),
+        responseSchema: { status: 'failed' },
+        hostRequestFingerprint: 'world:host-request:00000000000000ae',
+        idempotencyKeyBytes: fromUtf8('http-pack-key-body-timeout-failed'),
+        idempotencyKeyWorldFingerprint: 'world:key:http-pack-body-timeout-failed',
+      });
+      assert.equal(decodeResolutionInputBytes(packFixedFailedTimeout.resolutionInputBytes).status, 2);
+      assert.equal(packFixedFailedTimeout.diagnostics.status, 'failed');
 
       let reuseFetchCount = 0;
       globalThis.fetch = async () => {
@@ -6212,6 +6365,17 @@ describe('Capability Plane v0.2 core contracts', () => {
     }, promptLimitedApprovalRequest);
     assert.equal(promptLimitedPackApprovalReport.accepted, false);
     assert.ok(promptLimitedPackApprovalReport.blockers.includes('ERR_CAPABILITY_PROMPT_TOO_LARGE'));
+    const promptOnlyLimitedPackApprovalReport = packApproval.preflight({
+      policy: {
+        allowLiveEffects: true,
+        allowHumanEffects: true,
+        maximumPromptBytes: 4,
+      },
+    }, {
+      ...promptLimitedApprovalRequest,
+      policyRequestBytes: fromUtf8('tiny'),
+    });
+    assert.equal(promptOnlyLimitedPackApprovalReport.accepted, true);
     await assert.rejects(
       () => packApproval.resolve({
         policy: promptLimitedApprovalPolicy,
@@ -6339,6 +6503,15 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.equal(packApproval.shadow({}, approvalRequest(), null).schemaAccepted, false);
     assert.equal(packApproval.shadow({}, approvalRequest(), fromUtf8('recorded')).schemaAccepted, false);
     assert.equal(packApproval.shadow({}, approvalRequest(), packApprovalResolution.resolutionInputBytes).schemaAccepted, true);
+    const worldEvidenceApprovalResolution = encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xa3n,
+      status: 0,
+      responseValueImageBytes: encodeCanonicalValueImage({ bytes: fromUtf8(stableJson({ decision: 'approved' })), dynamicSize: true }),
+      hostClaimBytes: fromUtf8(stableJson({ runHead: { generation: 1 } })),
+      attemptNumber: 1,
+      metadata: fromUtf8('world-evidence-approval-shadow'),
+    });
+    assert.equal(packApproval.shadow({}, approvalRequest(), worldEvidenceApprovalResolution).schemaAccepted, false);
     assert.equal(approval.preflight({}, httpRequest()).accepted, false);
     const proposedApproval = approval.dryRun({}, {
       ...approvalRequest(),
@@ -6923,6 +7096,25 @@ describe('Capability Plane v0.2 core contracts', () => {
         ).schemaAccepted,
         false,
       );
+      const fixturePackShadowDriver = new FixturePackCapabilityDriver();
+      const fixturePackShadowRequest = modelRequest('goal=invoke', 'fixture-pack-shadow-key');
+      const fixturePackShadowResolution = await fixturePackShadowDriver.resolve({}, fixturePackShadowRequest);
+      assert.equal(fixturePackShadowDriver.shadow({}, fixturePackShadowRequest, fromUtf8('recorded')).schemaAccepted, false);
+      assert.equal(fixturePackShadowDriver.shadow({}, fixturePackShadowRequest, encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xbadn,
+        status: 0,
+        responseValueImageBytes: encodeCanonicalValueImage({
+          bytes: fromUtf8(stableJson({
+            schema: 'boundary.Agent.Action.v0',
+            action: { variant: 'tool', toolId: 'actuate', payload: '' },
+          })),
+          dynamicSize: true,
+        }),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('wrong-target-fixture-pack-shadow'),
+      })).schemaAccepted, false);
+      assert.equal(fixturePackShadowDriver.shadow({}, fixturePackShadowRequest, fixturePackShadowResolution.resolutionInputBytes).schemaAccepted, true);
       assert.throws(
         () => driver.shadow(
           {},
@@ -7822,6 +8014,7 @@ function fixtureCapabilityManifest() {
     maximumRequestBytes: 1024,
     maximumResponseBytes: 1024,
     conformanceCorpusFingerprint: null,
+    conformanceReceiptFingerprint: null,
     metadataBytes: '',
     adapter: { kind: 'in_process', module: 'adapter.mjs', exportName: 'driver' },
     checksums: [],

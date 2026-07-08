@@ -1103,11 +1103,95 @@ function defaultCapabilityPreflight(manifestLike, hostRequest) {
   }
 }
 function capabilityHostClaimBytes(value) {
+  assertNoWorldEvidenceKeys(value);
   return fromUtf8(stableJson({
     kind: "world-host.capability.host-claim.v0",
     value,
     worldAuthoredEvidence: false
   }));
+}
+function assertCapabilityResolutionBoundary(value) {
+  if (!value || typeof value !== "object")
+    fail("ERR_CAPABILITY_RESOLUTION_INVALID");
+  assertNoWorldEvidenceKeys(value);
+  for (const field of ["hostClaimBytes", "metadata", "responseValueImageBytes"])
+    assertNoWorldEvidenceByteField(value[field]);
+  const resolutionInputBytes = value.resolutionInputBytes;
+  if (!(resolutionInputBytes instanceof Uint8Array))
+    fail("ERR_CAPABILITY_RESOLUTION_INVALID");
+  const decoded = decodeResolutionInputBytes(resolutionInputBytes);
+  for (const field of ["hostClaimBytes", "metadata", "responseValueImageBytes"])
+    assertNoWorldEvidenceByteField(decoded[field]);
+  return true;
+}
+function assertNoWorldEvidenceByteField(value) {
+  const payload = parseJsonBytes(value);
+  if (payload !== null)
+    assertNoWorldEvidenceKeys(payload);
+  const valueImagePayload = parseCanonicalValueImagePayload(value);
+  if (valueImagePayload !== null) {
+    const decodedPayload = parseJsonBytes(valueImagePayload);
+    if (decodedPayload !== null)
+      assertNoWorldEvidenceKeys(decodedPayload);
+  }
+}
+function parseJsonBytes(value) {
+  if (!(value instanceof Uint8Array) || value.byteLength === 0)
+    return null;
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(value).trim();
+  } catch {
+    return null;
+  }
+  if (!text || !/^[\[{]/.test(text))
+    return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+function parseCanonicalValueImagePayload(value) {
+  if (!(value instanceof Uint8Array) || value.byteLength === 0)
+    return null;
+  try {
+    return decodeCanonicalValueImage(value).payload;
+  } catch {
+    return null;
+  }
+}
+function assertNoWorldEvidenceKeys(value, path = [], seen = new WeakSet) {
+  if (value == null || typeof value !== "object")
+    return true;
+  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value))
+    return true;
+  if (seen.has(value))
+    return true;
+  seen.add(value);
+  if (value instanceof Map) {
+    let index = 0;
+    for (const [key, child] of value.entries()) {
+      const entryPath = [...path, `map:${index}`];
+      if (typeof key === "string" && FORBIDDEN_WORLD_EVIDENCE_KEYS.has(key))
+        fail("ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN", `capability driver must not author ${key}`, { path: [...path, key].join(".") });
+      assertNoWorldEvidenceKeys(key, [...entryPath, "key"], seen);
+      assertNoWorldEvidenceKeys(child, typeof key === "string" ? [...path, key] : [...entryPath, "value"], seen);
+      index += 1;
+    }
+  } else if (value instanceof Set) {
+    let index = 0;
+    for (const child of value.values()) {
+      assertNoWorldEvidenceKeys(child, [...path, `set:${index}`], seen);
+      index += 1;
+    }
+  }
+  for (const [key, child] of Object.entries(value)) {
+    if (FORBIDDEN_WORLD_EVIDENCE_KEYS.has(key))
+      fail("ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN", `capability driver must not author ${key}`, { path: [...path, key].join(".") });
+    assertNoWorldEvidenceKeys(child, [...path, key], seen);
+  }
+  return true;
 }
 
 // src/core/capability_policy.mjs
@@ -1253,7 +1337,7 @@ function assertHumanPolicyAllows(context, manifest, hostRequest) {
   const deniedAuthorityLabels = (manifest?.authorityLabels ?? []).filter((label) => allowedAuthorityLabels.size && !allowedAuthorityLabels.has(label));
   if (deniedAuthorityLabels.length)
     fail("ERR_CAPABILITY_AUTHORITY_DENIED", "authority label denied", { labels: deniedAuthorityLabels });
-  const maximumRequestBytes = positivePolicyLimit(policy.maximumRequestBytes ?? policy.maximumPromptBytes ?? 1024 * 1024, "maximumRequestBytes");
+  const maximumRequestBytes = positivePolicyLimit(policy.maximumRequestBytes ?? 1024 * 1024, "maximumRequestBytes");
   const maximumPromptBytes = positivePolicyLimit(policy.maximumPromptBytes ?? maximumRequestBytes, "maximumPromptBytes");
   const maximumResponseBytes = positivePolicyLimit(policy.maximumResponseBytes ?? 1024 * 1024, "maximumResponseBytes");
   const policyRequestBytes = hostRequest?.policyRequestBytes ?? hostRequest?.requestBytes;
@@ -1276,7 +1360,7 @@ function assertHumanPromptPolicyAllows(context, manifest, hostRequest) {
   const deniedAuthorityLabels = (manifest?.authorityLabels ?? []).filter((label) => allowedAuthorityLabels.size && !allowedAuthorityLabels.has(label));
   if (deniedAuthorityLabels.length)
     fail("ERR_CAPABILITY_AUTHORITY_DENIED", "authority label denied", { labels: deniedAuthorityLabels });
-  const maximumRequestBytes = positivePolicyLimit(policy.maximumRequestBytes ?? policy.maximumPromptBytes ?? 1024 * 1024, "maximumRequestBytes");
+  const maximumRequestBytes = positivePolicyLimit(policy.maximumRequestBytes ?? 1024 * 1024, "maximumRequestBytes");
   const maximumPromptBytes = positivePolicyLimit(policy.maximumPromptBytes ?? maximumRequestBytes, "maximumPromptBytes");
   const maximumResponseBytes = positivePolicyLimit(policy.maximumResponseBytes ?? 1024 * 1024, "maximumResponseBytes");
   const policyRequestBytes = hostRequest?.policyRequestBytes ?? hostRequest?.requestBytes;
@@ -1329,6 +1413,7 @@ function recordedResolutionAccepted(recordedResolution, hostRequest, manifest, p
   if (!resolutionInputBytes)
     return false;
   try {
+    assertCapabilityResolutionBoundary({ resolutionInputBytes });
     assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, policy);
     return true;
   } catch {
