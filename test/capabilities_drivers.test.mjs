@@ -1793,19 +1793,42 @@ describe('capability preflight and reference drivers', () => {
       allowedAuthorityLabels: ['human:approval'],
     });
     const context = { policy };
+    const liveHumanContext = {
+      policy: {
+        allowLiveEffects: true,
+        allowHumanEffects: true,
+        allowedAuthorityLabels: ['human:approval'],
+      },
+    };
     const missingPromptDriver = new HumanApprovalCapabilityDriver({ mode: 'interactive-terminal' });
     const unsupportedModeDriver = new HumanApprovalCapabilityDriver({ mode: 'browser-popup', prompt: async () => true });
+    let interactivePromptCalled = false;
+    const fixedInteractiveDriver = new HumanApprovalCapabilityDriver({
+      mode: 'interactive-terminal',
+      prompt: async () => {
+        interactivePromptCalled = true;
+        return false;
+      },
+    });
     const missingPromptReport = missingPromptDriver.preflight(context, humanRequest);
     const unsupportedModeReport = unsupportedModeDriver.preflight(context, humanRequest);
+    const fixedInteractiveReport = fixedInteractiveDriver.preflight(liveHumanContext, humanRequest);
 
     assert.equal(missingPromptReport.accepted, false);
     assert.ok(missingPromptReport.blockers.includes('ERR_HUMAN_APPROVAL_PROMPT_REQUIRED'));
     assert.equal(unsupportedModeReport.accepted, false);
     assert.ok(unsupportedModeReport.blockers.includes('ERR_HUMAN_APPROVAL_MODE_UNSUPPORTED'));
+    assert.equal(fixedInteractiveReport.accepted, false);
+    assert.ok(fixedInteractiveReport.blockers.includes('ERR_HUMAN_APPROVAL_RESPONSE_SCHEMA_UNSUPPORTED'));
     await assert.rejects(
       () => missingPromptDriver.resolve(context, humanRequest),
       { code: 'ERR_HUMAN_APPROVAL_PROMPT_REQUIRED' },
     );
+    await assert.rejects(
+      () => fixedInteractiveDriver.resolve(liveHumanContext, humanRequest),
+      { code: 'ERR_HUMAN_APPROVAL_RESPONSE_SCHEMA_UNSUPPORTED' },
+    );
+    assert.equal(interactivePromptCalled, false);
     assert.throws(
       () => missingPromptDriver.shadow(context, humanRequest, { resolutionInputBytes: fromUtf8('recorded') }),
       { code: 'ERR_HUMAN_APPROVAL_PROMPT_REQUIRED' },

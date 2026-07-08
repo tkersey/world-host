@@ -4914,6 +4914,7 @@ describe('Capability Plane v0.2 core contracts', () => {
           },
         }, {
           ...httpRequest(),
+          responseSchema: { status: 'failed' },
           hostRequestFingerprint: 'world:host-request:00000000000000ae',
           idempotencyKeyBytes: fromUtf8('http-pack-post-response-failure'),
           idempotencyKeyWorldFingerprint: 'world:key:http-pack-post-response-failure',
@@ -5125,6 +5126,7 @@ describe('Capability Plane v0.2 core contracts', () => {
           policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
         }, {
           ...httpRequest(),
+          responseSchema: { status: 'failed' },
           hostRequestFingerprint: 'world:host-request:00000000000000ab',
           idempotencyKeyBytes: fromUtf8('http-key-secret-echo'),
           idempotencyKeyWorldFingerprint: 'world:key:http-secret-echo',
@@ -5143,6 +5145,7 @@ describe('Capability Plane v0.2 core contracts', () => {
           policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
         }, {
           ...httpRequest(),
+          responseSchema: { status: 'failed' },
           hostRequestFingerprint: 'world:host-request:00000000000000ac',
           idempotencyKeyBytes: fromUtf8('http-key-secret-transaction-ref'),
           idempotencyKeyWorldFingerprint: 'world:key:http-secret-transaction-ref',
@@ -5160,6 +5163,7 @@ describe('Capability Plane v0.2 core contracts', () => {
           policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
         }, {
           ...httpRequest(),
+          responseSchema: { status: 'failed' },
           hostRequestFingerprint: 'world:host-request:00000000000000ae',
           idempotencyKeyBytes: fromUtf8('http-key-secret-shaped-body'),
           idempotencyKeyWorldFingerprint: 'world:key:http-secret-shaped-body',
@@ -5176,6 +5180,7 @@ describe('Capability Plane v0.2 core contracts', () => {
           policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
         }, {
           ...httpRequest(),
+          responseSchema: { status: 'failed' },
           hostRequestFingerprint: 'world:host-request:00000000000000af',
           idempotencyKeyBytes: fromUtf8('http-key-secret-shaped-transaction-ref'),
           idempotencyKeyWorldFingerprint: 'world:key:http-secret-shaped-transaction-ref',
@@ -5193,6 +5198,7 @@ describe('Capability Plane v0.2 core contracts', () => {
           policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
         }, {
           ...httpRequest(),
+          responseSchema: { status: 'failed' },
           hostRequestFingerprint: 'world:host-request:00000000000000b0',
           idempotencyKeyBytes: fromUtf8('http-key-pack-secret-shaped-body'),
           idempotencyKeyWorldFingerprint: 'world:key:http-pack-secret-shaped-body',
@@ -5321,6 +5327,7 @@ describe('Capability Plane v0.2 core contracts', () => {
           policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
         }, {
           ...httpRequest(),
+          responseSchema: { status: 'failed' },
           hostRequestFingerprint: 'world:host-request:00000000000000ad',
           idempotencyKeyBytes: fromUtf8('http-key-post-response-failure'),
           idempotencyKeyWorldFingerprint: 'world:key:http-post-response-failure',
@@ -5328,6 +5335,24 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(decodeResolutionInputBytes(postResponseFailure.resolutionInputBytes).status, 2);
       assert.equal(postResponseFailure.diagnostics.failureCode, 'ERR_HTTP_RESPONSE_VALIDATION_FAILED');
       assert.equal(directPostResponseFailureFetchCount, 1);
+      globalThis.fetch = async () => new Response('{not-json', {
+        status: 200,
+        headers: { 'x-request-id': 'request-post-response-failure-fixed-ok' },
+      });
+      await assert.rejects(
+        () => new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+        }).resolve({
+          policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+        }, {
+          ...httpRequest(),
+          responseSchema: { status: 'ok' },
+          hostRequestFingerprint: 'world:host-request:00000000000000af',
+          idempotencyKeyBytes: fromUtf8('http-key-post-response-failure-fixed-ok'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-post-response-failure-fixed-ok',
+        }),
+        { code: 'ERR_HTTP_FAILED_STATUS_UNSUPPORTED' },
+      );
 
       let stalledBodyAborted = false;
       const stalledBodyFetch = async (url, options) => new Response(new ReadableStream({
@@ -6164,7 +6189,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       });
       const limitedResult = await limitedDriver.resolve({
           policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
-        }, httpRequest());
+        }, { ...httpRequest(), responseSchema: { status: 'failed' } });
       assert.equal(decodeResolutionInputBytes(limitedResult.resolutionInputBytes).status, 2);
       assert.equal(limitedResult.diagnostics.failureCode, 'ERR_HTTP_RESPONSE_TOO_LARGE');
 
@@ -6200,11 +6225,12 @@ describe('Capability Plane v0.2 core contracts', () => {
             allowedMethods: ['POST'],
           },
         }),
-        { code: 'ERR_EFFECT_RESPONSE_STATUS_MISMATCH' },
+        { code: 'ERR_HTTP_FAILED_STATUS_UNSUPPORTED' },
       );
       const postResponseRecords = await postResponseStore.listEffectRecords('http-post-response-validation-failed-run');
       assert.equal(postResponseRecords.length, 1);
-      assert.equal(postResponseRecords[0].state, EffectState.failed);
+      assert.equal(postResponseRecords[0].state, EffectState.running);
+      assert.equal(postResponseRecords[0].diagnostics.recoveryRequired, 'idempotent_resolve_failed');
       assert.equal(postResponseFailureFetchCount, 1);
 
       let directFetchCalled = false;
@@ -6566,19 +6592,19 @@ describe('Capability Plane v0.2 core contracts', () => {
     await assert.rejects(
       () => targetDeniedApproval.resolve({
         policy: { allowLiveEffects: true, allowHumanEffects: true },
-      }, { ...approvalRequest(), hostRequestFingerprint: undefined }),
+      }, { ...approvalRequest(), responseSchema: undefined, hostRequestFingerprint: undefined }),
       { code: 'ERR_HOST_REQUEST_FINGERPRINT_REQUIRED' },
     );
     await assert.rejects(
       () => targetDeniedApproval.resolve({
         policy: { allowLiveEffects: true, allowHumanEffects: true },
-      }, { ...approvalRequest(), hostRequestFingerprint: 'not-a-world-prefix-deadbeef' }),
+      }, { ...approvalRequest(), responseSchema: undefined, hostRequestFingerprint: 'not-a-world-prefix-deadbeef' }),
       { code: 'ERR_HOST_REQUEST_FINGERPRINT_REQUIRED' },
     );
     await assert.rejects(
       () => targetDeniedApproval.resolve({
         policy: { allowLiveEffects: true, allowHumanEffects: true },
-      }, { ...approvalRequest(), hostRequestFingerprint: 'world:host-request:10000000000000000' }),
+      }, { ...approvalRequest(), responseSchema: undefined, hostRequestFingerprint: 'world:host-request:10000000000000000' }),
       { code: 'ERR_HOST_REQUEST_FINGERPRINT_RANGE' },
     );
     assert.equal(targetPromptCalled, false);
@@ -6596,6 +6622,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       policy: { allowLiveEffects: true, allowHumanEffects: true },
     }, {
       ...approvalRequest(),
+      responseSchema: undefined,
       requestBytes: fromUtf8(stableJson({ action: 'approve-file-write', password: 'fixture-password', apiKey: 'fixture-key' })),
     });
     assert.equal(promptedProposal.password, '[redacted]');
@@ -7041,6 +7068,43 @@ describe('Capability Plane v0.2 core contracts', () => {
         }, genericHttpModelRequest('goal=oversized-dry-run', 'model-dry-request-limit-key')),
         { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
       );
+      const oversizedPreflight = driver.preflight({
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          maximumLiveModelCalls: 1,
+          maximumRequestBytes: 1,
+          maximumPromptBytes: 4096,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      }, genericHttpModelRequest('goal=oversized-preflight', 'model-preflight-request-limit-key'));
+      assert.equal(oversizedPreflight.accepted, false);
+      assert.ok(oversizedPreflight.blockers.includes('ERR_CAPABILITY_PROMPT_TOO_LARGE'));
+      let oversizedResolveFetchCalled = false;
+      globalThis.fetch = async () => {
+        oversizedResolveFetchCalled = true;
+        return new Response('{"action":{"variant":"final","text":"should-not-fetch"}}', { status: 200 });
+      };
+      await assert.rejects(
+        () => driver.resolve({
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            maximumLiveModelCalls: 1,
+            maximumRequestBytes: 1,
+            maximumPromptBytes: 4096,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }, genericHttpModelRequest('goal=oversized-resolve', 'model-resolve-request-limit-key')),
+        { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+      );
+      assert.equal(oversizedResolveFetchCalled, false);
+      globalThis.fetch = async () => new Response('{"action":{"variant":"tool","toolId":"actuate","payload":""}}', {
+        status: 200,
+        headers: { 'x-request-id': 'request-2' },
+      });
       assert.equal(driver.manifest().maximumRequestBytes, 64 * 1024);
       const renderedModelLimitRequest = genericHttpModelRequest('goal=rendered-model-limit', 'model-rendered-limit-key');
       const renderedModelLimit = renderedModelLimitRequest.requestBytes.byteLength + 8;
@@ -7414,6 +7478,38 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(unknownActionMetadata.status, 'failed');
       assert.equal(unknownActionMetadata.failureCode, 'ERR_AGENT_ACTION_TOOL_UNKNOWN');
       assert.equal(unknownAction.diagnostics.failureCode, 'ERR_AGENT_ACTION_TOOL_UNKNOWN');
+      await assert.rejects(
+        () => driver.resolve({
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            maximumLiveModelCalls: 1,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }, { ...genericHttpModelRequest('goal=invoke', 'model-http-key-unknown-fixed-ok'), responseSchema: { status: 'ok' } }),
+        { code: 'ERR_MODEL_FAILED_STATUS_UNSUPPORTED' },
+      );
+      globalThis.fetch = async () => {
+        const error = new Error('timed out');
+        error.name = 'AbortError';
+        throw error;
+      };
+      const timeoutFailedModel = await driver.resolve({
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          maximumLiveModelCalls: 1,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      }, { ...genericHttpModelRequest('goal=invoke', 'model-http-key-timeout-failed'), responseSchema: { status: 'failed' } });
+      const timeoutFailedResolution = decodeResolutionInputBytes(timeoutFailedModel.resolutionInputBytes);
+      const timeoutFailedMetadata = JSON.parse(new TextDecoder().decode(timeoutFailedResolution.metadata));
+      assert.equal(timeoutFailedResolution.status, 2);
+      assert.equal(timeoutFailedMetadata.status, 'failed');
+      assert.equal(timeoutFailedMetadata.transportStatus, 'deferred');
+      assert.equal(timeoutFailedMetadata.failureCode, null);
 
       let invalidLiveFetchCount = 0;
       globalThis.fetch = async () => {

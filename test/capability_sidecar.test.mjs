@@ -421,6 +421,12 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
         }).manifest();
         assert.equal(runtimeOptionDotenv.dotenvSecret, null);
         assert.equal(runtimeOptionDotenv.bunfigPreload, false);
+        const runtimeOptionValueHelp = await new CapabilitySidecar({
+          command: [process.execPath, '--title', '--help', dotenvPath],
+          timeoutMs: 1000,
+        }).manifest();
+        assert.equal(runtimeOptionValueHelp.dotenvSecret, null);
+        assert.equal(runtimeOptionValueHelp.bunfigPreload, false);
         assert.throws(
           () => new CapabilitySidecar({
             command: ['deno', 'run', '--no-config', dotenvPath],
@@ -682,6 +688,14 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
           [process.execPath, '--fetch-preconnect=https://denied.example', dotenvPath],
           [process.execPath, '--fetch-preconnect', 'https://denied.example', dotenvPath],
           [process.execPath, '--redis-preconnect', dotenvPath],
+          [process.execPath, '--prefer-latest', dotenvPath],
+          [process.execPath, '--version', dotenvPath],
+          [process.execPath, '-v', dotenvPath],
+          [process.execPath, '-vh', dotenvPath],
+          [process.execPath, '-hv', dotenvPath],
+          [process.execPath, '-vv', dotenvPath],
+          [process.execPath, '--help', dotenvPath],
+          [process.execPath, '--revision', dotenvPath],
           [process.execPath, '--watch', dotenvPath],
           [process.execPath, '--hot', dotenvPath],
           [process.execPath, '--unsafely-ignore-certificate-errors', dotenvPath],

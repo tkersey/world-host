@@ -1401,8 +1401,10 @@ function assertU64Fingerprint(value) {
 }
 function assertFixedModeSupportsResponseSchema(mode, hostRequest = {}) {
   const status = hostRequest.responseSchema?.status;
-  if (!status || mode === "interactive-terminal")
+  if (!status)
     return;
+  if (mode === "interactive-terminal")
+    fail("ERR_HUMAN_APPROVAL_RESPONSE_SCHEMA_UNSUPPORTED", "interactive approval can emit ok or rejected and cannot satisfy fixed response schema");
   if (mode === "noninteractive-allow" && status !== "ok")
     fail("ERR_HUMAN_APPROVAL_RESPONSE_SCHEMA_UNSUPPORTED", "noninteractive allow can only emit ok approvals");
   if (mode === "noninteractive-deny" && status !== "rejected")

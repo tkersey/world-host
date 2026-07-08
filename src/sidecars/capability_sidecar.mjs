@@ -660,6 +660,7 @@ function assertSupportedBunEnvFileOptions(argv) {
   for (let index = 1; index < argv.length; index += 1) {
     const value = argv[index];
     if (entrypointSeen) continue;
+    if (bunRuntimeOptionValuePosition(argv, index)) continue;
     if (value === '--cwd' || value.startsWith('--cwd=')) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars do not support --cwd');
     }
@@ -675,6 +676,9 @@ function assertSupportedBunEnvFileOptions(argv) {
     if (unsupportedBunCodeLoadingOption(value)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars do not support inline code or preload options');
     }
+    if (unsupportedBunEarlyExitOption(value)) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars do not support early-exit flags before the entrypoint');
+    }
     if (unsupportedBunNetworkOption(value)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars do not support preconnect options');
     }
@@ -687,7 +691,6 @@ function assertSupportedBunEnvFileOptions(argv) {
     if (unsupportedBunInstallOption(value)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars do not support package auto-install');
     }
-    if (bunRuntimeOptionValuePosition(argv, index)) continue;
     if (unsupportedBunSubcommand(value)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars do not support package or execution subcommands');
     }
@@ -719,7 +722,14 @@ function unsupportedBunCodeLoadingOption(value) {
 
 function unsupportedBunNetworkOption(value) {
   return value === '--fetch-preconnect' || value.startsWith('--fetch-preconnect=') ||
-    value === '--redis-preconnect' || value.startsWith('--redis-preconnect=');
+    value === '--redis-preconnect' || value.startsWith('--redis-preconnect=') ||
+    value === '--prefer-latest' || value.startsWith('--prefer-latest=');
+}
+
+function unsupportedBunEarlyExitOption(value) {
+  return value === '-v' || value === '--version' || value === '--revision' ||
+    value === '-h' || value === '--help' ||
+    (/^-[A-Za-z]{2,}$/.test(value) && /[vh]/.test(value.slice(1)));
 }
 
 function unsupportedBunTlsOption(value) {

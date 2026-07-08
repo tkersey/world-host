@@ -115,11 +115,13 @@ export class GenericHttpJsonModelDriver {
     try {
       action = decodeAgentActionFromValueImage(resolution.responseValueImageBytes, { allowedToolIds: this.allowedToolIds });
     } catch (error) {
+      const status = modelResponseStatus(hostRequest, 'failed', 'ERR_MODEL_FAILED_STATUS_UNSUPPORTED', 'failed model output cannot satisfy fixed response schema');
       return modelResolutionFromTransport(result, resolution, {
-        status: 'failed',
+        status,
         failureCode: error.code ?? 'ERR_AGENT_ACTION_MALFORMED',
       });
     }
+    modelResponseStatus(hostRequest, 'ok', 'ERR_MODEL_OK_STATUS_UNSUPPORTED', 'successful model output cannot satisfy fixed response schema');
     return modelResolutionFromTransport(result, resolution, {
       status: 'ok',
       responseValueImageBytes: agentActionValueImage(action),
@@ -129,12 +131,22 @@ export class GenericHttpJsonModelDriver {
 
   #assertPolicyAllows(context, hostRequest) {
     const manifest = this.manifest();
+    const policy = context?.policy ?? {};
+    const action = context?.action ?? null;
+    assertCapabilityPolicyAllows({
+      manifest,
+      hostRequest,
+      policy,
+      mode: 'live',
+      action,
+      enforceNetworkTarget: false,
+    });
     assertCapabilityPolicyAllows({
       manifest,
       hostRequest: modelPolicyHostRequest(hostRequest, manifest),
-      policy: context?.policy ?? {},
+      policy,
       mode: 'live',
-      action: context?.action ?? null,
+      action,
     });
   }
 
@@ -287,7 +299,7 @@ function recordedResolutionInputBytes(recordedResolution) {
 
 function transportResponseSchema(responseSchema) {
   if (!responseSchema || responseSchema.status !== 'failed') return responseSchema;
-  return { ...responseSchema, status: 'http_error' };
+  return null;
 }
 
 export function decodeAgentActionFromResolutionInput(resolutionInputBytes, options = {}) {
@@ -371,10 +383,16 @@ function modelResolutionFromTransport(result, resolution, { status, responseValu
 }
 
 function modelStatusForTransportStatus(status, responseSchema = null) {
-  if (status === 1 && responseSchema?.status === 'failed') return 'failed';
+  if ((status === 1 || status === 2 || status === 4) && responseSchema?.status === 'failed') return 'failed';
   if (status === 1) return 'http_error';
   if (status === 4) return 'deferred';
   return 'failed';
+}
+
+function modelResponseStatus(hostRequest, status, code, message) {
+  const expected = hostRequest?.responseSchema?.status;
+  if (expected == null || expected === status) return status;
+  fail(code, message);
 }
 
 function modelWireStatus(status) {

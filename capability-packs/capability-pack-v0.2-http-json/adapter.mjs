@@ -1556,11 +1556,12 @@ class GenericHttpJsonCapabilityDriver {
           if (error?.name === "AbortError")
             throw error;
           const safeTransactionRef = safeHttpTransactionRef(transactionRef, secretValues);
+          const status = failedResponseStatus(hostRequest);
           return this.#resolution(hostRequest, {
-            status: "failed",
+            status,
             statusCode: response.status,
             failureCode: error.code ?? "ERR_HTTP_RESPONSE_VALIDATION_FAILED"
-          }, 2, safeTransactionRef);
+          }, ResponseStatusCode[status], safeTransactionRef);
         }
       });
     } catch (error) {
@@ -1921,6 +1922,11 @@ function timeoutResponseStatus(hostRequest) {
   if (status == null || status === "deferred") return "deferred";
   if (status === "failed" || status === "http_error") return status;
   fail("ERR_HTTP_TIMEOUT_STATUS_UNSUPPORTED", "HTTP timeout cannot satisfy fixed response schema");
+}
+function failedResponseStatus(hostRequest) {
+  const status = hostRequest?.responseSchema?.status;
+  if (status == null || status === "failed") return "failed";
+  fail("ERR_HTTP_FAILED_STATUS_UNSUPPORTED", "HTTP response validation failure cannot satisfy fixed response schema");
 }
 function extractPath(value, path) {
   if (!path)
