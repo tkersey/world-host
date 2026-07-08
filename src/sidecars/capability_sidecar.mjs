@@ -398,6 +398,8 @@ function sidecarSpawnArgv(argv, cwd = undefined, env = undefined) {
     if (shebangRuntime === 'node' || shebangRuntime === 'deno') {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar Node and Deno shebang entrypoints must use explicit runtime commands');
     }
+    const nonJavaScriptShebangArgv = nonJavaScriptShebangRuntimeArgv(inspectionPath);
+    if (nonJavaScriptShebangArgv) assertSupportedNonJavaScriptShebangRuntimeCommand(nonJavaScriptShebangArgv);
     assertSupportedDirectRuntimeCommand(argv);
     if (wrappedJavaScriptRuntimeCommand(argv, cwd, env?.PATH)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar JavaScript runtimes must not run through command wrappers');
@@ -875,6 +877,25 @@ function assertSupportedNonJavaScriptRuntimeCommand(argv) {
   fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar runtime commands must use path-qualified adapter entrypoints');
 }
 
+function assertSupportedNonJavaScriptShebangRuntimeCommand(argv) {
+  const runtime = commandBaseName(argv[0]);
+  if (!nonJavaScriptRuntimeSupportsInlineEval(runtime)) return;
+  for (let index = 1; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value === '--') return;
+    if (unsupportedNonJavaScriptRuntimeOption(runtime, value)) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar shebang runtime commands must not evaluate code before the entrypoint');
+    }
+    if (nonJavaScriptRuntimeOptionConsumesNext(runtime, value)) {
+      index += 1;
+      continue;
+    }
+    if (!value.startsWith('-')) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar shebang runtime commands must not name a second entrypoint');
+    }
+  }
+}
+
 function assertSupportedWrappedNonJavaScriptRuntimeCommands(argv, cwd = undefined, searchPath = undefined) {
   const command = commandBaseName(argv[0]);
   if (!BUN_ARGV_WRAPPER_COMMANDS.has(command)) return;
@@ -903,7 +924,8 @@ function nonJavaScriptRuntimeSupportsInlineEval(runtime) {
 
 function unsupportedNonJavaScriptRuntimeOption(runtime, value) {
   if (/^python(?:\d+(?:\.\d+)*)?$/.test(runtime) || /^pypy(?:\d+)?$/.test(runtime)) {
-    return value === '-c' || value.startsWith('-c') || value === '-m' || value.startsWith('-m');
+    return value === '-c' || value.startsWith('-c') || value === '-m' || value.startsWith('-m') ||
+      value === '-h' || value === '--help' || value === '-V' || value === '--version';
   }
   if (runtime === 'php') {
     return value === '-r' || value.startsWith('-r') ||
@@ -911,19 +933,24 @@ function unsupportedNonJavaScriptRuntimeOption(runtime, value) {
       value === '-R' || value.startsWith('-R') ||
       value === '-E' || value.startsWith('-E') ||
       value === '-d' || value.startsWith('-d') ||
-      value === '-c' || value.startsWith('-c');
+      value === '-c' || value.startsWith('-c') ||
+      value === '-l' || value.startsWith('-l') ||
+      value === '-v' || value === '--version' ||
+      value === '-S' || value.startsWith('-S');
   }
   if (runtime === 'lua' || runtime === 'luajit') {
     return value === '-e' || value.startsWith('-e') || value === '-l' || value.startsWith('-l');
   }
   if (runtime === 'ruby' || runtime === 'rscript') {
     return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=') ||
-      value === '-r' || value.startsWith('-r');
+      value === '-r' || value.startsWith('-r') ||
+      (runtime === 'ruby' && (value === '-c' || value.startsWith('-c') || value === '-v' || value === '--version' || value === '-h' || value === '--help'));
   }
   if (runtime === 'perl') {
     return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=') ||
       value === '-m' || value.startsWith('-m') || value === '-M' || value.startsWith('-M') ||
-      value === '-c' || value.startsWith('-c') || value === '-d' || value.startsWith('-d');
+      value === '-c' || value.startsWith('-c') || value === '-d' || value.startsWith('-d') ||
+      value === '-v' || value.startsWith('-V') || value === '-h' || value === '--help';
   }
   return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=');
 }
@@ -1018,6 +1045,15 @@ function bunShebangRuntimeArgs(value) {
   const tokens = shebangRuntimeTokens(firstLine);
   const bunIndex = tokens.findIndex((token) => commandBaseName(token) === 'bun');
   return bunIndex < 0 ? null : tokens.slice(bunIndex + 1);
+}
+
+function nonJavaScriptShebangRuntimeArgv(value) {
+  if (!value.includes('/') && !value.includes('\\')) return null;
+  const firstLine = shebangFirstLine(value);
+  if (!firstLine) return null;
+  const tokens = shebangRuntimeTokens(firstLine);
+  const runtimeIndex = tokens.findIndex((token) => nonJavaScriptRuntimeSupportsInlineEval(commandBaseName(token)));
+  return runtimeIndex < 0 ? null : tokens.slice(runtimeIndex);
 }
 
 function shebangFirstLine(value) {

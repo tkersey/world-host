@@ -7193,6 +7193,29 @@ describe('Capability Plane v0.2 core contracts', () => {
         attemptNumber: 1,
         metadata: fromUtf8('wrong-target-fixture-pack-shadow'),
       })).schemaAccepted, false);
+      assert.equal(fixturePackShadowDriver.shadow({}, fixturePackShadowRequest, encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xa1n,
+        status: 0,
+        responseValueImageBytes: encodeCanonicalValueImage({
+          bytes: fromUtf8(stableJson({
+            schema: 'boundary.Agent.Action.v0',
+            action: { variant: 'tool', toolId: 'actuate', payload: '' },
+            runHead: { generation: 1 },
+          })),
+          dynamicSize: true,
+        }),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: new Uint8Array(),
+      })).schemaAccepted, false);
+      assert.equal(fixturePackShadowDriver.shadow({}, fixturePackShadowRequest, encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xa1n,
+        status: 0,
+        responseValueImageBytes: fixturePackShadowResolution.responseValueImageBytes,
+        hostClaimBytes: fromUtf8(stableJson({ turnReceiptBytes: 'receipt' })),
+        attemptNumber: 1,
+        metadata: new Uint8Array(),
+      })).schemaAccepted, false);
       assert.equal(fixturePackShadowDriver.shadow({}, fixturePackShadowRequest, fixturePackShadowResolution.resolutionInputBytes).schemaAccepted, true);
       assert.throws(
         () => driver.shadow(

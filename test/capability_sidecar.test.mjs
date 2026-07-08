@@ -620,6 +620,10 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
           ['python3', '--'],
           ['python3', '-c', 'print(1)'],
           ['python3', '-m', 'http.server'],
+          ['python3', '--version', './adapter.py'],
+          ['python3', '--help', './adapter.py'],
+          ['python3', '-V', './adapter.py'],
+          ['python3', '-h', './adapter.py'],
           ['python3', '-W', 'ignore', '-c', 'print(1)'],
           ['env', 'python3', '-c', 'print(1)'],
           ['env', 'PYTHONPATH=./preload-dir', 'python3', './adapter.py'],
@@ -629,13 +633,23 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
           ['perl', '-MPreload', './adapter.pl'],
           ['perl', '-c', './adapter.pl'],
           ['perl', '-d:Some::Mod', './adapter.pl'],
+          ['perl', '-v', './adapter.pl'],
+          ['perl', '-V', './adapter.pl'],
+          ['perl', '-h', './adapter.pl'],
           ['ruby', '-e', 'puts 1'],
           ['ruby', '-r./preload.rb', './adapter.rb'],
+          ['ruby', '-c', './adapter.rb'],
+          ['ruby', '--version', './adapter.rb'],
+          ['ruby', '--help', './adapter.rb'],
           ['env', 'RUBYOPT=-r./preload.rb', 'ruby', './adapter.rb'],
+          ['Rscript', '-e', 'cat("preload")', './adapter.R'],
           ['php', '-r', 'echo 1;'],
           ['php', '-B', 'echo 1;', './adapter.php'],
           ['php', '-d', 'auto_prepend_file=./preload.php', './adapter.php'],
           ['php', '-c', './php.ini', './adapter.php'],
+          ['php', '-l', './adapter.php'],
+          ['php', '-v', './adapter.php'],
+          ['php', '-S', '127.0.0.1:0', './adapter.php'],
           ['env', 'PHPRC=./php-ini-dir', 'php', './adapter.php'],
           ['env', 'PHP_INI_SCAN_DIR=./php-ini-scan-dir', 'php', './adapter.php'],
           ['lua', '-e', 'print(1)'],
@@ -753,6 +767,18 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
         assert.throws(
           () => new CapabilitySidecar({
             command: [quotedShebangWithArgsPath],
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+        const pythonInlineShebangPath = path.join(root, 'python-inline-sidecar');
+        await writeFile(pythonInlineShebangPath, `#!/usr/bin/env -S python3 -c pass
+          print("adapter body")
+        `);
+        await chmod(pythonInlineShebangPath, 0o755);
+        assert.throws(
+          () => new CapabilitySidecar({
+            command: [pythonInlineShebangPath],
             timeoutMs: 1000,
           }).manifest(),
           { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },

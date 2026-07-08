@@ -4,6 +4,18 @@ const ResponseStatusCode = Object.freeze({
   ok: 0,
   final: 0,
 });
+const FORBIDDEN_WORLD_EVIDENCE_KEYS = new Set([
+  'boundaryModuleBytes',
+  'worldReceiptBytes',
+  'turnReceiptBytes',
+  'turnClosureBytes',
+  'capsuleBytes',
+  'chronicleEventBytes',
+  'archiveAppendBatchBytes',
+  'actuationReceiptBytes',
+  'executableImageBytes',
+  'runHead',
+]);
 
 class CarrierError extends Error {
   constructor(code, message = code) {
@@ -110,6 +122,7 @@ function recordedResolutionAccepted(recordedResolution, hostRequest, manifest, p
   const resolutionInputBytes = recordedResolutionInputBytes(recordedResolution);
   if (!resolutionInputBytes) return false;
   try {
+    assertCapabilityResolutionBoundary({ resolutionInputBytes });
     assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, policy);
     return true;
   } catch {
@@ -142,6 +155,88 @@ function assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, p
   }
 }
 
+function assertCapabilityResolutionBoundary(value) {
+  if (!value || typeof value !== 'object') fail('ERR_CAPABILITY_RESOLUTION_INVALID');
+  assertNoWorldEvidenceKeys(value);
+  for (const field of ['hostClaimBytes', 'metadata', 'responseValueImageBytes']) {
+    assertNoWorldEvidenceByteField(value[field]);
+  }
+  const resolutionInputBytes = value.resolutionInputBytes;
+  if (!(resolutionInputBytes instanceof Uint8Array)) fail('ERR_CAPABILITY_RESOLUTION_INVALID');
+  const decoded = decodeResolutionInputBytes(resolutionInputBytes);
+  for (const field of ['hostClaimBytes', 'metadata', 'responseValueImageBytes']) {
+    assertNoWorldEvidenceByteField(decoded[field]);
+  }
+  return true;
+}
+
+function assertNoWorldEvidenceByteField(value) {
+  const payload = parseJsonBytes(value);
+  if (payload !== null) assertNoWorldEvidenceKeys(payload);
+  const valueImagePayload = parseCanonicalValueImagePayload(value);
+  if (valueImagePayload !== null) {
+    const decodedPayload = parseJsonBytes(valueImagePayload);
+    if (decodedPayload !== null) assertNoWorldEvidenceKeys(decodedPayload);
+  }
+}
+
+function parseJsonBytes(value) {
+  if (!(value instanceof Uint8Array) || value.byteLength === 0) return null;
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(value).trim();
+  } catch {
+    return null;
+  }
+  if (!text || !/^[\[{]/.test(text)) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function parseCanonicalValueImagePayload(value) {
+  if (!(value instanceof Uint8Array) || value.byteLength === 0) return null;
+  try {
+    return decodeCanonicalValueImagePayload(value);
+  } catch {
+    return null;
+  }
+}
+
+function assertNoWorldEvidenceKeys(value, path = [], seen = new WeakSet()) {
+  if (value == null || typeof value !== 'object') return true;
+  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return true;
+  if (seen.has(value)) return true;
+  seen.add(value);
+  if (value instanceof Map) {
+    let index = 0;
+    for (const [key, child] of value.entries()) {
+      const entryPath = [...path, `map:${index}`];
+      if (typeof key === 'string' && FORBIDDEN_WORLD_EVIDENCE_KEYS.has(key)) {
+        fail('ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN', `capability driver must not author ${key}`);
+      }
+      assertNoWorldEvidenceKeys(key, [...entryPath, 'key'], seen);
+      assertNoWorldEvidenceKeys(child, typeof key === 'string' ? [...path, key] : [...entryPath, 'value'], seen);
+      index += 1;
+    }
+  } else if (value instanceof Set) {
+    let index = 0;
+    for (const child of value.values()) {
+      assertNoWorldEvidenceKeys(child, [...path, `set:${index}`], seen);
+      index += 1;
+    }
+  }
+  for (const [key, child] of Object.entries(value)) {
+    if (FORBIDDEN_WORLD_EVIDENCE_KEYS.has(key)) {
+      fail('ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN', `capability driver must not author ${key}`);
+    }
+    assertNoWorldEvidenceKeys(child, [...path, key], seen);
+  }
+  return true;
+}
+
 function assertResolutionStatusAccepted(status, hostRequest, manifest) {
   const expectedStatus = hostRequest.responseSchema?.status;
   if (expectedStatus === undefined) {
@@ -167,6 +262,21 @@ function decodeResolutionInputBytes(value) {
   };
   reader.done();
   return out;
+}
+
+function decodeCanonicalValueImagePayload(value) {
+  const reader = new ResolutionInputReader(value);
+  if (reader.u32() !== 1) fail('ERR_WORLD_VALUE_IMAGE_UNSUPPORTED');
+  if (reader.u32() !== 1) fail('ERR_WORLD_VALUE_IMAGE_UNSUPPORTED');
+  reader.u64();
+  reader.optionalU32();
+  reader.optionalU64();
+  reader.optionalU64();
+  reader.u8();
+  const payload = reader.portableBytes();
+  reader.optionalPortableBytes();
+  reader.done();
+  return payload;
 }
 
 class ResolutionInputReader {
@@ -202,6 +312,35 @@ class ResolutionInputReader {
     if (this.offset + length > this.bytesValue.byteLength) fail('ERR_RESOLUTION_INPUT_TRUNCATED');
     const out = this.bytesValue.slice(this.offset, this.offset + length);
     this.offset += length;
+    return out;
+  }
+
+  optionalU32() {
+    return this.optional(() => this.u32());
+  }
+
+  optionalU64() {
+    return this.optional(() => this.u64());
+  }
+
+  optionalPortableBytes() {
+    return this.optional(() => this.portableBytes());
+  }
+
+  optional(readValue) {
+    const tag = this.u8();
+    if (tag === 0) return null;
+    if (tag !== 1) fail('ERR_WORLD_VALUE_IMAGE_TRUNCATED');
+    return readValue();
+  }
+
+  portableBytes() {
+    const length = this.u64();
+    if (length > BigInt(Number.MAX_SAFE_INTEGER)) fail('ERR_WORLD_VALUE_IMAGE_TRUNCATED');
+    const size = Number(length);
+    if (this.offset + size > this.bytesValue.byteLength) fail('ERR_WORLD_VALUE_IMAGE_TRUNCATED');
+    const out = this.bytesValue.slice(this.offset, this.offset + size);
+    this.offset += size;
     return out;
   }
 
