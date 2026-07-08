@@ -1,8 +1,9 @@
 import { lstat, mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { inspect as inspectValue } from 'node:util';
 
 import { createApplicationRecord } from '../core/application.mjs';
@@ -32,6 +33,7 @@ const AGENT_FILE_DESCRIPTOR = 'world:descriptor:74afc8c3b2fe4c33';
 const AGENT_FILE_ACTUATION_CLASS = 'world:actuation-class:1';
 const AGENT_RUNTIME_FIXTURE_OUTPUT = 'actuate updated the fixture';
 const CAPABILITY_PACK_PROBE_SETTLE_MS = 25;
+const CAPABILITY_PACK_PROBE_CHILD_ARG = '--world-host-capability-probe-child';
 let capabilityPackProbeGlobalLock = Promise.resolve();
 export async function runBunCli(args, io, options = {}) {
   const command = args[0] ?? 'help';
@@ -50,7 +52,7 @@ export async function runBunCli(args, io, options = {}) {
     return 0;
   }
   if (command === 'agent') return await runAgentCommand(args.slice(1), io, options);
-  if (command === 'capability') return await runCapabilityCommand(args.slice(1), io);
+  if (command === 'capability') return await runCapabilityCommand(args.slice(1), io, options);
   if (command === 'inspect' || command === 'effects') {
     const storePath = valueAfter(args, '--store');
     const runId = valueAfter(args, '--run');
@@ -89,7 +91,7 @@ export async function runBunCli(args, io, options = {}) {
   return command === 'help' || command === '--help' || command === '-h' ? 0 : 2;
 }
 
-async function runCapabilityCommand(args, io) {
+async function runCapabilityCommand(args, io, options = {}) {
   const subcommand = args[0] ?? 'help';
   if (subcommand === 'check-pack') {
     const pack = requiredOption(args, '--pack');
@@ -104,7 +106,13 @@ async function runCapabilityCommand(args, io) {
     const artifacts = {};
     for (const item of checked.checksums) artifacts[item.path] = new Uint8Array(await readPackFile(pack, item.path));
     await assertCapabilityPackChecksums(checked, artifacts);
-    if (trustedExecuteAdapters) await assertCapabilityPackAdapterAbi(checked, artifacts, pack);
+    if (trustedExecuteAdapters) {
+      if (args.includes(CAPABILITY_PACK_PROBE_CHILD_ARG) || options.isolateTrustedCapabilityPackAdapters === false) {
+        await assertCapabilityPackAdapterAbi(checked, artifacts, pack);
+      } else {
+        await assertCapabilityPackAdapterAbiIsolated(pack);
+      }
+    }
     if (checked.conformanceCorpusFingerprint != null) {
       const receipt = assertCapabilityConformanceReceipt(JSON.parse(await readPackFile(pack, 'conformance.json', 'utf8')));
       if (receipt.driverId !== checked.driverId) fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH', 'conformance receipt driverId does not match manifest');
@@ -124,6 +132,69 @@ async function runCapabilityCommand(args, io) {
   }
   io.stdout.write('world-host capability commands: check-pack\n');
   return subcommand === 'help' || subcommand === '--help' || subcommand === '-h' ? 0 : 2;
+}
+
+async function assertCapabilityPackAdapterAbiIsolated(packRoot) {
+  const binPath = fileURLToPath(new URL('../../bin/world-host.mjs', import.meta.url));
+  const result = await runWorldHostProbeChild([
+    'capability',
+    'check-pack',
+    '--pack',
+    packRoot,
+    '--trusted-execute-adapters',
+    CAPABILITY_PACK_PROBE_CHILD_ARG,
+  ], binPath);
+  if (result.code === 0) return;
+  const childError = parseChildCliError(result.stderr);
+  if (childError?.code) {
+    fail(childError.code, childError.message ?? childError.code, childError.details ?? {});
+  }
+  const message = result.stderr.trim() || result.stdout.trim() ||
+    `capability pack probe child failed: ${result.signal ?? result.code ?? 'unknown'}`;
+  fail('ERR_CAPABILITY_PACK_ADAPTER_PROBE_PROCESS', message, {
+    exitCode: result.code,
+    signal: result.signal,
+  });
+}
+
+function runWorldHostProbeChild(args, binPath) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [binPath, ...args], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        WORLD_HOST_CLI_ERROR_JSON: '1',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.on('error', reject);
+    child.on('close', (code, signal) => {
+      resolve({ code, signal, stdout, stderr });
+    });
+  });
+}
+
+function parseChildCliError(stderr) {
+  const lines = String(stderr ?? '').trim().split(/\r?\n/).reverse();
+  for (const line of lines) {
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed && typeof parsed === 'object' && (typeof parsed.code === 'string' || typeof parsed.message === 'string')) {
+        return parsed;
+      }
+    } catch {}
+  }
+  return null;
 }
 
 async function readPackFile(packRoot, relativePath, encoding = null) {

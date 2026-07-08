@@ -2391,7 +2391,7 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
-  it('serializes non-network trusted probes while network probes patch globals', async () => {
+  it('isolates trusted network probe globals from concurrent CLI helpers', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-concurrent-probe-lock-'));
     const networkPack = path.join(root, 'network-pack');
     const fixturePack = path.join(root, 'fixture-pack');
@@ -2451,9 +2451,8 @@ describe('migration, branching, and CLI diagnostics', () => {
           dryRun() { return { wouldInvoke: true }; }
           shadow() { return { liveInvoked: false, schemaAccepted: false }; }
           resolve() {
-            globalThis.__worldHostProbeLockStarted = true;
             return Promise.resolve()
-              .then(() => new Promise((resolve) => setTimeout(resolve, 75)))
+              .then(() => new Promise((resolve) => setTimeout(resolve, 150)))
               .then(() => ({ resolutionInputBytes }));
           }
           recover() { return { operatorInterventionRequired: true }; }
@@ -2520,22 +2519,26 @@ describe('migration, branching, and CLI diagnostics', () => {
       fixtureManifest.packFingerprint = await capabilityPackFingerprint(fixtureManifest);
       await writeFile(path.join(fixturePack, 'manifest.json'), `${JSON.stringify(fixtureManifest, null, 2)}\n`);
 
-      delete globalThis.__worldHostProbeLockStarted;
       const networkRun = runBunCli(['capability', 'check-pack', '--pack', networkPack, '--trusted-execute-adapters'], quiet)
         .then((result) => ({ result }), (error) => ({ error }));
-      for (let attempt = 0; attempt < 50 && globalThis.__worldHostProbeLockStarted !== true; attempt += 1) {
-        await new Promise((resolve) => hostSetTimeout(resolve, 5));
-      }
-      assert.equal(globalThis.__worldHostProbeLockStarted, true);
       const fixtureRun = runBunCli(['capability', 'check-pack', '--pack', fixturePack, '--trusted-execute-adapters'], quiet)
         .then((result) => ({ result }), (error) => ({ error }));
+      let unrelatedTimerFired = false;
+      hostSetTimeout(() => {
+        unrelatedTimerFired = true;
+      }, 10);
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        assert.equal(globalThis.setTimeout, hostSetTimeout);
+        await new Promise((resolve) => hostSetTimeout(resolve, 5));
+      }
+      assert.equal(globalThis.setTimeout, hostSetTimeout);
+      assert.equal(unrelatedTimerFired, true);
       const [networkResult, fixtureResult] = await Promise.all([networkRun, fixtureRun]);
       if (networkResult.error) throw networkResult.error;
       if (fixtureResult.error) throw fixtureResult.error;
       assert.equal(networkResult.result, 0);
       assert.equal(fixtureResult.result, 0);
     } finally {
-      delete globalThis.__worldHostProbeLockStarted;
       await rm(root, { recursive: true, force: true });
     }
   });
