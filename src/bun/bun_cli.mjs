@@ -1,4 +1,4 @@
-import { lstat, mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -37,6 +37,7 @@ const DEFAULT_CAPABILITY_PACK_PROBE_TIMEOUT_MS = 5000;
 const DEFAULT_CAPABILITY_PACK_PROBE_CHILD_OUTPUT_BYTES = 1024 * 1024;
 const CAPABILITY_PACK_PROBE_SETTLE_MS = 25;
 const CAPABILITY_PACK_PROBE_CHILD_ARG = '--world-host-capability-probe-child';
+const CAPABILITY_PACK_PROBE_IMPORT_ROOT_ENV = 'WORLD_HOST_CAPABILITY_PACK_PROBE_IMPORT_ROOT';
 let capabilityPackProbeGlobalLock = Promise.resolve();
 export async function runBunCli(args, io, options = {}) {
   const command = args[0] ?? 'help';
@@ -114,7 +115,7 @@ async function runCapabilityCommand(args, io, options = {}) {
       if (args.includes(CAPABILITY_PACK_PROBE_CHILD_ARG) || options.isolateTrustedCapabilityPackAdapters === false) {
         await assertCapabilityPackAdapterAbi(checked, artifacts, pack);
       } else {
-        await assertCapabilityPackAdapterAbiIsolated(pack);
+        await assertCapabilityPackAdapterAbiIsolated(pack, checked);
       }
     }
     if (checked.conformanceCorpusFingerprint != null) {
@@ -141,43 +142,53 @@ async function runCapabilityCommand(args, io, options = {}) {
   return subcommand === 'help' || subcommand === '--help' || subcommand === '-h' ? 0 : 2;
 }
 
-async function assertCapabilityPackAdapterAbiIsolated(packRoot) {
+async function assertCapabilityPackAdapterAbiIsolated(packRoot, packManifest) {
   const binPath = fileURLToPath(new URL('../../bin/world-host.mjs', import.meta.url));
-  const result = await runWorldHostProbeChild([
-    'capability',
-    'check-pack',
-    '--pack',
-    packRoot,
-    '--trusted-execute-adapters',
-    CAPABILITY_PACK_PROBE_CHILD_ARG,
-  ], binPath);
-  if (result.timedOut) {
-    fail('ERR_CAPABILITY_PACK_ADAPTER_PROBE_TIMEOUT', 'capability pack adapter probe child timed out', {
-      timeoutMs: result.timeoutMs,
+  let importRoot = null;
+  try {
+    if (packManifest.adapter.kind === 'in_process') {
+      importRoot = await mkdtemp(path.join(tmpdir(), 'world-host-capability-adapter-imports-'));
+    }
+    const result = await runWorldHostProbeChild([
+      'capability',
+      'check-pack',
+      '--pack',
+      packRoot,
+      '--trusted-execute-adapters',
+      CAPABILITY_PACK_PROBE_CHILD_ARG,
+    ], binPath, {
+      env: importRoot == null ? {} : { [CAPABILITY_PACK_PROBE_IMPORT_ROOT_ENV]: importRoot },
+    });
+    if (result.timedOut) {
+      fail('ERR_CAPABILITY_PACK_ADAPTER_PROBE_TIMEOUT', 'capability pack adapter probe child timed out', {
+        timeoutMs: result.timeoutMs,
+        signal: result.signal,
+      });
+    }
+    if (result.outputLimitExceeded) {
+      fail('ERR_CAPABILITY_PACK_ADAPTER_PROBE_OUTPUT_TOO_LARGE', 'capability pack adapter probe child output exceeded limit', {
+        stream: result.outputLimitExceeded.stream,
+        limitBytes: result.outputLimitExceeded.limitBytes,
+        signal: result.signal,
+      });
+    }
+    if (result.code === 0) return;
+    const childError = parseChildCliError(result.stderr);
+    if (childError?.code) {
+      fail(childError.code, childError.message ?? childError.code, childError.details ?? {});
+    }
+    const message = result.stderr.trim() || result.stdout.trim() ||
+      `capability pack probe child failed: ${result.signal ?? result.code ?? 'unknown'}`;
+    fail('ERR_CAPABILITY_PACK_ADAPTER_PROBE_PROCESS', message, {
+      exitCode: result.code,
       signal: result.signal,
     });
+  } finally {
+    if (importRoot != null) await rm(importRoot, { recursive: true, force: true });
   }
-  if (result.outputLimitExceeded) {
-    fail('ERR_CAPABILITY_PACK_ADAPTER_PROBE_OUTPUT_TOO_LARGE', 'capability pack adapter probe child output exceeded limit', {
-      stream: result.outputLimitExceeded.stream,
-      limitBytes: result.outputLimitExceeded.limitBytes,
-      signal: result.signal,
-    });
-  }
-  if (result.code === 0) return;
-  const childError = parseChildCliError(result.stderr);
-  if (childError?.code) {
-    fail(childError.code, childError.message ?? childError.code, childError.details ?? {});
-  }
-  const message = result.stderr.trim() || result.stdout.trim() ||
-    `capability pack probe child failed: ${result.signal ?? result.code ?? 'unknown'}`;
-  fail('ERR_CAPABILITY_PACK_ADAPTER_PROBE_PROCESS', message, {
-    exitCode: result.code,
-    signal: result.signal,
-  });
 }
 
-function runWorldHostProbeChild(args, binPath) {
+function runWorldHostProbeChild(args, binPath, { env = {} } = {}) {
   return new Promise((resolve, reject) => {
     const timeoutMs = capabilityPackProbeTimeoutMs();
     const outputLimitBytes = capabilityPackProbeChildOutputBytes();
@@ -185,6 +196,7 @@ function runWorldHostProbeChild(args, binPath) {
       cwd: process.cwd(),
       env: {
         ...process.env,
+        ...env,
         WORLD_HOST_CLI_ERROR_JSON: '1',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -301,32 +313,39 @@ function pathInside(root, target) {
 
 async function assertCapabilityPackAdapterAbi(packManifest, artifacts, packRoot) {
   await withDeterministicCapabilityPackProbeNetwork(packManifest, null, async (probeNetwork) => {
+    let adapterImportRoot = null;
     let driver;
     let sidecar = false;
-    if (packManifest.adapter.kind === 'in_process') {
-      const module = await withCapabilityPackProbeTimeout('import', import(await capabilityPackAdapterImportUrl(packManifest, artifacts)));
-      await probeNetwork?.assertNoViolations();
-      const Driver = module[packManifest.adapter.exportName];
-      if (typeof Driver !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_EXPORT');
-      driver = new Driver(capabilityPackAdapterOptions(packManifest));
-      await probeNetwork?.assertNoViolations();
-    } else if (packManifest.adapter.kind === 'sidecar') {
-      if (externalCapabilityPackEffectProbe(packManifest, null)) {
-        fail('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED', 'network sidecar probes must not perform live external effects');
+    try {
+      if (packManifest.adapter.kind === 'in_process') {
+        const adapterImport = await capabilityPackAdapterImportTarget(packManifest, artifacts);
+        adapterImportRoot = adapterImport.root;
+        const module = await withCapabilityPackProbeTimeout('import', import(adapterImport.url));
+        await probeNetwork?.assertNoViolations();
+        const Driver = module[packManifest.adapter.exportName];
+        if (typeof Driver !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_EXPORT');
+        driver = new Driver(capabilityPackAdapterOptions(packManifest));
+        await probeNetwork?.assertNoViolations();
+      } else if (packManifest.adapter.kind === 'sidecar') {
+        if (externalCapabilityPackEffectProbe(packManifest, null)) {
+          fail('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED', 'network sidecar probes must not perform live external effects');
+        }
+        driver = new CapabilitySidecar({ command: packManifest.adapter.command, cwd: packRoot });
+        sidecar = true;
+      } else {
+        return;
       }
-      driver = new CapabilitySidecar({ command: packManifest.adapter.command, cwd: packRoot });
-      sidecar = true;
-    } else {
-      return;
+      const capabilityDriver = defineCapabilityDriver(driver);
+      if (packManifest.canRecover === true && typeof driver.recover !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_RECOVER');
+      const driverManifest = sidecar
+        ? await withCapabilityPackProbeTimeout('manifest', capabilityPackSidecarManifest(driver, packManifest))
+        : capabilityDriver.manifest();
+      await probeNetwork?.assertNoViolations();
+      assertCapabilityPackDriverManifestMatches(packManifest, driverManifest);
+      await assertCapabilityPackAdapterProbe(packManifest, capabilityDriver, driverManifest, { driver, sidecar, probeNetwork });
+    } finally {
+      if (adapterImportRoot != null) await rm(adapterImportRoot, { recursive: true, force: true });
     }
-    const capabilityDriver = defineCapabilityDriver(driver);
-    if (packManifest.canRecover === true && typeof driver.recover !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_RECOVER');
-    const driverManifest = sidecar
-      ? await withCapabilityPackProbeTimeout('manifest', capabilityPackSidecarManifest(driver, packManifest))
-      : capabilityDriver.manifest();
-    await probeNetwork?.assertNoViolations();
-    assertCapabilityPackDriverManifestMatches(packManifest, driverManifest);
-    await assertCapabilityPackAdapterProbe(packManifest, capabilityDriver, driverManifest, { driver, sidecar, probeNetwork });
   });
 }
 
@@ -1093,10 +1112,10 @@ function assertCapabilityPackDriverManifestMatches(packManifest, driverManifest)
   }
 }
 
-async function capabilityPackAdapterImportUrl(packManifest, artifacts) {
+async function capabilityPackAdapterImportTarget(packManifest, artifacts) {
   const checksum = packManifest.checksums.find((item) => item.path === packManifest.adapter.module)?.checksum;
   if (!checksum) fail('ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED', `referenced artifact is not checksum-covered: ${packManifest.adapter.module}`);
-  const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-adapter-imports-'));
+  const root = await capabilityPackAdapterImportRoot();
   for (const item of packManifest.checksums) {
     const bytes = artifacts[item.path];
     if (!(bytes instanceof Uint8Array)) fail('ERR_CAPABILITY_PACK_ARTIFACT_MISSING', `artifact missing: ${item.path}`);
@@ -1105,7 +1124,23 @@ async function capabilityPackAdapterImportUrl(packManifest, artifacts) {
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, bytes, { flag: 'wx' });
   }
-  return pathToFileURL(path.resolve(root, packManifest.adapter.module)).href;
+  return Object.freeze({
+    root,
+    url: pathToFileURL(path.resolve(root, packManifest.adapter.module)).href,
+  });
+}
+
+async function capabilityPackAdapterImportRoot() {
+  const ownerRoot = process.env[CAPABILITY_PACK_PROBE_IMPORT_ROOT_ENV];
+  if (ownerRoot == null || ownerRoot.length === 0) {
+    return await mkdtemp(path.join(tmpdir(), 'world-host-capability-adapter-imports-'));
+  }
+  const actual = await realpath(ownerRoot);
+  const tempRoot = await realpath(tmpdir());
+  if (!pathInside(tempRoot, actual) || !path.basename(actual).startsWith('world-host-capability-adapter-imports-')) {
+    fail('ERR_CAPABILITY_PACK_ADAPTER_IMPORT_ROOT', 'adapter import root must be a world-host temp directory');
+  }
+  return actual;
 }
 
 function capabilityPackAdapterOptions(packManifest) {

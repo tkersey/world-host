@@ -1472,6 +1472,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         : item);
       syncLoopManifest.packFingerprint = await capabilityPackFingerprint(syncLoopManifest);
       await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(syncLoopManifest, null, 2)}\n`);
+      const directImportDirs = await capabilityAdapterImportDirNames();
       await assert.rejects(
         () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
           stdout: { write() {} },
@@ -1479,6 +1480,8 @@ describe('migration, branching, and CLI diagnostics', () => {
         }),
         { code: 'ERR_CAPABILITY_PACK_ADAPTER_PROBE_TIMEOUT' },
       );
+      await assertNoNewCapabilityAdapterImportDirs(directImportDirs);
+      const proofScriptImportDirs = await capabilityAdapterImportDirNames();
       const syncLoopResult = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
         cwd: root,
         encoding: 'utf8',
@@ -1488,6 +1491,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(syncLoopResult.error, undefined);
       assert.notEqual(syncLoopResult.status, 0);
       assert.match(`${syncLoopResult.stdout}${syncLoopResult.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_PROBE_TIMEOUT/);
+      await assertNoNewCapabilityAdapterImportDirs(proofScriptImportDirs);
     } finally {
       if (previousTimeout == null) {
         delete process.env.WORLD_HOST_CAPABILITY_PACK_PROBE_TIMEOUT_MS;
@@ -6680,6 +6684,19 @@ function decodeValueImageResponseRefs(bytes) {
 
 function fingerprintHex(value) {
   return value == null ? null : `0x${value.toString(16).padStart(16, '0')}`;
+}
+
+async function capabilityAdapterImportDirNames() {
+  const entries = await readdir(tmpdir(), { withFileTypes: true }).catch(() => []);
+  return new Set(entries
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith('world-host-capability-adapter-imports-'))
+    .map((entry) => entry.name));
+}
+
+async function assertNoNewCapabilityAdapterImportDirs(before) {
+  const after = await capabilityAdapterImportDirNames();
+  const added = [...after].filter((name) => !before.has(name)).sort();
+  assert.deepEqual(added, []);
 }
 
 function fixtureDriver() {
