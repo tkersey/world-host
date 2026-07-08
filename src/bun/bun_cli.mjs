@@ -1145,7 +1145,9 @@ async function capabilityPackAdapterImportRoot() {
 
 function capabilityPackAdapterOptions(packManifest) {
   const base = { packFingerprint: packManifest.packFingerprint };
-  if (packManifest.driverId === 'generic-http-json') return { ...base, endpointUrl: 'https://example.invalid/decide' };
+  if (packManifest.driverId === 'generic-http-json' || packManifest.driverId === 'generic-http-json-model') {
+    return { ...base, endpointUrl: 'https://example.invalid/decide' };
+  }
   return base;
 }
 

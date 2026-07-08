@@ -2545,6 +2545,10 @@ describe('Capability Plane v0.2 core contracts', () => {
       ['deno', 'run', '--no-config', '--unsafely-ignore-certificate-errors=example.invalid', 'sidecar.mjs'],
       ['bun', '--fetch-preconnect=https://denied.example', 'sidecar.mjs'],
       ['bun', '--fetch-preconnect', 'https://denied.example', 'sidecar.mjs'],
+      ['bun', '--redis-preconnect', 'sidecar.mjs'],
+      ['bun', '--redis-preconnect=redis://denied.example:6379', 'sidecar.mjs'],
+      ['bun', '--prefer-latest', 'sidecar.mjs'],
+      ['bun', '--prefer-latest=true', 'sidecar.mjs'],
       ['bun', '--unsafely-ignore-certificate-errors', 'sidecar.mjs'],
       ['bun', '--unsafely-ignore-certificate-errors=example.invalid', 'sidecar.mjs'],
     ]) {

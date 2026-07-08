@@ -2695,6 +2695,92 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('supplies deterministic endpoint options to generic HTTP model pack probes', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-generic-http-model-probe-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('generic-http-json-model-probe'),
+      })).toString('base64');
+      const adapterBytes = fromUtf8(`
+        const resolutionInputBytes = new Uint8Array(Buffer.from('${validResolutionBase64}', 'base64'));
+        export class CapabilityDriver {
+          constructor(options = {}) {
+            if (options.endpointUrl !== 'https://example.invalid/decide') {
+              throw new Error('generic model probe endpoint option missing');
+            }
+            this.packFingerprint = options.packFingerprint;
+            this.endpointUrl = options.endpointUrl;
+          }
+          manifest() {
+            return {
+              driverId: 'generic-http-json-model',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: ['model:generic-http-json'],
+              supportedDescriptorFingerprints: ['descriptor:generic-http-json-model'],
+              supportedActuationClasses: ['model'],
+              supportedResponseStatuses: ['ok', 'failed', 'deferred'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'idempotent',
+              concurrencyLimit: 1,
+              authorityLabels: ['model:http-json'],
+              diagnostics: { configuredEndpointUrl: this.endpointUrl }
+            };
+          }
+          preflight() { return { accepted: true, blockers: [] }; }
+          dryRun() { return { wouldInvoke: true }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          resolve() { return { resolutionInputBytes }; }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      Object.assign(manifest, {
+        driverId: 'generic-http-json-model',
+        supportedActuatorRefs: ['model:generic-http-json'],
+        supportedDescriptorFingerprints: ['descriptor:generic-http-json-model'],
+        supportedActuationClasses: ['model'],
+        supportedResponseStatuses: ['ok', 'failed', 'deferred'],
+        maximumRequestBytes: 1048576,
+        maximumResponseBytes: 1048576,
+        recoveryClass: 'idempotent',
+        authorityLabels: ['model:http-json'],
+        policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
+      });
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
+      manifest.checksums = manifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
+        .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      assert.equal(await runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      }), 0);
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('isolates trusted network probe globals from concurrent CLI helpers', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-concurrent-probe-lock-'));
     const networkPack = path.join(root, 'network-pack');

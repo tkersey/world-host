@@ -2811,7 +2811,9 @@ function sidecarUnsupportedBunCodeLoadingOption(command, index) {
 function sidecarUnsupportedBunNetworkOption(command, index) {
   if (commandBaseName(command[0]).toLowerCase() !== 'bun' || !sidecarRuntimeOptionPosition(command, index)) return false;
   const value = command[index];
-  if (value !== '--fetch-preconnect' && !value.startsWith('--fetch-preconnect=')) return false;
+  if (!(value === '--fetch-preconnect' || value.startsWith('--fetch-preconnect=') ||
+    value === '--redis-preconnect' || value.startsWith('--redis-preconnect=') ||
+    value === '--prefer-latest' || value.startsWith('--prefer-latest='))) return false;
   const entrypointIndex = sidecarEntrypointIndex(command);
   return entrypointIndex < 0 || index < entrypointIndex;
 }
