@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 
 import { CapabilitySidecar, CapabilitySidecarCommand, decodeSidecarFrame, encodeSidecarFrame } from '../src/sidecars/capability_sidecar.mjs';
 import { defineCapabilityDriver } from '../src/core/capability_driver.mjs';
+import { markDefaultEffectContext } from '../src/core/effect_context.mjs';
 import { fromUtf8 } from '../src/core/store.mjs';
 
 describe('Capability sidecar transport', () => {
@@ -58,6 +59,50 @@ describe('Capability sidecar transport', () => {
       () => decodeSidecarFrame(fromUtf8('x'.repeat(32)), 8),
       { code: 'ERR_CAPABILITY_SIDECAR_FRAME_TOO_LARGE' },
     );
+  });
+
+  it('keeps marked default contexts receiver-local in sidecar frames', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-sidecar-context-'));
+    try {
+      const sidecarPath = path.join(root, 'sidecar.mjs');
+      await writeFile(sidecarPath, `
+        const input = await new Response(Bun.stdin.stream()).text();
+        const frame = JSON.parse(input);
+        const context = frame.payload.context ?? frame.payload;
+        process.stdout.write(JSON.stringify({
+          command: frame.command,
+          payload: {
+            context,
+            contextKeys: Object.keys(context).sort(),
+            hasHostRequest: frame.payload.hostRequest != null
+          }
+        }) + '\\n');
+      `);
+
+      const sidecar = new CapabilitySidecar({ command: [process.execPath, sidecarPath], timeoutMs: 1000 });
+      const defaultContext = markDefaultEffectContext({
+        policy: { allowedOrigins: ['https://api.example'] },
+        action: { approved: true },
+        run: { id: 'receiver-run' },
+        parentClosureBytes: { redacted: false },
+        hostRequest: { hostRequestFingerprint: 'world:host-request:0000000000000a01' },
+        worldHostRequest: { requestFingerprint: '0xa01' },
+      });
+
+      const resolved = await sidecar.resolve(defaultContext, { actuatorRef: 'http:json' });
+      assert.deepEqual(resolved.contextKeys, ['action', 'policy']);
+      assert.deepEqual(resolved.context.action, { approved: true });
+      assert.deepEqual(resolved.context.policy, { allowedOrigins: ['https://api.example'] });
+      assert.equal(resolved.hasHostRequest, true);
+
+      const custom = await sidecar.resolve({
+        policy: { allowedOrigins: ['https://custom.example'] },
+        worldHostRequest: { requestFingerprint: '0xc01' },
+      }, { actuatorRef: 'http:json' });
+      assert.deepEqual(custom.contextKeys, ['policy', 'worldHostRequest']);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('runs sidecars without shell interpolation and rejects bad outcomes', async () => {

@@ -2,6 +2,7 @@ import { EffectJournal, EffectState } from './effect_journal.mjs';
 import { EffectRecoveryClass, assertDurableRecoveryAllowed } from './actuator.mjs';
 import { assertCapabilityReportAccepted, createRunPolicy, preflightCapabilities } from './capabilities.mjs';
 import { defineCapabilityDriver } from './capability_driver.mjs';
+import { isDefaultEffectContext, markDefaultEffectContext } from './effect_context.mjs';
 import { assertCapabilityPreflightAccepted, journaledHostRequest, networkPolicyHostRequest } from './capability_modes.mjs';
 import { assertCapabilityPolicyAllows } from './capability_policy.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from './run.mjs';
@@ -795,18 +796,19 @@ async function defaultTurnInputFactory({ parentHead }) {
 }
 
 async function defaultEffectContextFactory(context) {
-  return {
+  return markDefaultEffectContext({
     ...context,
     policy: capabilityPolicyForSelectedEffect(context.policy, context.driverManifest, context.hostRequest),
-  };
+  });
 }
 
 function normalizeSelectedEffectContext(context, policy, manifest, hostRequest) {
   const selected = context && typeof context === 'object' ? context : {};
-  return {
+  const normalized = {
     ...selected,
     policy: selectedEffectCapabilityPolicy(selected.policy ?? policy, manifest, hostRequest),
   };
+  return isDefaultEffectContext(selected) ? markDefaultEffectContext(normalized) : normalized;
 }
 
 function selectedEffectCapabilityPolicy(policy, manifest, hostRequest) {

@@ -3,6 +3,7 @@ import { Buffer } from 'node:buffer';
 import { closeSync, openSync, readSync } from 'node:fs';
 import path from 'node:path';
 
+import { receiverLocalEffectContext } from '../core/effect_context.mjs';
 import { assertBytes, fail, fromUtf8 } from '../core/store.mjs';
 
 export const CapabilitySidecarCommand = Object.freeze({
@@ -217,7 +218,8 @@ export class CapabilitySidecar {
   }
 
   async recover(context, effectRecord) {
-    return await this.requestPayload(CapabilitySidecarCommand.recover, arguments.length === 1 ? context : { context, effectRecord });
+    const sidecarContext = receiverLocalEffectContext(context);
+    return await this.requestPayload(CapabilitySidecarCommand.recover, arguments.length === 1 ? sidecarContext : { context: sidecarContext, effectRecord });
   }
 
   async dryRun(context, hostRequest) {
@@ -225,9 +227,10 @@ export class CapabilitySidecar {
   }
 
   async shadow(context, hostRequest, recordedResolution) {
+    const sidecarContext = receiverLocalEffectContext(context);
     return await this.requestPayload(
       CapabilitySidecarCommand.shadow,
-      arguments.length === 1 ? context : { context, hostRequest, recordedResolution },
+      arguments.length === 1 ? sidecarContext : { context: sidecarContext, hostRequest, recordedResolution },
     );
   }
 
@@ -241,7 +244,8 @@ export class CapabilitySidecar {
 }
 
 function driverHostRequestPayload(context, hostRequest, arity) {
-  return arity === 1 ? context : { context, hostRequest };
+  const sidecarContext = receiverLocalEffectContext(context);
+  return arity === 1 ? sidecarContext : { context: sidecarContext, hostRequest };
 }
 
 export class CapabilitySidecarConformance {
