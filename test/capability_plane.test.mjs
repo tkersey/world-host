@@ -72,7 +72,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       corpusFingerprint: 'sha256:'.concat('1'.repeat(64)),
       vectors: [{ name: 'passed-vector', status: 'passed' }],
     };
-    assert.equal(
+    assert.notEqual(
       await capabilityConformanceReceiptFingerprint({ ...conformanceReceipt, packFingerprint: 'sha256:'.concat('2'.repeat(64)) }),
       await capabilityConformanceReceiptFingerprint(conformanceReceipt),
     );

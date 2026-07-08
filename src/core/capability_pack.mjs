@@ -33,7 +33,6 @@ const SEMANTIC_FIELDS = Object.freeze([
   'maximumRequestBytes',
   'maximumResponseBytes',
   'conformanceCorpusFingerprint',
-  'conformanceReceiptFingerprint',
   'metadataBytes',
   'adapter',
 ]);
@@ -389,6 +388,7 @@ export async function capabilityConformanceReceiptFingerprint(input) {
   return `sha256:${await sha256Hex(fromUtf8(stableJson({
     kind: 'world-host.capability.conformance-receipt.v1',
     driverId: receipt.driverId,
+    packFingerprint: receipt.packFingerprint,
     corpusFingerprint: receipt.corpusFingerprint,
     vectors: receipt.vectors,
     nonClaims: receipt.nonClaims,
