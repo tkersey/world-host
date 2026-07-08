@@ -154,6 +154,20 @@ describe('Capability sidecar transport', () => {
           }),
           { code: 'ERR_CAPABILITY_SIDECAR_ENV_INVALID' },
         );
+        for (const env of [
+          { PATH: root },
+          { RUBYOPT: '-r./preload.rb' },
+          { PERL5OPT: '-MPreload' },
+        ]) {
+          assert.throws(
+            () => new CapabilitySidecar({
+              command: [process.execPath, envPath],
+              timeoutMs: 1000,
+              env,
+            }),
+            { code: 'ERR_CAPABILITY_SIDECAR_ENV_INVALID' },
+          );
+        }
       } finally {
         if (originalAmbient === undefined) {
           delete process.env.WORLD_HOST_SIDECAR_AMBIENT_SECRET;
@@ -259,6 +273,17 @@ describe('Capability sidecar transport', () => {
           ['env', 'node-sidecar'],
           ['nice', 'deno-sidecar'],
           ['env', 'bun-sidecar'],
+        ]) {
+          assert.throws(
+            () => new CapabilitySidecar({
+              command,
+              env: { PATH: `${root}${path.delimiter}${process.env.PATH ?? ''}` },
+              timeoutMs: 1000,
+            }).manifest(),
+            { code: 'ERR_CAPABILITY_SIDECAR_ENV_INVALID' },
+          );
+        }
+        for (const command of [
           ['env', `PATH=${root}${path.delimiter}${process.env.PATH ?? ''}`, 'node-sidecar'],
           ['env', '-S', `PATH=${root}${path.delimiter}${process.env.PATH ?? ''}`, 'node-sidecar'],
           ['env', '-P', root, 'bun-sidecar'],
@@ -266,7 +291,6 @@ describe('Capability sidecar transport', () => {
           assert.throws(
             () => new CapabilitySidecar({
               command,
-              env: { PATH: `${root}${path.delimiter}${process.env.PATH ?? ''}` },
               timeoutMs: 1000,
             }).manifest(),
             { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
@@ -279,7 +303,7 @@ describe('Capability sidecar transport', () => {
             env: { PATH: `.${path.delimiter}${process.env.PATH ?? ''}` },
             timeoutMs: 1000,
           }).manifest(),
-          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+          { code: 'ERR_CAPABILITY_SIDECAR_ENV_INVALID' },
         );
         assert.throws(
           () => new CapabilitySidecar({
@@ -338,22 +362,17 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
         }).manifest();
         assert.equal(runtimeOptionDotenv.dotenvSecret, null);
         assert.equal(runtimeOptionDotenv.bunfigPreload, false);
-        const fakeDenoPath = path.join(root, 'deno');
-        await writeFile(fakeDenoPath, `#!/bin/sh
-cat >/dev/null
-printf '%s\\n' '{"command":"manifest","payload":{"driverId":"fixture-sidecar"}}'
-`);
-        await chmod(fakeDenoPath, 0o755);
-        const denoNoConfig = await new CapabilitySidecar({
-          command: ['deno', 'run', '--no-config', dotenvPath],
-          env: { PATH: root },
-          timeoutMs: 1000,
-        }).manifest();
-        assert.equal(denoNoConfig.driverId, 'fixture-sidecar');
+        assert.throws(
+          () => new CapabilitySidecar({
+            command: ['deno', 'run', '--no-config', dotenvPath],
+            env: { PATH: root },
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_ENV_INVALID' },
+        );
         assert.throws(
           () => new CapabilitySidecar({
             command: ['deno', 'run', '--no-config', '--unsafely-ignore-certificate-errors', dotenvPath],
-            env: { PATH: root },
             timeoutMs: 1000,
           }).manifest(),
           { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
@@ -361,7 +380,6 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"fixture-sidecar"}}'
         assert.throws(
           () => new CapabilitySidecar({
             command: ['deno', 'run', '--config=deno.json', dotenvPath],
-            env: { PATH: root },
             timeoutMs: 1000,
           }).manifest(),
           { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
@@ -486,6 +504,8 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"fixture-sidecar"}}'
           { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
         );
         for (const command of [
+          ['node'],
+          ['node', '--conditions', 'dev'],
           ['node', '--env-file=.env', dotenvPath],
           ['node', '--env-file', '.env', dotenvPath],
           ['node', '--env-file-if-exists=.env', dotenvPath],
@@ -526,10 +546,16 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"fixture-sidecar"}}'
           ['deno', '--no-config', 'task', 'start', './sidecar.ts'],
           ['deno', 'run', '--allow-read=.', dotenvPath],
           ['deno', 'run', '-A', dotenvPath],
+          ['python3'],
+          ['python3', '--'],
           ['python3', '-c', 'print(1)'],
           ['python3', '-m', 'http.server'],
+          ['env', 'python3', '-c', 'print(1)'],
+          ['timeout', '1', 'python3', '-c', 'print(1)'],
           ['perl', '-e', 'print 1'],
+          ['perl', '-MPreload', './adapter.pl'],
           ['ruby', '-e', 'puts 1'],
+          ['ruby', '-r./preload.rb', './adapter.rb'],
         ]) {
           assert.throws(
             () => new CapabilitySidecar({ command, timeoutMs: 1000 }).manifest(),
@@ -636,7 +662,7 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"fixture-sidecar"}}'
             env: { PATH: `${root}${path.delimiter}${process.env.PATH ?? ''}` },
             timeoutMs: 1000,
           }),
-          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+          { code: 'ERR_CAPABILITY_SIDECAR_ENV_INVALID' },
         );
         assert.throws(
           () => new CapabilitySidecar({

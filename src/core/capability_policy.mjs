@@ -18,7 +18,7 @@ export class CapabilityPolicy {
     this.requireApprovalForNetworkEffects = input.requireApprovalForNetworkEffects === true;
     this.requireApprovalForBestEffort = input.requireApprovalForBestEffort !== false;
     this.maximumLiveModelCalls = nonNegativeSafeInteger(input.maximumLiveModelCalls ?? 0, 'maximumLiveModelCalls');
-    this.maximumRequestBytes = positiveSafeInteger(input.maximumRequestBytes ?? input.maximumPromptBytes ?? 1024 * 1024, 'maximumRequestBytes');
+    this.maximumRequestBytes = positiveSafeInteger(input.maximumRequestBytes ?? 1024 * 1024, 'maximumRequestBytes');
     this.maximumPromptBytes = positiveSafeInteger(input.maximumPromptBytes ?? this.maximumRequestBytes, 'maximumPromptBytes');
     this.maximumResponseBytes = positiveSafeInteger(input.maximumResponseBytes ?? 1024 * 1024, 'maximumResponseBytes');
     this.allowedOrigins = new Set(iterable(input.allowedOrigins));

@@ -1,6 +1,6 @@
 import { EffectRecoveryClass } from '../core/actuator.mjs';
-import { DryRunReport, ShadowReport, capabilityHostClaimBytes, defaultCapabilityPreflight } from '../core/capability_driver.mjs';
-import { hostRequestTargetFingerprint } from '../core/effect_journal.mjs';
+import { DryRunReport, ShadowReport, assertCapabilityResolutionBoundary, capabilityHostClaimBytes, defaultCapabilityPreflight } from '../core/capability_driver.mjs';
+import { assertResolutionAccepted, hostRequestTargetFingerprint } from '../core/effect_journal.mjs';
 import { assertCapabilityPolicyAllows, redactCapabilityDiagnostics } from '../core/capability_policy.mjs';
 import { fail, fromUtf8, stableJson } from '../core/store.mjs';
 import { encodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
@@ -58,7 +58,10 @@ export class HumanApprovalCapabilityDriver {
   shadow(context, hostRequest, recordedResolution) {
     this.dryRun(context, hostRequest);
     assertFixedModeSupportsResponseSchema(this.mode, hostRequest);
-    return new ShadowReport({ liveInvoked: false, schemaAccepted: Boolean(recordedResolution) });
+    return new ShadowReport({
+      liveInvoked: false,
+      schemaAccepted: recordedResolutionAccepted(recordedResolution, hostRequest, this.manifest(), context?.policy ?? {}),
+    });
   }
 
   async approve({ proposed }) {
@@ -178,4 +181,22 @@ function assertFixedModeSupportsResponseSchema(mode, hostRequest = {}) {
   if (mode === 'noninteractive-deny' && status !== 'rejected') {
     fail('ERR_HUMAN_APPROVAL_RESPONSE_SCHEMA_UNSUPPORTED', 'noninteractive deny can only emit rejected approvals');
   }
+}
+
+function recordedResolutionAccepted(recordedResolution, hostRequest, manifest, policy) {
+  const resolutionInputBytes = recordedResolutionInputBytes(recordedResolution);
+  if (!resolutionInputBytes) return false;
+  try {
+    assertCapabilityResolutionBoundary({ resolutionInputBytes });
+    assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, policy);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function recordedResolutionInputBytes(recordedResolution) {
+  if (recordedResolution instanceof Uint8Array) return recordedResolution;
+  if (recordedResolution?.resolutionInputBytes instanceof Uint8Array) return recordedResolution.resolutionInputBytes;
+  return null;
 }

@@ -1176,7 +1176,10 @@ class HumanApprovalCapabilityDriver {
   shadow(context, hostRequest, recordedResolution) {
     this.dryRun(context, hostRequest);
     assertFixedModeSupportsResponseSchema(this.mode, hostRequest);
-    return new ShadowReport({ liveInvoked: false, schemaAccepted: Boolean(recordedResolution) });
+    return new ShadowReport({
+      liveInvoked: false,
+      schemaAccepted: recordedResolutionAccepted(recordedResolution, hostRequest, this.manifest(), context?.policy ?? {})
+    });
   }
   async approve({ proposed }) {
     assertHumanApprovalModeReady(this.mode, this.prompt);
@@ -1320,6 +1323,53 @@ function assertFixedModeSupportsResponseSchema(mode, hostRequest = {}) {
     fail("ERR_HUMAN_APPROVAL_RESPONSE_SCHEMA_UNSUPPORTED", "noninteractive allow can only emit ok approvals");
   if (mode === "noninteractive-deny" && status !== "rejected")
     fail("ERR_HUMAN_APPROVAL_RESPONSE_SCHEMA_UNSUPPORTED", "noninteractive deny can only emit rejected approvals");
+}
+function recordedResolutionAccepted(recordedResolution, hostRequest, manifest, policy) {
+  const resolutionInputBytes = recordedResolutionInputBytes(recordedResolution);
+  if (!resolutionInputBytes)
+    return false;
+  try {
+    assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, policy);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function recordedResolutionInputBytes(recordedResolution) {
+  if (recordedResolution instanceof Uint8Array)
+    return recordedResolution;
+  if (recordedResolution?.resolutionInputBytes instanceof Uint8Array)
+    return recordedResolution.resolutionInputBytes;
+  return null;
+}
+function assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, policy = {}) {
+  const resolution = decodeResolutionInputBytes(resolutionInputBytes);
+  if (resolution.targetHostRequestFingerprint !== resolutionTarget(hostRequest))
+    fail("ERR_EFFECT_RESOLUTION_TARGET_MISMATCH", "driver ResolutionInput targets a different HostRequest");
+  assertResolutionStatusAccepted(resolution.status, hostRequest, manifest);
+  if (resolution.status === 0 && resolution.responseValueImageBytes.byteLength === 0)
+    fail("ERR_EFFECT_RESPONSE_REQUIRED", "responded ResolutionInput requires response bytes");
+  if (resolution.status !== 0 && resolution.responseValueImageBytes.byteLength !== 0)
+    fail("ERR_EFFECT_RESPONSE_FORBIDDEN", "non-responded ResolutionInput must not carry response bytes");
+  const maximumResponseBytes = policy.maximumResponseBytes === undefined ? manifest.maximumResponseBytes : Math.min(manifest.maximumResponseBytes, policy.maximumResponseBytes);
+  if (maximumResponseBytes !== Number.MAX_SAFE_INTEGER) {
+    if (resolutionInputBytes.byteLength > maximumResponseBytes || resolution.responseValueImageBytes.byteLength > maximumResponseBytes || resolution.hostClaimBytes.byteLength > maximumResponseBytes || resolution.metadata.byteLength > maximumResponseBytes)
+      fail("ERR_EFFECT_RESPONSE_TOO_LARGE", "driver ResolutionInput exceeds byte limit");
+  }
+}
+function assertResolutionStatusAccepted(status, hostRequest, manifest) {
+  const expectedStatus = hostRequest.responseSchema?.status;
+  if (expectedStatus === undefined) {
+    const manifestStatuses = new Set((manifest.supportedResponseStatuses ?? []).map((item) => ResponseStatusCode[item]));
+    if (!manifestStatuses.has(status))
+      fail("ERR_RESPONSE_STATUS_NOT_SUPPORTED", "ResolutionInput status is not supported by the selected driver manifest");
+    return;
+  }
+  const expectedWireStatus = ResponseStatusCode[expectedStatus];
+  if (expectedWireStatus === undefined)
+    fail("ERR_RESPONSE_STATUS_NOT_SUPPORTED", "HostRequest response schema status is not supported");
+  if (status !== expectedWireStatus)
+    fail("ERR_EFFECT_RESPONSE_STATUS_MISMATCH", "driver ResolutionInput status does not match the HostRequest response schema");
 }
 function assertHumanApprovalModeReady(mode, prompt) {
   if (mode !== "noninteractive-allow" && mode !== "noninteractive-deny" && mode !== "interactive-terminal")

@@ -1164,6 +1164,16 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { 'adapter.mjs': computedConstructorFunctionImportAdapter }),
       { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
     );
+    const computedConstructorAliasImportAdapter = fromUtf8('const C = "con" + "structor"; const F = (async()=>{})[C][C]; const env = F("return process")().env; export const CapabilityDriver = env;');
+    const computedConstructorAliasImportAdapterChecksum = `sha256:${await sha256Hex(computedConstructorAliasImportAdapter)}`;
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum: computedConstructorAliasImportAdapterChecksum }],
+      }, { 'adapter.mjs': computedConstructorAliasImportAdapter }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+    );
     const evalImportAdapter = fromUtf8('const fs = eval("import(\\\"node:fs\\\")"); export const CapabilityDriver = fs;');
     const evalImportAdapterChecksum = `sha256:${await sha256Hex(evalImportAdapter)}`;
     await assert.rejects(
@@ -4951,6 +4961,18 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(JSON.stringify(result.diagnostics).includes('secret'), false);
       assert.equal(decodeResolutionInputBytes(result.resolutionInputBytes).status, 0);
       assert.equal(driver.dryRun({}, httpRequest()).wouldInvoke, true);
+      assert.equal(driver.shadow({}, httpRequest(), null).schemaAccepted, false);
+      assert.equal(driver.shadow({}, httpRequest(), fromUtf8('recorded')).schemaAccepted, false);
+      assert.equal(driver.shadow({}, httpRequest(), result.resolutionInputBytes).schemaAccepted, true);
+      const wrongTargetHttpResolution = encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xbadn,
+        status: 0,
+        responseValueImageBytes: encodeCanonicalValueImage({ bytes: fromUtf8(stableJson({ status: 'ok' })), dynamicSize: true }),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('wrong-target-http-shadow'),
+      });
+      assert.equal(driver.shadow({}, httpRequest(), wrongTargetHttpResolution).schemaAccepted, false);
       const queryDryRunRequest = {
         ...httpRequest(),
         requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/decide?mode=delete', method: 'POST', body: { prompt: 'hi' } })),
@@ -6296,13 +6318,19 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { ...approvalRequest(), responseSchema: { status: 'rejected' } }, fromUtf8('recorded')),
       { code: 'ERR_HUMAN_APPROVAL_RESPONSE_SCHEMA_UNSUPPORTED' },
     );
-    assert.equal(decodeResolutionInputBytes((await packApproval.resolve({
+    const packApprovalResolution = await packApproval.resolve({
       policy: { allowLiveEffects: true, allowHumanEffects: true },
-    }, approvalRequest())).resolutionInputBytes).status, 0);
+    }, approvalRequest());
+    const approvalResolution = await approval.resolve({
+      policy: { allowLiveEffects: true, allowHumanEffects: true },
+    }, approvalRequest());
+    assert.equal(decodeResolutionInputBytes(packApprovalResolution.resolutionInputBytes).status, 0);
     assert.equal(approval.shadow({}, approvalRequest(), null).schemaAccepted, false);
-    assert.equal(approval.shadow({}, approvalRequest(), fromUtf8('recorded')).schemaAccepted, true);
+    assert.equal(approval.shadow({}, approvalRequest(), fromUtf8('recorded')).schemaAccepted, false);
+    assert.equal(approval.shadow({}, approvalRequest(), approvalResolution.resolutionInputBytes).schemaAccepted, true);
     assert.equal(packApproval.shadow({}, approvalRequest(), null).schemaAccepted, false);
-    assert.equal(packApproval.shadow({}, approvalRequest(), fromUtf8('recorded')).schemaAccepted, true);
+    assert.equal(packApproval.shadow({}, approvalRequest(), fromUtf8('recorded')).schemaAccepted, false);
+    assert.equal(packApproval.shadow({}, approvalRequest(), packApprovalResolution.resolutionInputBytes).schemaAccepted, true);
     assert.equal(approval.preflight({}, httpRequest()).accepted, false);
     const proposedApproval = approval.dryRun({}, {
       ...approvalRequest(),
@@ -7072,6 +7100,26 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(semanticMetadata.driver, 'generic-http-json-model');
       assert.equal(semanticMetadata.transportDriver, 'generic-http-json');
       assert.equal(semanticMetadata.outputSchema, 'boundary.Agent.Action.v0');
+      assert.equal(driver.shadow({}, genericHttpModelRequest('goal=invoke', 'model-shadow-valid-key'), result.resolutionInputBytes).schemaAccepted, true);
+      assert.equal(driver.shadow({}, genericHttpModelRequest('goal=invoke', 'model-shadow-malformed-key'), fromUtf8('recorded')).schemaAccepted, false);
+      const disallowedModelResolution = encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xa1n,
+        status: 0,
+        responseValueImageBytes: encodeCanonicalValueImage({
+          bytes: fromUtf8(stableJson({
+            schema: 'boundary.Agent.Action.v0',
+            action: { variant: 'tool', toolId: 'write_file', payload: 'out.txt' },
+          })),
+          dynamicSize: true,
+        }),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('disallowed-model-shadow'),
+      });
+      assert.equal(new GenericHttpJsonModelDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        allowedToolIds: ['actuate'],
+      }).shadow({}, genericHttpModelRequest('goal=invoke', 'model-shadow-disallowed-key'), disallowedModelResolution).schemaAccepted, false);
 
       let liveModelFetchCount = 0;
       globalThis.fetch = async () => {

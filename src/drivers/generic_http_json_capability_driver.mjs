@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 
 import { EffectRecoveryClass, ResponseStatusCode } from '../core/actuator.mjs';
-import { CapabilityPreflightReport, DryRunReport, ShadowReport, capabilityHostClaimBytes, defaultCapabilityPreflight } from '../core/capability_driver.mjs';
-import { hostRequestTargetFingerprint } from '../core/effect_journal.mjs';
+import { CapabilityPreflightReport, DryRunReport, ShadowReport, assertCapabilityResolutionBoundary, capabilityHostClaimBytes, defaultCapabilityPreflight } from '../core/capability_driver.mjs';
+import { assertResolutionAccepted, hostRequestTargetFingerprint } from '../core/effect_journal.mjs';
 import { assertCapabilityPolicyAllows, createCapabilityPolicy } from '../core/capability_policy.mjs';
 import { assertRequiredSecretsAvailable } from '../core/secrets.mjs';
 import { assertBytes, fail, fromUtf8, stableJson } from '../core/store.mjs';
@@ -122,7 +122,7 @@ export class GenericHttpJsonCapabilityDriver {
     const dryRun = this.dryRun(context, hostRequest);
     return new ShadowReport({
       liveInvoked: false,
-      schemaAccepted: Boolean(recordedResolution),
+      schemaAccepted: recordedResolutionAccepted(recordedResolution, hostRequest, this.manifest(), context?.policy ?? {}),
       diagnostics: { proposedAction: dryRun.proposedAction },
     });
   }
@@ -546,6 +546,24 @@ function assertResolvableHttpHostRequest(hostRequest = {}) {
   if (typeof hostRequest.idempotencyKeyWorldFingerprint !== 'string' || hostRequest.idempotencyKeyWorldFingerprint.length === 0) {
     fail('ERR_HTTP_IDEMPOTENCY_KEY_REQUIRED');
   }
+}
+
+function recordedResolutionAccepted(recordedResolution, hostRequest, manifest, policy) {
+  const resolutionInputBytes = recordedResolutionInputBytes(recordedResolution);
+  if (!resolutionInputBytes) return false;
+  try {
+    assertCapabilityResolutionBoundary({ resolutionInputBytes });
+    assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, policy);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function recordedResolutionInputBytes(recordedResolution) {
+  if (recordedResolution instanceof Uint8Array) return recordedResolution;
+  if (recordedResolution?.resolutionInputBytes instanceof Uint8Array) return recordedResolution.resolutionInputBytes;
+  return null;
 }
 
 async function readResponseBytes(response, maximumResponseBytes) {

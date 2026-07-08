@@ -1362,9 +1362,10 @@ function adapterAliasesReflectiveGetter(text) {
 function adapterAliasesDangerousComputedMember(text) {
   const identifier = '[A-Za-z_$][A-Za-z0-9_$]*';
   const literalAliases = new Set();
-  const literalDeclaration = /\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(["'`])([^"'`]+)\2/g;
+  const literalDeclaration = /\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([^;\n]+)/g;
   for (const match of text.matchAll(literalDeclaration)) {
-    if (dangerousMemberName(match[3])) literalAliases.add(match[1]);
+    const literal = readStaticStringExpression(match[2]);
+    if (dangerousMemberName(literal)) literalAliases.add(match[1]);
   }
   const aliasDeclaration = new RegExp(`\\b(?:const|let|var)\\s+(${identifier})\\s*=\\s*(${identifier})\\b`, 'g');
   for (let changed = true; changed;) {
@@ -1388,11 +1389,33 @@ function adapterAliasesDangerousComputedMember(text) {
   for (const match of text.matchAll(memberDeclaration)) calleeAliases.add(match[1]);
   const memberAssignment = new RegExp(`(?:^|[;{}(),\\n])\\s*(${identifier})\\s*=\\s*${computedDangerousMember}`, 'g');
   for (const match of text.matchAll(memberAssignment)) calleeAliases.add(match[1]);
+  const computedAliasMember = `[^;\\n]*\\[\\s*(?:${aliasPattern})\\s*\\][^;\\n]*`;
+  const computedAliasDeclaration = new RegExp(`\\b(?:const|let|var)\\s+(${identifier})\\s*=\\s*${computedAliasMember}`, 'g');
+  for (const match of text.matchAll(computedAliasDeclaration)) calleeAliases.add(match[1]);
+  const computedAliasAssignment = new RegExp(`(?:^|[;{}(),\\n])\\s*(${identifier})\\s*=\\s*${computedAliasMember}`, 'g');
+  for (const match of text.matchAll(computedAliasAssignment)) calleeAliases.add(match[1]);
   for (const alias of calleeAliases) {
     const call = new RegExp(`\\b${escapeRegExp(alias)}\\s*(?:\\?\\.\\s*)?\\(`);
     if (call.test(text)) return true;
   }
   return false;
+}
+
+function readStaticStringExpression(text) {
+  let index = 0;
+  let value = '';
+  for (;;) {
+    index = skipWhitespaceAndComments(text, index);
+    const char = text[index];
+    if (char !== '\'' && char !== '"' && char !== '`') return null;
+    const literal = char === '`' ? readTemplateString(text, index) : readQuotedString(text, index, char);
+    if (literal.value === null) return null;
+    value += literal.value;
+    index = skipWhitespaceAndComments(text, literal.end);
+    if (index >= text.length) return value;
+    if (text[index] !== '+') return null;
+    index += 1;
+  }
 }
 
 function escapeRegExp(value) {

@@ -2641,6 +2641,9 @@ describe('capability preflight and reference drivers', () => {
     const promptLimited = createRunPolicy({ maximumRequestBytes: 4096, maximumPromptBytes: 8 });
     assert.equal(promptLimited.maximumRequestBytes, 4096);
     assert.equal(promptLimited.maximumPromptBytes, 8);
+    const promptOnlyLimited = createRunPolicy({ maximumPromptBytes: 8 });
+    assert.equal(promptOnlyLimited.maximumRequestBytes, 1024 * 1024);
+    assert.equal(promptOnlyLimited.maximumPromptBytes, 8);
   });
 
   it('keeps default HTTP driver response limits within the default policy', () => {

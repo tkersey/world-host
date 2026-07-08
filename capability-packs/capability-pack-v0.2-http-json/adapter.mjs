@@ -1131,7 +1131,7 @@ class CapabilityPolicy {
     this.requireApprovalForNetworkEffects = input.requireApprovalForNetworkEffects === true;
     this.requireApprovalForBestEffort = input.requireApprovalForBestEffort !== false;
     this.maximumLiveModelCalls = nonNegativeSafeInteger(input.maximumLiveModelCalls ?? 0, "maximumLiveModelCalls");
-    this.maximumRequestBytes = positiveSafeInteger(input.maximumRequestBytes ?? input.maximumPromptBytes ?? 1024 * 1024, "maximumRequestBytes");
+    this.maximumRequestBytes = positiveSafeInteger(input.maximumRequestBytes ?? 1024 * 1024, "maximumRequestBytes");
     this.maximumPromptBytes = positiveSafeInteger(input.maximumPromptBytes ?? this.maximumRequestBytes, "maximumPromptBytes");
     this.maximumResponseBytes = positiveSafeInteger(input.maximumResponseBytes ?? 1024 * 1024, "maximumResponseBytes");
     this.allowedOrigins = new Set(iterable(input.allowedOrigins));
@@ -1435,7 +1435,7 @@ class GenericHttpJsonCapabilityDriver {
     const dryRun = this.dryRun(context, hostRequest);
     return new ShadowReport({
       liveInvoked: false,
-      schemaAccepted: Boolean(recordedResolution),
+      schemaAccepted: recordedResolutionAccepted(recordedResolution, hostRequest, this.manifest(), context?.policy ?? {}),
       diagnostics: { proposedAction: dryRun.proposedAction }
     });
   }
@@ -1856,6 +1856,53 @@ function assertResolvableHttpHostRequest(hostRequest = {}) {
   resolutionTarget(hostRequest);
   if (typeof hostRequest.idempotencyKeyWorldFingerprint !== "string" || hostRequest.idempotencyKeyWorldFingerprint.length === 0)
     fail("ERR_HTTP_IDEMPOTENCY_KEY_REQUIRED");
+}
+function recordedResolutionAccepted(recordedResolution, hostRequest, manifest, policy) {
+  const resolutionInputBytes = recordedResolutionInputBytes(recordedResolution);
+  if (!resolutionInputBytes)
+    return false;
+  try {
+    assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, policy);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function recordedResolutionInputBytes(recordedResolution) {
+  if (recordedResolution instanceof Uint8Array)
+    return recordedResolution;
+  if (recordedResolution?.resolutionInputBytes instanceof Uint8Array)
+    return recordedResolution.resolutionInputBytes;
+  return null;
+}
+function assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, policy = {}) {
+  const resolution = decodeResolutionInputBytes(resolutionInputBytes);
+  if (resolution.targetHostRequestFingerprint !== resolutionTarget(hostRequest))
+    fail("ERR_EFFECT_RESOLUTION_TARGET_MISMATCH", "driver ResolutionInput targets a different HostRequest");
+  assertResolutionStatusAccepted(resolution.status, hostRequest, manifest);
+  if (resolution.status === 0 && resolution.responseValueImageBytes.byteLength === 0)
+    fail("ERR_EFFECT_RESPONSE_REQUIRED", "responded ResolutionInput requires response bytes");
+  if (resolution.status !== 0 && resolution.responseValueImageBytes.byteLength !== 0)
+    fail("ERR_EFFECT_RESPONSE_FORBIDDEN", "non-responded ResolutionInput must not carry response bytes");
+  const maximumResponseBytes = policy.maximumResponseBytes === undefined ? manifest.maximumResponseBytes : Math.min(manifest.maximumResponseBytes, policy.maximumResponseBytes);
+  if (maximumResponseBytes !== Number.MAX_SAFE_INTEGER) {
+    if (resolutionInputBytes.byteLength > maximumResponseBytes || resolution.responseValueImageBytes.byteLength > maximumResponseBytes || resolution.hostClaimBytes.byteLength > maximumResponseBytes || resolution.metadata.byteLength > maximumResponseBytes)
+      fail("ERR_EFFECT_RESPONSE_TOO_LARGE", "driver ResolutionInput exceeds byte limit");
+  }
+}
+function assertResolutionStatusAccepted(status, hostRequest, manifest) {
+  const expectedStatus = hostRequest.responseSchema?.status;
+  if (expectedStatus === undefined) {
+    const manifestStatuses = new Set((manifest.supportedResponseStatuses ?? []).map((item) => ResponseStatusCode[item]));
+    if (!manifestStatuses.has(status))
+      fail("ERR_RESPONSE_STATUS_NOT_SUPPORTED", "ResolutionInput status is not supported by the selected driver manifest");
+    return;
+  }
+  const expectedWireStatus = ResponseStatusCode[expectedStatus];
+  if (expectedWireStatus === undefined)
+    fail("ERR_RESPONSE_STATUS_NOT_SUPPORTED", "HostRequest response schema status is not supported");
+  if (status !== expectedWireStatus)
+    fail("ERR_EFFECT_RESPONSE_STATUS_MISMATCH", "driver ResolutionInput status does not match the HostRequest response schema");
 }
 async function readResponseBytes(response, maximumResponseBytes) {
   const contentLength = response.headers.get("content-length");

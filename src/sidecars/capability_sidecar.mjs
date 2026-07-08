@@ -144,13 +144,14 @@ export class CapabilitySidecar {
     if (cwd != null && (typeof cwd !== 'string' || cwd.length === 0)) {
       fail('ERR_CAPABILITY_SIDECAR_CWD_INVALID', 'sidecar cwd must be a path string');
     }
+    const childEnv = sidecarUserEnv(env);
     if (bareScriptEntrypoint(command[0])) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar script entrypoints must be path-qualified');
     }
     if (pathQualifiedJavaScriptEntrypoint(command[0])) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar JavaScript entrypoints must use an explicit runtime command');
     }
-    const resolvedShebangRuntime = pathResolvedJavaScriptRuntimeShebang(command[0], env.PATH ?? sidecarPath(), cwd ?? undefined);
+    const resolvedShebangRuntime = pathResolvedJavaScriptRuntimeShebang(command[0], sidecarPath(), cwd ?? undefined);
     if (resolvedShebangRuntime === 'bun') {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar Bun shebang entrypoints must be path-qualified');
     }
@@ -168,7 +169,7 @@ export class CapabilitySidecar {
     this.cwd = cwd == null ? undefined : path.resolve(cwd);
     this.timeoutMs = timeoutMs;
     this.maximumFrameBytes = maximumFrameBytes;
-    this.env = sidecarEnv({ PATH: sidecarPath(), ...env });
+    this.env = sidecarEnv({ PATH: sidecarPath(), ...childEnv });
   }
 
   async request(command, payload = {}) {
@@ -399,6 +400,7 @@ function sidecarSpawnArgv(argv, cwd = undefined, env = undefined) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars must not run through command wrappers');
     }
     assertSupportedNonJavaScriptRuntimeCommand(argv);
+    assertSupportedWrappedNonJavaScriptRuntimeCommands(argv, cwd, env?.PATH);
     const bunShebangArgs = bunShebangRuntimeArgs(inspectionPath);
     if (bunShebangArgs) {
       const shebangArgv = ['bun', ...bunShebangArgs, ...argv];
@@ -603,7 +605,7 @@ function wrapperCommandFromIndex(argv, index, cwd = undefined, searchPath = unde
   if (BUN_ARGV_WRAPPER_COMMANDS.has(command)) {
     return wrapperCommandArguments(argv.slice(index), cwd, searchPath);
   }
-  return [{ value, cwd, searchPath }];
+  return [{ value, cwd, searchPath, argv: argv.slice(index) }];
 }
 
 function envChdirCwd(value, cwd = undefined) {
@@ -737,7 +739,10 @@ function assertSupportedDirectRuntimeCommand(argv) {
 function assertSupportedNodeRuntimeCommand(argv) {
   for (let index = 1; index < argv.length; index += 1) {
     const value = argv[index];
-    if (value === '--') return;
+    if (value === '--') {
+      if (index + 1 < argv.length) return;
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Node sidecars require a local entrypoint');
+    }
     if (unsupportedNodeRuntimeOption(value)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Node sidecars do not support env-file, inline code, or preload options');
     }
@@ -752,6 +757,7 @@ function assertSupportedNodeRuntimeCommand(argv) {
     }
     if (!value.startsWith('-')) return;
   }
+  fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Node sidecars require a local entrypoint');
 }
 
 function unsupportedNodeRuntimeOption(value) {
@@ -822,11 +828,23 @@ function assertSupportedNonJavaScriptRuntimeCommand(argv) {
   if (!nonJavaScriptRuntimeSupportsInlineEval(runtime)) return;
   for (let index = 1; index < argv.length; index += 1) {
     const value = argv[index];
-    if (value === '--') return;
+    if (value === '--') {
+      if (index + 1 < argv.length && !argv[index + 1].startsWith('-')) return;
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar runtime commands must use path-qualified adapter entrypoints');
+    }
     if (unsupportedNonJavaScriptRuntimeOption(runtime, value)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar runtime commands must use path-qualified adapter entrypoints');
     }
     if (!value.startsWith('-')) return;
+  }
+  fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar runtime commands must use path-qualified adapter entrypoints');
+}
+
+function assertSupportedWrappedNonJavaScriptRuntimeCommands(argv, cwd = undefined, searchPath = undefined) {
+  const command = commandBaseName(argv[0]);
+  if (!BUN_ARGV_WRAPPER_COMMANDS.has(command)) return;
+  for (const candidate of wrapperCommandArguments(argv, cwd, searchPath)) {
+    assertSupportedNonJavaScriptRuntimeCommand(candidate.argv ?? [candidate.value]);
   }
 }
 
@@ -838,6 +856,14 @@ function nonJavaScriptRuntimeSupportsInlineEval(runtime) {
 function unsupportedNonJavaScriptRuntimeOption(runtime, value) {
   if (/^python(?:\d+(?:\.\d+)*)?$/.test(runtime) || /^pypy(?:\d+)?$/.test(runtime)) {
     return value === '-c' || value.startsWith('-c') || value === '-m' || value.startsWith('-m');
+  }
+  if (runtime === 'ruby' || runtime === 'rscript') {
+    return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=') ||
+      value === '-r' || value.startsWith('-r');
+  }
+  if (runtime === 'perl') {
+    return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=') ||
+      value === '-m' || value.startsWith('-m') || value === '-M' || value.startsWith('-M');
   }
   return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=');
 }
@@ -991,10 +1017,21 @@ function sidecarEnv(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail('ERR_CAPABILITY_SIDECAR_ENV_INVALID');
   return Object.freeze(Object.fromEntries(Object.entries(value).map(([key, child]) => {
     if (typeof key !== 'string' || key.length === 0 || key.includes('\0')) fail('ERR_CAPABILITY_SIDECAR_ENV_INVALID');
-    if (key.toUpperCase() === 'NODE_OPTIONS') fail('ERR_CAPABILITY_SIDECAR_ENV_INVALID', 'sidecar environment must not set NODE_OPTIONS');
     if (typeof child !== 'string') fail('ERR_CAPABILITY_SIDECAR_ENV_INVALID');
     return [key, child];
   })));
+}
+
+function sidecarUserEnv(value) {
+  const env = sidecarEnv(value);
+  for (const key of Object.keys(env)) {
+    const normalized = key.toUpperCase();
+    if (normalized === 'PATH') fail('ERR_CAPABILITY_SIDECAR_ENV_INVALID', 'sidecar environment must not override PATH');
+    if (normalized === 'NODE_OPTIONS' || normalized === 'RUBYOPT' || normalized === 'PERL5OPT') {
+      fail('ERR_CAPABILITY_SIDECAR_ENV_INVALID', 'sidecar environment must not set runtime preload options');
+    }
+  }
+  return env;
 }
 
 function sidecarPath() {

@@ -1412,8 +1412,15 @@ function preflightRouteKey(route) {
 
 function hostRequestWithPendingIndex(hostRequest, index, worldHostRequest = null) {
   const next = { ...hostRequest };
-  if (next.hostRequestFingerprint == null && worldHostRequest?.requestFingerprint != null) {
+  if (worldHostRequest?.requestFingerprint != null) {
     next.hostRequestFingerprint = `world:host-request:${fingerprintString(worldHostRequest.requestFingerprint)}`;
+  }
+  const worldHostReplyBinding = maybeHostReplyBindingDiagnostics(worldHostRequest);
+  if (worldHostReplyBinding) {
+    next.diagnostics = {
+      ...(next.diagnostics ?? {}),
+      worldHostReplyBinding,
+    };
   }
   next.pendingRequestIndex = index;
   return next;

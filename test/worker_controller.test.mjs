@@ -2514,6 +2514,56 @@ describe('RunController and WorldWorker', () => {
     }
   });
 
+  it('overwrites custom mapper world fingerprints and reply binding diagnostics', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([
+        fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'mapper-binding-key', idempotencyKeyFingerprint: 0xa09n }),
+      ]),
+    });
+    const driver = delayedBatchDriver({ coordinateFirstPair: false });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [driver],
+      hostRequestMapper: () => ({
+        actuatorRef: 'world:actuator-ref:0000000000000a05',
+        descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+        actuationClass: 'world:actuation-class:1',
+        responseSchema: { status: 'responded' },
+        idempotencyKeyBytes: fromUtf8('mapper-binding-key'),
+        idempotencyKeyWorldFingerprint: 'world:idempotency-key:0000000000000a09',
+        requestBytes: fromUtf8('mapped request bytes'),
+        hostRequestFingerprint: 'world:host-request:0000000000000bad',
+        diagnostics: {
+          mapper: 'custom',
+          worldHostReplyBinding: {
+            requestFingerprint: '0000000000000bad',
+            intentFingerprint: '0000000000000bad',
+            envelopeFingerprint: '0000000000000bad',
+            idempotencyKeyFingerprint: '0000000000000bad',
+          },
+        },
+      }),
+    });
+
+    const result = await controller.advance(runId, branchId);
+    const effects = await store.listEffectRecords(runId);
+
+    assert.equal(result.status, 'advanced');
+    assert.deepEqual(driver.completions, ['world:host-request:0000000000000a01']);
+    assert.equal(effects.length, 1);
+    assert.equal(effects[0].hostRequestFingerprint, 'world:host-request:0000000000000a01');
+    assert.equal(effects[0].diagnostics.mapper, 'custom');
+    assert.equal(effects[0].diagnostics.driverId, 'test.effect.driver');
+    assert.deepEqual(effects[0].diagnostics.worldHostReplyBinding, {
+      requestFingerprint: '0000000000000a01',
+      intentFingerprint: '0000000000000a06',
+      envelopeFingerprint: '0000000000000a07',
+      idempotencyKeyFingerprint: '0000000000000a09',
+    });
+  });
+
   it('preserves controller live model budgets before resolving effects', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',

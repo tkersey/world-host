@@ -1562,8 +1562,15 @@ function importedPendingRequestsForPreflight(worldRequests, mapper, policy) {
 
 function importedMappedHostRequest(hostRequest, index, worldRequest) {
   const next = { ...hostRequest };
-  if (next.hostRequestFingerprint == null && worldRequest?.requestFingerprint != null) {
+  if (worldRequest?.requestFingerprint != null) {
     next.hostRequestFingerprint = worldHostRequestFingerprint(worldRequest);
+  }
+  const worldHostReplyBinding = maybeWorldHostReplyBindingDiagnostics(worldRequest);
+  if (worldHostReplyBinding) {
+    next.diagnostics = {
+      ...(next.diagnostics ?? {}),
+      worldHostReplyBinding,
+    };
   }
   next.pendingRequestIndex = index;
   return next;
@@ -1606,6 +1613,19 @@ function importedPreflightReport(report, pendingRequestCount, mapperUnresolvedPe
 
 function worldHostRequestFingerprint(worldRequest) {
   return `world:host-request:${fingerprintString(worldRequest?.requestFingerprint)}`;
+}
+
+function maybeWorldHostReplyBindingDiagnostics(worldRequest) {
+  try {
+    return {
+      requestFingerprint: fingerprintString(worldRequest?.requestFingerprint),
+      intentFingerprint: fingerprintString(worldRequest?.intentFingerprint),
+      envelopeFingerprint: fingerprintString(worldRequest?.envelopeFingerprint),
+      idempotencyKeyFingerprint: fingerprintString(worldRequest?.idempotencyKeyFingerprint),
+    };
+  } catch {
+    return null;
+  }
 }
 
 function fingerprintString(value) {
