@@ -4848,6 +4848,55 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(decodeResolutionInputBytes(secretTransactionRef.resolutionInputBytes).status, 2);
       assert.equal(secretTransactionRef.diagnostics.failureCode, 'ERR_SECRET_PERSISTED');
       assert.equal(secretTransactionRef.driverTransactionRef, null);
+      globalThis.fetch = async () => new Response('{"action":{"variant":"final","text":"sk-live-response-secret"}}', {
+        status: 200,
+        headers: { 'x-request-id': 'request-secret-shaped-body' },
+      });
+      const secretShapedBody = await new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+        }).resolve({
+          policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+        }, {
+          ...httpRequest(),
+          hostRequestFingerprint: 'world:host-request:00000000000000ae',
+          idempotencyKeyBytes: fromUtf8('http-key-secret-shaped-body'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-secret-shaped-body',
+        });
+      assert.equal(decodeResolutionInputBytes(secretShapedBody.resolutionInputBytes).status, 2);
+      assert.equal(secretShapedBody.diagnostics.failureCode, 'ERR_SECRET_PERSISTED');
+      globalThis.fetch = async () => new Response('{"action":{"variant":"final","text":"ok"}}', {
+        status: 200,
+        headers: { 'x-request-id': 'sk-response-transaction-secret' },
+      });
+      const secretShapedTransactionRef = await new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+        }).resolve({
+          policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+        }, {
+          ...httpRequest(),
+          hostRequestFingerprint: 'world:host-request:00000000000000af',
+          idempotencyKeyBytes: fromUtf8('http-key-secret-shaped-transaction-ref'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-secret-shaped-transaction-ref',
+        });
+      assert.equal(decodeResolutionInputBytes(secretShapedTransactionRef.resolutionInputBytes).status, 2);
+      assert.equal(secretShapedTransactionRef.diagnostics.failureCode, 'ERR_SECRET_PERSISTED');
+      assert.equal(secretShapedTransactionRef.driverTransactionRef, null);
+      globalThis.fetch = async () => new Response('{"apiKey":"sk-pack-response-secret"}', {
+        status: 200,
+        headers: { 'x-request-id': 'pack-secret-shaped-body' },
+      });
+      const packSecretShapedBody = await new HttpJsonPackCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+        }).resolve({
+          policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+        }, {
+          ...httpRequest(),
+          hostRequestFingerprint: 'world:host-request:00000000000000b0',
+          idempotencyKeyBytes: fromUtf8('http-key-pack-secret-shaped-body'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-pack-secret-shaped-body',
+        });
+      assert.equal(decodeResolutionInputBytes(packSecretShapedBody.resolutionInputBytes).status, 2);
+      assert.equal(packSecretShapedBody.diagnostics.failureCode, 'ERR_SECRET_PERSISTED');
 
       let secretHasCalls = 0;
       let secretGetCalls = 0;

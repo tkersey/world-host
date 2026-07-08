@@ -1454,9 +1454,8 @@ class GenericHttpJsonCapabilityDriver {
         if (!response.ok) {
           await discardResponseBody(response, this.maximumResponseBytes);
           const transactionRef2 = response.headers.get("x-request-id");
-          assertNoKnownSecretEcho(transactionRef2, secretValues);
           const status = httpErrorResponseStatus(hostRequest);
-          return this.#resolution(hostRequest, { status, statusCode: response.status }, ResponseStatusCode[status], transactionRef2);
+          return this.#resolution(hostRequest, { status, statusCode: response.status }, ResponseStatusCode[status], safeHttpTransactionRef(transactionRef2, secretValues));
         }
         const transactionRef = response.headers.get("x-request-id");
         try {
@@ -1464,7 +1463,9 @@ class GenericHttpJsonCapabilityDriver {
           const json = bytes2.byteLength ? JSON.parse(new TextDecoder().decode(bytes2)) : null;
           const body = extractPath(json, this.responseExtractionPath);
           const payload = { status: "ok", statusCode: response.status, body };
+          assertNoCredentialShapedResponseValue(payload);
           assertNoKnownSecretEcho(payload, secretValues);
+          assertNoCredentialShapedResponseValue(transactionRef);
           assertNoKnownSecretEcho(transactionRef, secretValues);
           return this.#resolution(hostRequest, payload, 0, transactionRef);
         } catch (error) {
@@ -1750,8 +1751,16 @@ function assertNoKnownSecretEcho(value, secretValues) {
     }
   });
 }
+function assertNoCredentialShapedResponseValue(value) {
+  visitCredentialShapedResponseStrings(value, [], (text, path2) => {
+    if (credentialQueryValue(text) || credentialAssignmentText(text) || path2.some(credentialPathKey) && text.length > 0 && !credentialUrlSentinel(text)) {
+      fail("ERR_SECRET_PERSISTED", "HTTP response contained credential-shaped data");
+    }
+  });
+}
 function safeHttpTransactionRef(transactionRef, secretValues) {
   try {
+    assertNoCredentialShapedResponseValue(transactionRef);
     assertNoKnownSecretEcho(transactionRef, secretValues);
     return transactionRef;
   } catch {
@@ -1772,6 +1781,25 @@ function secretEchoCandidates(secretValues) {
       candidates.add(scheme[1].trim());
   }
   return [...candidates];
+}
+function visitCredentialShapedResponseStrings(value, path2, visit) {
+  if (typeof value === "string") {
+    visit(value, path2);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value)
+      visitCredentialShapedResponseStrings(item, path2, visit);
+    return;
+  }
+  if (!value || typeof value !== "object")
+    return;
+  for (const [key, child] of Object.entries(value)) {
+    if (credentialQueryValue(key) || credentialAssignmentText(key)) {
+      fail("ERR_SECRET_PERSISTED", "HTTP response contained credential-shaped key");
+    }
+    visitCredentialShapedResponseStrings(child, [...path2, key], visit);
+  }
 }
 function visitPayloadStrings(value, visit) {
   if (typeof value === "string") {
