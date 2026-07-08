@@ -146,6 +146,12 @@ async function assertCapabilityPackAdapterAbiIsolated(packRoot) {
     '--trusted-execute-adapters',
     CAPABILITY_PACK_PROBE_CHILD_ARG,
   ], binPath);
+  if (result.timedOut) {
+    fail('ERR_CAPABILITY_PACK_ADAPTER_PROBE_TIMEOUT', 'capability pack adapter probe child timed out', {
+      timeoutMs: result.timeoutMs,
+      signal: result.signal,
+    });
+  }
   if (result.code === 0) return;
   const childError = parseChildCliError(result.stderr);
   if (childError?.code) {
@@ -161,6 +167,7 @@ async function assertCapabilityPackAdapterAbiIsolated(packRoot) {
 
 function runWorldHostProbeChild(args, binPath) {
   return new Promise((resolve, reject) => {
+    const timeoutMs = capabilityPackProbeTimeoutMs();
     const child = spawn(process.execPath, [binPath, ...args], {
       cwd: process.cwd(),
       env: {
@@ -171,6 +178,29 @@ function runWorldHostProbeChild(args, binPath) {
     });
     let stdout = '';
     let stderr = '';
+    let settled = false;
+    let timedOut = false;
+    let timeoutTimer = null;
+    let killTimer = null;
+    const clearTimers = () => {
+      if (timeoutTimer) clearHostTimeout(timeoutTimer);
+      if (killTimer) clearHostTimeout(killTimer);
+    };
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      resolve(value);
+    };
+    timeoutTimer = setHostTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+      killTimer = setHostTimeout(() => {
+        if (!settled) child.kill('SIGKILL');
+      }, 1000);
+      killTimer.unref?.();
+    }, timeoutMs);
+    timeoutTimer.unref?.();
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk) => {
@@ -179,9 +209,14 @@ function runWorldHostProbeChild(args, binPath) {
     child.stderr.on('data', (chunk) => {
       stderr += chunk;
     });
-    child.on('error', reject);
+    child.on('error', (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      reject(error);
+    });
     child.on('close', (code, signal) => {
-      resolve({ code, signal, stdout, stderr });
+      settle({ code, signal, stdout, stderr, timedOut, timeoutMs });
     });
   });
 }

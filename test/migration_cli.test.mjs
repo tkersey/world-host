@@ -1409,6 +1409,46 @@ describe('migration, branching, and CLI diagnostics', () => {
       });
       assert.notEqual(result.status, 0);
       assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_PROBE_TIMEOUT:resolve:50/);
+
+      const syncLoopAdapterBytes = fromUtf8(`
+        export class CapabilityDriver {
+          constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
+          manifest() {
+            return {
+              driverId: 'fixture-agent-model',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: ['fixture:agent-model'],
+              supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+              supportedActuationClasses: ['model'],
+              supportedResponseStatuses: ['ok', 'final'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'pure',
+              concurrencyLimit: 1,
+              authorityLabels: ['model:fixture-agent']
+            };
+          }
+          preflight() { return { accepted: true, blockers: [] }; }
+          dryRun() { return { wouldInvoke: false }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          resolve() { for (;;) {} }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      await writeFile(path.join(pack, 'adapter.mjs'), syncLoopAdapterBytes);
+      const syncLoopManifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      syncLoopManifest.checksums = syncLoopManifest.checksums.map((item) => item.path === 'adapter.mjs'
+        ? { ...item, checksum: `sha256:${createHash('sha256').update(syncLoopAdapterBytes).digest('hex')}` }
+        : item);
+      syncLoopManifest.packFingerprint = await capabilityPackFingerprint(syncLoopManifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(syncLoopManifest, null, 2)}\n`);
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_PROBE_TIMEOUT' },
+      );
     } finally {
       if (previousTimeout == null) {
         delete process.env.WORLD_HOST_CAPABILITY_PACK_PROBE_TIMEOUT_MS;
