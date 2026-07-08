@@ -34,6 +34,7 @@ const AGENT_FILE_DESCRIPTOR = 'world:descriptor:74afc8c3b2fe4c33';
 const AGENT_FILE_ACTUATION_CLASS = 'world:actuation-class:1';
 const AGENT_RUNTIME_FIXTURE_OUTPUT = 'actuate updated the fixture';
 const DEFAULT_CAPABILITY_PACK_PROBE_TIMEOUT_MS = 5000;
+const DEFAULT_CAPABILITY_PACK_PROBE_CHILD_OUTPUT_BYTES = 1024 * 1024;
 const CAPABILITY_PACK_PROBE_SETTLE_MS = 25;
 const CAPABILITY_PACK_PROBE_CHILD_ARG = '--world-host-capability-probe-child';
 let capabilityPackProbeGlobalLock = Promise.resolve();
@@ -152,6 +153,13 @@ async function assertCapabilityPackAdapterAbiIsolated(packRoot) {
       signal: result.signal,
     });
   }
+  if (result.outputLimitExceeded) {
+    fail('ERR_CAPABILITY_PACK_ADAPTER_PROBE_OUTPUT_TOO_LARGE', 'capability pack adapter probe child output exceeded limit', {
+      stream: result.outputLimitExceeded.stream,
+      limitBytes: result.outputLimitExceeded.limitBytes,
+      signal: result.signal,
+    });
+  }
   if (result.code === 0) return;
   const childError = parseChildCliError(result.stderr);
   if (childError?.code) {
@@ -168,6 +176,7 @@ async function assertCapabilityPackAdapterAbiIsolated(packRoot) {
 function runWorldHostProbeChild(args, binPath) {
   return new Promise((resolve, reject) => {
     const timeoutMs = capabilityPackProbeTimeoutMs();
+    const outputLimitBytes = capabilityPackProbeChildOutputBytes();
     const child = spawn(process.execPath, [binPath, ...args], {
       cwd: process.cwd(),
       env: {
@@ -178,8 +187,12 @@ function runWorldHostProbeChild(args, binPath) {
     });
     let stdout = '';
     let stderr = '';
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
     let settled = false;
     let timedOut = false;
+    let outputLimitExceeded = null;
+    let terminating = false;
     let timeoutTimer = null;
     let killTimer = null;
     const clearTimers = () => {
@@ -192,22 +205,46 @@ function runWorldHostProbeChild(args, binPath) {
       clearTimers();
       resolve(value);
     };
-    timeoutTimer = setHostTimeout(() => {
-      timedOut = true;
+    const terminate = () => {
+      if (terminating) return;
+      terminating = true;
       child.kill('SIGTERM');
       killTimer = setHostTimeout(() => {
         if (!settled) child.kill('SIGKILL');
       }, 1000);
       killTimer.unref?.();
+    };
+    const appendOutput = (stream, chunk) => {
+      if (outputLimitExceeded) return;
+      const text = String(chunk);
+      const chunkBytes = Buffer.byteLength(text);
+      const currentBytes = stream === 'stdout' ? stdoutBytes : stderrBytes;
+      if (currentBytes + chunkBytes > outputLimitBytes) {
+        outputLimitExceeded = { stream, limitBytes: outputLimitBytes };
+        terminate();
+        return;
+      }
+      if (stream === 'stdout') {
+        stdout += text;
+        stdoutBytes += chunkBytes;
+      } else {
+        stderr += text;
+        stderrBytes += chunkBytes;
+      }
+    };
+    timeoutTimer = setHostTimeout(() => {
+      if (outputLimitExceeded) return;
+      timedOut = true;
+      terminate();
     }, timeoutMs);
     timeoutTimer.unref?.();
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk) => {
-      stdout += chunk;
+      appendOutput('stdout', chunk);
     });
     child.stderr.on('data', (chunk) => {
-      stderr += chunk;
+      appendOutput('stderr', chunk);
     });
     child.on('error', (error) => {
       if (settled) return;
@@ -216,7 +253,7 @@ function runWorldHostProbeChild(args, binPath) {
       reject(error);
     });
     child.on('close', (code, signal) => {
-      settle({ code, signal, stdout, stderr, timedOut, timeoutMs });
+      settle({ code, signal, stdout, stderr, timedOut, timeoutMs, outputLimitExceeded });
     });
   });
 }
@@ -373,6 +410,11 @@ async function withCapabilityPackProbeTimeout(phase, value) {
 function capabilityPackProbeTimeoutMs() {
   const parsed = Number.parseInt(process.env.WORLD_HOST_CAPABILITY_PACK_PROBE_TIMEOUT_MS ?? '', 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_CAPABILITY_PACK_PROBE_TIMEOUT_MS;
+}
+
+function capabilityPackProbeChildOutputBytes() {
+  const parsed = Number.parseInt(process.env.WORLD_HOST_CAPABILITY_PACK_PROBE_OUTPUT_BYTES ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_CAPABILITY_PACK_PROBE_CHILD_OUTPUT_BYTES;
 }
 
 function capabilityPackProbeTimeoutError(phase, timeoutMs) {
