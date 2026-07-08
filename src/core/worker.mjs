@@ -388,6 +388,8 @@ export class RunController {
       });
     }
     const effects = new Array(selected.length);
+    const resolvedPending = new Array(selected.length);
+    const lateUnresolvedHostRequests = new Array(selected.length);
     const pendingPositions = new Map(selected.map((item, index) => [item, index]));
     const groups = groupPendingEffects(selected);
     await runGroupedBounded(groups, policy, async (item) => {
@@ -396,22 +398,49 @@ export class RunController {
       assertSelectedEffectPolicyAllows(item.manifest, item.hostRequest, policy, context?.action, { allowCachedLiveModelReplay: true });
       const journalHostRequest = journaledHostRequest(item.hostRequest, item.manifest);
       const driver = controllerResolveDriver(item.driver);
-      const resolved = await journal.resolve(
-        context,
-        journalHostRequest,
-        driver,
-        {
-          beforeInvoke: async (preflightContext, preflightHostRequest) => {
-            assertSelectedEffectPolicyAllows(item.manifest, item.hostRequest, policy, context?.action);
-            if (typeof driver?.preflight === 'function') {
-              assertCapabilityPreflightAccepted(await driver.preflight(preflightContext, preflightHostRequest));
-            }
+      const position = pendingPositions.get(item);
+      let resolved;
+      try {
+        resolved = await journal.resolve(
+          context,
+          journalHostRequest,
+          driver,
+          {
+            beforeInvoke: async (preflightContext, preflightHostRequest) => {
+              assertSelectedEffectPolicyAllows(item.manifest, item.hostRequest, policy, context?.action);
+              if (typeof driver?.preflight === 'function') {
+                assertCapabilityPreflightAccepted(await driver.preflight(preflightContext, preflightHostRequest));
+              }
+            },
           },
-        },
-      );
-      effects[pendingPositions.get(item)] = { ...resolved, worldHostRequest: item.worldHostRequest };
+        );
+      } catch (error) {
+        if (policy.allowPartialEffectBatch === true && error?.code === 'ERR_CAPABILITY_PREFLIGHT_BLOCKED') {
+          const diagnostic = unresolvedHostRequestDiagnostic(item.index, item.hostRequest);
+          diagnostic.blockers = Array.isArray(error.details?.blockers) && error.details.blockers.length > 0
+            ? [...error.details.blockers]
+            : [error.code];
+          diagnostic.policy = 'allowPartialEffectBatch';
+          lateUnresolvedHostRequests[position] = diagnostic;
+          return;
+        }
+        throw error;
+      }
+      effects[position] = { ...resolved, worldHostRequest: item.worldHostRequest };
+      resolvedPending[position] = item;
     });
-    return { effects, pending: selected, unresolvedHostRequests };
+    const resolvedEffects = effects.filter(Boolean);
+    const resolvedPendingRequests = resolvedPending.filter(Boolean);
+    const allUnresolvedHostRequests = [
+      ...unresolvedHostRequests,
+      ...lateUnresolvedHostRequests.filter(Boolean),
+    ];
+    if (resolvedEffects.length === 0 && allUnresolvedHostRequests.length > 0) {
+      fail('ERR_PARTIAL_EFFECT_BATCH_EMPTY', 'partial effect batch has no covered HostRequests', {
+        unresolvedHostRequestCount: allUnresolvedHostRequests.length,
+      });
+    }
+    return { effects: resolvedEffects, pending: resolvedPendingRequests, unresolvedHostRequests: allUnresolvedHostRequests };
   }
 }
 
