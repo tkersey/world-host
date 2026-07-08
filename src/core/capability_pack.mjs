@@ -105,7 +105,6 @@ const SIDECAR_RUNTIME_NON_ARTIFACT_VALUE_OPTIONS = new Set([
 ]);
 const SIDECAR_RUNTIME_NON_ARTIFACT_INLINE_VALUE_OPTIONS = new Set([
   ...SIDECAR_RUNTIME_NON_ARTIFACT_VALUE_OPTIONS,
-  '--unsafely-ignore-certificate-errors',
 ]);
 const SIDECAR_MODULE_LOADER_OPTIONS = new Set([
   '--test-reporter',
@@ -115,7 +114,6 @@ const SIDECAR_RUNTIME_FLAG_ONLY_OPTIONS = new Set([
   '--experimental-strip-types',
   '--no-warnings',
   '--trace-warnings',
-  '--unsafely-ignore-certificate-errors',
 ]);
 const NODE_RUNTIME_FLAG_ONLY_OPTIONS = new Set([
   '--enable-source-maps',
@@ -124,8 +122,8 @@ const NODE_RUNTIME_FLAG_ONLY_OPTIONS = new Set([
   '--trace-warnings',
 ]);
 const DENO_RUNTIME_VALUE_OPTIONS = new Set(['--cert', '--config', '--config-file', '--location', '-c']);
-const DENO_RUNTIME_INLINE_VALUE_OPTIONS = new Set([...DENO_RUNTIME_VALUE_OPTIONS, '--unsafely-ignore-certificate-errors']);
-const DENO_RUNTIME_FLAG_ONLY_OPTIONS = new Set(['--no-config', '--unsafely-ignore-certificate-errors']);
+const DENO_RUNTIME_INLINE_VALUE_OPTIONS = new Set(DENO_RUNTIME_VALUE_OPTIONS);
+const DENO_RUNTIME_FLAG_ONLY_OPTIONS = new Set(['--no-config']);
 const BUN_UNSUPPORTED_SUBCOMMANDS = new Set([
   'a',
   'add',
@@ -2654,6 +2652,12 @@ function assertSafeSidecarCommandToken(command, index) {
   if (sidecarUnsupportedNodeRuntimeOption(command, index)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `Node sidecars do not support this runtime option before the entrypoint: ${value}`);
   }
+  if (sidecarUnsupportedDenoConfigOption(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Deno sidecars must use --no-config instead of caller-supplied config files');
+  }
+  if (sidecarUnsupportedDenoTlsOption(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Deno sidecars do not support disabling TLS certificate verification');
+  }
   if (sidecarUnsupportedDenoRuntimeOption(command, index)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `Deno sidecars do not support this runtime option before the entrypoint: ${value}`);
   }
@@ -2821,6 +2825,22 @@ function sidecarUnsupportedDenoRuntimeOption(command, index) {
   if (denoRuntimeInlineOptionValue(value)) return false;
   if (DENO_RUNTIME_VALUE_OPTIONS.has(value)) return false;
   return true;
+}
+
+function sidecarUnsupportedDenoConfigOption(command, index) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'deno' || !sidecarRuntimeOptionPosition(command, index)) return false;
+  if (sidecarRuntimeOptionValuePosition(command, index)) return false;
+  const value = command[index];
+  const option = value.includes('=') ? value.slice(0, value.indexOf('=')) : value;
+  if (option === '--config' || option === '--config-file') return true;
+  return value === '-c' || (value.startsWith('-c') && !value.startsWith('--'));
+}
+
+function sidecarUnsupportedDenoTlsOption(command, index) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'deno' || !sidecarRuntimeOptionPosition(command, index)) return false;
+  if (sidecarRuntimeOptionValuePosition(command, index)) return false;
+  const value = command[index];
+  return value === '--unsafely-ignore-certificate-errors' || value.startsWith('--unsafely-ignore-certificate-errors=');
 }
 
 function denoRunSubcommandBefore(command, index) {

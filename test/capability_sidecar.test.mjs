@@ -350,12 +350,14 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"fixture-sidecar"}}'
           timeoutMs: 1000,
         }).manifest();
         assert.equal(denoNoConfig.driverId, 'fixture-sidecar');
-        const denoTlsFlag = await new CapabilitySidecar({
-          command: ['deno', 'run', '--no-config', '--unsafely-ignore-certificate-errors', dotenvPath],
-          env: { PATH: root },
-          timeoutMs: 1000,
-        }).manifest();
-        assert.equal(denoTlsFlag.driverId, 'fixture-sidecar');
+        assert.throws(
+          () => new CapabilitySidecar({
+            command: ['deno', 'run', '--no-config', '--unsafely-ignore-certificate-errors', dotenvPath],
+            env: { PATH: root },
+            timeoutMs: 1000,
+          }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
         assert.throws(
           () => new CapabilitySidecar({
             command: ['deno', 'run', '--config=deno.json', dotenvPath],
@@ -513,6 +515,8 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"fixture-sidecar"}}'
           ['deno', 'run', '--import', './preload.mjs', dotenvPath],
           ['deno', 'run', '--import-map', 'import_map.json', dotenvPath],
           ['deno', 'run', '--import-map=import_map.json', dotenvPath],
+          ['deno', 'run', '--no-config', '--unsafely-ignore-certificate-errors', dotenvPath],
+          ['deno', 'run', '--no-config', '--unsafely-ignore-certificate-errors=example.invalid', dotenvPath],
           ['deno', 'run', '--no-config', '--unsafely-ignore-certificate-errors', 'https://example.invalid/sidecar.ts', dotenvPath],
           ['deno', 'run', 'https://example.invalid/sidecar.ts'],
           ['deno', 'run', 'jsr:@example/sidecar'],

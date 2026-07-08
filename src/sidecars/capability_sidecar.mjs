@@ -132,8 +132,8 @@ const NODE_ALLOWED_FLAG_ONLY_OPTIONS = new Set([
   '--trace-warnings',
 ]);
 const DENO_OPTION_VALUE_OPTIONS = new Set(['--cert', '--config', '--config-file', '--location', '-c']);
-const DENO_OPTION_INLINE_VALUE_OPTIONS = new Set([...DENO_OPTION_VALUE_OPTIONS, '--unsafely-ignore-certificate-errors']);
-const DENO_ALLOWED_FLAG_ONLY_OPTIONS = new Set(['--no-config', '--unsafely-ignore-certificate-errors']);
+const DENO_OPTION_INLINE_VALUE_OPTIONS = new Set(DENO_OPTION_VALUE_OPTIONS);
+const DENO_ALLOWED_FLAG_ONLY_OPTIONS = new Set(['--no-config']);
 const NON_JS_INLINE_EVAL_RUNTIMES = new Set(['perl', 'php', 'ruby', 'rscript', 'lua', 'luajit']);
 
 export class CapabilitySidecar {
@@ -780,6 +780,9 @@ function assertSupportedDenoRuntimeCommand(argv) {
     if (denoConfigOption(value)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Deno sidecars must use --no-config instead of caller-supplied config files');
     }
+    if (unsupportedDenoTlsOption(value)) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Deno sidecars do not support disabling TLS certificate verification');
+    }
     if (unsupportedDenoPermissionOption(value)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Deno sidecars do not support permission-granting flags');
     }
@@ -844,6 +847,10 @@ function unsupportedDenoPermissionOption(value) {
   return option === '-A' || option === '-E' || option === '-F' || option === '-N' ||
     option === '-P' || option === '-R' || option === '-S' || option === '-W' ||
     option === '--allow-all' || option === '--permission-set' || option.startsWith('--allow-');
+}
+
+function unsupportedDenoTlsOption(value) {
+  return value === '--unsafely-ignore-certificate-errors' || value.startsWith('--unsafely-ignore-certificate-errors=');
 }
 
 function denoOptionConsumesNext(value) {

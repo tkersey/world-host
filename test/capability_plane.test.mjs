@@ -1554,18 +1554,24 @@ describe('Capability Plane v0.2 core contracts', () => {
       docs: [],
       checksums: [{ path: './adapter.ts', checksum: typeScriptSidecarChecksum }],
     }, { './adapter.ts': typeScriptSidecar }), true);
-    assert.equal(await assertCapabilityPackChecksums({
-      ...manifest,
-      adapter: { kind: 'sidecar', command: ['deno', 'run', '--no-config', '--unsafely-ignore-certificate-errors', './adapter.ts'] },
-      docs: [],
-      checksums: [{ path: './adapter.ts', checksum: typeScriptSidecarChecksum }],
-    }, { './adapter.ts': typeScriptSidecar }), true);
-    assert.equal(await assertCapabilityPackChecksums({
-      ...manifest,
-      adapter: { kind: 'sidecar', command: ['deno', 'run', '--no-config', '--unsafely-ignore-certificate-errors=example.test', './adapter.ts'] },
-      docs: [],
-      checksums: [{ path: './adapter.ts', checksum: typeScriptSidecarChecksum }],
-    }, { './adapter.ts': typeScriptSidecar }), true);
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['deno', 'run', '--no-config', '--unsafely-ignore-certificate-errors', './adapter.ts'] },
+        docs: [],
+        checksums: [{ path: './adapter.ts', checksum: typeScriptSidecarChecksum }],
+      }, { './adapter.ts': typeScriptSidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['deno', 'run', '--no-config', '--unsafely-ignore-certificate-errors=example.test', './adapter.ts'] },
+        docs: [],
+        checksums: [{ path: './adapter.ts', checksum: typeScriptSidecarChecksum }],
+      }, { './adapter.ts': typeScriptSidecar }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
     assert.equal(await assertCapabilityPackChecksums({
       ...manifest,
       adapter: { kind: 'sidecar', command: ['deno', 'run', '--no-config', '--location', 'https://example.test', './adapter.ts'] },
@@ -2155,17 +2161,20 @@ describe('Capability Plane v0.2 core contracts', () => {
       }),
       { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
-    const denoConfig = fromUtf8('{\n  // ordinary config is allowed\n  "compilerOptions": { "strict": true }\n}\n');
+    const denoConfig = fromUtf8('{\n  "compilerOptions": { "strict": true }\n}\n');
     const denoConfigChecksum = `sha256:${await sha256Hex(denoConfig)}`;
-    assert.equal(await assertCapabilityPackChecksums({
-      ...manifest,
-      adapter: { kind: 'sidecar', command: ['deno', 'run', '--config', 'deno.jsonc', 'sidecar.mjs'] },
-      docs: [],
-      checksums: [
-        { path: 'sidecar.mjs', checksum: sidecarChecksum },
-        { path: 'deno.jsonc', checksum: denoConfigChecksum },
-      ],
-    }, { 'sidecar.mjs': sidecar, 'deno.jsonc': denoConfig }), true);
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['deno', 'run', '--config', 'deno.jsonc', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: 'deno.jsonc', checksum: denoConfigChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, 'deno.jsonc': denoConfig }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
     const denoConfigExtendsBase = fromUtf8(JSON.stringify({ extends: './base.json' }));
     const denoConfigExtendsBaseChecksum = `sha256:${await sha256Hex(denoConfigExtendsBase)}`;
     const denoBaseConfig = fromUtf8(JSON.stringify({ compilerOptions: { strict: true } }));
@@ -2180,18 +2189,21 @@ describe('Capability Plane v0.2 core contracts', () => {
           { path: 'deno.json', checksum: denoConfigExtendsBaseChecksum },
         ],
       }, { 'sidecar.mjs': sidecar, 'deno.json': denoConfigExtendsBase }),
-      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
-    assert.equal(await assertCapabilityPackChecksums({
-      ...manifest,
-      adapter: { kind: 'sidecar', command: ['deno', 'run', '--config', 'deno.json', 'sidecar.mjs'] },
-      docs: [],
-      checksums: [
-        { path: 'sidecar.mjs', checksum: sidecarChecksum },
-        { path: 'deno.json', checksum: denoConfigExtendsBaseChecksum },
-        { path: 'base.json', checksum: denoBaseConfigChecksum },
-      ],
-    }, { 'sidecar.mjs': sidecar, 'deno.json': denoConfigExtendsBase, 'base.json': denoBaseConfig }), true);
+    await assert.rejects(
+      () => assertCapabilityPackChecksums({
+        ...manifest,
+        adapter: { kind: 'sidecar', command: ['deno', 'run', '--config', 'deno.json', 'sidecar.mjs'] },
+        docs: [],
+        checksums: [
+          { path: 'sidecar.mjs', checksum: sidecarChecksum },
+          { path: 'deno.json', checksum: denoConfigExtendsBaseChecksum },
+          { path: 'base.json', checksum: denoBaseConfigChecksum },
+        ],
+      }, { 'sidecar.mjs': sidecar, 'deno.json': denoConfigExtendsBase, 'base.json': denoBaseConfig }),
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+    );
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
@@ -2216,7 +2228,7 @@ describe('Capability Plane v0.2 core contracts', () => {
           { path: './base.json', checksum: denoBaseConfigChecksum },
         ],
       }, { 'sidecar.mjs': sidecar, 'configs/deno.json': denoConfigExtendsBase, './base.json': denoBaseConfig }),
-      { code: 'ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED' },
+      { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
     const denoConfigWithImportMap = fromUtf8(JSON.stringify({ importMap: 'import_map.json' }));
     const denoConfigWithImportMapChecksum = `sha256:${await sha256Hex(denoConfigWithImportMap)}`;
@@ -2495,6 +2507,8 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
     for (const command of [
+      ['deno', 'run', '--no-config', '--unsafely-ignore-certificate-errors', 'sidecar.mjs'],
+      ['deno', 'run', '--no-config', '--unsafely-ignore-certificate-errors=example.invalid', 'sidecar.mjs'],
       ['bun', '--fetch-preconnect=https://denied.example', 'sidecar.mjs'],
       ['bun', '--fetch-preconnect', 'https://denied.example', 'sidecar.mjs'],
       ['bun', '--unsafely-ignore-certificate-errors', 'sidecar.mjs'],
