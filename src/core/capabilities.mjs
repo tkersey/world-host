@@ -870,10 +870,14 @@ export function hostRequestPolicyPromptByteLength(manifest, hostRequest) {
 }
 
 function requestPolicyRequestByteLength(route, request) {
-  if (!request) return undefined;
-  const rawByteLength = request.requestBytes?.byteLength;
-  if (!isHttpRoute(route, request)) return rawByteLength;
-  return maxSafeByteLength(rawByteLength, httpRequestBodyPolicyByteLength(route, request));
+  return hostRequestPolicyRequestByteLength(route, request);
+}
+
+export function hostRequestPolicyRequestByteLength(manifest, hostRequest) {
+  if (!hostRequest) return undefined;
+  const rawByteLength = hostRequest.requestBytes?.byteLength;
+  if (!isHttpRoute(manifest, hostRequest)) return rawByteLength;
+  return maxSafeByteLength(rawByteLength, httpRequestBodyPolicyByteLength(manifest, hostRequest));
 }
 
 function maxSafeByteLength(...values) {

@@ -6,7 +6,7 @@ import {
   assertRecoveryClass,
   defineActuatorDriver,
 } from './actuator.mjs';
-import { createRunPolicy, hostRequestPolicyPromptByteLength } from './capabilities.mjs';
+import { createRunPolicy, hostRequestPolicyPromptByteLength, hostRequestPolicyRequestByteLength } from './capabilities.mjs';
 import { assertBlobRef, assertBytes, fail, fromUtf8, stableJson, toHex } from './store.mjs';
 import { decodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
 import { decodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
@@ -137,32 +137,32 @@ export class EffectJournal {
     assertPreparedRequestWithinLimits(prepared, manifest, this.policy);
     assertDurableRecoveryAllowed(manifest.recoveryClass, this.policy);
     return await withEffectKeyLock(this.store, effectLockKey(this.runId, prepared.idempotencyKey), async () => {
-      const assertPromptWithinPolicy = () => assertHostRequestPromptWithinPolicy(normalizedHostRequest, manifest, this.policy);
+      const assertRequestWithinCurrentPolicy = () => assertHostRequestPolicyWithinLimits(normalizedHostRequest, manifest, this.policy);
       let observed = await this.#observePrepared(journalHostRequest, prepared, {
         manifest,
         createIfMissing: false,
-        beforeBranchLocalReuse: assertPromptWithinPolicy,
+        beforeBranchLocalReuse: assertRequestWithinCurrentPolicy,
       });
       const existingOutcome = observed ? await this.#nonInvokingResolution(observed, normalizedHostRequest, manifest) : null;
       if (existingOutcome?.retryRequired) {
         observed = existingOutcome.record;
       } else if (existingOutcome) {
-        assertPromptWithinPolicy();
+        assertRequestWithinCurrentPolicy();
         return existingOutcome;
       }
       if (typeof options.beforeInvoke === 'function') await options.beforeInvoke(context, normalizedHostRequest);
-      assertPromptWithinPolicy();
+      assertRequestWithinCurrentPolicy();
       if (!observed) {
         observed = await this.#observePrepared(journalHostRequest, prepared, {
           manifest,
-          beforeBranchLocalReuse: assertPromptWithinPolicy,
+          beforeBranchLocalReuse: assertRequestWithinCurrentPolicy,
         });
       }
       const observedOutcome = await this.#nonInvokingResolution(observed, normalizedHostRequest, manifest);
       if (observedOutcome?.retryRequired) {
         observed = observedOutcome.record;
       } else if (observedOutcome) {
-        assertPromptWithinPolicy();
+        assertRequestWithinCurrentPolicy();
         return observedOutcome;
       }
       if (observed.state === EffectState.running) return await this.#recoverLocked(context, observed, driver);
@@ -915,7 +915,11 @@ function assertPreparedRequestWithinLimits(prepared, manifest, policy) {
   if (policy.maximumRequestBytes !== undefined && prepared.requestBytes.byteLength > policy.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
 }
 
-function assertHostRequestPromptWithinPolicy(hostRequest, manifest, policy) {
+function assertHostRequestPolicyWithinLimits(hostRequest, manifest, policy) {
+  const requestByteLength = hostRequestPolicyRequestByteLength(manifest, hostRequest);
+  if (policy.maximumRequestBytes !== undefined && requestByteLength !== undefined && requestByteLength > policy.maximumRequestBytes) {
+    fail('ERR_CAPABILITY_PROMPT_TOO_LARGE');
+  }
   const promptByteLength = hostRequestPolicyPromptByteLength(manifest, hostRequest);
   if (policy.maximumPromptBytes !== undefined && promptByteLength !== undefined && promptByteLength > policy.maximumPromptBytes) {
     fail('ERR_CAPABILITY_PROMPT_TOO_LARGE');
@@ -928,7 +932,7 @@ async function assertRecoveredRequestWithinLimits(record, manifest, policy) {
   if (checksum !== record.requestBytesChecksum) fail('ERR_EFFECT_REQUEST_BYTES_CHECKSUM_MISMATCH');
   if (record.requestBytes.byteLength > manifest.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
   if (policy.maximumRequestBytes !== undefined && record.requestBytes.byteLength > policy.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
-  assertHostRequestPromptWithinPolicy(record, manifest, policy);
+  assertHostRequestPolicyWithinLimits(record, manifest, policy);
 }
 
 function assertManifestResponseWithinPolicy(manifest, policy) {

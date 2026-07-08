@@ -96,6 +96,82 @@ describe('EffectJournal', () => {
     assert.equal(records[0].branchId, 'main');
   });
 
+  it('enforces rendered request byte limits before reusing cached configured HTTP outcomes', async () => {
+    const store = new MemoryStore();
+    const requestTemplate = { prompt: 'x'.repeat(128) };
+    const request = httpHostRequest({
+      idempotencyKeyBytes: fromUtf8('cached-rendered-request-limit-key'),
+      idempotencyKeyWorldFingerprint: 'world:key:cached-rendered-request-limit',
+      requestBytes: fromUtf8(JSON.stringify({ body: 'x' })),
+      hostRequestFingerprint: 'world:host-request:0000000000000c02',
+    });
+    const driver = new GenericHttpJsonCapabilityDriver({
+      endpointUrl: 'https://allowed.example/decide',
+      requestTemplate,
+    });
+    const permissivePolicy = {
+      allowLiveEffects: true,
+      allowNetworkEffects: true,
+      maximumRequestBytes: 4096,
+      maximumPromptBytes: 4096,
+      allowedOrigins: ['https://allowed.example'],
+      allowedMethods: ['POST'],
+    };
+    const renderedRequestLimit = request.requestBytes.byteLength + 8;
+    assert.ok(fromUtf8(JSON.stringify(requestTemplate)).byteLength > renderedRequestLimit);
+    const permissive = new EffectJournal({
+      store,
+      runId: 'run',
+      branchId: 'main',
+      parentTurnClosureFingerprint: 'turn:0',
+      policy: permissivePolicy,
+    });
+    let fetchCount = 0;
+    globalThis.fetch = async () => {
+      fetchCount += 1;
+      return new Response('{"action":{"variant":"final","text":"cached-rendered-request-limit"}}', {
+        status: 200,
+        headers: { 'x-request-id': 'request-rendered-limit' },
+      });
+    };
+
+    const first = await permissive.resolve({ policy: permissivePolicy }, request, driver);
+    assert.equal(first.reused, false);
+    assert.equal(fetchCount, 1);
+
+    const limitedPolicy = { ...permissivePolicy, maximumRequestBytes: renderedRequestLimit };
+    const limited = new EffectJournal({
+      store,
+      runId: 'run',
+      branchId: 'main',
+      parentTurnClosureFingerprint: 'turn:0',
+      policy: limitedPolicy,
+    });
+    globalThis.fetch = async () => {
+      fetchCount += 1;
+      throw new Error('rendered request policy should reject cached reuse before fetch');
+    };
+
+    await assert.rejects(
+      () => limited.resolve({ policy: limitedPolicy }, request, driver),
+      { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+    );
+
+    const limitedTarget = new EffectJournal({
+      store,
+      runId: 'run',
+      branchId: 'target',
+      parentTurnClosureFingerprint: 'turn:target',
+      policy: limitedPolicy,
+    });
+    await assert.rejects(
+      () => limitedTarget.resolve({ policy: limitedPolicy }, request, driver),
+      { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+    );
+
+    assert.equal(fetchCount, 1);
+  });
+
   it('reruns safely recoverable effects when a terminal reusable outcome is invalid', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
