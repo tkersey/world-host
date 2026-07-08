@@ -37,6 +37,7 @@ import { CapabilityDriver as HumanApprovalPackCapabilityDriver } from '../capabi
 import { fromUtf8, stableJson, toHex } from '../src/core/store.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
 import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
+import { encodeCanonicalValueImage } from '../src/protocol/world_loaded_value_codec.mjs';
 
 function captureThrown(fn) {
   try {
@@ -4239,6 +4240,35 @@ describe('Capability Plane v0.2 core contracts', () => {
           status: 0,
           responseValueImageBytes: fromUtf8('ok'),
           hostClaimBytes: fromUtf8(stableJson({ runHead: { generation: 1 } })),
+          attemptNumber: 1,
+          metadata: fromUtf8('plain metadata'),
+        }),
+      }),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
+    assert.throws(
+      () => assertCapabilityResolutionBoundary({
+        resolutionInputBytes: encodeResolutionInputBytes({
+          targetHostRequestFingerprint: 0x1n,
+          status: 0,
+          responseValueImageBytes: fromUtf8(stableJson({ turnClosureBytes: 'closure' })),
+          hostClaimBytes: fromUtf8(stableJson({ safe: true })),
+          attemptNumber: 1,
+          metadata: fromUtf8('plain metadata'),
+        }),
+      }),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
+    assert.throws(
+      () => assertCapabilityResolutionBoundary({
+        resolutionInputBytes: encodeResolutionInputBytes({
+          targetHostRequestFingerprint: 0x1n,
+          status: 0,
+          responseValueImageBytes: encodeCanonicalValueImage({
+            bytes: fromUtf8(stableJson({ turnClosureBytes: 'closure' })),
+            dynamicSize: true,
+          }),
+          hostClaimBytes: fromUtf8(stableJson({ safe: true })),
           attemptNumber: 1,
           metadata: fromUtf8('plain metadata'),
         }),

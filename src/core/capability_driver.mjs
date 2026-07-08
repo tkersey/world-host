@@ -1,6 +1,7 @@
 import { assertDriverCanResolve, assertDriverManifest, defineActuatorDriver } from './actuator.mjs';
 import { assertBytes, fail, fromUtf8, stableJson } from './store.mjs';
 import { decodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
+import { decodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
 
 const FORBIDDEN_WORLD_EVIDENCE_KEYS = new Set([
   'boundaryModuleBytes',
@@ -132,16 +133,20 @@ export function assertCapabilityResolutionBoundary(value) {
 }
 
 function assertNoCarriedResolutionWorldEvidence(value) {
-  for (const field of ['hostClaimBytes', 'metadata']) {
-    const payload = parseJsonBytes(value[field]);
-    if (payload !== null) assertNoWorldEvidenceKeys(payload);
-  }
+  for (const field of ['hostClaimBytes', 'metadata', 'responseValueImageBytes']) assertNoWorldEvidenceByteField(value[field]);
 }
 
 function assertNoDecodedResolutionWorldEvidence(decoded) {
-  for (const field of ['hostClaimBytes', 'metadata']) {
-    const payload = parseJsonBytes(decoded[field]);
-    if (payload !== null) assertNoWorldEvidenceKeys(payload);
+  for (const field of ['hostClaimBytes', 'metadata', 'responseValueImageBytes']) assertNoWorldEvidenceByteField(decoded[field]);
+}
+
+function assertNoWorldEvidenceByteField(value) {
+  const payload = parseJsonBytes(value);
+  if (payload !== null) assertNoWorldEvidenceKeys(payload);
+  const valueImagePayload = parseCanonicalValueImagePayload(value);
+  if (valueImagePayload !== null) {
+    const decodedPayload = parseJsonBytes(valueImagePayload);
+    if (decodedPayload !== null) assertNoWorldEvidenceKeys(decodedPayload);
   }
 }
 
@@ -156,6 +161,15 @@ function parseJsonBytes(value) {
   if (!text || !/^[\[{]/.test(text)) return null;
   try {
     return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function parseCanonicalValueImagePayload(value) {
+  if (!(value instanceof Uint8Array) || value.byteLength === 0) return null;
+  try {
+    return decodeCanonicalValueImage(value).payload;
   } catch {
     return null;
   }
