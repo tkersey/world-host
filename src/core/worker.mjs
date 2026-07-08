@@ -366,8 +366,9 @@ export class RunController {
         hostRequest: item.hostRequest,
         worldHostRequest: item.worldHostRequest,
       });
+      const selectedContext = normalizeSelectedEffectContext(context, policy, item.manifest, item.hostRequest);
       try {
-        assertSelectedEffectPolicyAllows(item.manifest, item.hostRequest, policy, context?.action, { allowCachedLiveModelReplay: true });
+        assertSelectedEffectPolicyAllows(item.manifest, item.hostRequest, policy, selectedContext?.action, { allowCachedLiveModelReplay: true });
       } catch (error) {
         if (policy.allowPartialEffectBatch === true && error?.code === 'ERR_CAPABILITY_APPROVAL_REQUIRED') {
           unresolvedHostRequests.push({
@@ -379,7 +380,7 @@ export class RunController {
         }
         throw error;
       }
-      selected.push({ ...item, context });
+      selected.push({ ...item, context: selectedContext });
     }
     if (selected.length === 0 && unresolvedHostRequests.length > 0) {
       fail('ERR_PARTIAL_EFFECT_BATCH_EMPTY', 'partial effect batch has no covered HostRequests', {
@@ -769,6 +770,29 @@ async function defaultEffectContextFactory(context) {
     ...context,
     policy: capabilityPolicyForSelectedEffect(context.policy, context.driverManifest, context.hostRequest),
   };
+}
+
+function normalizeSelectedEffectContext(context, policy, manifest, hostRequest) {
+  const selected = context && typeof context === 'object' ? context : {};
+  return {
+    ...selected,
+    policy: selectedEffectCapabilityPolicy(selected.policy ?? policy, manifest, hostRequest),
+  };
+}
+
+function selectedEffectCapabilityPolicy(policy, manifest, hostRequest) {
+  return capabilityPolicyShape(policy)
+    ? policy
+    : capabilityPolicyForSelectedEffect(policy, manifest, hostRequest);
+}
+
+function capabilityPolicyShape(policy) {
+  return policy && typeof policy === 'object' && (
+    Object.prototype.hasOwnProperty.call(policy, 'allowLiveEffects') ||
+    Object.prototype.hasOwnProperty.call(policy, 'allowNetworkEffects') ||
+    Object.prototype.hasOwnProperty.call(policy, 'allowedOrigins') ||
+    Object.prototype.hasOwnProperty.call(policy, 'allowedMethods')
+  );
 }
 
 function capabilityPolicyForSelectedEffect(policy = {}, manifest = {}, hostRequest = {}, options = {}) {

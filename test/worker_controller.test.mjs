@@ -2326,6 +2326,53 @@ describe('RunController and WorldWorker', () => {
     }
   });
 
+  it('normalizes custom capability contexts before invoking generic effect drivers', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    try {
+      globalThis.fetch = async () => {
+        fetchCount += 1;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
+        effectPolicy: {
+          requireApprovalForNetworkEffects: true,
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+        },
+        effectContextFactory: async (context) => ({
+          ...context,
+          action: { approved: true },
+        }),
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('generic-http-custom-context-policy-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:generic-http-custom-context-policy',
+          requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'approved' } })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fetchCount, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('binds partial approved raw effect routes with the approval-aware policy', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
