@@ -2456,6 +2456,11 @@ describe('RunController and WorldWorker', () => {
         effectContextFactory: async (context) => ({
           ...context,
           action: { approved: true },
+          policy: {
+            ...context.policy,
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+          },
         }),
         hostRequestMapper: () => ({
           actuatorRef: 'http:json',

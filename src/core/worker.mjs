@@ -812,7 +812,7 @@ function normalizeSelectedEffectContext(context, policy, manifest, hostRequest) 
 }
 
 function selectedEffectCapabilityPolicy(policy, manifest, hostRequest) {
-  return capabilityPolicyShape(policy)
+  return capabilityPolicyShape(policy) && !runHttpPolicyShape(policy)
     ? policy
     : capabilityPolicyForSelectedEffect(policy, manifest, hostRequest);
 }
@@ -823,6 +823,16 @@ function capabilityPolicyShape(policy) {
     Object.prototype.hasOwnProperty.call(policy, 'allowNetworkEffects') ||
     Object.prototype.hasOwnProperty.call(policy, 'allowedOrigins') ||
     Object.prototype.hasOwnProperty.call(policy, 'allowedMethods')
+  );
+}
+
+function runHttpPolicyShape(policy) {
+  return policy && typeof policy === 'object' && (
+    Object.prototype.hasOwnProperty.call(policy, 'allowedHttpOrigins') ||
+    Object.prototype.hasOwnProperty.call(policy, 'allowedHttpMethods')
+  ) && (
+    !Object.prototype.hasOwnProperty.call(policy, 'allowedOrigins') &&
+    !Object.prototype.hasOwnProperty.call(policy, 'allowedMethods')
   );
 }
 
