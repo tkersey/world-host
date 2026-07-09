@@ -24,6 +24,8 @@ import { SandboxFileDriver } from '../src/drivers/sandbox_file_driver.mjs';
 import { refreshAgentRuntimePackChecksums } from '../scripts/agent_runtime_pack_lib.mjs';
 import { capabilityPackFingerprint } from '../src/core/capability_pack.mjs';
 
+const DEFAULT_SIDECAR_TRANSPORTABLE_BYTES = Math.floor(((1024 * 1024) - 4096) / 6);
+
 describe('migration, branching, and CLI diagnostics', () => {
   it('forks a branch without mutating the source branch head', async () => {
     const { store, run, head } = await fixtureStore();
@@ -1671,12 +1673,14 @@ describe('migration, branching, and CLI diagnostics', () => {
       await rm(path.join(pack, 'conformance.json'));
 
       async function writeSidecarPack(sidecarBytes, manifestOverrides = {}) {
-        await writeFile(path.join(pack, 'sidecar.mjs'), sidecarBytes);
         const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
         Object.assign(manifest, manifestOverrides);
         manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
+        manifest.maximumRequestBytes = Math.min(manifest.maximumRequestBytes, DEFAULT_SIDECAR_TRANSPORTABLE_BYTES);
+        manifest.maximumResponseBytes = Math.min(manifest.maximumResponseBytes, DEFAULT_SIDECAR_TRANSPORTABLE_BYTES);
         manifest.conformanceCorpusFingerprint = null;
         manifest.conformanceReceiptFingerprint = null;
+        await writeFile(path.join(pack, 'sidecar.mjs'), sidecarBytes);
         manifest.checksums = manifest.checksums
           .filter((item) => !['adapter.mjs', 'conformance.json', 'sidecar.mjs'].includes(item.path))
           .concat({ path: 'sidecar.mjs', checksum: `sha256:${createHash('sha256').update(sidecarBytes).digest('hex')}` });
@@ -3222,11 +3226,13 @@ describe('migration, branching, and CLI diagnostics', () => {
       await rm(path.join(pack, 'conformance.json'));
 
       async function writeSidecarPack(sidecarBytes) {
-        await writeFile(path.join(pack, 'sidecar.mjs'), sidecarBytes);
         const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
         manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
+        manifest.maximumRequestBytes = Math.min(manifest.maximumRequestBytes, DEFAULT_SIDECAR_TRANSPORTABLE_BYTES);
+        manifest.maximumResponseBytes = Math.min(manifest.maximumResponseBytes, DEFAULT_SIDECAR_TRANSPORTABLE_BYTES);
         manifest.conformanceCorpusFingerprint = null;
         manifest.conformanceReceiptFingerprint = null;
+        await writeFile(path.join(pack, 'sidecar.mjs'), sidecarBytes);
         manifest.checksums = manifest.checksums
           .filter((item) => !['adapter.mjs', 'conformance.json', 'sidecar.mjs'].includes(item.path))
           .concat({ path: 'sidecar.mjs', checksum: `sha256:${createHash('sha256').update(sidecarBytes).digest('hex')}` });
@@ -3466,12 +3472,14 @@ describe('migration, branching, and CLI diagnostics', () => {
         };
         process.stdout.write(JSON.stringify({ command: frame.command, payload: responses[frame.command] ?? driverManifest }) + '\\n');
       `);
-      await writeFile(path.join(pack, 'sidecar.mjs'), sidecarBytes);
       const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
       manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
+      manifest.maximumRequestBytes = Math.min(manifest.maximumRequestBytes, DEFAULT_SIDECAR_TRANSPORTABLE_BYTES);
+      manifest.maximumResponseBytes = Math.min(manifest.maximumResponseBytes, DEFAULT_SIDECAR_TRANSPORTABLE_BYTES);
       manifest.conformanceCorpusFingerprint = null;
       manifest.conformanceReceiptFingerprint = null;
       manifest.supportedResponseStatuses = ['failed', 'ok'];
+      await writeFile(path.join(pack, 'sidecar.mjs'), sidecarBytes);
       manifest.checksums = manifest.checksums
         .filter((item) => !['adapter.mjs', 'conformance.json', 'sidecar.mjs'].includes(item.path))
         .concat({ path: 'sidecar.mjs', checksum: `sha256:${createHash('sha256').update(sidecarBytes).digest('hex')}` });

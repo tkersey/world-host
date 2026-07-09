@@ -330,7 +330,7 @@ async function assertCapabilityPackAdapterAbi(packManifest, artifacts, packRoot)
         if (externalCapabilityPackEffectProbe(packManifest, null)) {
           fail('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED', 'network sidecar probes must not perform live external effects');
         }
-        driver = new CapabilitySidecar({ command: packManifest.adapter.command, cwd: packRoot });
+        driver = new CapabilitySidecar({ command: packManifest.adapter.command, cwd: packRoot, packFingerprint: packManifest.packFingerprint });
         sidecar = true;
       } else {
         return;
@@ -350,7 +350,7 @@ async function assertCapabilityPackAdapterAbi(packManifest, artifacts, packRoot)
 }
 
 async function capabilityPackSidecarManifest(sidecarDriver, packManifest) {
-  const raw = await sidecarDriver.requestPayload(CapabilitySidecarCommand.manifest, { packFingerprint: packManifest.packFingerprint });
+  const raw = await sidecarDriver.manifest();
   const manifest = assertDriverManifest(raw);
   if (raw.packFingerprint != null && typeof raw.packFingerprint !== 'string') {
     fail('ERR_INVALID_DRIVER_MANIFEST', 'packFingerprint must be a string');

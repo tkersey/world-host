@@ -64,7 +64,7 @@ export class GenericHttpJsonCapabilityDriver {
       supportedDescriptorFingerprints: ['descriptor:http-json'],
       supportedActuationClasses: ['http'],
       supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
-      maximumRequestBytes: encodedJsonStringEnvelopeLimit(this.maximumRequestBytes, REQUEST_ENVELOPE_OVERHEAD_BYTES),
+      maximumRequestBytes: this.maximumRequestBytes,
       maximumResponseBytes: encodedJsonStringEnvelopeLimit(this.maximumResponseBytes, RESPONSE_ENVELOPE_OVERHEAD_BYTES),
       recoveryClass: EffectRecoveryClass.idempotent,
       concurrencyLimit: 4,
@@ -155,9 +155,11 @@ export class GenericHttpJsonCapabilityDriver {
           assertNoKnownSecretEcho(payload, secretValues);
           assertNoCredentialShapedResponseValue(transactionRef);
           assertNoKnownSecretEcho(transactionRef, secretValues);
-          return this.#resolution(hostRequest, payload, 0, transactionRef);
+          const status = okResponseStatus(hostRequest);
+          return this.#resolution(hostRequest, payload, ResponseStatusCode[status], transactionRef);
         } catch (error) {
           if (error?.name === 'AbortError') throw error;
+          if (error?.code === 'ERR_HTTP_OK_STATUS_UNSUPPORTED') throw error;
           const safeTransactionRef = safeHttpTransactionRef(transactionRef, secretValues);
           const status = failedResponseStatus(hostRequest);
           return this.#resolution(hostRequest, {
@@ -545,6 +547,12 @@ function failedResponseStatus(hostRequest) {
   const status = hostRequest?.responseSchema?.status;
   if (status == null || status === 'failed') return 'failed';
   fail('ERR_HTTP_FAILED_STATUS_UNSUPPORTED', 'HTTP response validation failure cannot satisfy fixed response schema');
+}
+
+function okResponseStatus(hostRequest) {
+  const status = hostRequest?.responseSchema?.status;
+  if (status == null || status === 'ok') return 'ok';
+  fail('ERR_HTTP_OK_STATUS_UNSUPPORTED', 'HTTP ok response cannot satisfy fixed response schema');
 }
 
 function extractPath(value, path) {

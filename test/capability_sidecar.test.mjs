@@ -158,6 +158,9 @@ describe('Capability sidecar transport', () => {
       assert.equal((await sidecar.request(CapabilitySidecarCommand.manifest)).payload.driverId, 'fixture-sidecar');
       assert.equal((await sidecar.manifest()).driverId, 'fixture-sidecar');
       assert.equal(defineCapabilityDriver(sidecar).manifest().driverId, 'fixture-sidecar');
+      const cappedSidecar = new CapabilitySidecar({ command: [process.execPath, sidecarPath], timeoutMs: 1000, maximumFrameBytes: 8192 });
+      assert.equal((await cappedSidecar.manifest()).maximumRequestBytes, Math.floor((8192 - 4096) / 6));
+      assert.equal((await cappedSidecar.manifest()).maximumResponseBytes, Math.floor((8192 - 4096) / 6));
       const mutableCommand = [process.execPath, sidecarPath];
       const copiedCommandSidecar = new CapabilitySidecar({ command: mutableCommand, timeoutMs: 1000 });
       mutableCommand[0] = '/tmp/world-host-untrusted-runtime';
@@ -205,6 +208,65 @@ describe('Capability sidecar transport', () => {
       assert.equal((await new CapabilitySidecar({ command: ['bun', sidecarPath], timeoutMs: 1000 }).manifest()).driverId, 'fixture-sidecar');
       assert.equal((await new CapabilitySidecar({ command: ['bun', 'sidecar.mjs'], cwd: root, timeoutMs: 1000 }).manifest()).driverId, 'fixture-sidecar');
       await assert.rejects(() => sidecar.dryRun({}), { code: 'ERR_CAPABILITY_SIDECAR_EXIT' });
+
+      const largeManifestPath = path.join(root, 'large-manifest.mjs');
+      await writeFile(largeManifestPath, `
+        await new Response(Bun.stdin.stream()).text();
+        process.stdout.write(JSON.stringify({
+          command: 'manifest',
+          payload: {
+            driverId: 'large-sidecar',
+            supportedActuatorRefs: ['http:json'],
+            supportedDescriptorFingerprints: ['descriptor:http-json'],
+            supportedActuationClasses: ['http'],
+            supportedResponseStatuses: ['ok'],
+            maximumRequestBytes: 1048576,
+            maximumResponseBytes: 1048576,
+            recoveryClass: 'idempotent',
+            concurrencyLimit: 1,
+            authorityLabels: ['network:http']
+          }
+        }) + '\\n');
+      `);
+      const largeSidecar = new CapabilitySidecar({ command: [process.execPath, largeManifestPath], timeoutMs: 1000, maximumFrameBytes: 8192 });
+      const rawLargeManifest = await largeSidecar.requestPayload(CapabilitySidecarCommand.manifest);
+      const cappedLargeManifest = await largeSidecar.manifest();
+      assert.equal(rawLargeManifest.maximumRequestBytes, 1048576);
+      assert.equal(cappedLargeManifest.maximumRequestBytes, Math.floor((8192 - 4096) / 6));
+      assert.equal(cappedLargeManifest.maximumResponseBytes, Math.floor((8192 - 4096) / 6));
+
+      const packFingerprintPath = path.join(root, 'pack-fingerprint.mjs');
+      await writeFile(packFingerprintPath, `
+        const input = await new Response(Bun.stdin.stream()).text();
+        const frame = JSON.parse(input);
+        if (frame.command === 'manifest') {
+          process.stdout.write(JSON.stringify({
+            command: 'manifest',
+            payload: {
+              driverId: 'pack-fingerprint-sidecar',
+              supportedActuatorRefs: ['http:json'],
+              supportedDescriptorFingerprints: ['descriptor:http-json'],
+              supportedActuationClasses: ['http'],
+              supportedResponseStatuses: ['ok'],
+              maximumRequestBytes: 1024,
+              maximumResponseBytes: 1024,
+              recoveryClass: 'idempotent',
+              concurrencyLimit: 1,
+              authorityLabels: ['network:http'],
+              packFingerprint: frame.payload?.packFingerprint
+            }
+          }) + '\\n');
+        } else {
+          process.stdout.write(JSON.stringify({ command: frame.command, payload: { packFingerprint: frame.payload?.packFingerprint } }) + '\\n');
+        }
+      `);
+      const packSidecar = new CapabilitySidecar({
+        command: [process.execPath, packFingerprintPath],
+        timeoutMs: 1000,
+        packFingerprint: 'sha256:'.concat('7'.repeat(64)),
+      });
+      assert.equal((await packSidecar.manifest()).packFingerprint, 'sha256:'.concat('7'.repeat(64)));
+      assert.equal((await packSidecar.resolve({}, { actuatorRef: 'http:json' })).packFingerprint, 'sha256:'.concat('7'.repeat(64)));
 
       const envPath = path.join(root, 'env.mjs');
       await writeFile(envPath, `

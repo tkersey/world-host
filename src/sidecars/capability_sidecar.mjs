@@ -25,6 +25,8 @@ const OBJECT_SENTINEL_PAYLOAD = 'value';
 const LEGACY_BYTES_KEY = '__bytes';
 const EMPTY_BUN_ENV_FILE = process.platform === 'win32' ? 'NUL' : '/dev/null';
 const EMPTY_BUN_CONFIG_FILE = process.platform === 'win32' ? 'NUL' : '/dev/null';
+const SIDECAR_FRAME_PAYLOAD_OVERHEAD_BYTES = 4096;
+const SIDECAR_FRAME_PAYLOAD_EXPANSION = 6;
 const BUN_RUNTIME_VALUE_OPTIONS = new Set([
   '--conditions',
   '--config',
@@ -139,12 +141,15 @@ const DENO_ALLOWED_FLAG_ONLY_OPTIONS = new Set(['--no-config']);
 const NON_JS_INLINE_EVAL_RUNTIMES = new Set(['perl', 'php', 'ruby', 'rscript', 'lua', 'luajit']);
 
 export class CapabilitySidecar {
-  constructor({ command, cwd = null, timeoutMs = 5000, maximumFrameBytes = 1024 * 1024, env = {} } = {}) {
+  constructor({ command, cwd = null, timeoutMs = 5000, maximumFrameBytes = 1024 * 1024, env = {}, packFingerprint = null } = {}) {
     if (!Array.isArray(command) || command.length === 0 || command.some((item) => typeof item !== 'string' || item.length === 0)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar command must be an argv array');
     }
     if (cwd != null && (typeof cwd !== 'string' || cwd.length === 0)) {
       fail('ERR_CAPABILITY_SIDECAR_CWD_INVALID', 'sidecar cwd must be a path string');
+    }
+    if (packFingerprint != null && (typeof packFingerprint !== 'string' || packFingerprint.length === 0)) {
+      fail('ERR_CAPABILITY_SIDECAR_PACK_FINGERPRINT_INVALID', 'sidecar pack fingerprint must be a string');
     }
     const childEnv = sidecarUserEnv(env);
     if (bareScriptEntrypoint(command[0])) {
@@ -172,6 +177,7 @@ export class CapabilitySidecar {
     this.timeoutMs = timeoutMs;
     this.maximumFrameBytes = maximumFrameBytes;
     this.env = sidecarEnv({ PATH: sidecarPath(), ...childEnv });
+    this.packFingerprint = packFingerprint;
   }
 
   async request(command, payload = {}) {
@@ -207,31 +213,49 @@ export class CapabilitySidecar {
   }
 
   manifest() {
-    return this.requestPayloadSync(CapabilitySidecarCommand.manifest);
+    return sidecarManifestTransportLimits(
+      this.requestPayloadSync(CapabilitySidecarCommand.manifest, sidecarPackPayload(this.packFingerprint)),
+      this.maximumFrameBytes,
+    );
   }
 
   async preflight(context, hostRequest) {
-    return await this.requestPayload(CapabilitySidecarCommand.preflight, driverHostRequestPayload(context, hostRequest, arguments.length));
+    return await this.requestPayload(CapabilitySidecarCommand.preflight, sidecarPackPayload(
+      this.packFingerprint,
+      driverHostRequestPayload(context, hostRequest, arguments.length),
+    ));
   }
 
   async resolve(context, hostRequest) {
-    return await this.requestPayload(CapabilitySidecarCommand.resolve, driverHostRequestPayload(context, hostRequest, arguments.length));
+    return await this.requestPayload(CapabilitySidecarCommand.resolve, sidecarPackPayload(
+      this.packFingerprint,
+      driverHostRequestPayload(context, hostRequest, arguments.length),
+    ));
   }
 
   async recover(context, effectRecord) {
     const sidecarContext = receiverLocalEffectContext(context);
-    return await this.requestPayload(CapabilitySidecarCommand.recover, arguments.length === 1 ? sidecarContext : { context: sidecarContext, effectRecord });
+    return await this.requestPayload(CapabilitySidecarCommand.recover, sidecarPackPayload(
+      this.packFingerprint,
+      arguments.length === 1 ? sidecarContext : { context: sidecarContext, effectRecord },
+    ));
   }
 
   async dryRun(context, hostRequest) {
-    return await this.requestPayload(CapabilitySidecarCommand.dryRun, driverHostRequestPayload(context, hostRequest, arguments.length));
+    return await this.requestPayload(CapabilitySidecarCommand.dryRun, sidecarPackPayload(
+      this.packFingerprint,
+      driverHostRequestPayload(context, hostRequest, arguments.length),
+    ));
   }
 
   async shadow(context, hostRequest, recordedResolution) {
     const sidecarContext = receiverLocalEffectContext(context);
     return await this.requestPayload(
       CapabilitySidecarCommand.shadow,
-      arguments.length === 1 ? sidecarContext : { context: sidecarContext, hostRequest, recordedResolution },
+      sidecarPackPayload(
+        this.packFingerprint,
+        arguments.length === 1 ? sidecarContext : { context: sidecarContext, hostRequest, recordedResolution },
+      ),
     );
   }
 
@@ -247,6 +271,27 @@ export class CapabilitySidecar {
 function driverHostRequestPayload(context, hostRequest, arity) {
   const sidecarContext = receiverLocalEffectContext(context);
   return arity === 1 ? sidecarContext : { context: sidecarContext, hostRequest };
+}
+
+function sidecarPackPayload(packFingerprint, payload = {}) {
+  return packFingerprint == null ? payload : { ...payload, packFingerprint };
+}
+
+function sidecarManifestTransportLimits(raw, maximumFrameBytes) {
+  if (!raw || typeof raw !== 'object') return raw;
+  const transportableBytes = sidecarTransportablePayloadBytes(maximumFrameBytes);
+  let manifest = raw;
+  for (const field of ['maximumRequestBytes', 'maximumResponseBytes']) {
+    if (Number.isSafeInteger(raw[field]) && raw[field] > transportableBytes) {
+      if (manifest === raw) manifest = { ...raw };
+      manifest[field] = transportableBytes;
+    }
+  }
+  return manifest;
+}
+
+function sidecarTransportablePayloadBytes(maximumFrameBytes) {
+  return Math.max(1, Math.floor((maximumFrameBytes - SIDECAR_FRAME_PAYLOAD_OVERHEAD_BYTES) / SIDECAR_FRAME_PAYLOAD_EXPANSION));
 }
 
 export class CapabilitySidecarConformance {

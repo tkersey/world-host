@@ -4640,6 +4640,10 @@ describe('Capability Plane v0.2 core contracts', () => {
         secretProvider: new EnvSecretProvider({ API_TOKEN: 'Bearer fixture-token-value' }),
       });
       assert.deepEqual(driver.manifest().supportedResponseStatuses, ['ok', 'http_error', 'failed', 'deferred']);
+      assert.equal(new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        maximumRequestBytes: 4,
+      }).manifest().maximumRequestBytes, 4);
       const packDriver = new HttpJsonPackCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' });
       assert.deepEqual(packDriver.manifest().supportedResponseStatuses, ['ok', 'http_error', 'failed', 'deferred']);
       globalThis.fetch = async () => new Response('transport failed', { status: 500 });
@@ -5292,6 +5296,20 @@ describe('Capability Plane v0.2 core contracts', () => {
       });
       assert.equal(decodeResolutionInputBytes(httpError.resolutionInputBytes).status, 1);
       assert.equal(errorBodyPulled, true);
+
+      globalThis.fetch = async () => new Response('{"status":"ok"}', { status: 200 });
+      await assert.rejects(
+        () => new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }).resolve({
+          policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+        }, {
+          ...httpRequest(),
+          responseSchema: { status: 'failed' },
+          hostRequestFingerprint: 'world:host-request:00000000000000b1',
+          idempotencyKeyBytes: fromUtf8('http-key-ok-fixed-failed'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-ok-fixed-failed',
+        }),
+        { code: 'ERR_HTTP_OK_STATUS_UNSUPPORTED' },
+      );
 
       let retryFetchCount = 0;
       globalThis.fetch = async () => {
@@ -5949,30 +5967,33 @@ describe('Capability Plane v0.2 core contracts', () => {
         endpointUrl: 'https://allowed.example/decide',
         maximumRequestBytes: 2,
       });
-      await runCapabilityMode({
-        mode: 'live',
-        driver: tinyBodyDriver,
-        hostRequest: {
-          ...httpRequest(),
-          hostRequestFingerprint: 'world:host-request:00000000000000a5',
-          idempotencyKeyBytes: fromUtf8('http-key-tiny-body'),
-          idempotencyKeyWorldFingerprint: 'world:key:http-tiny-body',
-          requestBytes: fromUtf8(stableJson({ body: {} })),
-        },
-        journalOptions: {
-          store: new MemoryStore(),
-          runId: 'tiny-body-run',
-          branchId: 'main',
-          parentTurnClosureFingerprint: 'world:turn-closure:parent',
-        },
-        policy: {
-          allowLiveEffects: true,
-          allowNetworkEffects: true,
-          allowedOrigins: ['https://allowed.example'],
-          allowedMethods: ['POST'],
-        },
-      });
-      assert.equal(tinyBodyFetchCalled, true);
+      await assert.rejects(
+        () => runCapabilityMode({
+          mode: 'live',
+          driver: tinyBodyDriver,
+          hostRequest: {
+            ...httpRequest(),
+            hostRequestFingerprint: 'world:host-request:00000000000000a5',
+            idempotencyKeyBytes: fromUtf8('http-key-tiny-body'),
+            idempotencyKeyWorldFingerprint: 'world:key:http-tiny-body',
+            requestBytes: fromUtf8(stableJson({ body: {} })),
+          },
+          journalOptions: {
+            store: new MemoryStore(),
+            runId: 'tiny-body-run',
+            branchId: 'main',
+            parentTurnClosureFingerprint: 'world:turn-closure:parent',
+          },
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        }),
+        { code: 'ERR_HOST_REQUEST_TOO_LARGE' },
+      );
+      assert.equal(tinyBodyFetchCalled, false);
 
       let defaultMethod = null;
       globalThis.fetch = async (url, options) => {
