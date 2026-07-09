@@ -5,7 +5,7 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { CapabilitySidecar, CapabilitySidecarCommand, decodeSidecarFrame, encodeSidecarFrame } from '../src/sidecars/capability_sidecar.mjs';
+import { CapabilitySidecar, CapabilitySidecarCommand, CapabilitySidecarConformance, decodeSidecarFrame, encodeSidecarFrame } from '../src/sidecars/capability_sidecar.mjs';
 import { defineCapabilityDriver } from '../src/core/capability_driver.mjs';
 import { markDefaultEffectContext } from '../src/core/effect_context.mjs';
 import { fromUtf8 } from '../src/core/store.mjs';
@@ -166,6 +166,36 @@ describe('Capability sidecar transport', () => {
       const resolved = await sidecar.resolve({ trace: true }, { actuatorRef: 'http:json' });
       assert.equal(resolved.ok, true);
       assert.equal(resolved.actuatorRef, 'http:json');
+      const conformance = await new CapabilitySidecarConformance({
+        command: [process.execPath, sidecarPath],
+        vectors: [
+          {
+            command: CapabilitySidecarCommand.resolve,
+            payload: { hostRequest: { actuatorRef: 'http:json' } },
+            expectedPayload: {
+              ok: true,
+              actuatorRef: 'http:json',
+              legacyRequest: null,
+              contextRequestFingerprint: null,
+            },
+          },
+        ],
+      }).run();
+      assert.equal(conformance.vectorCount, 1);
+      assert.deepEqual(conformance.vectors, [{ command: CapabilitySidecarCommand.resolve, accepted: true }]);
+      await assert.rejects(
+        () => new CapabilitySidecarConformance({
+          command: [process.execPath, sidecarPath],
+          vectors: [
+            {
+              command: CapabilitySidecarCommand.resolve,
+              payload: { hostRequest: { actuatorRef: 'http:json' } },
+              expectedPayload: { ok: false },
+            },
+          ],
+        }).run(),
+        { code: 'ERR_CAPABILITY_SIDECAR_CONFORMANCE_VECTOR_FAILED' },
+      );
       const resolvedWithBigIntContext = await sidecar.resolve(
         { requestFingerprint: 0x12n },
         { actuatorRef: 'http:json' },
@@ -219,6 +249,10 @@ describe('Capability sidecar transport', () => {
           { LUA_INIT_5_4: '@./preload.lua' },
           { PHPRC: './php-ini-dir' },
           { PHP_INI_SCAN_DIR: './php-ini-scan-dir' },
+          { R_PROFILE: './preload.R' },
+          { R_PROFILE_USER: './preload.R' },
+          { R_ENVIRON: './Renviron' },
+          { R_ENVIRON_USER: './Renviron' },
         ]) {
           assert.throws(
             () => new CapabilitySidecar({
@@ -636,13 +670,20 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
           ['perl', '-v', './adapter.pl'],
           ['perl', '-V', './adapter.pl'],
           ['perl', '-h', './adapter.pl'],
+          ['perl5.36', '-e', 'print 1'],
+          ['perl5.36', '-v', './adapter.pl'],
           ['ruby', '-e', 'puts 1'],
           ['ruby', '-r./preload.rb', './adapter.rb'],
           ['ruby', '-c', './adapter.rb'],
           ['ruby', '--version', './adapter.rb'],
           ['ruby', '--help', './adapter.rb'],
+          ['ruby3.2', '-e', 'puts 1'],
+          ['ruby3.2', '-c', './adapter.rb'],
           ['env', 'RUBYOPT=-r./preload.rb', 'ruby', './adapter.rb'],
           ['Rscript', '-e', 'cat("preload")', './adapter.R'],
+          ['Rscript', '--version', './adapter.R'],
+          ['Rscript', '--help', './adapter.R'],
+          ['Rscript', '-', './adapter.R'],
           ['php', '-r', 'echo 1;'],
           ['php', '-B', 'echo 1;', './adapter.php'],
           ['php', '-d', 'auto_prepend_file=./preload.php', './adapter.php'],
@@ -650,10 +691,16 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
           ['php', '-l', './adapter.php'],
           ['php', '-v', './adapter.php'],
           ['php', '-S', '127.0.0.1:0', './adapter.php'],
+          ['php8.2', '-r', 'echo 1;'],
+          ['php8.2', '-v', './adapter.php'],
           ['env', 'PHPRC=./php-ini-dir', 'php', './adapter.php'],
           ['env', 'PHP_INI_SCAN_DIR=./php-ini-scan-dir', 'php', './adapter.php'],
           ['lua', '-e', 'print(1)'],
           ['lua', '-l', 'preload', './adapter.lua'],
+          ['lua', '-v', './adapter.lua'],
+          ['lua', '-', './adapter.lua'],
+          ['lua5.4', '-e', 'print(1)'],
+          ['lua5.4', '-v', './adapter.lua'],
           ['env', 'LUA_INIT=@./preload.lua', 'lua', './adapter.lua'],
           ['npx', 'unchecked-package'],
           ['npm', 'exec', 'unchecked-package'],

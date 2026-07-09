@@ -4,7 +4,7 @@ import { closeSync, openSync, readSync } from 'node:fs';
 import path from 'node:path';
 
 import { receiverLocalEffectContext } from '../core/effect_context.mjs';
-import { assertBytes, fail, fromUtf8 } from '../core/store.mjs';
+import { assertBytes, fail, fromUtf8, stableJson } from '../core/store.mjs';
 
 export const CapabilitySidecarCommand = Object.freeze({
   manifest: 'manifest',
@@ -260,9 +260,21 @@ export class CapabilitySidecarConformance {
   async run() {
     const sidecar = new CapabilitySidecar({ command: this.command, cwd: this.cwd });
     const manifest = await sidecar.manifest();
+    const results = [];
+    for (const vector of this.vectors) {
+      const command = vector?.command;
+      if (!COMMANDS.has(command)) fail('ERR_CAPABILITY_SIDECAR_CONFORMANCE_VECTOR_INVALID');
+      const response = await sidecar.request(command, vector.payload ?? {});
+      if (response.command !== command) fail('ERR_CAPABILITY_SIDECAR_CONFORMANCE_VECTOR_FAILED');
+      if (vector.expectedPayload != null && stableJson(response.payload) !== stableJson(vector.expectedPayload)) {
+        fail('ERR_CAPABILITY_SIDECAR_CONFORMANCE_VECTOR_FAILED');
+      }
+      results.push(Object.freeze({ command, accepted: true }));
+    }
     return Object.freeze({
       manifest,
       vectorCount: this.vectors.length,
+      vectors: Object.freeze(results),
       sidecarOutputTrusted: false,
       worldAuthoredEvidence: false,
     });
@@ -857,7 +869,7 @@ function assertSupportedDenoRuntimeCommand(argv) {
 }
 
 function assertSupportedNonJavaScriptRuntimeCommand(argv) {
-  const runtime = commandBaseName(argv[0]);
+  const runtime = nonJavaScriptRuntimeName(commandBaseName(argv[0]));
   if (!nonJavaScriptRuntimeSupportsInlineEval(runtime)) return;
   for (let index = 1; index < argv.length; index += 1) {
     const value = argv[index];
@@ -878,7 +890,7 @@ function assertSupportedNonJavaScriptRuntimeCommand(argv) {
 }
 
 function assertSupportedNonJavaScriptShebangRuntimeCommand(argv) {
-  const runtime = commandBaseName(argv[0]);
+  const runtime = nonJavaScriptRuntimeName(commandBaseName(argv[0]));
   if (!nonJavaScriptRuntimeSupportsInlineEval(runtime)) return;
   for (let index = 1; index < argv.length; index += 1) {
     const value = argv[index];
@@ -918,11 +930,22 @@ function assertNoPackageManagerCommand(argv, cwd = undefined, searchPath = undef
 }
 
 function nonJavaScriptRuntimeSupportsInlineEval(runtime) {
+  runtime = nonJavaScriptRuntimeName(runtime);
   return /^python(?:\d+(?:\.\d+)*)?$/.test(runtime) || /^pypy(?:\d+)?$/.test(runtime) ||
     NON_JS_INLINE_EVAL_RUNTIMES.has(runtime);
 }
 
+function nonJavaScriptRuntimeName(runtime) {
+  if (/^php\d+(?:\.\d+)*$/.test(runtime)) return 'php';
+  if (/^ruby\d+(?:\.\d+)*$/.test(runtime)) return 'ruby';
+  if (/^perl\d+(?:\.\d+)*$/.test(runtime)) return 'perl';
+  if (/^lua\d+(?:\.\d+)*$/.test(runtime)) return 'lua';
+  if (/^luajit\d+(?:\.\d+)*$/.test(runtime)) return 'luajit';
+  return runtime;
+}
+
 function unsupportedNonJavaScriptRuntimeOption(runtime, value) {
+  runtime = nonJavaScriptRuntimeName(runtime);
   if (/^python(?:\d+(?:\.\d+)*)?$/.test(runtime) || /^pypy(?:\d+)?$/.test(runtime)) {
     return value === '-c' || value.startsWith('-c') || value === '-m' || value.startsWith('-m') ||
       value === '-h' || value === '--help' || value === '-V' || value === '--version';
@@ -939,12 +962,14 @@ function unsupportedNonJavaScriptRuntimeOption(runtime, value) {
       value === '-S' || value.startsWith('-S');
   }
   if (runtime === 'lua' || runtime === 'luajit') {
-    return value === '-e' || value.startsWith('-e') || value === '-l' || value.startsWith('-l');
+    return value === '-e' || value.startsWith('-e') || value === '-l' || value.startsWith('-l') ||
+      value === '-v' || value === '--version' || value === '-h' || value === '--help' || value === '-';
   }
   if (runtime === 'ruby' || runtime === 'rscript') {
     return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=') ||
       value === '-r' || value.startsWith('-r') ||
-      (runtime === 'ruby' && (value === '-c' || value.startsWith('-c') || value === '-v' || value === '--version' || value === '-h' || value === '--help'));
+      (runtime === 'ruby' && (value === '-c' || value.startsWith('-c') || value === '-v' || value === '--version' || value === '-h' || value === '--help')) ||
+      (runtime === 'rscript' && (value === '--version' || value === '--help' || value === '-'));
   }
   if (runtime === 'perl') {
     return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=') ||
@@ -1148,7 +1173,11 @@ function unsupportedSidecarPreloadEnvKey(key) {
     normalized === 'LUA_INIT' ||
     normalized.startsWith('LUA_INIT_') ||
     normalized === 'PHPRC' ||
-    normalized === 'PHP_INI_SCAN_DIR';
+    normalized === 'PHP_INI_SCAN_DIR' ||
+    normalized === 'R_PROFILE' ||
+    normalized === 'R_PROFILE_USER' ||
+    normalized === 'R_ENVIRON' ||
+    normalized === 'R_ENVIRON_USER';
 }
 
 function sidecarPath() {
