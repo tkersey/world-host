@@ -1301,6 +1301,27 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('rejects a symlinked capability-packs container during proof script', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-packs-container-symlink-'));
+    const realPacks = path.join(root, 'real-capability-packs');
+    const linkedPacks = path.join(root, 'capability-packs');
+    try {
+      await mkdir(realPacks, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), path.join(realPacks, 'capability-pack-v0.2-fixture'), { recursive: true });
+      await symlink(realPacks, linkedPacks);
+
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ROOT_UNSAFE:/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('rejects stale capability conformance receipts during CLI check-pack', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-conformance-'));
     const pack = path.join(root, 'capability-pack-v0.2-fixture');
@@ -1945,6 +1966,171 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.notEqual(result.status, 0);
       assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED/);
       assert.doesNotMatch(`${result.stdout}${result.stderr}`, /network sidecar command should not run/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('probes each advertised trusted capability pack route', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-multi-route-probe-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('multi-route-probe'),
+      })).toString('base64');
+      const adapterBytes = fromUtf8(`
+        const resolutionInputBytes = new Uint8Array(Buffer.from('${validResolutionBase64}', 'base64'));
+        export class CapabilityDriver {
+          constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
+          manifest() {
+            return {
+              driverId: 'multi-route-probe',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: ['fixture:agent-model', 'http:json'],
+              supportedDescriptorFingerprints: ['descriptor:fixture-agent-model', 'descriptor:http-json'],
+              supportedActuationClasses: ['model', 'http'],
+              supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'idempotent',
+              concurrencyLimit: 1,
+              authorityLabels: ['model:fixture-agent', 'network:http'],
+              diagnostics: {
+                origins: ['https://example.invalid'],
+                methods: ['POST'],
+                configuredEndpointUrl: 'https://example.invalid/decide',
+                configuredOrigin: 'https://example.invalid',
+                defaultMethod: 'POST'
+              }
+            };
+          }
+          preflight(context, hostRequest) {
+            if (hostRequest.actuatorRef === 'fixture:agent-model' && hostRequest.actuationClass === 'http') {
+              return { accepted: false, blockers: ['unprobed-cross-route'] };
+            }
+            return { accepted: true, blockers: [] };
+          }
+          dryRun() { return { wouldInvoke: false }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          resolve() { return { resolutionInputBytes }; }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      Object.assign(manifest, {
+        driverId: 'multi-route-probe',
+        supportedActuatorRefs: ['fixture:agent-model', 'http:json'],
+        supportedDescriptorFingerprints: ['descriptor:fixture-agent-model', 'descriptor:http-json'],
+        supportedActuationClasses: ['model', 'http'],
+        supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+        recoveryClass: 'idempotent',
+        authorityLabels: ['model:fixture-agent', 'network:http'],
+        policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
+        conformanceCorpusFingerprint: null,
+        conformanceReceiptFingerprint: null,
+      });
+      manifest.checksums = manifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
+        .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        (error) => {
+          assert.equal(error.code, 'ERR_CAPABILITY_PACK_ADAPTER_PREFLIGHT');
+          assert.deepEqual(error.details?.blockers, ['unprobed-cross-route']);
+          return true;
+        },
+      );
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /unprobed-cross-route/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects trusted capability pack adapters with no advertised probe routes', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-empty-probe-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const adapterBytes = fromUtf8(`
+        export class CapabilityDriver {
+          constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
+          manifest() {
+            return {
+              driverId: 'empty-probe-routes',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: [],
+              supportedDescriptorFingerprints: [],
+              supportedActuationClasses: [],
+              supportedResponseStatuses: ['ok'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'pure',
+              concurrencyLimit: 1,
+              authorityLabels: []
+            };
+          }
+          preflight() { return { accepted: true, blockers: [] }; }
+          dryRun() { return { wouldInvoke: false }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          resolve() { return { resolutionInputBytes: new Uint8Array() }; }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      Object.assign(manifest, {
+        driverId: 'empty-probe-routes',
+        supportedActuatorRefs: [],
+        supportedDescriptorFingerprints: [],
+        supportedActuationClasses: [],
+        supportedResponseStatuses: ['ok'],
+        authorityLabels: [],
+        conformanceCorpusFingerprint: null,
+        conformanceReceiptFingerprint: null,
+      });
+      manifest.checksums = manifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
+        .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_PREFLIGHT' },
+      );
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /requires at least one advertised capability route/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -3554,7 +3740,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       await mkdir(packs, { recursive: true });
       await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
       await rm(path.join(pack, 'conformance.json'));
-      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+      const validModelResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
         targetHostRequestFingerprint: 0xabcn,
         status: 0,
         responseValueImageBytes: fromUtf8('probe-response'),
@@ -3562,14 +3748,27 @@ describe('migration, branching, and CLI diagnostics', () => {
         attemptNumber: 1,
         metadata: fromUtf8('selected-class-adapter'),
       })).toString('base64');
+      const validHttpResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabdn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-http-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('selected-http-class-adapter'),
+      })).toString('base64');
       const adapterBytes = fromUtf8(`
         function decodedBytes(value) {
           return new TextDecoder().decode(value ?? new Uint8Array());
         }
-        const resolutionInputBytes = new Uint8Array(Buffer.from('${validResolutionBase64}', 'base64'));
+        const modelResolutionInputBytes = new Uint8Array(Buffer.from('${validModelResolutionBase64}', 'base64'));
+        const httpResolutionInputBytes = new Uint8Array(Buffer.from('${validHttpResolutionBase64}', 'base64'));
         function modelProbe(hostRequest) {
           return hostRequest?.actuationClass === 'model' &&
             decodedBytes(hostRequest?.requestBytes).includes('boundary.Agent.DecisionPrompt.v0');
+        }
+        function httpProbe(hostRequest) {
+          return hostRequest?.actuationClass === 'http' &&
+            decodedBytes(hostRequest?.requestBytes).includes('worldHostCapabilityPackAbiProbe');
         }
         export class CapabilityDriver {
           constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
@@ -3589,16 +3788,16 @@ describe('migration, branching, and CLI diagnostics', () => {
             };
           }
           preflight(context, hostRequest) {
-            return modelProbe(hostRequest)
+            return modelProbe(hostRequest) || httpProbe(hostRequest)
               ? { accepted: true, blockers: [] }
               : { accepted: false, blockers: ['selected-class-probe-mismatch'] };
           }
           dryRun() { return { wouldInvoke: false }; }
           shadow() { return { liveInvoked: false, schemaAccepted: false }; }
           resolve(context, hostRequest) {
-            return modelProbe(hostRequest)
-              ? { resolutionInputBytes }
-              : { resolutionInputBytes: new Uint8Array() };
+            if (modelProbe(hostRequest)) return { resolutionInputBytes: modelResolutionInputBytes };
+            if (httpProbe(hostRequest)) return { resolutionInputBytes: httpResolutionInputBytes };
+            return { resolutionInputBytes: new Uint8Array() };
           }
           recover() { return { operatorInterventionRequired: true }; }
         }

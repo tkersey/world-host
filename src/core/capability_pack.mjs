@@ -1102,7 +1102,7 @@ function assertNoArtifactCredentialMaterial(artifactPath, bytes) {
 }
 
 function textArtifactPath(artifactPath) {
-  return /\.(?:c?m?js|[cm]?ts|tsx|jsx|jsonc?|md|txt|ya?ml|toml|ini|conf|cfg|env|pem|crt|cer|key|sh|bash|zsh|fish|py|rb|pl)$/i.test(artifactPath) ||
+  return /\.(?:c?m?js|[cm]?ts|tsx|jsx|jsonc?|md|txt|ya?ml|toml|ini|conf|cfg|env|pem|crt|cer|key|sh|bash|zsh|fish|py|rb|pl|php|lua|r)$/i.test(artifactPath) ||
     /(?:^|[/\\])\.env(?:\.[A-Za-z0-9._-]+)?$/i.test(artifactPath);
 }
 
@@ -2709,6 +2709,9 @@ function assertSafeSidecarCommandToken(command, index) {
   if (sidecarUnsupportedDenoRuntimeOption(command, index)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `Deno sidecars do not support this runtime option before the entrypoint: ${value}`);
   }
+  if (sidecarUnsupportedPhpRuntimeOption(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `PHP sidecars do not support this runtime option before the entrypoint: ${value}`);
+  }
   if (index === 0 && SIDECAR_RUNTIME_WRAPPERS.has(executable)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command wraps runtime execution outside checksum coverage: ${value}`);
   }
@@ -3011,6 +3014,48 @@ function sidecarInlineEvalFlag(runtime, value) {
   if (runtime === 'php') return value === '-r' || value.startsWith('-r');
   return value === '-e' || value === '--eval' || value === '-p' || value === '--print' ||
     value.startsWith('-e') || value.startsWith('-p') || value.startsWith('--eval=') || value.startsWith('--print=');
+}
+
+function sidecarUnsupportedPhpRuntimeOption(command, index) {
+  const runtime = phpRuntimeName(commandBaseName(command[0]).toLowerCase());
+  if (runtime !== 'php' || index < 1) return false;
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  if (entrypointIndex >= 0 && index > entrypointIndex) return false;
+  return unsupportedPhpRuntimeOption(command[index]);
+}
+
+function phpRuntimeName(runtime) {
+  return /^php\d+(?:\.\d+)*$/.test(runtime) ? 'php' : runtime;
+}
+
+function unsupportedPhpRuntimeOption(value) {
+  if (typeof value !== 'string') return false;
+  const option = value.includes('=') ? value.slice(0, value.indexOf('=')) : value;
+  return value === '-?' ||
+    value === '-r' || value.startsWith('-r') ||
+    value === '-B' || value.startsWith('-B') ||
+    value === '-R' || value.startsWith('-R') ||
+    value === '-E' || value.startsWith('-E') ||
+    value === '-d' || value.startsWith('-d') ||
+    value === '-c' || value.startsWith('-c') ||
+    value === '-l' || value.startsWith('-l') ||
+    ['-a', '-h', '-i', '-m', '-s', '-w'].some((prefix) => value === prefix || value.startsWith(prefix)) ||
+    value === '-v' || value === '--version' ||
+    value === '-S' || value.startsWith('-S') ||
+    [
+      '--help',
+      '--info',
+      '--ini',
+      '--interactive',
+      '--modules',
+      '--ri',
+      '--rc',
+      '--re',
+      '--rf',
+      '--rz',
+      '--strip',
+      '--syntax-highlight',
+    ].includes(option);
 }
 
 function sidecarRuntimeRemoteEntrypoint(command, index) {

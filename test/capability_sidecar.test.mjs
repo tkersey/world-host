@@ -154,6 +154,20 @@ describe('Capability sidecar transport', () => {
         () => new CapabilitySidecar({ command: [sidecarPath] }),
         { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
       );
+      for (const command of [
+        ['php', '-a', './adapter.php'],
+        ['php', '-d', 'memory_limit=128M', './adapter.php'],
+        ['php', '-i', './adapter.php'],
+        ['php', '-m', './adapter.php'],
+        ['php', '-s', './adapter.php'],
+        ['php', '-w', './adapter.php'],
+        ['php', '--ini', './adapter.php'],
+      ]) {
+        assert.throws(
+          () => new CapabilitySidecar({ command }),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+      }
       const sidecar = new CapabilitySidecar({ command: [process.execPath, sidecarPath], timeoutMs: 1000 });
       assert.equal((await sidecar.request(CapabilitySidecarCommand.manifest)).payload.driverId, 'fixture-sidecar');
       assert.equal((await sidecar.manifest()).driverId, 'fixture-sidecar');

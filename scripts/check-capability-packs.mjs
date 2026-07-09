@@ -12,7 +12,8 @@ import {
 
 const trustedExecuteAdapters = process.argv.includes('--trusted-execute-adapters');
 const root = path.resolve('capability-packs');
-const names = (await readdir(root).catch(() => [])).filter((name) => name.startsWith('capability-pack-v0.2-')).sort();
+const safeRoot = await safePacksRoot(root);
+const names = safeRoot == null ? [] : (await readdir(safeRoot)).filter((name) => name.startsWith('capability-pack-v0.2-')).sort();
 if (!names.length) {
   console.error('no capability packs found');
   process.exit(1);
@@ -48,6 +49,19 @@ for (const name of names) {
 }
 
 console.log(JSON.stringify({ capabilityPacks: results, status: 'passed' }, null, 2));
+
+async function safePacksRoot(rootPath) {
+  let info;
+  try {
+    info = await lstat(rootPath);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+  if (info.isSymbolicLink()) throw new Error(`ERR_CAPABILITY_PACK_ROOT_UNSAFE:${rootPath}`);
+  if (!info.isDirectory()) throw new Error(`ERR_CAPABILITY_PACK_ROOT_INVALID:${rootPath}`);
+  return rootPath;
+}
 
 async function readPackFile(packRoot, relativePath, encoding = null) {
   const rootPath = await safePackRoot(packRoot);

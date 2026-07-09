@@ -359,7 +359,13 @@ async function capabilityPackSidecarManifest(sidecarDriver, packManifest) {
 }
 
 async function assertCapabilityPackAdapterProbe(packManifest, capabilityDriver, driverManifest, { driver, sidecar = false, probeNetwork = null } = {}) {
-  const hostRequest = capabilityPackSidecarProbeHostRequest(driverManifest);
+  const hostRequests = capabilityPackSidecarProbeHostRequests(driverManifest);
+  for (const hostRequest of hostRequests) {
+    await assertCapabilityPackAdapterProbeRequest(packManifest, capabilityDriver, driverManifest, hostRequest, { driver, sidecar, probeNetwork });
+  }
+}
+
+async function assertCapabilityPackAdapterProbeRequest(packManifest, capabilityDriver, driverManifest, hostRequest, { driver, sidecar = false, probeNetwork = null } = {}) {
   const policy = capabilityPackSidecarProbePolicy(driverManifest, hostRequest);
   const context = { worldHostCapabilityPackAbiProbe: true, policy };
   if (sidecar && externalCapabilityPackEffectProbe(driverManifest, hostRequest)) {
@@ -998,17 +1004,41 @@ function parseProbeJson(bytes) {
   }
 }
 
-function capabilityPackSidecarProbeHostRequest(driverManifest) {
-  const actuationClass = driverManifest.supportedActuationClasses[0];
+function capabilityPackSidecarProbeHostRequests(driverManifest) {
+  const actuatorRefs = driverManifest.supportedActuatorRefs;
+  const descriptorFingerprints = driverManifest.supportedDescriptorFingerprints;
+  const actuationClasses = driverManifest.supportedActuationClasses;
+  if (actuatorRefs.length < 1 || descriptorFingerprints.length < 1 || actuationClasses.length < 1) {
+    fail('ERR_CAPABILITY_PACK_ADAPTER_PREFLIGHT', 'capability pack adapter ABI probe requires at least one advertised capability route');
+  }
+  const hostRequests = [];
+  for (const actuatorRef of actuatorRefs) {
+    for (const descriptorFingerprint of descriptorFingerprints) {
+      for (const actuationClass of actuationClasses) {
+        hostRequests.push(capabilityPackSidecarProbeHostRequest({
+          driverManifest,
+          actuatorRef,
+          descriptorFingerprint,
+          actuationClass,
+          index: hostRequests.length,
+        }));
+      }
+    }
+  }
+  return hostRequests;
+}
+
+function capabilityPackSidecarProbeHostRequest({ driverManifest, actuatorRef, descriptorFingerprint, actuationClass, index }) {
+  const targetFingerprint = (0xabcn + BigInt(index)).toString(16).padStart(16, '0');
   const requestBytes = capabilityPackSidecarProbeRequestBytes(driverManifest, actuationClass);
   return Object.freeze({
-    actuatorRef: driverManifest.supportedActuatorRefs[0],
-    descriptorFingerprint: driverManifest.supportedDescriptorFingerprints[0],
+    actuatorRef,
+    descriptorFingerprint,
     actuationClass,
-    idempotencyKeyBytes: fromUtf8('world-host-capability-pack-sidecar-abi-probe-key'),
-    idempotencyKeyWorldFingerprint: 'world:idempotency-key:world-host-capability-pack-sidecar-abi-probe',
+    idempotencyKeyBytes: fromUtf8(`world-host-capability-pack-sidecar-abi-probe-key:${index}`),
+    idempotencyKeyWorldFingerprint: `world:idempotency-key:world-host-capability-pack-sidecar-abi-probe:${index}`,
     requestBytes,
-    hostRequestFingerprint: 'world:host-request:0000000000000abc',
+    hostRequestFingerprint: `world:host-request:${targetFingerprint}`,
   });
 }
 

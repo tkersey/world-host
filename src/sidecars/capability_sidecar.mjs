@@ -172,6 +172,7 @@ export class CapabilitySidecar {
     if (pathQualifiedSidecarRuntime(command[0])) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar runtime commands must not be path-qualified');
     }
+    assertSupportedNonJavaScriptRuntimeCommand(command);
     this.command = Object.freeze([...command]);
     this.cwd = cwd == null ? undefined : path.resolve(cwd);
     this.timeoutMs = timeoutMs;
@@ -1003,6 +1004,14 @@ function unsupportedNonJavaScriptRuntimeOption(runtime, value) {
       value === '-d' || value.startsWith('-d') ||
       value === '-c' || value.startsWith('-c') ||
       value === '-l' || value.startsWith('-l') ||
+      value === '-?' ||
+      value === '-a' || value.startsWith('-a') ||
+      value === '-h' || value.startsWith('-h') ||
+      value === '-i' || value.startsWith('-i') ||
+      value === '-m' || value.startsWith('-m') ||
+      value === '-s' || value.startsWith('-s') ||
+      value === '-w' || value.startsWith('-w') ||
+      unsupportedPhpLongRuntimeOption(value) ||
       value === '-v' || value === '--version' ||
       value === '-S' || value.startsWith('-S');
   }
@@ -1023,6 +1032,24 @@ function unsupportedNonJavaScriptRuntimeOption(runtime, value) {
       value === '-v' || value.startsWith('-V') || value === '-h' || value === '--help';
   }
   return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=');
+}
+
+function unsupportedPhpLongRuntimeOption(value) {
+  const option = value.includes('=') ? value.slice(0, value.indexOf('=')) : value;
+  return [
+    '--help',
+    '--info',
+    '--ini',
+    '--interactive',
+    '--modules',
+    '--ri',
+    '--rc',
+    '--re',
+    '--rf',
+    '--rz',
+    '--strip',
+    '--syntax-highlight',
+  ].includes(option);
 }
 
 function nonJavaScriptRuntimeOptionConsumesNext(runtime, value) {

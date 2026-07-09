@@ -3072,6 +3072,25 @@ describe('Capability Plane v0.2 core contracts', () => {
         { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
       );
     }
+    for (const command of [
+      ['php', '-a', './adapter.php'],
+      ['php', '-d', 'memory_limit=128M', './adapter.php'],
+      ['php', '-i', './adapter.php'],
+      ['php', '-m', './adapter.php'],
+      ['php', '-s', './adapter.php'],
+      ['php', '-w', './adapter.php'],
+      ['php', '--ini', './adapter.php'],
+    ]) {
+      await assert.rejects(
+        () => assertCapabilityPackChecksums({
+          ...manifest,
+          adapter: { kind: 'sidecar', command },
+          docs: [],
+          checksums: [{ path: './adapter.php', checksum: sidecarChecksum }],
+        }, { './adapter.php': sidecar }),
+        { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+      );
+    }
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
@@ -3329,6 +3348,22 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, { './sidecar.sh': prefixedTokenSidecar }),
       { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
     );
+    const adapterChecksum = `sha256:${await sha256Hex(artifact)}`;
+    for (const artifactPath of ['docs/example.php', 'scripts/example.lua', 'analysis/example.R']) {
+      const secretTextArtifact = fromUtf8('Authorization: Bearer sk-artifact-secret-value\n');
+      const secretTextArtifactChecksum = `sha256:${await sha256Hex(secretTextArtifact)}`;
+      await assert.rejects(
+        () => assertCapabilityPackChecksums({
+          ...manifest,
+          docs: [],
+          checksums: [
+            { path: 'adapter.mjs', checksum: adapterChecksum },
+            { path: artifactPath, checksum: secretTextArtifactChecksum },
+          ],
+        }, { 'adapter.mjs': artifact, [artifactPath]: secretTextArtifact }),
+        { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
+      );
+    }
     assert.throws(
       () => assertCapabilityManifest({ ...manifest, extra: 'sk-raw-manifest-secret' }),
       { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
