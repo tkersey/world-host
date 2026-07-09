@@ -4228,6 +4228,23 @@ describe('Capability Plane v0.2 core contracts', () => {
       });
       assert.equal(methodOnlyResult.code, 0, methodOnlyResult.stderr || methodOnlyResult.stdout);
       assert.equal(await Bun.file(methodPath).text(), 'GET');
+      const destructiveConfig = path.join(root, 'destructive.json');
+      await writeFile(destructiveConfig, JSON.stringify({ endpointUrl, idempotencyKey: 'destructive-live-smoke-key', body: { ok: true }, methods: ['DELETE'] }));
+      const destructiveResult = await runBunProcess([
+        process.execPath,
+        '--preload',
+        preload,
+        'scripts/run-live-capability-smoke.mjs',
+        '--config',
+        destructiveConfig,
+        '--secret-provider',
+        'env',
+        '--allow-origin',
+        'https://allowed.example',
+        '--live',
+      ], { env: { ...process.env, WORLD_HOST_LIVE_SMOKE: '1', WORLD_HOST_TEST_FETCH_HEADER_FILE: headerPath, WORLD_HOST_TEST_FETCH_STATUS: '200' } });
+      assert.notEqual(destructiveResult.code, 0);
+      assert.match(destructiveResult.stderr, /ERR_LIVE_SMOKE_DESTRUCTIVE_REQUIRES_OPT_IN/);
       const failingResult = await runBunProcess([
         process.execPath,
         '--preload',

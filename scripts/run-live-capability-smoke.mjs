@@ -18,16 +18,19 @@ const secretProviderName = valueAfter('--secret-provider');
 const allowOrigin = valueAfter('--allow-origin');
 const live = process.argv.includes('--live');
 const allowDestructive = process.argv.includes('--allow-destructive');
+const safeLiveSmokeMethods = new Set(['GET', 'HEAD', 'OPTIONS', 'TRACE']);
 
 if (!configPath) throw new Error('ERR_LIVE_SMOKE_CONFIG_REQUIRED');
 if (!secretProviderName) throw new Error('ERR_LIVE_SMOKE_SECRET_PROVIDER_REQUIRED');
 if (!allowOrigin) throw new Error('ERR_LIVE_SMOKE_ALLOWLIST_REQUIRED');
 
 const config = JSON.parse(await readFile(configPath, 'utf8'));
-if (config.destructive === true && !allowDestructive) throw new Error('ERR_LIVE_SMOKE_DESTRUCTIVE_REQUIRES_OPT_IN');
+const configuredMethods = liveSmokeConfiguredMethods(config);
+if ((config.destructive === true || (live && liveSmokeUsesUnsafeMethod(configuredMethods, config.method))) && !allowDestructive) {
+  throw new Error('ERR_LIVE_SMOKE_DESTRUCTIVE_REQUIRES_OPT_IN');
+}
 if (secretProviderName !== 'env') throw new Error('ERR_LIVE_SMOKE_SECRET_PROVIDER_UNSUPPORTED');
 
-const configuredMethods = config.methods ?? [config.method ?? 'POST'];
 const driver = new GenericHttpJsonCapabilityDriver({
   endpointUrl: config.endpointUrl,
   origins: [allowOrigin],
@@ -88,4 +91,19 @@ function summarizeLiveResult(result) {
 
 function byteCount(value) {
   return value instanceof Uint8Array ? { byteLength: value.byteLength } : null;
+}
+
+function liveSmokeConfiguredMethods(config) {
+  if (Array.isArray(config.methods)) return config.methods;
+  if (config.methods != null) return [config.methods];
+  return [config.method ?? 'POST'];
+}
+
+function liveSmokeUsesUnsafeMethod(configuredMethods, requestMethod) {
+  const methods = new Set([...configuredMethods, requestMethod].filter((method) => method != null).map((method) => String(method).toUpperCase()));
+  if (methods.size === 0) methods.add('POST');
+  for (const method of methods) {
+    if (!safeLiveSmokeMethods.has(method)) return true;
+  }
+  return false;
 }
