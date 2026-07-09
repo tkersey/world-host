@@ -726,6 +726,8 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
           ['deno', '--no-config', 'task', 'start', './sidecar.ts'],
           ['deno', 'run', '--allow-read=.', dotenvPath],
           ['deno', 'run', '-A', dotenvPath],
+          ['bun'],
+          ['bun', '--'],
           ['python3'],
           ['python3', '--'],
           ['python3', '-c', 'print(1)'],

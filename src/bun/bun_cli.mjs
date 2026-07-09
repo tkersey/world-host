@@ -368,6 +368,8 @@ async function assertCapabilityPackAdapterProbe(packManifest, capabilityDriver, 
 async function assertCapabilityPackAdapterProbeRequest(packManifest, capabilityDriver, driverManifest, hostRequest, { driver, sidecar = false, probeNetwork = null } = {}) {
   const policy = capabilityPackSidecarProbePolicy(driverManifest, hostRequest);
   const context = { worldHostCapabilityPackAbiProbe: true, policy };
+  probeNetwork?.setProbeHostRequest?.(hostRequest);
+  probeNetwork?.setProbePolicy(policy);
   if (sidecar && externalCapabilityPackEffectProbe(driverManifest, hostRequest)) {
     fail('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED', 'network sidecar probes must not perform live external effects');
   }
@@ -469,6 +471,8 @@ async function withDeterministicCapabilityPackProbeNetwork(driverManifest, hostR
       clearInterval: globalThis.clearInterval,
       setImmediate: globalThis.setImmediate,
       clearImmediate: globalThis.clearImmediate,
+      bunFile: globalThis.Bun?.file,
+      bunWrite: globalThis.Bun?.write,
       bunSleep: globalThis.Bun?.sleep,
       promiseResolve: globalThis.Promise?.resolve,
       queueMicrotask: globalThis.queueMicrotask,
@@ -483,17 +487,41 @@ async function withDeterministicCapabilityPackProbeNetwork(driverManifest, hostR
       clearInterval: Object.prototype.hasOwnProperty.call(globalThis, 'clearInterval'),
       setImmediate: Object.prototype.hasOwnProperty.call(globalThis, 'setImmediate'),
       clearImmediate: Object.prototype.hasOwnProperty.call(globalThis, 'clearImmediate'),
+      bunFile: globalThis.Bun != null && Object.prototype.hasOwnProperty.call(globalThis.Bun, 'file'),
+      bunWrite: globalThis.Bun != null && Object.prototype.hasOwnProperty.call(globalThis.Bun, 'write'),
       bunSleep: globalThis.Bun != null && Object.prototype.hasOwnProperty.call(globalThis.Bun, 'sleep'),
       promiseResolve: globalThis.Promise != null && Object.prototype.hasOwnProperty.call(globalThis.Promise, 'resolve'),
       queueMicrotask: Object.prototype.hasOwnProperty.call(globalThis, 'queueMicrotask'),
     };
-    const deterministicFetch = async () => new Response(stableJson({ worldHostCapabilityPackAbiProbe: true }), {
-      status: 200,
-      headers: {
-        'content-type': 'application/json',
-        'x-request-id': 'world-host-capability-pack-abi-probe',
-      },
-    });
+    let activeProbeResponseStatus = null;
+    const deterministicFetch = async (input, init = {}) => {
+      deterministicNetwork.assertHttpAllowed('fetch', input, init?.method ?? input?.method ?? 'GET');
+      if (activeProbeResponseStatus === 'http_error') {
+        return new Response('', {
+          status: 503,
+          headers: { 'x-request-id': 'world-host-capability-pack-abi-probe' },
+        });
+      }
+      if (activeProbeResponseStatus === 'failed') {
+        return new Response('not-json', {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'x-request-id': 'world-host-capability-pack-abi-probe',
+          },
+        });
+      }
+      if (activeProbeResponseStatus === 'deferred') {
+        throw Object.assign(new Error('world-host deterministic probe timeout'), { name: 'AbortError' });
+      }
+      return new Response(stableJson({ worldHostCapabilityPackAbiProbe: true }), {
+        status: 200,
+        headers: {
+          'content-type': 'application/json',
+          'x-request-id': 'world-host-capability-pack-abi-probe',
+        },
+      });
+    };
     const deterministicNetwork = deterministicCapabilityPackProbeNetwork({
       fetch: deterministicFetch,
       setTimeout: previousGlobals.setTimeout.bind(globalThis),
@@ -502,6 +530,8 @@ async function withDeterministicCapabilityPackProbeNetwork(driverManifest, hostR
       clearInterval: previousGlobals.clearInterval.bind(globalThis),
       setImmediate: typeof previousGlobals.setImmediate === 'function' ? previousGlobals.setImmediate.bind(globalThis) : null,
       clearImmediate: typeof previousGlobals.clearImmediate === 'function' ? previousGlobals.clearImmediate.bind(globalThis) : null,
+      file: typeof previousGlobals.bunFile === 'function' ? previousGlobals.bunFile.bind(globalThis.Bun) : null,
+      write: typeof previousGlobals.bunWrite === 'function' ? previousGlobals.bunWrite.bind(globalThis.Bun) : null,
       sleep: typeof previousGlobals.bunSleep === 'function' ? previousGlobals.bunSleep.bind(globalThis.Bun) : null,
       promiseResolve: previousGlobals.promiseResolve.bind(globalThis.Promise),
       queueMicrotask: previousGlobals.queueMicrotask.bind(globalThis),
@@ -510,6 +540,9 @@ async function withDeterministicCapabilityPackProbeNetwork(driverManifest, hostR
         `${api} is only supported during deterministic resolve/recover capability pack probes`,
       ),
     });
+    deterministicNetwork.setProbeHostRequest = (request) => {
+      activeProbeResponseStatus = request?.responseSchema?.status ?? null;
+    };
     globalThis.fetch = deterministicNetwork.fetch;
     if (hadGlobals.WebSocket) globalThis.WebSocket = deterministicNetwork.WebSocket;
     if (hadGlobals.EventSource) globalThis.EventSource = deterministicNetwork.EventSource;
@@ -519,6 +552,8 @@ async function withDeterministicCapabilityPackProbeNetwork(driverManifest, hostR
     globalThis.clearInterval = deterministicNetwork.clearInterval;
     if (typeof previousGlobals.setImmediate === 'function') globalThis.setImmediate = deterministicNetwork.setImmediate;
     if (typeof previousGlobals.clearImmediate === 'function') globalThis.clearImmediate = deterministicNetwork.clearImmediate;
+    if (globalThis.Bun && typeof previousGlobals.bunFile === 'function') globalThis.Bun.file = deterministicNetwork.file;
+    if (globalThis.Bun && typeof previousGlobals.bunWrite === 'function') globalThis.Bun.write = deterministicNetwork.write;
     if (globalThis.Bun && typeof previousGlobals.bunSleep === 'function') globalThis.Bun.sleep = deterministicNetwork.sleep;
     globalThis.Promise.resolve = deterministicNetwork.promiseResolve;
     globalThis.queueMicrotask = deterministicNetwork.queueMicrotask;
@@ -542,6 +577,8 @@ async function withDeterministicCapabilityPackProbeNetwork(driverManifest, hostR
         restoreCapabilityPackProbeGlobal('clearInterval', previousGlobals.clearInterval, hadGlobals.clearInterval);
         restoreCapabilityPackProbeGlobal('setImmediate', previousGlobals.setImmediate, hadGlobals.setImmediate);
         restoreCapabilityPackProbeGlobal('clearImmediate', previousGlobals.clearImmediate, hadGlobals.clearImmediate);
+        if (globalThis.Bun) restoreCapabilityPackProbeGlobalProperty(globalThis.Bun, 'file', previousGlobals.bunFile, hadGlobals.bunFile);
+        if (globalThis.Bun) restoreCapabilityPackProbeGlobalProperty(globalThis.Bun, 'write', previousGlobals.bunWrite, hadGlobals.bunWrite);
         if (globalThis.Bun) restoreCapabilityPackProbeGlobalProperty(globalThis.Bun, 'sleep', previousGlobals.bunSleep, hadGlobals.bunSleep);
         restoreCapabilityPackProbeGlobalProperty(globalThis.Promise, 'resolve', previousGlobals.promiseResolve, hadGlobals.promiseResolve);
         restoreCapabilityPackProbeGlobal('queueMicrotask', previousGlobals.queueMicrotask, hadGlobals.queueMicrotask);
@@ -566,10 +603,14 @@ async function withCapabilityPackProbeGlobalLock(fn) {
   }
 }
 
-function deterministicCapabilityPackProbeNetwork({ fetch, setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate, sleep, promiseResolve, queueMicrotask, failNetworkEffect }) {
+function deterministicCapabilityPackProbeNetwork({ fetch, setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate, file, write, sleep, promiseResolve, queueMicrotask, failNetworkEffect }) {
   let phase = 'capture';
   let phaseToken = 0;
   let networkAllowed = false;
+  let fileAllowed = false;
+  let allowedOrigins = new Set();
+  let allowedMethods = new Set();
+  let allowedFileRoots = [];
   let violations = [];
   const pendingTimeouts = new Set();
   const pendingIntervals = new Set();
@@ -580,6 +621,42 @@ function deterministicCapabilityPackProbeNetwork({ fetch, setTimeout, clearTimeo
     if (phase === 'closed' || phase === 'resolve-await' || phase === 'resolve-returned' ||
       phase === 'recover-await' || phase === 'recover-returned') return;
     failNetworkEffect(api);
+  };
+  const assertFileAllowed = (api, target) => {
+    if (((phase === 'resolve' || phase === 'recover') || asyncContinuationNetworkAllowedDepth > 0) && fileAllowed === true && fileProbeTargetAllowed(target, allowedFileRoots)) return;
+    violations.push(api);
+    if (phase === 'closed' || phase === 'resolve-await' || phase === 'resolve-returned' ||
+      phase === 'recover-await' || phase === 'recover-returned') return;
+    failNetworkEffect(api);
+  };
+  const assertHttpAllowed = (api, input, method) => {
+    assertAllowed(api);
+    let url;
+    try {
+      url = new URL(typeof input === 'string' || input instanceof URL ? input : input?.url);
+    } catch {
+      violations.push(`${api}:url`);
+      failNetworkEffect(api);
+    }
+    const normalizedMethod = String(method ?? 'GET').toUpperCase();
+    if ((allowedOrigins.size > 0 && !allowedOrigins.has(url.origin)) ||
+      (allowedMethods.size > 0 && !allowedMethods.has(normalizedMethod))) {
+      violations.push(`${api}:policy`);
+      failNetworkEffect(api);
+    }
+  };
+  const assertUrlOriginAllowed = (api, input) => {
+    let url;
+    try {
+      url = new URL(typeof input === 'string' || input instanceof URL ? input : input?.url);
+    } catch {
+      violations.push(`${api}:url`);
+      failNetworkEffect(api);
+    }
+    if (allowedOrigins.size > 0 && !allowedOrigins.has(url.origin)) {
+      violations.push(`${api}:policy`);
+      failNetworkEffect(api);
+    }
   };
   const cancelPendingTimers = () => {
     for (const timer of pendingTimeouts) clearTimeout(timer);
@@ -658,6 +735,7 @@ function deterministicCapabilityPackProbeNetwork({ fetch, setTimeout, clearTimeo
 
     constructor(url, protocols = '') {
       assertAllowed('WebSocket');
+      assertUrlOriginAllowed('WebSocket', url);
       this.url = String(url);
       this.protocol = Array.isArray(protocols) ? String(protocols[0] ?? '') : String(protocols ?? '');
       this.extensions = '';
@@ -686,6 +764,7 @@ function deterministicCapabilityPackProbeNetwork({ fetch, setTimeout, clearTimeo
 
     constructor(url) {
       assertAllowed('EventSource');
+      assertUrlOriginAllowed('EventSource', url);
       this.url = String(url);
       this.readyState = DeterministicEventSource.CLOSED;
       this.withCredentials = false;
@@ -705,10 +784,23 @@ function deterministicCapabilityPackProbeNetwork({ fetch, setTimeout, clearTimeo
     setNetworkAllowed(allowed) {
       networkAllowed = allowed === true;
     },
+    setProbePolicy(policy = {}) {
+      allowedOrigins = new Set((policy.allowedOrigins ?? policy.allowedHttpOrigins ?? []).map((origin) => {
+        try {
+          return new URL(origin).origin;
+        } catch {
+          return null;
+        }
+      }).filter(Boolean));
+      allowedMethods = new Set((policy.allowedMethods ?? policy.allowedHttpMethods ?? []).map((method) => String(method).toUpperCase()));
+      allowedFileRoots = [...(policy.allowedFileRoots ?? [])].filter((root) => typeof root === 'string' && root.length > 0);
+      fileAllowed = policy.allowFileEffects === true;
+    },
     setPhase(nextPhase) {
       phase = nextPhase;
       phaseToken += 1;
     },
+    assertHttpAllowed,
     allowReturnedPromise(value) {
       const state = trackedPromiseStates.get(value);
       if (state) {
@@ -740,6 +832,14 @@ function deterministicCapabilityPackProbeNetwork({ fetch, setTimeout, clearTimeo
     fetch: (...args) => {
       assertAllowed('fetch');
       return fetch(...args);
+    },
+    file: (target, options) => {
+      assertFileAllowed('Bun.file', target);
+      return file(target, options);
+    },
+    write: (target, data, options) => {
+      assertFileAllowed('Bun.write', target);
+      return write(target, data, options);
     },
     sleep: () => {
       assertAllowed('Bun.sleep');
@@ -892,6 +992,26 @@ function deterministicCapabilityPackProbeNetwork({ fetch, setTimeout, clearTimeo
   };
 }
 
+function fileProbeTargetAllowed(target, allowedFileRoots) {
+  if (allowedFileRoots.length === 0) return false;
+  let targetPath;
+  try {
+    if (target instanceof URL) {
+      if (target.protocol !== 'file:') return false;
+      targetPath = fileURLToPath(target);
+    } else {
+      targetPath = String(target);
+    }
+  } catch {
+    return false;
+  }
+  const resolvedTarget = path.resolve(targetPath);
+  return allowedFileRoots.some((root) => {
+    const resolvedRoot = path.resolve(root);
+    return resolvedTarget === resolvedRoot || pathInside(resolvedRoot, resolvedTarget);
+  });
+}
+
 function restoreCapabilityPackProbeGlobal(name, value, hadOwnProperty) {
   if (hadOwnProperty) {
     globalThis[name] = value;
@@ -1012,23 +1132,27 @@ function capabilityPackSidecarProbeHostRequests(driverManifest) {
     fail('ERR_CAPABILITY_PACK_ADAPTER_PREFLIGHT', 'capability pack adapter ABI probe requires at least one advertised capability route');
   }
   const hostRequests = [];
+  const responseStatuses = driverManifest.supportedResponseStatuses?.length > 0 ? driverManifest.supportedResponseStatuses : ['ok'];
   for (const actuatorRef of actuatorRefs) {
     for (const descriptorFingerprint of descriptorFingerprints) {
       for (const actuationClass of actuationClasses) {
-        hostRequests.push(capabilityPackSidecarProbeHostRequest({
-          driverManifest,
-          actuatorRef,
-          descriptorFingerprint,
-          actuationClass,
-          index: hostRequests.length,
-        }));
+        for (const responseStatus of responseStatuses) {
+          hostRequests.push(capabilityPackSidecarProbeHostRequest({
+            driverManifest,
+            actuatorRef,
+            descriptorFingerprint,
+            actuationClass,
+            responseStatus,
+            index: hostRequests.length,
+          }));
+        }
       }
     }
   }
   return hostRequests;
 }
 
-function capabilityPackSidecarProbeHostRequest({ driverManifest, actuatorRef, descriptorFingerprint, actuationClass, index }) {
+function capabilityPackSidecarProbeHostRequest({ driverManifest, actuatorRef, descriptorFingerprint, actuationClass, responseStatus, index }) {
   const targetFingerprint = (0xabcn + BigInt(index)).toString(16).padStart(16, '0');
   const requestBytes = capabilityPackSidecarProbeRequestBytes(driverManifest, actuationClass);
   return Object.freeze({
@@ -1037,6 +1161,7 @@ function capabilityPackSidecarProbeHostRequest({ driverManifest, actuatorRef, de
     actuationClass,
     idempotencyKeyBytes: fromUtf8(`world-host-capability-pack-sidecar-abi-probe-key:${index}`),
     idempotencyKeyWorldFingerprint: `world:idempotency-key:world-host-capability-pack-sidecar-abi-probe:${index}`,
+    responseSchema: { status: responseStatus },
     requestBytes,
     hostRequestFingerprint: `world:host-request:${targetFingerprint}`,
   });

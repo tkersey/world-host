@@ -173,6 +173,7 @@ export class CapabilitySidecar {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar runtime commands must not be path-qualified');
     }
     assertSupportedNonJavaScriptRuntimeCommand(command);
+    sidecarSpawnArgv(command, cwd ?? undefined, childEnv);
     this.command = Object.freeze([...command]);
     this.cwd = cwd == null ? undefined : path.resolve(cwd);
     this.timeoutMs = timeoutMs;
@@ -757,9 +758,13 @@ function assertSupportedBunEnvFileOptions(argv) {
     if (value === '--env-file-if-exists' || value.startsWith('--env-file-if-exists=')) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars do not support --env-file-if-exists');
     }
-    if (value === '--') return;
+    if (value === '--') {
+      if (index + 1 < argv.length && !argv[index + 1].startsWith('-')) return;
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars must name an adapter entrypoint');
+    }
     if (!value.startsWith('-')) entrypointSeen = true;
   }
+  if (!entrypointSeen) fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars must name an adapter entrypoint');
 }
 
 function unsupportedBunConfigOption(value) {

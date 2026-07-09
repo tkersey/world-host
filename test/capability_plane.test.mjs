@@ -4461,6 +4461,14 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.notEqual(normalizedDryRunReport, forgedDryRunReport);
     assert.equal(normalizedDryRunReport.turnClosureBytes, undefined);
     assert.equal(Object.getPrototypeOf(normalizedDryRunReport), DryRunReport.prototype);
+    await assert.rejects(
+      () => runCapabilityMode({
+        mode: 'dry-run',
+        driver: worldEvidenceReportDriver({ dryRunReport: { wouldInvoke: false, diagnostics: new Map([[{ runHead: { generation: 1 } }, 'hidden-key']]) } }),
+        hostRequest: request,
+      }),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
     assert.throws(
       () => capabilityHostClaimBytes({ runHead: { generation: 1 } }),
       { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
@@ -4476,6 +4484,23 @@ describe('Capability Plane v0.2 core contracts', () => {
           status: 0,
           responseValueImageBytes: fromUtf8('ok'),
           hostClaimBytes: fromUtf8(stableJson({ runHead: { generation: 1 } })),
+          attemptNumber: 1,
+          metadata: fromUtf8('plain metadata'),
+        }),
+      }),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
+    assert.throws(
+      () => assertCapabilityResolutionBoundary({
+        resolutionInputBytes: encodeResolutionInputBytes({
+          targetHostRequestFingerprint: 0x1n,
+          status: 0,
+          responseValueImageBytes: encodeCanonicalValueImage({
+            bytes: fromUtf8('ok'),
+            dynamicSize: true,
+            diagnosticTypeLabel: fromUtf8(stableJson({ runHead: { generation: 1 } })),
+          }),
+          hostClaimBytes: fromUtf8(stableJson({ safe: true })),
           attemptNumber: 1,
           metadata: fromUtf8('plain metadata'),
         }),

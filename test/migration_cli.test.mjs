@@ -1695,7 +1695,7 @@ describe('migration, branching, and CLI diagnostics', () => {
 
       async function writeSidecarPack(sidecarBytes, manifestOverrides = {}) {
         const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
-        Object.assign(manifest, manifestOverrides);
+        Object.assign(manifest, { supportedResponseStatuses: ['ok'] }, manifestOverrides);
         manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
         manifest.maximumRequestBytes = Math.min(manifest.maximumRequestBytes, DEFAULT_SIDECAR_TRANSPORTABLE_BYTES);
         manifest.maximumResponseBytes = Math.min(manifest.maximumResponseBytes, DEFAULT_SIDECAR_TRANSPORTABLE_BYTES);
@@ -1717,7 +1717,7 @@ describe('migration, branching, and CLI diagnostics', () => {
           supportedActuatorRefs: ['fixture:agent-model'],
           supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
           supportedActuationClasses: ['model'],
-          supportedResponseStatuses: ['ok', 'final'],
+          supportedResponseStatuses: ['ok'],
           maximumRequestBytes: 1048576,
           maximumResponseBytes: 1048576,
           recoveryClass: 'pure',
@@ -1766,7 +1766,7 @@ describe('migration, branching, and CLI diagnostics', () => {
           supportedActuatorRefs: ['fixture:agent-model'],
           supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
           supportedActuationClasses: ['model'],
-          supportedResponseStatuses: ['ok', 'final'],
+          supportedResponseStatuses: ['ok'],
           maximumRequestBytes: 1048576,
           maximumResponseBytes: 1048576,
           recoveryClass: 'pure',
@@ -1813,7 +1813,7 @@ describe('migration, branching, and CLI diagnostics', () => {
           supportedActuatorRefs: ['fixture:agent-model'],
           supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
           supportedActuationClasses: ['model'],
-          supportedResponseStatuses: ['ok', 'final'],
+          supportedResponseStatuses: ['ok'],
           maximumRequestBytes: 1048576,
           maximumResponseBytes: 1048576,
           recoveryClass: 'pure',
@@ -1857,7 +1857,7 @@ describe('migration, branching, and CLI diagnostics', () => {
             supportedActuatorRefs: ['fixture:agent-model'],
             supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
             supportedActuationClasses: ['model'],
-            supportedResponseStatuses: ['ok', 'final'],
+            supportedResponseStatuses: ['ok'],
             maximumRequestBytes: 1048576,
             maximumResponseBytes: 1048576,
             recoveryClass: 'pure',
@@ -1905,7 +1905,7 @@ describe('migration, branching, and CLI diagnostics', () => {
           supportedActuatorRefs: ['fixture:agent-model', 'http:json'],
           supportedDescriptorFingerprints: ['descriptor:fixture-agent-model', 'descriptor:http-json'],
           supportedActuationClasses: ['model', 'http'],
-          supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+          supportedResponseStatuses: ['ok'],
           maximumRequestBytes: 1048576,
           maximumResponseBytes: 1048576,
           recoveryClass: 'idempotent',
@@ -1937,7 +1937,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         supportedActuatorRefs: ['fixture:agent-model', 'http:json'],
         supportedDescriptorFingerprints: ['descriptor:fixture-agent-model', 'descriptor:http-json'],
         supportedActuationClasses: ['model', 'http'],
-        supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+        supportedResponseStatuses: ['ok'],
         recoveryClass: 'idempotent',
         authorityLabels: ['network:http'],
         policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
@@ -1998,7 +1998,7 @@ describe('migration, branching, and CLI diagnostics', () => {
               supportedActuatorRefs: ['fixture:agent-model', 'http:json'],
               supportedDescriptorFingerprints: ['descriptor:fixture-agent-model', 'descriptor:http-json'],
               supportedActuationClasses: ['model', 'http'],
-              supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+              supportedResponseStatuses: ['ok'],
               maximumRequestBytes: 1048576,
               maximumResponseBytes: 1048576,
               recoveryClass: 'idempotent',
@@ -2032,7 +2032,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         supportedActuatorRefs: ['fixture:agent-model', 'http:json'],
         supportedDescriptorFingerprints: ['descriptor:fixture-agent-model', 'descriptor:http-json'],
         supportedActuationClasses: ['model', 'http'],
-        supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+        supportedResponseStatuses: ['ok'],
         recoveryClass: 'idempotent',
         authorityLabels: ['model:fixture-agent', 'network:http'],
         policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
@@ -2158,7 +2158,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         const capturedEventSource = typeof EventSource === 'undefined' ? null : EventSource;
         const resolutionInputBytes = new Uint8Array(Buffer.from('${validResolutionBase64}', 'base64'));
         async function assertDeterministicFetch(fetchFn) {
-          const response = await fetchFn('https://example.invalid/world-host-capability-pack-abi-probe');
+          const response = await fetchFn('https://example.invalid/world-host-capability-pack-abi-probe', { method: 'POST' });
           const payload = await response.json();
           if (payload.worldHostCapabilityPackAbiProbe !== true) throw new Error('non-deterministic probe fetch');
         }
@@ -2181,14 +2181,14 @@ describe('migration, branching, and CLI diagnostics', () => {
               supportedActuatorRefs: ['http:json'],
               supportedDescriptorFingerprints: ['descriptor:http-json'],
               supportedActuationClasses: ['http'],
-              supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+              supportedResponseStatuses: ['ok'],
               maximumRequestBytes: 1048576,
               maximumResponseBytes: 1048576,
               recoveryClass: 'idempotent',
               concurrencyLimit: 1,
               authorityLabels: ['network:http'],
               diagnostics: {
-                origins: ['https://example.invalid'],
+                origins: ['https://example.invalid', 'wss://example.invalid'],
                 methods: ['POST'],
                 configuredEndpointUrl: 'https://example.invalid/decide',
                 configuredOrigin: 'https://example.invalid',
@@ -2214,7 +2214,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         supportedActuatorRefs: ['http:json'],
         supportedDescriptorFingerprints: ['descriptor:http-json'],
         supportedActuationClasses: ['http'],
-        supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+        supportedResponseStatuses: ['ok'],
         recoveryClass: 'idempotent',
         authorityLabels: ['network:http'],
         policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
@@ -2269,7 +2269,7 @@ describe('migration, branching, and CLI diagnostics', () => {
               supportedActuatorRefs: ['fixture:agent-model'],
               supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
               supportedActuationClasses: ['model'],
-              supportedResponseStatuses: ['ok', 'final'],
+              supportedResponseStatuses: ['ok'],
               maximumRequestBytes: 1048576,
               maximumResponseBytes: 1048576,
               recoveryClass: 'pure',
@@ -2289,6 +2289,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       `);
       await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
       const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.supportedResponseStatuses = ['ok'];
       manifest.conformanceCorpusFingerprint = null;
       manifest.conformanceReceiptFingerprint = null;
       manifest.checksums = manifest.checksums
@@ -2344,7 +2345,7 @@ describe('migration, branching, and CLI diagnostics', () => {
               supportedActuatorRefs: ['http:json'],
               supportedDescriptorFingerprints: ['descriptor:http-json'],
               supportedActuationClasses: ['http'],
-              supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+              supportedResponseStatuses: ['ok'],
               maximumRequestBytes: 1048576,
               maximumResponseBytes: 1048576,
               recoveryClass: 'idempotent',
@@ -2379,7 +2380,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         supportedActuatorRefs: ['http:json'],
         supportedDescriptorFingerprints: ['descriptor:http-json'],
         supportedActuationClasses: ['http'],
-        supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+        supportedResponseStatuses: ['ok'],
         recoveryClass: 'idempotent',
         authorityLabels: ['network:http'],
         policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
@@ -2441,7 +2442,7 @@ describe('migration, branching, and CLI diagnostics', () => {
               supportedActuatorRefs: ['http:json'],
               supportedDescriptorFingerprints: ['descriptor:http-json'],
               supportedActuationClasses: ['http'],
-              supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+              supportedResponseStatuses: ['ok'],
               maximumRequestBytes: 1048576,
               maximumResponseBytes: 1048576,
               recoveryClass: 'idempotent',
@@ -2476,7 +2477,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         supportedActuatorRefs: ['http:json'],
         supportedDescriptorFingerprints: ['descriptor:http-json'],
         supportedActuationClasses: ['http'],
-        supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+        supportedResponseStatuses: ['ok'],
         recoveryClass: 'idempotent',
         authorityLabels: ['network:http'],
         policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
@@ -2537,7 +2538,7 @@ describe('migration, branching, and CLI diagnostics', () => {
               supportedActuatorRefs: ['http:json'],
               supportedDescriptorFingerprints: ['descriptor:http-json'],
               supportedActuationClasses: ['http'],
-              supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+              supportedResponseStatuses: ['ok'],
               maximumRequestBytes: 1048576,
               maximumResponseBytes: 1048576,
               recoveryClass: 'idempotent',
@@ -2571,7 +2572,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         supportedActuatorRefs: ['http:json'],
         supportedDescriptorFingerprints: ['descriptor:http-json'],
         supportedActuationClasses: ['http'],
-        supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+        supportedResponseStatuses: ['ok'],
         recoveryClass: 'idempotent',
         authorityLabels: ['network:http'],
         policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
@@ -2631,7 +2632,7 @@ describe('migration, branching, and CLI diagnostics', () => {
               supportedActuatorRefs: ['http:json'],
               supportedDescriptorFingerprints: ['descriptor:http-json'],
               supportedActuationClasses: ['http'],
-              supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+              supportedResponseStatuses: ['ok'],
               maximumRequestBytes: 1048576,
               maximumResponseBytes: 1048576,
               recoveryClass: 'idempotent',
@@ -2668,7 +2669,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         supportedActuatorRefs: ['http:json'],
         supportedDescriptorFingerprints: ['descriptor:http-json'],
         supportedActuationClasses: ['http'],
-        supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+        supportedResponseStatuses: ['ok'],
         recoveryClass: 'idempotent',
         authorityLabels: ['network:http'],
         policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
@@ -2824,7 +2825,7 @@ describe('migration, branching, and CLI diagnostics', () => {
               supportedActuatorRefs: ['fixture:agent-model'],
               supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
               supportedActuationClasses: ['model'],
-              supportedResponseStatuses: ['ok', 'final'],
+              supportedResponseStatuses: ['ok'],
               maximumRequestBytes: 1048576,
               maximumResponseBytes: 1048576,
               recoveryClass: 'pure',
@@ -2857,7 +2858,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         supportedActuatorRefs: ['fixture:agent-model'],
         supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
         supportedActuationClasses: ['model'],
-        supportedResponseStatuses: ['ok', 'final'],
+        supportedResponseStatuses: ['ok'],
         recoveryClass: 'pure',
         authorityLabels: ['network:openai'],
         policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
@@ -2918,7 +2919,7 @@ describe('migration, branching, and CLI diagnostics', () => {
               supportedActuatorRefs: ['model:generic-http-json'],
               supportedDescriptorFingerprints: ['descriptor:generic-http-json-model'],
               supportedActuationClasses: ['model'],
-              supportedResponseStatuses: ['ok', 'failed', 'deferred'],
+              supportedResponseStatuses: ['ok'],
               maximumRequestBytes: 1048576,
               maximumResponseBytes: 1048576,
               recoveryClass: 'idempotent',
@@ -2941,7 +2942,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         supportedActuatorRefs: ['model:generic-http-json'],
         supportedDescriptorFingerprints: ['descriptor:generic-http-json-model'],
         supportedActuationClasses: ['model'],
-        supportedResponseStatuses: ['ok', 'failed', 'deferred'],
+        supportedResponseStatuses: ['ok'],
         maximumRequestBytes: 1048576,
         maximumResponseBytes: 1048576,
         recoveryClass: 'idempotent',
@@ -3012,7 +3013,7 @@ describe('migration, branching, and CLI diagnostics', () => {
               supportedActuatorRefs: ['http:json'],
               supportedDescriptorFingerprints: ['descriptor:http-json'],
               supportedActuationClasses: ['http'],
-              supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+              supportedResponseStatuses: ['ok'],
               maximumRequestBytes: 1048576,
               maximumResponseBytes: 1048576,
               recoveryClass: 'idempotent',
@@ -3049,7 +3050,7 @@ describe('migration, branching, and CLI diagnostics', () => {
               supportedActuatorRefs: ['fixture:agent-model'],
               supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
               supportedActuationClasses: ['model'],
-              supportedResponseStatuses: ['ok', 'final'],
+              supportedResponseStatuses: ['ok'],
               maximumRequestBytes: 1048576,
               maximumResponseBytes: 1048576,
               recoveryClass: 'pure',
@@ -3075,7 +3076,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         supportedActuatorRefs: ['http:json'],
         supportedDescriptorFingerprints: ['descriptor:http-json'],
         supportedActuationClasses: ['http'],
-        supportedResponseStatuses: ['ok', 'http_error', 'failed', 'deferred'],
+        supportedResponseStatuses: ['ok'],
         recoveryClass: 'idempotent',
         authorityLabels: ['network:http'],
         policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
@@ -3089,6 +3090,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       await writeFile(path.join(networkPack, 'manifest.json'), `${JSON.stringify(networkManifest, null, 2)}\n`);
 
       const fixtureManifest = JSON.parse(await readFile(path.join(fixturePack, 'manifest.json'), 'utf8'));
+      fixtureManifest.supportedResponseStatuses = ['ok'];
       fixtureManifest.conformanceCorpusFingerprint = null;
       fixtureManifest.conformanceReceiptFingerprint = null;
       fixtureManifest.checksums = fixtureManifest.checksums
@@ -3614,7 +3616,7 @@ describe('migration, branching, and CLI diagnostics', () => {
               supportedActuatorRefs: ['fixture:agent-model'],
               supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
               supportedActuationClasses: ['model'],
-              supportedResponseStatuses: ['ok', 'final'],
+              supportedResponseStatuses: ['ok'],
               maximumRequestBytes: 1048576,
               maximumResponseBytes: 1048576,
               recoveryClass: 'pure',
@@ -3664,13 +3666,21 @@ describe('migration, branching, and CLI diagnostics', () => {
       await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
       await rm(path.join(pack, 'adapter.mjs'));
       await rm(path.join(pack, 'conformance.json'));
-      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+      const failedResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
         targetHostRequestFingerprint: 0xabcn,
+        status: 2,
+        responseValueImageBytes: new Uint8Array(),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('status-order-sidecar-failed'),
+      })).toString('base64');
+      const okResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabdn,
         status: 0,
         responseValueImageBytes: fromUtf8('probe-response'),
         hostClaimBytes: new Uint8Array(),
         attemptNumber: 1,
-        metadata: fromUtf8('status-order-sidecar'),
+        metadata: fromUtf8('status-order-sidecar-ok'),
       })).toString('base64');
       const sidecarBytes = fromUtf8(`
         const input = await new Response(Bun.stdin.stream()).text();
@@ -3688,12 +3698,19 @@ describe('migration, branching, and CLI diagnostics', () => {
           authorityLabels: ['model:fixture-agent'],
           packFingerprint: frame.payload?.packFingerprint
         };
-        const resolution = {
+        const failedResolution = {
           resolutionInputBytes: {
             __world_host_sidecar_type: 'bytes',
-            base64: '${validResolutionBase64}'
+            base64: '${failedResolutionBase64}'
           }
         };
+        const okResolution = {
+          resolutionInputBytes: {
+            __world_host_sidecar_type: 'bytes',
+            base64: '${okResolutionBase64}'
+          }
+        };
+        const resolution = frame.payload?.hostRequest?.responseSchema?.status === 'failed' ? failedResolution : okResolution;
         const responses = {
           manifest: driverManifest,
           preflight: { accepted: true, blockers: [] },
@@ -3779,7 +3796,7 @@ describe('migration, branching, and CLI diagnostics', () => {
               supportedActuatorRefs: ['fixture:agent-model'],
               supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
               supportedActuationClasses: ['model', 'http'],
-              supportedResponseStatuses: ['ok', 'final'],
+              supportedResponseStatuses: ['ok'],
               maximumRequestBytes: 1048576,
               maximumResponseBytes: 1048576,
               recoveryClass: 'pure',
@@ -3807,6 +3824,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       manifest.conformanceCorpusFingerprint = null;
       manifest.conformanceReceiptFingerprint = null;
       manifest.supportedActuationClasses = ['model', 'http'];
+      manifest.supportedResponseStatuses = ['ok'];
       manifest.checksums = manifest.checksums
         .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
         .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });

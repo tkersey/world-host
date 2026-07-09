@@ -104,6 +104,7 @@ export function defaultCapabilityPreflight(manifestLike, hostRequest) {
 
 export function assertCapabilityPreflightReport(value) {
   if (!value || typeof value !== 'object') fail('ERR_CAPABILITY_PREFLIGHT_REPORT_INVALID');
+  assertNoWorldEvidenceKeys(value);
   const report = new CapabilityPreflightReport(value);
   assertNoWorldEvidenceKeys(report);
   return report;
@@ -111,6 +112,7 @@ export function assertCapabilityPreflightReport(value) {
 
 export function assertDryRunReport(value) {
   if (!value || typeof value !== 'object') fail('ERR_CAPABILITY_DRY_RUN_REPORT_INVALID');
+  assertNoWorldEvidenceKeys(value);
   const report = new DryRunReport(value);
   assertNoWorldEvidenceKeys(report);
   return report;
@@ -118,6 +120,7 @@ export function assertDryRunReport(value) {
 
 export function assertShadowReport(value) {
   if (!value || typeof value !== 'object') fail('ERR_CAPABILITY_SHADOW_REPORT_INVALID');
+  assertNoWorldEvidenceKeys(value);
   const report = new ShadowReport(value);
   assertNoWorldEvidenceKeys(report);
   return report;
@@ -143,10 +146,12 @@ function assertNoDecodedResolutionWorldEvidence(decoded) {
 function assertNoWorldEvidenceByteField(value, path = []) {
   const payload = parseJsonBytes(value);
   if (payload !== null) assertNoWorldEvidenceKeys(payload, path);
-  const valueImagePayload = parseCanonicalValueImagePayload(value);
-  if (valueImagePayload !== null) {
-    const decodedPayload = parseJsonBytes(valueImagePayload);
+  const valueImage = parseCanonicalValueImage(value);
+  if (valueImage !== null) {
+    const decodedPayload = parseJsonBytes(valueImage.payload);
     if (decodedPayload !== null) assertNoWorldEvidenceKeys(decodedPayload, path);
+    const decodedLabel = parseJsonBytes(valueImage.diagnosticTypeLabel);
+    if (decodedLabel !== null) assertNoWorldEvidenceKeys(decodedLabel, [...path, 'diagnosticTypeLabel']);
   }
 }
 
@@ -167,11 +172,11 @@ function parseJsonBytes(value) {
   }
 }
 
-function parseCanonicalValueImagePayload(value) {
+function parseCanonicalValueImage(value) {
   const bytes = byteView(value);
   if (bytes === null || bytes.byteLength === 0) return null;
   try {
-    return decodeCanonicalValueImage(bytes).payload;
+    return decodeCanonicalValueImage(bytes);
   } catch {
     return null;
   }
