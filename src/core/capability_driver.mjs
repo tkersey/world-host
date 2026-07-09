@@ -140,21 +140,22 @@ function assertNoDecodedResolutionWorldEvidence(decoded) {
   for (const field of ['hostClaimBytes', 'metadata', 'responseValueImageBytes']) assertNoWorldEvidenceByteField(decoded[field]);
 }
 
-function assertNoWorldEvidenceByteField(value) {
+function assertNoWorldEvidenceByteField(value, path = []) {
   const payload = parseJsonBytes(value);
-  if (payload !== null) assertNoWorldEvidenceKeys(payload);
+  if (payload !== null) assertNoWorldEvidenceKeys(payload, path);
   const valueImagePayload = parseCanonicalValueImagePayload(value);
   if (valueImagePayload !== null) {
     const decodedPayload = parseJsonBytes(valueImagePayload);
-    if (decodedPayload !== null) assertNoWorldEvidenceKeys(decodedPayload);
+    if (decodedPayload !== null) assertNoWorldEvidenceKeys(decodedPayload, path);
   }
 }
 
 function parseJsonBytes(value) {
-  if (!(value instanceof Uint8Array) || value.byteLength === 0) return null;
+  const bytes = byteView(value);
+  if (bytes === null || bytes.byteLength === 0) return null;
   let text;
   try {
-    text = new TextDecoder('utf-8', { fatal: true }).decode(value).trim();
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes).trim();
   } catch {
     return null;
   }
@@ -167,12 +168,20 @@ function parseJsonBytes(value) {
 }
 
 function parseCanonicalValueImagePayload(value) {
-  if (!(value instanceof Uint8Array) || value.byteLength === 0) return null;
+  const bytes = byteView(value);
+  if (bytes === null || bytes.byteLength === 0) return null;
   try {
-    return decodeCanonicalValueImage(value).payload;
+    return decodeCanonicalValueImage(bytes).payload;
   } catch {
     return null;
   }
+}
+
+function byteView(value) {
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  return null;
 }
 
 function cloneReportPayload(value, seen = new WeakMap()) {
@@ -230,7 +239,10 @@ function cloneArrayBufferView(value) {
 
 export function assertNoWorldEvidenceKeys(value, path = [], seen = new WeakSet()) {
   if (value == null || typeof value !== 'object') return true;
-  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return true;
+  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
+    assertNoWorldEvidenceByteField(value, path);
+    return true;
+  }
   if (seen.has(value)) return true;
   seen.add(value);
   if (value instanceof Map) {

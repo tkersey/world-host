@@ -4520,6 +4520,41 @@ describe('Capability Plane v0.2 core contracts', () => {
     });
     assert.equal(assertNoWorldEvidenceKeys({ bytesWithEnumerableGetter }), true);
     assert.throws(
+      () => assertNoWorldEvidenceKeys({
+        diagnostics: {
+          payload: fromUtf8(stableJson({ turnClosureBytes: 'closure' })),
+        },
+      }),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
+    assert.throws(
+      () => assertNoWorldEvidenceKeys({
+        diagnostics: {
+          payload: encodeCanonicalValueImage({
+            bytes: fromUtf8(stableJson({ turnClosureBytes: 'closure' })),
+            dynamicSize: true,
+          }),
+        },
+      }),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
+    assert.throws(
+      () => assertCapabilityResolutionBoundary({
+        resolutionInputBytes: encodeResolutionInputBytes({
+          targetHostRequestFingerprint: 0x1n,
+          status: 0,
+          responseValueImageBytes: fromUtf8('ok'),
+          hostClaimBytes: fromUtf8(stableJson({ safe: true })),
+          attemptNumber: 1,
+          metadata: fromUtf8('plain metadata'),
+        }),
+        diagnostics: {
+          payload: fromUtf8(stableJson({ turnClosureBytes: 'closure' })),
+        },
+      }),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
+    assert.throws(
       () => assertNoWorldEvidenceKeys({ diagnostics: new Map([['turnReceiptBytes', fromUtf8('receipt')]]) }),
       { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
     );
