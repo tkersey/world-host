@@ -3359,6 +3359,52 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('rejects Bun sidecar early-exit and watch flags during pack validation', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-bun-sidecar-flags-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'adapter.mjs'));
+      await rm(path.join(pack, 'conformance.json'));
+
+      const sidecarBytes = fromUtf8('process.stdout.write("{}\\n");\n');
+      await writeFile(path.join(pack, 'sidecar.mjs'), sidecarBytes);
+
+      async function writeSidecarCommand(command) {
+        const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+        manifest.adapter = { kind: 'sidecar', command };
+        manifest.conformanceCorpusFingerprint = null;
+        manifest.conformanceReceiptFingerprint = null;
+        manifest.checksums = manifest.checksums
+          .filter((item) => !['adapter.mjs', 'conformance.json', 'sidecar.mjs'].includes(item.path))
+          .concat({ path: 'sidecar.mjs', checksum: `sha256:${createHash('sha256').update(sidecarBytes).digest('hex')}` });
+        manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+        await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+      }
+
+      for (const command of [
+        ['bun', '--version', 'sidecar.mjs'],
+        ['bun', '--revision', 'sidecar.mjs'],
+        ['bun', '--help', 'sidecar.mjs'],
+        ['bun', '--watch', 'sidecar.mjs', 'extra.mjs'],
+        ['bun', '--hot', 'sidecar.mjs', 'extra.mjs'],
+      ]) {
+        await writeSidecarCommand(command);
+        await assert.rejects(
+          () => runBunCli(['capability', 'check-pack', '--pack', pack], {
+            stdout: { write() {} },
+            stderr: { write() {} },
+          }),
+          { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+        );
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('rejects sidecar manifest mismatches before trusted probes run', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-sidecar-manifest-order-'));
     const packs = path.join(root, 'capability-packs');

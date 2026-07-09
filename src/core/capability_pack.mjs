@@ -2685,6 +2685,12 @@ function assertSafeSidecarCommandToken(command, index) {
   if (sidecarUnsupportedBunTlsOption(command, index)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Bun sidecars do not support disabling TLS certificate verification');
   }
+  if (sidecarUnsupportedBunEarlyExitOption(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Bun sidecars do not support early-exit flags before the entrypoint');
+  }
+  if (sidecarUnsupportedBunWatchOption(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Bun sidecars do not support watch or hot reload options');
+  }
   if (sidecarUnsupportedBunInstallOption(command, index)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Bun sidecars do not support package auto-install');
   }
@@ -2822,6 +2828,24 @@ function sidecarUnsupportedBunTlsOption(command, index) {
   if (commandBaseName(command[0]).toLowerCase() !== 'bun' || !sidecarRuntimeOptionPosition(command, index)) return false;
   const value = command[index];
   if (value !== '--unsafely-ignore-certificate-errors' && !value.startsWith('--unsafely-ignore-certificate-errors=')) return false;
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  return entrypointIndex < 0 || index < entrypointIndex;
+}
+
+function sidecarUnsupportedBunEarlyExitOption(command, index) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'bun' || !sidecarRuntimeOptionPosition(command, index)) return false;
+  const value = command[index];
+  if (!(value === '-v' || value === '--version' || value === '--revision' ||
+    value === '-h' || value === '--help' ||
+    value.startsWith('--revision=') || value.startsWith('--version=') || value.startsWith('--help='))) return false;
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  return entrypointIndex < 0 || index < entrypointIndex;
+}
+
+function sidecarUnsupportedBunWatchOption(command, index) {
+  if (commandBaseName(command[0]).toLowerCase() !== 'bun' || !sidecarRuntimeOptionPosition(command, index)) return false;
+  const value = command[index];
+  if (!(value === '--watch' || value.startsWith('--watch=') || value === '--hot' || value.startsWith('--hot='))) return false;
   const entrypointIndex = sidecarEntrypointIndex(command);
   return entrypointIndex < 0 || index < entrypointIndex;
 }
