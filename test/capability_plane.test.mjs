@@ -2911,6 +2911,22 @@ describe('Capability Plane v0.2 core contracts', () => {
       }, {}),
       { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
     );
+    for (const [command, artifactPath] of [
+      [['perl', '-v', './adapter.pl'], './adapter.pl'],
+      [['perl', '-V', './adapter.pl'], './adapter.pl'],
+      [['ruby', '-', './adapter.rb'], './adapter.rb'],
+      [['ruby', '-c', './adapter.rb'], './adapter.rb'],
+    ]) {
+      await assert.rejects(
+        () => assertCapabilityPackChecksums({
+          ...manifest,
+          adapter: { kind: 'sidecar', command },
+          docs: [],
+          checksums: [{ path: artifactPath, checksum: sidecarChecksum }],
+        }, { [artifactPath]: sidecar }),
+        { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+      );
+    }
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,

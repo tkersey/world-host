@@ -2709,6 +2709,9 @@ function assertSafeSidecarCommandToken(command, index) {
   if (sidecarUnsupportedDenoRuntimeOption(command, index)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `Deno sidecars do not support this runtime option before the entrypoint: ${value}`);
   }
+  if (sidecarUnsupportedNonJavaScriptRuntimeOption(command, index)) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `Non-JavaScript sidecars do not support this runtime option before the entrypoint: ${value}`);
+  }
   if (sidecarUnsupportedPhpRuntimeOption(command, index)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `PHP sidecars do not support this runtime option before the entrypoint: ${value}`);
   }
@@ -2898,6 +2901,15 @@ function sidecarUnsupportedDenoRuntimeOption(command, index) {
   return true;
 }
 
+function sidecarUnsupportedNonJavaScriptRuntimeOption(command, index) {
+  if (index < 1) return false;
+  const runtime = nonJavaScriptRuntimeName(commandBaseName(command[0]).toLowerCase());
+  if (SIDECAR_JS_RUNTIMES.has(runtime) || !sidecarInlineEvalRuntime(runtime)) return false;
+  const entrypointIndex = sidecarEntrypointIndex(command);
+  if (entrypointIndex >= 0 && index > entrypointIndex) return false;
+  return unsupportedNonJavaScriptRuntimeOption(runtime, command[index]);
+}
+
 function sidecarUnsupportedDenoConfigOption(command, index) {
   if (commandBaseName(command[0]).toLowerCase() !== 'deno' || !sidecarRuntimeOptionPosition(command, index)) return false;
   if (sidecarRuntimeOptionValuePosition(command, index)) return false;
@@ -3003,6 +3015,42 @@ function sidecarRuntimeImportMapOption(command, index) {
 
 function sidecarInlineEvalRuntime(runtime) {
   return SIDECAR_INLINE_EVAL_RUNTIMES.has(runtime) || /^python(?:\d+(?:\.\d+)*)?$/.test(runtime) || /^pypy(?:\d+)?$/.test(runtime);
+}
+
+function nonJavaScriptRuntimeName(runtime) {
+  if (/^php\d+(?:\.\d+)*$/.test(runtime)) return 'php';
+  if (/^ruby\d+(?:\.\d+)*$/.test(runtime)) return 'ruby';
+  if (/^perl\d+(?:\.\d+)*$/.test(runtime)) return 'perl';
+  if (/^lua\d+(?:\.\d+)*$/.test(runtime)) return 'lua';
+  if (/^luajit\d+(?:\.\d+)*$/.test(runtime)) return 'luajit';
+  return runtime;
+}
+
+function unsupportedNonJavaScriptRuntimeOption(runtime, value) {
+  runtime = nonJavaScriptRuntimeName(runtime);
+  if (typeof value !== 'string') return false;
+  if (/^python(?:\d+(?:\.\d+)*)?$/.test(runtime) || /^pypy(?:\d+)?$/.test(runtime)) {
+    return value === '-c' || value.startsWith('-c') || value === '-m' || value.startsWith('-m') ||
+      value === '-h' || value === '--help' || value === '-V' || value === '--version';
+  }
+  if (runtime === 'php') return unsupportedPhpRuntimeOption(value);
+  if (runtime === 'lua' || runtime === 'luajit') {
+    return value === '-e' || value.startsWith('-e') || value === '-l' || value.startsWith('-l') ||
+      value === '-v' || value === '--version' || value === '-h' || value === '--help' || value === '-';
+  }
+  if (runtime === 'ruby' || runtime === 'rscript') {
+    return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=') ||
+      value === '-r' || value.startsWith('-r') ||
+      (runtime === 'ruby' && (value === '-' || value === '-c' || value.startsWith('-c') || value === '-v' || value === '--version' || value === '-h' || value === '--help')) ||
+      (runtime === 'rscript' && (value === '--version' || value === '--help' || value === '-'));
+  }
+  if (runtime === 'perl') {
+    return value === '-' || value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=') ||
+      value === '-m' || value.startsWith('-m') || value === '-M' || value.startsWith('-M') ||
+      value === '-c' || value.startsWith('-c') || value === '-d' || value.startsWith('-d') ||
+      value === '-v' || value.startsWith('-V') || value === '-h' || value === '--help';
+  }
+  return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=');
 }
 
 function sidecarInlineEvalFlag(runtime, value) {

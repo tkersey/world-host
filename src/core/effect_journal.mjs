@@ -6,6 +6,7 @@ import {
   assertRecoveryClass,
   defineActuatorDriver,
 } from './actuator.mjs';
+import { assertNoWorldEvidenceKeys } from './capability_driver.mjs';
 import { createRunPolicy, hostRequestPolicyPromptByteLength, hostRequestPolicyRequestByteLength } from './capabilities.mjs';
 import { assertBlobRef, assertBytes, fail, fromUtf8, stableJson, toHex } from './store.mjs';
 import { decodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
@@ -282,6 +283,7 @@ export class EffectJournal {
         ? await driver.recover(context, recordWithRequestBytes)
         : await driver.resolve(context, recordWithRequestBytes);
       if (recoveryResult?.operatorInterventionRequired === true) {
+        assertNoWorldEvidenceKeys(recoveryResult);
         const intervention = await this.#put({
           ...recordWithRequestBytes,
           state: EffectState.operatorInterventionRequired,

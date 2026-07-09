@@ -1480,6 +1480,32 @@ describe('EffectJournal', () => {
     assert.equal(recovered.record.resolutionInputRef, undefined);
   });
 
+  it('rejects operator intervention recovery diagnostics with world evidence keys', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+    driver.recover = async () => ({
+      operatorInterventionRequired: true,
+      diagnostics: { runHead: { generation: 1 }, decision: 'operator_required' },
+    });
+    const observed = await journal.observe(hostRequest(), { manifest: driver.manifest() });
+    const running = await store.putEffectRecord({
+      ...observed,
+      state: EffectState.running,
+      attemptCount: 1,
+      diagnostics: { recoveryRequired: 'idempotent_resolve_failed' },
+    });
+
+    await assert.rejects(
+      () => journal.recover({}, running, driver),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
+    const records = await store.listEffectRecords('run');
+    assert.equal(records.length, 1);
+    assert.equal(records[0].state, EffectState.running);
+    assert.equal(records[0].diagnostics.runHead, undefined);
+  });
+
   it('keeps pure driver failures recomputable before requiring operator recovery', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
