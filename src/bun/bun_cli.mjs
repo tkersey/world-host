@@ -516,10 +516,7 @@ async function withDeterministicCapabilityPackProbeNetwork(driverManifest, hostR
       }
       return new Response(stableJson({
         worldHostCapabilityPackAbiProbe: true,
-        action: {
-          schema: 'boundary.Agent.Action.v0',
-          action: { variant: 'final', text: 'world-host capability pack ABI probe' },
-        },
+        action: { variant: 'final', text: 'world-host capability pack ABI probe' },
       }), {
         status: 200,
         headers: {

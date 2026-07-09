@@ -3363,11 +3363,8 @@ describe('migration, branching, and CLI diagnostics', () => {
           async resolve() {
             const response = await fetch('https://example.invalid/world-host-capability-pack-abi-probe', { method: 'POST' });
             const payload = await response.json();
-            if (payload.action?.schema !== 'boundary.Agent.Action.v0') {
+            if (payload.action?.variant !== 'final') {
               throw Object.assign(new Error('model probe response was not action-shaped'), { code: 'ERR_MODEL_PROBE_ACTION_MISSING' });
-            }
-            if (payload.action?.action?.variant !== 'final') {
-              throw Object.assign(new Error('model probe action was invalid'), { code: 'ERR_MODEL_PROBE_ACTION_INVALID' });
             }
             return { resolutionInputBytes };
           }
