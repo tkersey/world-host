@@ -1133,11 +1133,14 @@ function assertNoWorldEvidenceByteField(value) {
   const payload = parseBoundaryJsonBytes(value);
   if (payload !== null)
     assertNoWorldEvidenceKeys(payload);
-  const valueImagePayload = parseCanonicalValueImagePayload(value);
-  if (valueImagePayload !== null) {
-    const decodedPayload = parseBoundaryJsonBytes(valueImagePayload);
+  const valueImage = parseCanonicalValueImage(value);
+  if (valueImage !== null) {
+    const decodedPayload = parseBoundaryJsonBytes(valueImage.payload);
     if (decodedPayload !== null)
       assertNoWorldEvidenceKeys(decodedPayload);
+    const decodedLabel = parseBoundaryJsonBytes(valueImage.diagnosticTypeLabel);
+    if (decodedLabel !== null)
+      assertNoWorldEvidenceKeys(decodedLabel, ["diagnosticTypeLabel"]);
   }
 }
 function parseBoundaryJsonBytes(value) {
@@ -1157,11 +1160,11 @@ function parseBoundaryJsonBytes(value) {
     return null;
   }
 }
-function parseCanonicalValueImagePayload(value) {
+function parseCanonicalValueImage(value) {
   if (!(value instanceof Uint8Array) || value.byteLength === 0)
     return null;
   try {
-    return decodeCanonicalValueImage(value).payload;
+    return decodeCanonicalValueImage(value);
   } catch {
     return null;
   }
@@ -1803,6 +1806,9 @@ function credentialAssignmentText(value) {
 function credentialPathKey(value) {
   return /^(?:credentials?|authorization|bearer|tokens?|secrets?|password|(?:api|access|private)[_-]?keys?)$/i.test(value);
 }
+function credentialResponsePathKey(value) {
+  return credentialPathKey(value) || /^(?:access[_-]?token|refresh[_-]?token|client[_-]?secret)$/i.test(value);
+}
 function credentialUrlSentinel(value) {
   return /^(?:redacted|opaque|required|none|null|example(?:[-_].*)?|fixture(?:[-_].*)?|no-(?:credentials?|secrets?|tokens?))$/i.test(value);
 }
@@ -1842,7 +1848,7 @@ function assertNoKnownSecretEcho(value, secretValues) {
 }
 function assertNoCredentialShapedResponseValue(value) {
   visitCredentialShapedResponseStrings(value, [], (text, path2) => {
-    if (credentialQueryValue(text) || credentialAssignmentText(text) || path2.some(credentialPathKey) && text.length > 0 && !credentialUrlSentinel(text)) {
+    if (credentialQueryValue(text) || credentialAssignmentText(text) || path2.some(credentialResponsePathKey) && text.length > 0 && !credentialUrlSentinel(text)) {
       fail("ERR_SECRET_PERSISTED", "HTTP response contained credential-shaped data");
     }
   });

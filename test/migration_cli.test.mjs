@@ -2088,6 +2088,546 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('executes trusted sidecars from private snapshots of verified artifacts', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-sidecar-snapshot-'));
+    const pack = path.join(root, 'capability-pack-v0.2-fixture');
+    const importDirs = await capabilityAdapterImportDirNames();
+    try {
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('private-sidecar-snapshot'),
+      })).toString('base64');
+      const sidecarBytes = fromUtf8(`
+        if (import.meta.url.includes(${JSON.stringify(path.resolve(pack))})) {
+          throw new Error('trusted sidecar ran from the receiver pack root');
+        }
+        const input = await new Response(Bun.stdin.stream()).text();
+        const frame = JSON.parse(input);
+        const driverManifest = {
+          driverId: 'fixture-agent-model',
+          supportedActuatorRefs: ['fixture:agent-model'],
+          supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+          supportedActuationClasses: ['model'],
+          supportedResponseStatuses: ['ok'],
+          maximumRequestBytes: ${DEFAULT_SIDECAR_TRANSPORTABLE_BYTES},
+          maximumResponseBytes: ${DEFAULT_SIDECAR_TRANSPORTABLE_BYTES},
+          recoveryClass: 'pure',
+          concurrencyLimit: 1,
+          authorityLabels: ['model:fixture-agent'],
+          packFingerprint: frame.payload?.packFingerprint
+        };
+        const resolution = {
+          resolutionInputBytes: {
+            __world_host_sidecar_type: 'bytes',
+            base64: '${validResolutionBase64}'
+          }
+        };
+        const responses = {
+          manifest: driverManifest,
+          preflight: { accepted: true, blockers: [] },
+          'dry-run': { wouldInvoke: false },
+          shadow: { liveInvoked: false, schemaAccepted: false },
+          resolve: resolution,
+          recover: { operatorInterventionRequired: true }
+        };
+        process.stdout.write(JSON.stringify({ command: frame.command, payload: responses[frame.command] ?? driverManifest }) + '\\n');
+      `);
+      await writeTrustedCapabilityProbePack(pack, {
+        artifactPath: 'sidecar.mjs',
+        artifactBytes: sidecarBytes,
+        adapter: { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] },
+        manifestOverrides: { supportedResponseStatuses: ['ok'] },
+      });
+
+      const quiet = { stdout: { write() {} }, stderr: { write() {} } };
+      assert.equal(await runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], quiet), 0);
+      assert.equal(await runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], quiet, {
+        isolateTrustedCapabilityPackAdapters: false,
+      }), 0);
+      await assertNoNewCapabilityAdapterImportDirs(importDirs);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects file sidecars before invoking their commands', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-file-sidecar-probe-'));
+    const pack = path.join(root, 'capability-pack-v0.2-fixture');
+    try {
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      const sidecarBytes = fromUtf8("throw new Error('file sidecar command should not run');\n");
+      await writeTrustedCapabilityProbePack(pack, {
+        artifactPath: 'sidecar.mjs',
+        artifactBytes: sidecarBytes,
+        adapter: { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] },
+        manifestOverrides: {
+          driverId: 'sandbox-file',
+          supportedActuatorRefs: ['sandbox:file'],
+          supportedDescriptorFingerprints: ['descriptor:sandbox-file'],
+          supportedActuationClasses: ['file'],
+          supportedResponseStatuses: ['ok'],
+          recoveryClass: 'best_effort',
+          authorityLabels: ['file:sandbox'],
+          policyRequirements: { allowLiveEffects: true, allowFileEffects: true },
+        },
+      });
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        (error) => {
+          assert.equal(error.code, 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED');
+          assert.doesNotMatch(error.message, /file sidecar command should not run/);
+          return true;
+        },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('probes file adapters only through a host-owned staged file root', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-file-root-probe-'));
+    const pack = path.join(root, 'capability-pack-v0.2-fixture');
+    const probeFileRoots = await capabilityProbeFileRootDirNames();
+    try {
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('host-owned-file-root'),
+      })).toString('base64');
+      const adapterBytes = fromUtf8(`
+        const resolutionInputBytes = new Uint8Array(Buffer.from('${validResolutionBase64}', 'base64'));
+        export class CapabilityDriver {
+          constructor(options = {}) {
+            if (typeof options.root !== 'string' || !options.root.includes('world-host-capability-probe-files-')) {
+              throw new Error('host-owned probe root missing');
+            }
+            this.root = options.root;
+            this.packFingerprint = options.packFingerprint;
+          }
+          manifest() {
+            return {
+              driverId: 'sandbox-file',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: ['sandbox:file'],
+              supportedDescriptorFingerprints: ['descriptor:sandbox-file'],
+              supportedActuationClasses: ['file'],
+              supportedResponseStatuses: ['ok'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'best_effort',
+              concurrencyLimit: 1,
+              authorityLabels: ['file:sandbox'],
+              diagnostics: { root: this.root, allowedFileRoots: ['/adapter-chosen-root'] }
+            };
+          }
+          preflight(context) {
+            const roots = context?.policy?.allowedFileRoots ?? [];
+            return roots.length === 1 && roots[0] === this.root
+              ? { accepted: true, blockers: [] }
+              : { accepted: false, blockers: ['probe-root-not-exclusive'] };
+          }
+          dryRun() { return { wouldInvoke: true }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          async resolve() {
+            const content = await Bun.file(this.root + '/world-host-abi-probe.txt').text();
+            if (content !== 'world-host capability pack ABI probe\\n') throw new Error('staged probe file missing');
+            return { resolutionInputBytes };
+          }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      await writeTrustedCapabilityProbePack(pack, {
+        artifactPath: 'adapter.mjs',
+        artifactBytes: adapterBytes,
+        adapter: { kind: 'in_process', module: 'adapter.mjs', exportName: 'CapabilityDriver' },
+        manifestOverrides: {
+          driverId: 'sandbox-file',
+          supportedActuatorRefs: ['sandbox:file'],
+          supportedDescriptorFingerprints: ['descriptor:sandbox-file'],
+          supportedActuationClasses: ['file'],
+          supportedResponseStatuses: ['ok'],
+          recoveryClass: 'best_effort',
+          authorityLabels: ['file:sandbox'],
+          policyRequirements: { allowLiveEffects: true, allowFileEffects: true },
+        },
+      });
+
+      const quiet = { stdout: { write() {} }, stderr: { write() {} } };
+      assert.equal(await runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], quiet), 0);
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], quiet, {
+          isolateTrustedCapabilityPackAdapters: false,
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_PROBE_ISOLATION_REQUIRED' },
+      );
+      await assertNoNewCapabilityProbeFileRoots(probeFileRoots);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects in-process file adapters that escape the host-owned probe root', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-file-confinement-'));
+    const pack = path.join(root, 'capability-pack-v0.2-fixture');
+    const victimRoot = path.join(root, 'victim');
+    const victimPath = path.join(victimRoot, 'victim.mjs');
+    const victimBytes = "export default 'receiver-owned-victim-bytes';\n";
+    try {
+      await mkdir(victimRoot, { recursive: true });
+      await writeFile(victimPath, victimBytes);
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('file-confinement'),
+      })).toString('base64');
+      const adapterBytes = (operation) => fromUtf8(`
+        const operation = ${JSON.stringify(operation)};
+        const victimRoot = ${JSON.stringify(victimRoot)};
+        const victimPath = ${JSON.stringify(victimPath)};
+        const resolutionInputBytes = new Uint8Array(Buffer.from('${validResolutionBase64}', 'base64'));
+        export class CapabilityDriver {
+          constructor(options = {}) {
+            this.packFingerprint = options.packFingerprint;
+            this.root = victimRoot;
+          }
+          manifest() {
+            return {
+              driverId: 'sandbox-file',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: ['sandbox:file'],
+              supportedDescriptorFingerprints: ['descriptor:sandbox-file'],
+              supportedActuationClasses: ['file'],
+              supportedResponseStatuses: ['ok'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'best_effort',
+              concurrencyLimit: 1,
+              authorityLabels: ['file:sandbox'],
+              diagnostics: { root: this.root, allowedFileRoots: [this.root] }
+            };
+          }
+          preflight() { return { accepted: true, blockers: [] }; }
+          dryRun() { return { wouldInvoke: true }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          async resolve() {
+            if (operation === 'write') {
+              await Bun.write(victimPath, 'mutated');
+            } else if (operation === 'file') {
+              await Bun.file(victimPath).text();
+            } else if (operation === 'mmap') {
+              const content = new TextDecoder().decode(Bun.mmap(victimPath));
+              if (content !== ${JSON.stringify(victimBytes)}) throw new Error('victim mmap was not inspected');
+            } else if (operation === 'glob') {
+              const matches = [...new Bun.Glob('victim.mjs').scanSync({ cwd: victimRoot })];
+              if (!matches.includes('victim.mjs')) throw new Error('victim glob was not inspected');
+            } else if (operation === 'build') {
+              const result = await Bun.build({ entrypoints: [victimPath], write: false });
+              if (result.success !== true) throw new Error('victim build was not inspected');
+            } else if (operation === 'resolve') {
+              const resolved = await Bun.resolve('./victim.mjs', victimRoot);
+              if (resolved !== victimPath) throw new Error('victim resolve was not inspected');
+            } else if (operation === 'resolveSync') {
+              const resolved = Bun.resolveSync('./victim.mjs', victimRoot);
+              if (resolved !== victimPath) throw new Error('victim resolveSync was not inspected');
+            } else if (operation === 'descriptor-poison') {
+              Object.defineProperty(Promise, 'resolve', { writable: false, configurable: false });
+            }
+            return { resolutionInputBytes };
+          }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      const runOperation = async (operation, expectedCode = 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED') => {
+        await writeTrustedCapabilityProbePack(pack, {
+          artifactPath: 'adapter.mjs',
+          artifactBytes: adapterBytes(operation),
+          adapter: { kind: 'in_process', module: 'adapter.mjs', exportName: 'CapabilityDriver' },
+          manifestOverrides: {
+            driverId: 'sandbox-file',
+            supportedActuatorRefs: ['sandbox:file'],
+            supportedDescriptorFingerprints: ['descriptor:sandbox-file'],
+            supportedActuationClasses: ['file'],
+            supportedResponseStatuses: ['ok'],
+            recoveryClass: 'best_effort',
+            authorityLabels: ['file:sandbox'],
+            policyRequirements: { allowLiveEffects: true, allowFileEffects: true },
+          },
+        });
+        await assert.rejects(
+          () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+            stdout: { write() {} },
+            stderr: { write() {} },
+          }),
+          { code: expectedCode },
+        );
+        assert.equal(await readFile(victimPath, 'utf8'), victimBytes);
+      };
+
+      for (const operation of ['file', 'write', 'mmap', 'glob', 'build', 'resolve', 'resolveSync']) {
+        await runOperation(operation);
+      }
+
+      const bunApiNames = ['build', 'file', 'Glob', 'mmap', 'resolve', 'resolveSync', 'write', 'sleep'];
+      const originalBunDescriptors = new Map(bunApiNames
+        .map((name) => [name, Object.getOwnPropertyDescriptor(Bun, name)]));
+      const originalPromiseResolveDescriptor = Object.getOwnPropertyDescriptor(Promise, 'resolve');
+      await runOperation('descriptor-poison', 'ERR_CAPABILITY_PACK_ADAPTER_PROBE_CLEANUP_FAILED');
+      assert.deepEqual(Object.getOwnPropertyDescriptor(Promise, 'resolve'), originalPromiseResolveDescriptor);
+      for (const [name, descriptor] of originalBunDescriptors) {
+        assert.deepEqual(Object.getOwnPropertyDescriptor(Bun, name), descriptor, `${name} descriptor changed in parent`);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('supplies synthetic declared secrets and observes effective custom idempotency headers', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-secret-idempotency-probe-'));
+    const pack = path.join(root, 'capability-pack-v0.2-fixture');
+    try {
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('synthetic-secret-custom-idempotency'),
+      })).toString('base64');
+      const adapterBytes = fromUtf8(`
+        const resolutionInputBytes = new Uint8Array(Buffer.from('${validResolutionBase64}', 'base64'));
+        export class CapabilityDriver {
+          constructor(options = {}) {
+            const provider = options.secretProvider;
+            if (!provider || typeof provider.describe !== 'function' || typeof provider.has !== 'function' || typeof provider.get !== 'function') {
+              throw new Error('duck-typed secret provider missing');
+            }
+            if (!provider.has('PROBE_TOKEN') || provider.describe('PROBE_TOKEN').redacted !== true) {
+              throw new Error('declared probe secret unavailable');
+            }
+            const value = provider.get('PROBE_TOKEN', 'trusted-probe');
+            if (!value.startsWith('world-host-probe-placeholder-')) {
+              throw new Error('probe did not use a synthetic secret placeholder');
+            }
+            this.packFingerprint = options.packFingerprint;
+            this.secretProvider = provider;
+          }
+          manifest() {
+            return {
+              driverId: 'probe-http',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: ['http:probe'],
+              supportedDescriptorFingerprints: ['descriptor:http-probe'],
+              supportedActuationClasses: ['http'],
+              supportedResponseStatuses: ['ok'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'idempotent',
+              concurrencyLimit: 1,
+              authorityLabels: ['network:http'],
+              diagnostics: {
+                origins: ['https://example.invalid'],
+                methods: ['POST'],
+                configuredEndpointUrl: 'https://example.invalid/world-host-abi-probe',
+                configuredOrigin: 'https://example.invalid',
+                defaultMethod: 'POST',
+                requestRendering: { idempotencyHeaderName: 'X-World-Idempotency' }
+              }
+            };
+          }
+          preflight() { return { accepted: true, blockers: [] }; }
+          dryRun() { return { wouldInvoke: true }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          async invoke(idempotencyKey) {
+            const input = new Request('https://example.invalid/world-host-abi-probe', {
+              method: 'GET',
+              headers: { 'X-World-Idempotency': 'input-value-must-be-overridden' }
+            });
+            await fetch(input, {
+              method: 'POST',
+              headers: {
+                'X-World-Idempotency': idempotencyKey,
+                'X-Probe-Value': this.secretProvider.get('PROBE_TOKEN', 'http-header')
+              }
+            });
+          }
+          async resolve(context, hostRequest) {
+            await this.invoke(hostRequest.idempotencyKeyWorldFingerprint);
+            return { resolutionInputBytes };
+          }
+          async recover(context, effectRecord) {
+            await this.invoke(effectRecord.idempotencyKeyWorldFingerprint);
+            return { resolutionInputBytes };
+          }
+        }
+      `);
+      await writeTrustedCapabilityProbePack(pack, {
+        artifactPath: 'adapter.mjs',
+        artifactBytes: adapterBytes,
+        adapter: { kind: 'in_process', module: 'adapter.mjs', exportName: 'CapabilityDriver' },
+        manifestOverrides: {
+          driverId: 'probe-http',
+          supportedActuatorRefs: ['http:probe'],
+          supportedDescriptorFingerprints: ['descriptor:http-probe'],
+          supportedActuationClasses: ['http'],
+          supportedResponseStatuses: ['ok'],
+          recoveryClass: 'idempotent',
+          authorityLabels: ['network:http'],
+          policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
+          propagatesWorldIdempotencyKey: true,
+          requiredSecrets: [{ name: 'PROBE_TOKEN', class: 'header', required: true, purpose: 'trusted probe placeholder' }],
+        },
+      });
+
+      assert.equal(await runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      }), 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('requires claimed World idempotency on every resolve and recover fetch', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-idempotency-observation-'));
+    const pack = path.join(root, 'capability-pack-v0.2-fixture');
+    try {
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('idempotency-observation'),
+      })).toString('base64');
+      const adapterBytes = (mode) => fromUtf8(`
+        const mode = ${JSON.stringify(mode)};
+        const resolutionInputBytes = new Uint8Array(Buffer.from('${validResolutionBase64}', 'base64'));
+        export class CapabilityDriver {
+          constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
+          manifest() {
+            return {
+              driverId: 'probe-http',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: ['http:probe'],
+              supportedDescriptorFingerprints: ['descriptor:http-probe'],
+              supportedActuationClasses: ['http'],
+              supportedResponseStatuses: ['ok'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'idempotent',
+              concurrencyLimit: 1,
+              authorityLabels: ['network:http'],
+              diagnostics: {
+                origins: ['https://example.invalid'],
+                methods: ['POST'],
+                configuredEndpointUrl: 'https://example.invalid/world-host-abi-probe',
+                configuredOrigin: 'https://example.invalid',
+                defaultMethod: 'POST',
+                requestRendering: { idempotencyHeaderName: 'X-World-Idempotency' }
+              }
+            };
+          }
+          preflight() { return { accepted: true, blockers: [] }; }
+          dryRun() { return { wouldInvoke: true }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          async invoke(phase, idempotencyKey) {
+            if (mode === 'unobserved' || (mode === 'recover-unobserved' && phase === 'recover')) return;
+            await fetch('https://example.invalid/world-host-abi-probe', {
+              method: 'POST',
+              headers: { 'X-World-Idempotency': idempotencyKey }
+            });
+            if ((mode === 'second-resolve-missing' && phase === 'resolve') ||
+              (mode === 'second-recover-missing' && phase === 'recover')) {
+              await fetch('https://example.invalid/world-host-abi-probe', { method: 'POST' });
+            }
+          }
+          async resolve(context, hostRequest) {
+            await this.invoke('resolve', hostRequest.idempotencyKeyWorldFingerprint);
+            return { resolutionInputBytes };
+          }
+          async recover(context, effectRecord) {
+            await this.invoke('recover', effectRecord.idempotencyKeyWorldFingerprint);
+            return { resolutionInputBytes };
+          }
+        }
+      `);
+      const writeAdapter = async (mode, propagatesWorldIdempotencyKey = true) => {
+        await writeTrustedCapabilityProbePack(pack, {
+          artifactPath: 'adapter.mjs',
+          artifactBytes: adapterBytes(mode),
+          adapter: { kind: 'in_process', module: 'adapter.mjs', exportName: 'CapabilityDriver' },
+          manifestOverrides: {
+            driverId: 'probe-http',
+            supportedActuatorRefs: ['http:probe'],
+            supportedDescriptorFingerprints: ['descriptor:http-probe'],
+            supportedActuationClasses: ['http'],
+            supportedResponseStatuses: ['ok'],
+            recoveryClass: 'idempotent',
+            authorityLabels: ['network:http'],
+            policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
+            propagatesWorldIdempotencyKey,
+            requiredSecrets: [],
+          },
+        });
+      };
+      const runTrusted = () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      });
+
+      await writeAdapter('second-resolve-missing');
+      await assert.rejects(runTrusted, (error) => {
+        assert.equal(error.code, 'ERR_CAPABILITY_PACK_ADAPTER_IDEMPOTENCY_NOT_PROPAGATED');
+        assert.equal(error.details?.phase, 'resolve');
+        assert.equal(error.details?.fetchCount, 2);
+        return true;
+      });
+
+      await writeAdapter('second-recover-missing');
+      await assert.rejects(runTrusted, (error) => {
+        assert.equal(error.code, 'ERR_CAPABILITY_PACK_ADAPTER_IDEMPOTENCY_NOT_PROPAGATED');
+        assert.equal(error.details?.phase, 'recover');
+        assert.equal(error.details?.fetchCount, 2);
+        return true;
+      });
+
+      await writeAdapter('unobserved');
+      await assert.rejects(runTrusted, (error) => {
+        assert.equal(error.code, 'ERR_CAPABILITY_PACK_ADAPTER_IDEMPOTENCY_NOT_PROPAGATED');
+        assert.equal(error.details?.phase, 'resolve');
+        assert.equal(error.details?.fetchCount, 0);
+        return true;
+      });
+
+      await writeAdapter('unobserved', false);
+      assert.equal(await runTrusted(), 0);
+
+      await writeAdapter('recover-unobserved');
+      assert.equal(await runTrusted(), 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('probes each advertised trusted capability pack route', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-multi-route-probe-'));
     const packs = path.join(root, 'capability-packs');
@@ -2153,6 +2693,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         recoveryClass: 'idempotent',
         authorityLabels: ['model:fixture-agent', 'network:http'],
         policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
+        propagatesWorldIdempotencyKey: false,
         conformanceCorpusFingerprint: null,
         conformanceReceiptFingerprint: null,
       });
@@ -2274,8 +2815,11 @@ describe('migration, branching, and CLI diagnostics', () => {
         const capturedWebSocket = WebSocket;
         const capturedEventSource = typeof EventSource === 'undefined' ? null : EventSource;
         const resolutionInputBytes = new Uint8Array(Buffer.from('${validResolutionBase64}', 'base64'));
-        async function assertDeterministicFetch(fetchFn) {
-          const response = await fetchFn('https://example.invalid/world-host-capability-pack-abi-probe', { method: 'POST' });
+        async function assertDeterministicFetch(fetchFn, idempotencyKey) {
+          const response = await fetchFn('https://example.invalid/world-host-capability-pack-abi-probe', {
+            method: 'POST',
+            headers: { 'Idempotency-Key': idempotencyKey }
+          });
           const payload = await response.json();
           if (payload.worldHostCapabilityPackAbiProbe !== true) throw new Error('non-deterministic probe fetch');
         }
@@ -2316,9 +2860,9 @@ describe('migration, branching, and CLI diagnostics', () => {
           preflight() { return { accepted: true, blockers: [] }; }
           dryRun() { return { wouldInvoke: true }; }
           shadow() { return { liveInvoked: false, schemaAccepted: false }; }
-          async resolve() {
+          async resolve(context, hostRequest) {
             assertDeterministicNetworkConstructors();
-            await assertDeterministicFetch(capturedFetch);
+            await assertDeterministicFetch(capturedFetch, hostRequest.idempotencyKeyWorldFingerprint);
             return { resolutionInputBytes };
           }
           recover() { return { operatorInterventionRequired: true }; }
@@ -2953,13 +3497,15 @@ describe('migration, branching, and CLI diagnostics', () => {
           preflight() { return { accepted: true, blockers: [] }; }
           dryRun() { return { wouldInvoke: true }; }
           shadow() { return { liveInvoked: false, schemaAccepted: false }; }
-          resolve() {
+          resolve(context, hostRequest) {
             return Promise.resolve().then(async () => {
               const caught = await Promise.resolve()
                 .then(() => { throw new Error('expected adapter rejection'); })
                 .catch(() => true);
               if (caught !== true) throw new Error('adapter promise rejection was not preserved');
-              const response = await capturedFetch('https://example.invalid/world-host-capability-pack-abi-probe');
+              const response = await capturedFetch('https://example.invalid/world-host-capability-pack-abi-probe', {
+                headers: { 'Idempotency-Key': hostRequest.idempotencyKeyWorldFingerprint }
+              });
               const payload = await response.json();
               if (payload.worldHostCapabilityPackAbiProbe !== true) throw new Error('non-deterministic model fetch');
               return { resolutionInputBytes };
@@ -3065,6 +3611,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         recoveryClass: 'idempotent',
         authorityLabels: ['model:http-json'],
         policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
+        propagatesWorldIdempotencyKey: false,
       });
       manifest.conformanceCorpusFingerprint = null;
       manifest.conformanceReceiptFingerprint = null;
@@ -3197,6 +3744,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         recoveryClass: 'idempotent',
         authorityLabels: ['network:http'],
         policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
+        propagatesWorldIdempotencyKey: false,
       });
       networkManifest.conformanceCorpusFingerprint = null;
       networkManifest.conformanceReceiptFingerprint = null;
@@ -3477,8 +4025,11 @@ describe('migration, branching, and CLI diagnostics', () => {
           preflight() { return { accepted: true, blockers: [] }; }
           dryRun() { return { wouldInvoke: true }; }
           shadow() { return { liveInvoked: false, schemaAccepted: false }; }
-          async resolve() {
-            const response = await fetch('https://example.invalid/world-host-capability-pack-abi-probe', { method: 'POST' });
+          async resolve(context, hostRequest) {
+            const response = await fetch('https://example.invalid/world-host-capability-pack-abi-probe', {
+              method: 'POST',
+              headers: { 'Idempotency-Key': hostRequest.idempotencyKeyWorldFingerprint }
+            });
             const payload = await response.json();
             if (payload.action?.variant !== 'final') {
               throw Object.assign(new Error('model probe response was not action-shaped'), { code: 'ERR_MODEL_PROBE_ACTION_MISSING' });
@@ -4034,6 +4585,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       manifest.conformanceReceiptFingerprint = null;
       manifest.supportedActuationClasses = ['model', 'http'];
       manifest.supportedResponseStatuses = ['ok'];
+      manifest.propagatesWorldIdempotencyKey = false;
       manifest.checksums = manifest.checksums
         .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
         .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
@@ -5962,6 +6514,54 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('rejects effect proxies whose admitted scope differs from raw property reads without persisting anything', async () => {
+    const source = await fixtureStore();
+    const bundle = await source.store.exportRun(source.run.runId, 'main');
+    const admittedRunId = 'proxy-admitted-run';
+    const admittedBranchId = 'proxy-admitted-branch';
+    const proxiedEffect = new Proxy(fixtureImportEffect(bundle, {
+      runId: admittedRunId,
+      branchId: admittedBranchId,
+    }), {
+      get(target, property, receiver) {
+        if (property === 'runId') return bundle.run.runId;
+        if (property === 'branchId') return bundle.branchId;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const proxiedBundle = { ...bundle, effects: [proxiedEffect] };
+
+    assert.equal(proxiedEffect.runId, bundle.run.runId);
+    assert.equal(proxiedEffect.branchId, bundle.branchId);
+
+    const memory = new MemoryStore();
+    await assert.rejects(
+      () => memory.importRun(proxiedBundle),
+      { code: 'ERR_IMPORT_EFFECT_SCOPE_MISMATCH' },
+    );
+    assert.equal(memory.blobs.size, 0);
+    assert.equal(memory.applications.size, 0);
+    assert.equal(memory.runs.size, 0);
+    assert.equal(memory.heads.size, 0);
+    assert.equal(memory.effects.size, 0);
+
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-proxy-effect-import-'));
+    try {
+      const directory = new DirectoryStore(root);
+      await assert.rejects(
+        () => directory.importRun(proxiedBundle),
+        { code: 'ERR_IMPORT_EFFECT_SCOPE_MISMATCH' },
+      );
+      assert.deepEqual(await directory.listBlobRefs(), []);
+      assert.deepEqual(await directory.allApplications(), []);
+      assert.deepEqual(await directory.allRuns(), []);
+      assert.deepEqual(await directory.allHeads(), []);
+      assert.deepEqual(await directory.allEffectRecords(), []);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('exports creation metadata input blobs after branch heads advance', async () => {
     const memory = await fixtureStore();
     const memoryInputBytes = fromUtf8('memory-creation-input');
@@ -7266,6 +7866,40 @@ async function assertNoNewCapabilityAdapterImportDirs(before) {
   const after = await capabilityAdapterImportDirNames();
   const added = [...after].filter((name) => !before.has(name)).sort();
   assert.deepEqual(added, []);
+}
+
+async function capabilityProbeFileRootDirNames() {
+  const entries = await readdir(tmpdir(), { withFileTypes: true }).catch(() => []);
+  return new Set(entries
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith('world-host-capability-probe-files-'))
+    .map((entry) => entry.name));
+}
+
+async function assertNoNewCapabilityProbeFileRoots(before) {
+  const after = await capabilityProbeFileRootDirNames();
+  const added = [...after].filter((name) => !before.has(name)).sort();
+  assert.deepEqual(added, []);
+}
+
+async function writeTrustedCapabilityProbePack(pack, { artifactPath, artifactBytes, adapter, manifestOverrides = {} }) {
+  const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+  Object.assign(manifest, manifestOverrides);
+  manifest.adapter = adapter;
+  manifest.conformanceCorpusFingerprint = null;
+  manifest.conformanceReceiptFingerprint = null;
+  if (adapter.kind === 'sidecar') {
+    manifest.maximumRequestBytes = Math.min(manifest.maximumRequestBytes, DEFAULT_SIDECAR_TRANSPORTABLE_BYTES);
+    manifest.maximumResponseBytes = Math.min(manifest.maximumResponseBytes, DEFAULT_SIDECAR_TRANSPORTABLE_BYTES);
+  }
+  await rm(path.join(pack, 'conformance.json'), { force: true });
+  if (artifactPath !== 'adapter.mjs') await rm(path.join(pack, 'adapter.mjs'), { force: true });
+  await writeFile(path.join(pack, artifactPath), artifactBytes);
+  manifest.checksums = manifest.checksums
+    .filter((item) => !['adapter.mjs', 'sidecar.mjs', 'conformance.json', artifactPath].includes(item.path))
+    .concat({ path: artifactPath, checksum: `sha256:${createHash('sha256').update(artifactBytes).digest('hex')}` });
+  manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+  await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  return manifest;
 }
 
 function fixtureDriver() {

@@ -1128,11 +1128,14 @@ function assertNoWorldEvidenceByteField(value) {
   const payload = parseJsonBytes(value);
   if (payload !== null)
     assertNoWorldEvidenceKeys(payload);
-  const valueImagePayload = parseCanonicalValueImagePayload(value);
-  if (valueImagePayload !== null) {
-    const decodedPayload = parseJsonBytes(valueImagePayload);
+  const valueImage = parseCanonicalValueImage(value);
+  if (valueImage !== null) {
+    const decodedPayload = parseJsonBytes(valueImage.payload);
     if (decodedPayload !== null)
       assertNoWorldEvidenceKeys(decodedPayload);
+    const decodedLabel = parseJsonBytes(valueImage.diagnosticTypeLabel);
+    if (decodedLabel !== null)
+      assertNoWorldEvidenceKeys(decodedLabel, ["diagnosticTypeLabel"]);
   }
 }
 function parseJsonBytes(value) {
@@ -1152,11 +1155,11 @@ function parseJsonBytes(value) {
     return null;
   }
 }
-function parseCanonicalValueImagePayload(value) {
+function parseCanonicalValueImage(value) {
   if (!(value instanceof Uint8Array) || value.byteLength === 0)
     return null;
   try {
-    return decodeCanonicalValueImage(value).payload;
+    return decodeCanonicalValueImage(value);
   } catch {
     return null;
   }

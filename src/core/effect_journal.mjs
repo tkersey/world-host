@@ -6,7 +6,8 @@ import {
   assertRecoveryClass,
   defineActuatorDriver,
 } from './actuator.mjs';
-import { assertNoWorldEvidenceKeys } from './capability_driver.mjs';
+import { assertCapabilityResolutionBoundary, assertNoWorldEvidenceKeys } from './capability_driver.mjs';
+import { redactCapabilityDiagnostics } from './capability_policy.mjs';
 import { createRunPolicy, hostRequestPolicyPromptByteLength, hostRequestPolicyRequestByteLength } from './capabilities.mjs';
 import { assertBlobRef, assertBytes, fail, fromUtf8, stableJson, toHex } from './store.mjs';
 import { decodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
@@ -30,6 +31,29 @@ const TERMINAL_WITH_OUTCOME = new Set([
 ]);
 
 const EFFECT_STATES = new Set(Object.values(EffectState));
+const EFFECT_RECORD_DURABLE_FIELDS = Object.freeze([
+  'runId',
+  'branchId',
+  'parentTurnClosureFingerprint',
+  'hostRequestFingerprint',
+  'idempotencyKey',
+  'idempotencyKeyWorldFingerprint',
+  'actuatorRef',
+  'descriptorFingerprint',
+  'actuationClass',
+  'responseSchema',
+  'requestBytesChecksum',
+  'requestIdentityChecksum',
+  'state',
+  'attemptCount',
+  'driverRecoveryClass',
+  'requestBytesRef',
+  'effectIdentityBytesRef',
+  'resolutionInputRef',
+  'hostClaimRef',
+  'driverTransactionRef',
+  'diagnostics',
+]);
 const RECOVER_AFTER_RESOLVE_FAILURE = new Set([
   EffectRecoveryClass.pure,
   EffectRecoveryClass.idempotent,
@@ -78,6 +102,7 @@ export class EffectJournal {
       if (options.createIfMissing === false && reusablePlaceholderCanYieldToOutcome(current)) {
         const reusable = await this.#branchLocalReusableRecord(prepared, {
           outcomesOnly: true,
+          acceptOutcome: options.acceptBranchLocalOutcome,
           beforeReuse: options.beforeBranchLocalReuse,
         });
         if (reusable) return reusable;
@@ -87,11 +112,15 @@ export class EffectJournal {
     if (options.createIfMissing === false) {
       return await this.#branchLocalReusableRecord(prepared, {
         outcomesOnly: true,
+        acceptOutcome: options.acceptBranchLocalOutcome,
         beforeReuse: options.beforeBranchLocalReuse,
       });
     }
 
-    const reusable = await this.#branchLocalReusableRecord(prepared, { beforeReuse: options.beforeBranchLocalReuse });
+    const reusable = await this.#branchLocalReusableRecord(prepared, {
+      acceptOutcome: options.acceptBranchLocalOutcome,
+      beforeReuse: options.beforeBranchLocalReuse,
+    });
     if (reusable) return reusable;
 
     const manifest = options.manifest ? normalizeManifest(options.manifest) : null;
@@ -139,9 +168,11 @@ export class EffectJournal {
     assertDurableRecoveryAllowed(manifest.recoveryClass, this.policy);
     return await withEffectKeyLock(this.store, effectLockKey(this.runId, prepared.idempotencyKey), async () => {
       const assertRequestWithinCurrentPolicy = () => assertHostRequestPolicyWithinLimits(normalizedHostRequest, manifest, this.policy);
+      const acceptBranchLocalOutcome = async (record) => await this.#reusableOutcomeAccepted(record, normalizedHostRequest, manifest);
       let observed = await this.#observePrepared(journalHostRequest, prepared, {
         manifest,
         createIfMissing: false,
+        acceptBranchLocalOutcome,
         beforeBranchLocalReuse: assertRequestWithinCurrentPolicy,
       });
       const existingOutcome = observed ? await this.#nonInvokingResolution(observed, normalizedHostRequest, manifest) : null;
@@ -156,6 +187,7 @@ export class EffectJournal {
       if (!observed) {
         observed = await this.#observePrepared(journalHostRequest, prepared, {
           manifest,
+          acceptBranchLocalOutcome,
           beforeBranchLocalReuse: assertRequestWithinCurrentPolicy,
         });
       }
@@ -373,8 +405,8 @@ export class EffectJournal {
       ? head.updateDiagnostics.committedEffectIds
       : []);
     const committed = [];
-    for (const record of await this.list()) {
-      assertEffectRecord(record);
+    for (const listedRecord of await this.list()) {
+      const record = assertEffectRecord(listedRecord);
       if (
         record.branchId === this.branchId &&
         record.parentTurnClosureFingerprint === committedParent &&
@@ -439,8 +471,10 @@ export class EffectJournal {
   async #branchLocalReusableRecord(prepared, options = {}) {
     const idempotencyKeyJson = stableJson(prepared.idempotencyKey);
     let reusable = null;
-    for (const record of await this.list()) {
-      assertEffectRecord(record);
+    let acceptedOutcome = null;
+    let currentBranchOutcome = null;
+    for (const listedRecord of await this.list()) {
+      const record = assertEffectRecord(listedRecord);
       if (stableJson(record.idempotencyKey) !== idempotencyKeyJson) continue;
       let candidate = record;
       if (effectIdentityChecksum(record) !== prepared.requestIdentityChecksum) {
@@ -469,18 +503,45 @@ export class EffectJournal {
       } else if (!options.outcomesOnly && reusable === null && candidate.state === EffectState.running) {
         reusable = candidate;
       }
+      if (hasOutcome && candidate.branchId === this.branchId && currentBranchOutcome === null) {
+        currentBranchOutcome = candidate;
+      }
+      if (
+        hasOutcome &&
+        acceptedOutcome === null &&
+        typeof options.acceptOutcome === 'function' &&
+        await options.acceptOutcome(candidate)
+      ) {
+        acceptedOutcome = candidate;
+      }
     }
-    if (reusable) {
+    const selected = currentBranchOutcome ?? acceptedOutcome ?? reusable;
+    if (selected) {
       if (typeof options.beforeReuse === 'function') options.beforeReuse();
       return await this.#put({
-        ...reusable,
+        ...selected,
         branchId: this.branchId,
         parentTurnClosureFingerprint: this.parentTurnClosureFingerprint,
-        state: reusable.state === EffectState.running ? EffectState.running : EffectState.resolved,
-        diagnostics: { ...reusable.diagnostics, branchLocalReuse: reusable.branchId },
+        state: selected.state === EffectState.running ? EffectState.running : EffectState.resolved,
+        diagnostics: { ...selected.diagnostics, branchLocalReuse: selected.branchId },
       });
     }
     return null;
+  }
+
+  async #reusableOutcomeAccepted(record, normalizedHostRequest, manifest) {
+    try {
+      assertEffectRecoveryClassMatchesManifest(manifest, record);
+    } catch {
+      return false;
+    }
+    const resolutionInputBytes = await this.store.getBlob(record.resolutionInputRef);
+    try {
+      assertResolutionAccepted(resolutionInputBytes, normalizedHostRequest, manifest, this.policy);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async #resolutionFromRecord(record) {
@@ -739,6 +800,7 @@ function retryableReusableResolutionError(error, manifest, policy) {
     'ERR_EFFECT_RESPONSE_REQUIRED',
     'ERR_EFFECT_RESPONSE_FORBIDDEN',
     'ERR_EFFECT_MODEL_OUTPUT_INVALID',
+    'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN',
   ]).has(error.code);
 }
 
@@ -797,6 +859,7 @@ export function createEffectRecord(record) {
 
 export function assertEffectRecord(record) {
   if (!record || typeof record !== 'object') fail('ERR_INVALID_EFFECT_RECORD');
+  record = admitEffectRecordDurableMetadata(record);
   for (const field of [
     'runId',
     'branchId',
@@ -831,6 +894,159 @@ export function assertEffectRecord(record) {
     fail('ERR_INVALID_EFFECT_RECORD', 'outcome effects require a persisted ResolutionInput');
   }
   return record;
+}
+
+function admitEffectRecordDurableMetadata(record) {
+  const selected = selectOwnEnumerableDataFields(record, EFFECT_RECORD_DURABLE_FIELDS);
+  const admitted = {};
+  for (const [field, value] of Object.entries(selected)) {
+    if (field === 'driverTransactionRef' || field === 'diagnostics' || field === 'responseSchema') continue;
+    const stripped = stripDurableSerializationHooks(value);
+    if (stripped !== undefined) admitted[field] = stripped;
+  }
+  admitted.idempotencyKey = selectDurableObjectFields(admitted.idempotencyKey, ['format', 'bytesHex']);
+  for (const field of ['requestBytesRef', 'effectIdentityBytesRef', 'resolutionInputRef', 'hostClaimRef']) {
+    admitted[field] = selectDurableObjectFields(admitted[field], ['algorithm', 'checksum', 'byteLength']);
+  }
+  admitted.responseSchema = assertEffectResponseSchemaDurable(selected.responseSchema);
+  admitted.driverTransactionRef = assertDriverTransactionRefDurable(selected.driverTransactionRef);
+  admitted.diagnostics = durableJsonImage(
+    redactCapabilityDiagnostics(stripDurableSerializationHooks(selected.diagnostics ?? {})),
+    'diagnostics',
+  );
+  return durableJsonImage(admitted, 'EffectRecord');
+}
+
+function selectOwnEnumerableDataFields(value, fields) {
+  const selected = {};
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  for (const field of fields) {
+    const descriptor = descriptors[field];
+    if (
+      descriptor?.enumerable !== true ||
+      !Object.prototype.hasOwnProperty.call(descriptor, 'value')
+    ) continue;
+    selected[field] = descriptor.value;
+  }
+  return selected;
+}
+
+function selectDurableObjectFields(value, fields) {
+  if (value === undefined || value === null || typeof value !== 'object') return value;
+  return selectOwnEnumerableDataFields(value, fields);
+}
+
+function assertEffectResponseSchemaDurable(value) {
+  if (value === undefined || value === null) return value;
+  const stripped = stripDurableSerializationHooks(value, new WeakMap(), {
+    label: 'responseSchema',
+    plainJsonOnly: true,
+  });
+  const durable = durableJsonImage(stripped, 'responseSchema');
+  const redacted = durableJsonImage(redactCapabilityDiagnostics(stripped), 'responseSchema');
+  if (stableJson(durable) !== stableJson(redacted)) {
+    fail('ERR_SECRET_PERSISTED', 'responseSchema contains secret-shaped data');
+  }
+  return selectDurableObjectFields(durable, ['status']);
+}
+
+function assertDriverTransactionRefDurable(value) {
+  if (value === undefined || value === null) return value;
+  const stripped = stripDurableSerializationHooks(value, new WeakMap(), {
+    label: 'driverTransactionRef',
+    plainJsonOnly: true,
+  });
+  const durable = durableJsonImage(stripped, 'driverTransactionRef');
+  const redacted = durableJsonImage(redactCapabilityDiagnostics(stripped), 'driverTransactionRef');
+  if (stableJson(durable) !== stableJson(redacted)) {
+    fail('ERR_SECRET_PERSISTED', 'driverTransactionRef contains secret-shaped data');
+  }
+  return durable;
+}
+
+function stripDurableSerializationHooks(value, seen = new WeakMap(), options = {}) {
+  const { label = 'value', plainJsonOnly = false } = options;
+  if (value === null || typeof value !== 'object') {
+    if (plainJsonOnly && (
+      value === undefined ||
+      typeof value === 'function' ||
+      typeof value === 'symbol' ||
+      typeof value === 'bigint' ||
+      (typeof value === 'number' && !Number.isFinite(value))
+    )) {
+      fail('ERR_INVALID_EFFECT_RECORD', `${label} must contain only plain durable JSON values`);
+    }
+    if (typeof value === 'function' || typeof value === 'symbol') return undefined;
+    return value;
+  }
+  if (plainJsonOnly) {
+    const prototype = Object.getPrototypeOf(value);
+    if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) {
+      fail('ERR_INVALID_EFFECT_RECORD', `${label} must contain only plain durable JSON values`);
+    }
+  }
+  if (value instanceof ArrayBuffer) return ArrayBuffer.prototype.slice.call(value, 0);
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(
+      ArrayBuffer.prototype.slice.call(value.buffer, value.byteOffset, value.byteOffset + value.byteLength),
+    );
+  }
+  if (seen.has(value)) return seen.get(value);
+  if (Array.isArray(value)) {
+    const stripped = [];
+    seen.set(value, stripped);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+        if (plainJsonOnly) fail('ERR_INVALID_EFFECT_RECORD', `${label} must contain only plain durable JSON values`);
+        stripped[index] = undefined;
+        continue;
+      }
+      stripped[index] = stripDurableSerializationHooks(descriptor.value, seen, options);
+    }
+    return stripped;
+  }
+  if (value instanceof Map) {
+    const stripped = new Map();
+    seen.set(value, stripped);
+    for (const [key, child] of Map.prototype.entries.call(value)) {
+      stripped.set(
+        stripDurableSerializationHooks(key, seen, options),
+        stripDurableSerializationHooks(child, seen, options),
+      );
+    }
+    return stripped;
+  }
+  const stripped = {};
+  seen.set(value, stripped);
+  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
+    if (key === 'toJSON' && typeof descriptor.value === 'function') continue;
+    if (descriptor.enumerable !== true) continue;
+    if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+      if (plainJsonOnly) fail('ERR_INVALID_EFFECT_RECORD', `${label} must contain only plain durable JSON values`);
+      continue;
+    }
+    const child = stripDurableSerializationHooks(descriptor.value, seen, options);
+    if (child === undefined) continue;
+    Object.defineProperty(stripped, key, {
+      value: child,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return stripped;
+}
+
+function durableJsonImage(value, label) {
+  try {
+    const encoded = JSON.stringify(value);
+    if (encoded === undefined) fail('ERR_INVALID_EFFECT_RECORD', `${label} must be durable JSON`);
+    return JSON.parse(encoded);
+  } catch {
+    fail('ERR_INVALID_EFFECT_RECORD', `${label} must be durable JSON`);
+  }
 }
 
 function assertOptionalBlobRef(ref, field) {
@@ -907,7 +1123,7 @@ function normalizeDriverResolution(value) {
   return {
     resolutionInputBytes,
     hostClaimBytes: value?.hostClaimBytes === undefined ? undefined : assertBytes(value.hostClaimBytes, 'hostClaimBytes'),
-    driverTransactionRef: value?.driverTransactionRef,
+    driverTransactionRef: assertDriverTransactionRefDurable(value?.driverTransactionRef),
     diagnostics: value?.diagnostics ?? {},
   };
 }
@@ -944,6 +1160,7 @@ function assertManifestResponseWithinPolicy(manifest, policy) {
 }
 
 export function assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, policy) {
+  assertCapabilityResolutionBoundary({ resolutionInputBytes });
   const resolution = decodeResolutionInputBytes(resolutionInputBytes);
   const expectedTarget = hostRequestTargetFingerprint(hostRequest);
   if (resolution.targetHostRequestFingerprint !== expectedTarget) {
@@ -1029,6 +1246,7 @@ function validateAgentAction(action, validation) {
 }
 
 function assertDriverCarriedBytesAccepted(resolved, manifest, policy) {
+  assertNoWorldEvidenceKeys(resolved.diagnostics);
   if (!resolved.hostClaimBytes) return;
   const maximumResponseBytes = policy.maximumResponseBytes === undefined
     ? manifest.maximumResponseBytes

@@ -36,6 +36,13 @@ const SEMANTIC_FIELDS = Object.freeze([
   'metadataBytes',
   'adapter',
 ]);
+const CAPABILITY_MANIFEST_FIELDS = new Set([
+  ...SEMANTIC_FIELDS,
+  'packFingerprint',
+  'conformanceReceiptFingerprint',
+  'checksums',
+  'docs',
+]);
 const SECRET_PATTERN = /credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key/i;
 const CONFORMANCE_RECEIPT_PATH = 'conformance.json';
 const HOST_NETWORK_GLOBALS = new Set(['fetch', 'WebSocket', 'EventSource']);
@@ -222,7 +229,7 @@ const NODE_CONFIG_MODULE_OPTIONS = new Set([
 
 export class CapabilityManifest {
   constructor(fields) {
-    Object.assign(this, fields);
+    const copiedFields = copyCapabilityManifestFields(fields);
     for (const key of [
       'supportedActuatorRefs',
       'supportedDescriptorFingerprints',
@@ -233,12 +240,58 @@ export class CapabilityManifest {
       'checksums',
       'docs',
     ]) {
-      if (Array.isArray(this[key])) Object.freeze(this[key]);
+      if (Array.isArray(copiedFields[key])) {
+        copiedFields[key] = immutableJsonSemanticValue(
+          copiedFields[key],
+          'ERR_CAPABILITY_MANIFEST_INVALID',
+          `${key} must contain deterministic semantic data`,
+        );
+      }
     }
-    Object.freeze(this.policyRequirements);
-    Object.freeze(this.adapter);
+    for (const key of ['policyRequirements', 'adapter']) {
+      if (copiedFields[key] && typeof copiedFields[key] === 'object') {
+        copiedFields[key] = immutableJsonSemanticValue(
+          copiedFields[key],
+          'ERR_CAPABILITY_MANIFEST_INVALID',
+          `${key} must contain deterministic semantic data`,
+        );
+      }
+    }
+    if (Object.hasOwn(copiedFields, 'metadataBytes')) {
+      copiedFields.metadataBytes = normalizeMetadataBytes(copiedFields.metadataBytes);
+    }
+    Object.assign(this, copiedFields);
     Object.freeze(this);
   }
+}
+
+function copyCapabilityManifestFields(fields) {
+  if (!fields || typeof fields !== 'object') {
+    fail('ERR_CAPABILITY_MANIFEST_INVALID', 'manifest fields must be supported data properties');
+  }
+  let keys;
+  try {
+    keys = Reflect.ownKeys(fields);
+  } catch {
+    fail('ERR_CAPABILITY_MANIFEST_INVALID', 'manifest fields must be supported data properties');
+  }
+  const copiedFields = {};
+  for (const key of keys) {
+    if (typeof key !== 'string' || !CAPABILITY_MANIFEST_FIELDS.has(key)) {
+      fail('ERR_CAPABILITY_MANIFEST_INVALID', 'manifest fields must be supported data properties');
+    }
+    let descriptor;
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(fields, key);
+    } catch {
+      fail('ERR_CAPABILITY_MANIFEST_INVALID', 'manifest fields must be supported data properties');
+    }
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+      fail('ERR_CAPABILITY_MANIFEST_INVALID', 'manifest fields must be supported data properties');
+    }
+    copiedFields[key] = descriptor.value;
+  }
+  return copiedFields;
 }
 
 export class CapabilityPack {
@@ -287,8 +340,16 @@ export class CapabilityConformanceReceipt {
 
 export function assertCapabilityManifest(input, options = {}) {
   if (!input || typeof input !== 'object') fail('ERR_CAPABILITY_MANIFEST_INVALID');
-  assertNoCredentialMaterial(input);
-  assertNoMetadataCredentialMaterial(input.metadataBytes);
+  let inputMetadataBytes;
+  try {
+    inputMetadataBytes = Object.hasOwn(input, 'metadataBytes') ? input.metadataBytes : '';
+  } catch {
+    fail('ERR_CAPABILITY_METADATA_INVALID', 'metadataBytes must be deterministic JSON-semantic data');
+  }
+  const metadataBytes = normalizeMetadataBytes(inputMetadataBytes);
+  assertNoCredentialMaterial(input, [], true);
+  assertNoCredentialMaterial(metadataBytes, ['metadataBytes']);
+  assertNoMetadataCredentialMaterial(metadataBytes);
   const formatVersion = exactInteger(input.formatVersion, 'formatVersion', world_host_capability_pack_format_version);
   const driverAbiVersion = exactInteger(input.driverAbiVersion, 'driverAbiVersion', world_host_capability_driver_abi_version);
   const recoveryClass = assertRecoveryClass(input.recoveryClass);
@@ -328,7 +389,7 @@ export function assertCapabilityManifest(input, options = {}) {
     maximumResponseBytes: requiredPositiveSafeInteger(input.maximumResponseBytes, 'maximumResponseBytes'),
     conformanceCorpusFingerprint: optionalFingerprint(input.conformanceCorpusFingerprint, 'conformanceCorpusFingerprint'),
     conformanceReceiptFingerprint: optionalFingerprint(input.conformanceReceiptFingerprint, 'conformanceReceiptFingerprint'),
-    metadataBytes: normalizeMetadataBytes(input.metadataBytes ?? ''),
+    metadataBytes,
     adapter: normalizeAdapter(input.adapter ?? {}),
     checksums: normalizeChecksums(input.checksums ?? []),
     docs: requiredStringList(input.docs ?? [], 'docs'),
@@ -3298,7 +3359,7 @@ function normalizeAdapter(adapter) {
   }
   return Object.freeze({
     kind,
-    command: adapter.command.map((item) => optionalRelativePath(item, 'adapter.command')),
+    command: Object.freeze(adapter.command.map((item) => optionalRelativePath(item, 'adapter.command'))),
   });
 }
 
@@ -3324,10 +3385,11 @@ function normalizePolicyRequirements(value) {
     allowFileEffects: value.allowFileEffects === true,
     allowHumanEffects: value.allowHumanEffects === true,
     allowBestEffort: value.allowBestEffort === true,
-    allowedOrigins: requiredStringList(value.allowedOrigins ?? [], 'policyRequirements.allowedOrigins'),
-    allowedMethods: requiredStringList(value.allowedMethods ?? [], 'policyRequirements.allowedMethods').map((item) => item.toUpperCase()),
-    allowedFileRoots: requiredStringList(value.allowedFileRoots ?? [], 'policyRequirements.allowedFileRoots')
-      .map((item) => optionalRelativePath(item, 'policyRequirements.allowedFileRoots')),
+    allowedOrigins: Object.freeze(requiredStringList(value.allowedOrigins ?? [], 'policyRequirements.allowedOrigins')),
+    allowedMethods: Object.freeze(requiredStringList(value.allowedMethods ?? [], 'policyRequirements.allowedMethods')
+      .map((item) => item.toUpperCase())),
+    allowedFileRoots: Object.freeze(requiredStringList(value.allowedFileRoots ?? [], 'policyRequirements.allowedFileRoots')
+      .map((item) => optionalRelativePath(item, 'policyRequirements.allowedFileRoots'))),
   });
 }
 
@@ -3346,7 +3408,7 @@ function assertConformanceVector(value) {
   return Object.freeze({ ...value });
 }
 
-function assertNoCredentialMaterial(value, path = []) {
+function assertNoCredentialMaterial(value, path = [], skipRootMetadataBytes = false) {
   if (value == null) return;
   if (typeof value === 'string') {
     const descriptorLabel = path[0] === 'requiredSecrets' && (path.length === 2 || ['name', 'class', 'purpose'].includes(path.at(-1)));
@@ -3366,9 +3428,10 @@ function assertNoCredentialMaterial(value, path = []) {
     return;
   }
   if (typeof value === 'object') {
-    for (const [key, child] of Object.entries(value)) {
+    for (const key of Object.keys(value)) {
+      if (skipRootMetadataBytes && path.length === 0 && key === 'metadataBytes') continue;
       assertNoCredentialKeyMaterial(key);
-      assertNoCredentialMaterial(child, [...path, key]);
+      assertNoCredentialMaterial(value[key], [...path, key]);
     }
   }
 }
@@ -3461,10 +3524,84 @@ function optionalRelativePath(value, field) {
 }
 
 function normalizeMetadataBytes(value) {
-  if (value instanceof Uint8Array) return { format: 'base64', bytes: btoa(String.fromCharCode(...value)) };
+  if (ArrayBuffer.isView(value)) {
+    if (!(value instanceof Uint8Array)) {
+      fail('ERR_CAPABILITY_METADATA_INVALID', 'metadataBytes must be deterministic JSON-semantic data');
+    }
+    try {
+      return immutableJsonSemanticValue(
+        { format: 'base64', bytes: btoa(String.fromCharCode(...value)) },
+        'ERR_CAPABILITY_METADATA_INVALID',
+        'metadataBytes must be deterministic JSON-semantic data',
+      );
+    } catch (error) {
+      if (error?.code === 'ERR_CAPABILITY_METADATA_INVALID') throw error;
+      fail('ERR_CAPABILITY_METADATA_INVALID', 'metadataBytes must be deterministic JSON-semantic data');
+    }
+  }
   if (typeof value === 'string') return value;
-  if (value && typeof value === 'object') return value;
-  fail('ERR_CAPABILITY_METADATA_INVALID');
+  if (value && typeof value === 'object') {
+    return immutableJsonSemanticValue(
+      value,
+      'ERR_CAPABILITY_METADATA_INVALID',
+      'metadataBytes must be deterministic JSON-semantic data',
+    );
+  }
+  fail('ERR_CAPABILITY_METADATA_INVALID', 'metadataBytes must be deterministic JSON-semantic data');
+}
+
+function immutableJsonSemanticValue(value, errorCode, message) {
+  try {
+    return cloneJsonSemanticValue(value, new WeakSet());
+  } catch {
+    fail(errorCode, message);
+  }
+}
+
+function cloneJsonSemanticValue(value, ancestors) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new TypeError('non-finite JSON number');
+    return value;
+  }
+  if (typeof value !== 'object') throw new TypeError('non-JSON semantic value');
+  if (ancestors.has(value)) throw new TypeError('cyclic JSON semantic value');
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) return cloneJsonSemanticArray(value, ancestors);
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) throw new TypeError('non-plain JSON object');
+    const entries = [];
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== 'string') throw new TypeError('symbol JSON key');
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor?.enumerable || !Object.hasOwn(descriptor, 'value')) {
+        throw new TypeError('non-data JSON property');
+      }
+      entries.push([key, cloneJsonSemanticValue(descriptor.value, ancestors)]);
+    }
+    return Object.freeze(Object.fromEntries(entries));
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function cloneJsonSemanticArray(value, ancestors) {
+  const keys = Reflect.ownKeys(value);
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+  const length = lengthDescriptor?.value;
+  if (!Number.isSafeInteger(length) || length < 0 || keys.length !== length + 1) {
+    throw new TypeError('sparse or extended JSON array');
+  }
+  const copy = [];
+  for (let index = 0; index < length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (!descriptor?.enumerable || !Object.hasOwn(descriptor, 'value')) {
+      throw new TypeError('sparse or accessor JSON array');
+    }
+    copy.push(cloneJsonSemanticValue(descriptor.value, ancestors));
+  }
+  return Object.freeze(copy);
 }
 
 function exactInteger(value, field, expected) {

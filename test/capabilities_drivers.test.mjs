@@ -8,7 +8,9 @@ import { tmpdir } from 'node:os';
 
 import { EffectRecoveryClass, assertDriverManifest, defineActuatorDriver } from '../src/core/actuator.mjs';
 import { createRunPolicy, preflightCapabilities } from '../src/core/capabilities.mjs';
+import { createAuthorityGrant, createCapabilityPolicy } from '../src/core/capability_policy.mjs';
 import { EffectJournal, EffectState, journaledHostRequest } from '../src/core/effect_journal.mjs';
+import { immutableSet } from '../src/core/immutable_set.mjs';
 import { FixtureModelDriver } from '../src/drivers/fixture_model_driver.mjs';
 import { SandboxFileDriver } from '../src/drivers/sandbox_file_driver.mjs';
 import { HttpJsonDriver } from '../src/drivers/http_json_driver.mjs';
@@ -23,6 +25,236 @@ import { MemoryStore } from '../src/stores/memory_store.mjs';
 const FIXTURE_FILE_ROOT = path.resolve('/tmp/world-host-fixture-file-root');
 
 describe('capability preflight and reference drivers', () => {
+  it('keeps policy membership sets immutable and Set-compatible', () => {
+    const capabilityPolicy = createCapabilityPolicy({
+      allowedOrigins: ['member'],
+      allowedMethods: ['member'],
+      allowedFileRoots: ['member'],
+      allowedAuthorityLabels: ['member'],
+      allowedCapabilityPacks: ['member'],
+      deniedCapabilityPacks: ['member'],
+    });
+    const authorityGrant = createAuthorityGrant({
+      authorityLabels: ['member'],
+      capabilityPacks: ['member'],
+      origins: ['member'],
+      fileRoots: ['member'],
+    });
+    const runPolicy = createRunPolicy({
+      allowedAuthorityLabels: ['member'],
+      allowedCapabilityPacks: ['member'],
+      deniedCapabilityPacks: ['member'],
+      allowedFileRoots: ['member'],
+      allowedHttpOrigins: ['member'],
+      allowedHttpMethods: ['member'],
+      acceptedSupervisionPolicies: ['member'],
+    });
+    const membershipSets = [
+      capabilityPolicy.allowedOrigins,
+      capabilityPolicy.allowedMethods,
+      capabilityPolicy.allowedFileRoots,
+      capabilityPolicy.allowedAuthorityLabels,
+      capabilityPolicy.allowedCapabilityPacks,
+      capabilityPolicy.deniedCapabilityPacks,
+      authorityGrant.authorityLabels,
+      authorityGrant.capabilityPacks,
+      authorityGrant.origins,
+      authorityGrant.fileRoots,
+      runPolicy.allowedAuthorityLabels,
+      runPolicy.allowedCapabilityPacks,
+      runPolicy.deniedCapabilityPacks,
+      runPolicy.allowedFileRoots,
+      runPolicy.allowedHttpOrigins,
+      runPolicy.allowedHttpMethods,
+      runPolicy.acceptedSupervisionPolicies,
+    ];
+
+    for (const membership of membershipSets) {
+      assert.ok(membership instanceof Set);
+      assert.equal(Object.isFrozen(membership), true);
+      assert.equal(membership.size, 1);
+      const expected = membership.has('MEMBER') ? 'MEMBER' : 'member';
+      assert.equal(membership.has(expected), true);
+      assert.deepEqual([...membership], [expected]);
+      let callbackOwner = null;
+      membership.forEach((value, key, owner) => {
+        assert.equal(value, expected);
+        assert.equal(key, expected);
+        callbackOwner = owner;
+      });
+      assert.equal(callbackOwner, membership);
+
+      assert.throws(() => membership.add('other'), TypeError);
+      assert.throws(() => membership.delete(expected), TypeError);
+      assert.throws(() => membership.clear(), TypeError);
+      assert.throws(() => Set.prototype.add.call(membership, 'other'), TypeError);
+      assert.throws(() => Set.prototype.delete.call(membership, expected), TypeError);
+      assert.throws(() => Set.prototype.clear.call(membership), TypeError);
+      assert.deepEqual([...membership], [expected]);
+    }
+
+    const source = new Set(['copied']);
+    const membership = immutableSet(source);
+    source.add('external-mutation');
+    assert.deepEqual([...membership], ['copied']);
+    assert.equal(membership.valueOf(), membership);
+  });
+
+  it('does not expose immutable Set targets to post-import intrinsic tampering', () => {
+    const originalAdd = Set.prototype.add;
+    let constructionTarget = null;
+    Set.prototype.add = function poisonedSetAdd(value) {
+      constructionTarget = this;
+      return Reflect.apply(originalAdd, this, [value]);
+    };
+
+    let membership;
+    try {
+      membership = immutableSet(['original']);
+    } finally {
+      Set.prototype.add = originalAdd;
+    }
+    assert.equal(constructionTarget, null);
+    assert.deepEqual([...membership], ['original']);
+
+    const has = Set.prototype.has;
+    const originalBindDescriptor = Object.getOwnPropertyDescriptor(has, 'bind');
+    let boundTarget = null;
+    Object.defineProperty(has, 'bind', {
+      configurable: true,
+      value(target) {
+        boundTarget = target;
+        return Reflect.apply(Function.prototype.bind, this, [target]);
+      },
+    });
+    try {
+      assert.equal(membership.has('original'), true);
+    } finally {
+      if (originalBindDescriptor) Object.defineProperty(has, 'bind', originalBindDescriptor);
+      else delete has.bind;
+    }
+    assert.equal(boundTarget, null);
+    assert.deepEqual([...membership], ['original']);
+  });
+
+  it('constructs policy membership through captured collection intrinsics', () => {
+    const setSource = new Set(['set-member']);
+    const arraySource = ['array-member'];
+    const immutableSource = immutableSet(['immutable-member']);
+    const originalSetIterator = Set.prototype[Symbol.iterator];
+    const originalArrayIterator = Array.prototype[Symbol.iterator];
+    const originalArrayMap = Array.prototype.map;
+    const originalString = globalThis.String;
+    const originalToUpperCase = String.prototype.toUpperCase;
+    let runPolicy;
+    let capabilityPolicy;
+    let authorityGrant;
+    try {
+      Set.prototype[Symbol.iterator] = function* poisonedSetIterator() {
+        yield 'set-iterator-injected';
+      };
+      Array.prototype[Symbol.iterator] = function* poisonedArrayIterator() {
+        yield 'array-iterator-injected';
+      };
+      Array.prototype.map = function poisonedArrayMap() {
+        return ['array-map-injected'];
+      };
+      globalThis.String = function poisonedStringConversion() {
+        return 'string-conversion-injected';
+      };
+      originalString.prototype.toUpperCase = function poisonedStringToUpperCase() {
+        return 'string-uppercase-injected';
+      };
+
+      runPolicy = createRunPolicy({
+        allowedAuthorityLabels: setSource,
+        allowedCapabilityPacks: arraySource,
+        allowedFileRoots: immutableSource,
+        allowedHttpOrigins: 'run-scalar',
+        allowedHttpMethods: ['get'],
+        deniedCapabilityPacks: null,
+      });
+      capabilityPolicy = createCapabilityPolicy({
+        allowedOrigins: setSource,
+        allowedMethods: ['post'],
+        allowedFileRoots: immutableSource,
+        allowedAuthorityLabels: 'capability-scalar',
+        allowedCapabilityPacks: arraySource,
+        deniedCapabilityPacks: null,
+      });
+      authorityGrant = createAuthorityGrant({
+        authorityLabels: setSource,
+        capabilityPacks: arraySource,
+        origins: immutableSource,
+        fileRoots: 'grant-scalar',
+      });
+    } finally {
+      Set.prototype[Symbol.iterator] = originalSetIterator;
+      Array.prototype[Symbol.iterator] = originalArrayIterator;
+      Array.prototype.map = originalArrayMap;
+      originalString.prototype.toUpperCase = originalToUpperCase;
+      globalThis.String = originalString;
+    }
+
+    assert.deepEqual([...runPolicy.allowedAuthorityLabels], ['set-member']);
+    assert.deepEqual([...runPolicy.allowedCapabilityPacks], ['array-member']);
+    assert.deepEqual([...runPolicy.allowedFileRoots], ['immutable-member']);
+    assert.deepEqual([...runPolicy.allowedHttpOrigins], ['run-scalar']);
+    assert.deepEqual([...runPolicy.allowedHttpMethods], ['GET']);
+    assert.equal(runPolicy.deniedCapabilityPacks.size, 0);
+
+    assert.deepEqual([...capabilityPolicy.allowedOrigins], ['set-member']);
+    assert.deepEqual([...capabilityPolicy.allowedMethods], ['POST']);
+    assert.deepEqual([...capabilityPolicy.allowedFileRoots], ['immutable-member']);
+    assert.deepEqual([...capabilityPolicy.allowedAuthorityLabels], ['capability-scalar']);
+    assert.deepEqual([...capabilityPolicy.allowedCapabilityPacks], ['array-member']);
+    assert.equal(capabilityPolicy.deniedCapabilityPacks.size, 0);
+
+    assert.deepEqual([...authorityGrant.authorityLabels], ['set-member']);
+    assert.deepEqual([...authorityGrant.capabilityPacks], ['array-member']);
+    assert.deepEqual([...authorityGrant.origins], ['immutable-member']);
+    assert.deepEqual([...authorityGrant.fileRoots], ['grant-scalar']);
+  });
+
+  it('keeps constructed run-policy authorization membership from widening', () => {
+    const policy = createRunPolicy({
+      allowedAuthorityLabels: ['network:http', 'test'],
+      allowedHttpOrigins: ['https://allowed.example'],
+      allowedHttpMethods: ['GET'],
+      deniedCapabilityPacks: ['denied-fixture'],
+      acceptedSupervisionPolicies: ['default'],
+    });
+
+    assert.throws(() => policy.allowedHttpOrigins.add('https://widened.example'), TypeError);
+    const originReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://widened.example/path')],
+      drivers: [new HttpJsonDriver({ origins: ['https://widened.example'] })],
+      policy,
+    });
+    assert.ok(originReport.blockers.includes('http-origin-denied:https://widened.example'));
+
+    assert.throws(() => policy.deniedCapabilityPacks.delete('denied-fixture'), TypeError);
+    const denyReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [fixtureRequest()],
+      drivers: [fixtureDriverWithAuthority(['test'], { driverId: 'denied-fixture' })],
+      policy,
+    });
+    assert.ok(denyReport.blockers.includes('ERR_CAPABILITY_PACK_DENIED'));
+
+    assert.throws(() => policy.acceptedSupervisionPolicies.add(0x123n), TypeError);
+    const supervisionReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      applianceManifest: { supervisionPolicyFingerprint: 0x123n },
+      currentHead: { generation: 0 },
+      policy,
+    });
+    assert.ok(supervisionReport.blockers.includes('supervision-policy-rejected'));
+  });
+
   it('accepts only exact driver manifest coverage under receiver-local policy', () => {
     const report = preflightCapabilities({
       application: { requiredActuators: [{ actuatorRef: 'fixture:model' }], requiredRuntimeLimits: {} },
@@ -945,6 +1177,72 @@ describe('capability preflight and reference drivers', () => {
     assert.ok(report.blockers.includes('ERR_CAPABILITY_APPROVAL_REQUIRED'));
     assert.equal(report.selectedPendingRequestRoutes.length, 0);
     assert.deepEqual(report.unresolvedPendingRequestRoutes, []);
+  });
+
+  it('ranks policy-safe routes before approval-deferred candidates', () => {
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [fixtureRequest()],
+      drivers: [
+        fixtureDriverWithAuthority(['test'], {
+          driverId: 'approval-deferred-best-effort',
+          recoveryClass: EffectRecoveryClass.bestEffort,
+        }),
+        fixtureDriverWithAuthority(['test'], { driverId: 'policy-safe-pure' }),
+      ],
+      policy: createRunPolicy({
+        allowBestEffort: true,
+        allowedAuthorityLabels: ['test'],
+      }),
+      allowApprovalDeferredRoutes: true,
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.deepEqual(report.selectedPendingRequestRoutes, [{
+      actuatorRef: 'fixture:model',
+      descriptorFingerprint: 'descriptor:fixture-model',
+      driverId: 'policy-safe-pure',
+      driverIndex: 1,
+    }]);
+  });
+
+  it('widens to approval-only routes without relaxing other policy blockers', () => {
+    const policy = createRunPolicy({
+      allowBestEffort: true,
+      allowedAuthorityLabels: ['test'],
+    });
+    const fallbackReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [fixtureRequest()],
+      drivers: [fixtureDriverWithAuthority(['test'], {
+        driverId: 'approval-only-fallback',
+        recoveryClass: EffectRecoveryClass.bestEffort,
+      })],
+      policy,
+      allowApprovalDeferredRoutes: true,
+    });
+
+    assert.deepEqual(fallbackReport.blockers, []);
+    assert.equal(fallbackReport.selectedPendingRequestRoutes[0].driverId, 'approval-only-fallback');
+    assert.equal(fallbackReport.selectedPendingRequestRoutes[0].driverIndex, 0);
+
+    const blockedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [fixtureRequest()],
+      drivers: [fixtureDriverWithAuthority(['denied'], {
+        driverId: 'approval-plus-authority-blocked',
+        recoveryClass: EffectRecoveryClass.bestEffort,
+      })],
+      policy,
+      allowApprovalDeferredRoutes: true,
+    });
+
+    assert.equal(blockedReport.selectedPendingRequestRoutes.length, 0);
+    assert.ok(blockedReport.blockers.includes('authority-denied:denied'));
+    assert.ok(blockedReport.blockers.includes('ERR_CAPABILITY_APPROVAL_REQUIRED'));
   });
 
   it('leaves approval-required file and best-effort requests unresolved in partial preflight', () => {

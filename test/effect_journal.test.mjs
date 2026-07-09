@@ -1,11 +1,18 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { EffectRecoveryClass } from '../src/core/actuator.mjs';
-import { EffectJournal, EffectState, journaledHostRequest, prepareHostRequest } from '../src/core/effect_journal.mjs';
+import {
+  EffectJournal,
+  EffectState,
+  assertEffectRecord,
+  createEffectRecord,
+  journaledHostRequest,
+  prepareHostRequest,
+} from '../src/core/effect_journal.mjs';
 import { fromUtf8 } from '../src/core/store.mjs';
 import { GenericHttpJsonCapabilityDriver } from '../src/drivers/generic_http_json_capability_driver.mjs';
 import { GenericHttpJsonModelDriver } from '../src/drivers/model_capability_driver.mjs';
@@ -203,6 +210,33 @@ describe('EffectJournal', () => {
     assert.equal(records[0].diagnostics.invalidReusableResolution, 'ERR_EFFECT_RESOLUTION_TARGET_MISMATCH');
   });
 
+  it('reruns safely recoverable cached outcomes with forbidden World evidence', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const observed = await journal.observe(hostRequest(), { recoveryClass: EffectRecoveryClass.idempotent });
+    const forbiddenResolutionInputRef = await store.putBlob(fixtureResolutionInputBytes(
+      hostRequest(),
+      fromUtf8(JSON.stringify({ turnClosureBytes: [1, 2, 3] })),
+    ));
+    await store.putEffectRecord({
+      ...observed,
+      state: EffectState.resolved,
+      attemptCount: 1,
+      resolutionInputRef: forbiddenResolutionInputRef,
+    });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent, response: 'resolution:fresh' });
+
+    const resolved = await journal.resolve({}, hostRequest(), driver);
+    const records = await store.listEffectRecords('run');
+
+    assert.equal(resolved.reused, false);
+    assert.equal(driver.calls, 1);
+    assert.deepEqual(decodeResolutionInputBytes(resolved.resolutionInputBytes).responseValueImageBytes, fromUtf8('resolution:fresh'));
+    assert.equal(records.length, 1);
+    assert.equal(records[0].state, EffectState.resolved);
+    assert.equal(records[0].diagnostics.invalidReusableResolution, 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN');
+  });
+
   it('does not rerun submitted reusable outcomes when validation fails', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
@@ -228,6 +262,33 @@ describe('EffectJournal', () => {
       { code: 'ERR_EFFECT_RESOLUTION_TARGET_MISMATCH' },
     );
     const records = await store.listEffectRecords('run');
+    assert.equal(driver.calls, 0);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].state, EffectState.submitted);
+  });
+
+  it('does not rerun submitted cached outcomes with forbidden World evidence', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const observed = await journal.observe(hostRequest(), { recoveryClass: EffectRecoveryClass.idempotent });
+    const forbiddenResolutionInputRef = await store.putBlob(fixtureResolutionInputBytes(
+      hostRequest(),
+      fromUtf8(JSON.stringify({ turnClosureBytes: [1, 2, 3] })),
+    ));
+    await store.putEffectRecord({
+      ...observed,
+      state: EffectState.submitted,
+      attemptCount: 1,
+      resolutionInputRef: forbiddenResolutionInputRef,
+    });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent, response: 'resolution:fresh' });
+
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest(), driver),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
+    const records = await store.listEffectRecords('run');
+
     assert.equal(driver.calls, 0);
     assert.equal(records.length, 1);
     assert.equal(records[0].state, EffectState.submitted);
@@ -368,6 +429,333 @@ describe('EffectJournal', () => {
     assert.equal(records.length, 1);
     assert.equal(records[0].state, EffectState.failed);
     assert.equal(records[0].resolutionInputRef, undefined);
+  });
+
+  it('rejects raw driver successful resolve diagnostics with world evidence keys before persisting', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+    driver.resolve = async (_context, request) => ({
+      resolutionInputBytes: fixtureResolutionInputBytes(request, fromUtf8('resolution')),
+      diagnostics: { runHead: { generation: 1 } },
+    });
+
+    await assert.rejects(
+      () => journal.resolve({}, hostRequest(), driver),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
+    const records = await store.listEffectRecords('run');
+    assert.equal(records.length, 1);
+    assert.equal(records[0].state, EffectState.failed);
+    assert.equal(records[0].diagnostics.runHead, undefined);
+    assert.equal(records[0].resolutionInputRef, undefined);
+  });
+
+  it('redacts driver diagnostics before durable resolve writes and preserves legitimate transaction refs', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-effect-metadata-'));
+    try {
+      const store = new DirectoryStore(root);
+      const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+      const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+      const secret = 'sk-durable-effect-secret-12345678';
+      driver.resolve = async (_context, request) => ({
+        resolutionInputBytes: fixtureResolutionInputBytes(request, fromUtf8('resolution')),
+        driverTransactionRef: 'txn:legitimate-123',
+        diagnostics: { payload: fromUtf8(secret), status: 'ok', upstream: secret },
+      });
+
+      const resolved = await journal.resolve({}, hostRequest(), driver);
+
+      assert.equal(resolved.record.driverTransactionRef, 'txn:legitimate-123');
+      assert.deepEqual(resolved.record.diagnostics, {
+        driverId: 'fixture-driver',
+        payload: `[bytes:${fromUtf8(secret).byteLength}]`,
+        status: 'ok',
+        upstream: '[redacted]',
+      });
+      const [persisted] = await store.listEffectRecords('run');
+      assert.equal(JSON.stringify(persisted).includes(secret), false);
+      const [effectFile] = await readdir(path.join(root, 'effects', 'run'));
+      assert.equal((await readFile(path.join(root, 'effects', 'run', effectFile), 'utf8')).includes(secret), false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('redacts thrown driver error text before the failure record is durable', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+    const secret = 'sk-thrown-effect-secret-12345678';
+    driver.resolve = async () => {
+      throw new Error(`upstream returned ${secret}`);
+    };
+
+    await assert.rejects(() => journal.resolve({}, hostRequest(), driver), { message: `upstream returned ${secret}` });
+
+    const [persisted] = await store.listEffectRecords('run');
+    assert.equal(persisted.state, EffectState.running);
+    assert.equal(persisted.diagnostics.error, '[redacted]');
+    assert.equal(JSON.stringify(persisted).includes(secret), false);
+  });
+
+  it('fails closed on secret-shaped driver transaction refs before they become durable', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+    const secret = 'sk-transaction-ref-secret-12345678';
+    driver.resolve = async (_context, request) => ({
+      resolutionInputBytes: fixtureResolutionInputBytes(request, fromUtf8('resolution')),
+      driverTransactionRef: `Bearer ${secret}`,
+    });
+
+    await assert.rejects(() => journal.resolve({}, hostRequest(), driver), { code: 'ERR_SECRET_PERSISTED' });
+
+    const [persisted] = await store.listEffectRecords('run');
+    assert.equal(persisted.state, EffectState.running);
+    assert.equal(persisted.driverTransactionRef, undefined);
+    assert.equal(JSON.stringify(persisted).includes(secret), false);
+  });
+
+  it('applies durable metadata admission to created and imported effect records', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const observed = await journal.observe(hostRequest(), { recoveryClass: EffectRecoveryClass.idempotent });
+    const secret = 'sk-constructed-effect-secret-12345678';
+
+    const created = createEffectRecord({
+      ...observed,
+      driverTransactionRef: 'txn:created-legitimate',
+      diagnostics: { authorization: `Bearer ${secret}`, safe: true },
+    });
+    const imported = assertEffectRecord({
+      ...observed,
+      driverTransactionRef: 'txn:imported-legitimate',
+      diagnostics: { apiKey: secret, safe: true },
+    });
+
+    assert.deepEqual(created.diagnostics, { authorization: '[redacted]', safe: true });
+    assert.equal(created.driverTransactionRef, 'txn:created-legitimate');
+    assert.deepEqual(imported.diagnostics, { apiKey: '[redacted]', safe: true });
+    assert.equal(imported.driverTransactionRef, 'txn:imported-legitimate');
+    assert.throws(
+      () => assertEffectRecord({ ...observed, driverTransactionRef: `Bearer ${secret}` }),
+      { code: 'ERR_SECRET_PERSISTED' },
+    );
+  });
+
+  it('admits only known effect fields and rejects secret-shaped response schema metadata', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const observed = await journal.observe(hostRequest(), { recoveryClass: EffectRecoveryClass.idempotent });
+    const secret = 'sk-unrecognized-effect-field-secret-12345678';
+
+    const admitted = assertEffectRecord({
+      ...observed,
+      authorization: `Bearer ${secret}`,
+      unrecognizedMetadata: { safe: true },
+    });
+
+    assert.equal(Object.prototype.hasOwnProperty.call(admitted, 'authorization'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(admitted, 'unrecognizedMetadata'), false);
+    assert.equal(JSON.stringify(admitted).includes(secret), false);
+    assert.throws(
+      () => assertEffectRecord({
+        ...observed,
+        responseSchema: { status: 'ok', authorization: `Bearer ${secret}` },
+      }),
+      { code: 'ERR_SECRET_PERSISTED' },
+    );
+  });
+
+  it('preserves plain transaction-ref identity and rejects collapsing object values', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const observed = await journal.observe(hostRequest(), { recoveryClass: EffectRecoveryClass.idempotent });
+    const first = assertEffectRecord({
+      ...observed,
+      driverTransactionRef: { id: 'txn:plain', toJSON: 'identity:first' },
+    });
+    const second = assertEffectRecord({
+      ...observed,
+      driverTransactionRef: { id: 'txn:plain', toJSON: 'identity:second' },
+    });
+
+    assert.deepEqual(first.driverTransactionRef, { id: 'txn:plain', toJSON: 'identity:first' });
+    assert.deepEqual(second.driverTransactionRef, { id: 'txn:plain', toJSON: 'identity:second' });
+    assert.notEqual(JSON.stringify(first.driverTransactionRef), JSON.stringify(second.driverTransactionRef));
+    for (const driverTransactionRef of [new Date('2026-07-09T00:00:00.000Z'), new URL('https://example.test/txn')]) {
+      assert.throws(
+        () => assertEffectRecord({ ...observed, driverTransactionRef }),
+        { code: 'ERR_INVALID_EFFECT_RECORD' },
+      );
+    }
+
+    let hookCalls = 0;
+    const callableHook = assertEffectRecord({
+      ...observed,
+      driverTransactionRef: {
+        id: 'txn:callable-hook',
+        toJSON() {
+          hookCalls += 1;
+          return { id: 'txn:serializer-replacement' };
+        },
+      },
+    });
+    assert.deepEqual(callableHook.driverTransactionRef, { id: 'txn:callable-hook' });
+    assert.equal(hookCalls, 0);
+  });
+
+  it('admits direct MemoryStore effect writes before persistence', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const observed = await journal.observe(hostRequest(), { recoveryClass: EffectRecoveryClass.idempotent });
+    const secret = 'sk-memory-store-secret-12345678';
+
+    const admitted = await store.putEffectRecord({
+      ...observed,
+      branchId: 'direct-safe',
+      driverTransactionRef: 'txn:memory-legitimate',
+      diagnostics: { apiKey: secret, safe: true },
+    });
+
+    assert.deepEqual(admitted.diagnostics, { apiKey: '[redacted]', safe: true });
+    assert.equal(admitted.driverTransactionRef, 'txn:memory-legitimate');
+    assert.deepEqual(
+      await store.getEffectRecord('run', observed.idempotencyKey, 'direct-safe'),
+      admitted,
+    );
+    await assert.rejects(
+      () => store.putEffectRecord({
+        ...observed,
+        branchId: 'direct-unsafe',
+        driverTransactionRef: `Bearer ${secret}`,
+      }),
+      { code: 'ERR_SECRET_PERSISTED' },
+    );
+    assert.equal(await store.getEffectRecord('run', observed.idempotencyKey, 'direct-unsafe'), null);
+  });
+
+  it('admits direct DirectoryStore effect writes before persistence', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-direct-effect-admission-'));
+    try {
+      const store = new DirectoryStore(root);
+      const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+      const observed = await journal.observe(hostRequest(), { recoveryClass: EffectRecoveryClass.idempotent });
+      const secret = 'sk-directory-store-secret-12345678';
+
+      const admitted = await store.putEffectRecord({
+        ...observed,
+        branchId: 'direct-safe',
+        driverTransactionRef: 'txn:directory-legitimate',
+        diagnostics: { authorization: `Bearer ${secret}`, safe: true },
+      });
+
+      assert.deepEqual(admitted.diagnostics, { authorization: '[redacted]', safe: true });
+      assert.equal(admitted.driverTransactionRef, 'txn:directory-legitimate');
+      const persisted = await store.getEffectRecord('run', observed.idempotencyKey, 'direct-safe');
+      assert.deepEqual(persisted.diagnostics, admitted.diagnostics);
+      assert.equal(persisted.driverTransactionRef, admitted.driverTransactionRef);
+      await assert.rejects(
+        () => store.putEffectRecord({
+          ...observed,
+          branchId: 'direct-unsafe',
+          driverTransactionRef: `Bearer ${secret}`,
+        }),
+        { code: 'ERR_SECRET_PERSISTED' },
+      );
+      assert.equal(await store.getEffectRecord('run', observed.idempotencyKey, 'direct-unsafe'), null);
+      const effectFiles = await readdir(path.join(root, 'effects', 'run'));
+      const effectJson = await Promise.all(effectFiles.map((name) => readFile(path.join(root, 'effects', 'run', name), 'utf8')));
+      assert.equal(effectJson.some((text) => text.includes(secret)), false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('strips serializer hooks before MemoryStore and DirectoryStore effect admission', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-effect-serializer-hooks-'));
+    try {
+      const stores = [
+        ['memory', new MemoryStore()],
+        ['directory', new DirectoryStore(root)],
+      ];
+      for (const [label, store] of stores) {
+        const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+        const observed = await journal.observe(hostRequest(), { recoveryClass: EffectRecoveryClass.idempotent });
+        const secret = `sk-${label}-serializer-secret-12345678`;
+        let hookCalls = 0;
+
+        const diagnostics = Object.assign(Object.create({ inheritedSecret: secret }), {
+          safe: 'diagnostics-preserved',
+          helper() {
+            hookCalls += 1;
+            return secret;
+          },
+          toJSON() {
+            hookCalls += 1;
+            return { apiKey: secret };
+          },
+        });
+        const diagnosticsAdmitted = await store.putEffectRecord({
+          ...observed,
+          branchId: `${label}-diagnostics-hook`,
+          diagnostics,
+        });
+        const diagnosticsPersisted = await store.getEffectRecord(
+          'run',
+          observed.idempotencyKey,
+          `${label}-diagnostics-hook`,
+        );
+        assert.deepEqual(diagnosticsAdmitted.diagnostics, { safe: 'diagnostics-preserved' });
+        assert.equal(JSON.stringify(diagnosticsAdmitted), JSON.stringify(diagnosticsPersisted));
+
+        const driverTransactionRef = {
+          id: `${label}-transaction-ref`,
+          toJSON() {
+            hookCalls += 1;
+            return `Bearer ${secret}`;
+          },
+        };
+        const transactionAdmitted = await store.putEffectRecord({
+          ...observed,
+          branchId: `${label}-transaction-hook`,
+          driverTransactionRef,
+        });
+        const transactionPersisted = await store.getEffectRecord(
+          'run',
+          observed.idempotencyKey,
+          `${label}-transaction-hook`,
+        );
+        assert.deepEqual(transactionAdmitted.driverTransactionRef, { id: `${label}-transaction-ref` });
+        assert.equal(JSON.stringify(transactionAdmitted), JSON.stringify(transactionPersisted));
+
+        const topLevelRecord = {
+          ...observed,
+          branchId: `${label}-record-hook`,
+          diagnostics: { safe: 'record-preserved' },
+          toJSON() {
+            hookCalls += 1;
+            return { diagnostics: { apiKey: secret } };
+          },
+        };
+        const recordAdmitted = await store.putEffectRecord(topLevelRecord);
+        const recordPersisted = await store.getEffectRecord(
+          'run',
+          observed.idempotencyKey,
+          `${label}-record-hook`,
+        );
+        assert.equal(recordAdmitted.runId, 'run');
+        assert.deepEqual(recordAdmitted.diagnostics, { safe: 'record-preserved' });
+        assert.equal(Object.prototype.hasOwnProperty.call(recordAdmitted, 'toJSON'), false);
+        assert.equal(JSON.stringify(recordAdmitted), JSON.stringify(recordPersisted));
+
+        assert.equal(hookCalls, 0);
+        assert.equal(JSON.stringify(await store.listEffectRecords('run')).includes(secret), false);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('rejects driver ResolutionInput targeting another HostRequest before persisting it', async () => {
@@ -1506,6 +1894,88 @@ describe('EffectJournal', () => {
     assert.equal(records[0].diagnostics.runHead, undefined);
   });
 
+  it('rejects raw driver successful recover diagnostics with world evidence keys before persisting', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+    driver.recover = async (_context, record) => ({
+      resolutionInputBytes: fixtureResolutionInputBytes(record, fromUtf8('recovered:resolution')),
+      diagnostics: { runHead: { generation: 1 } },
+    });
+    const observed = await journal.observe(hostRequest(), { manifest: driver.manifest() });
+    const running = await store.putEffectRecord({
+      ...observed,
+      state: EffectState.running,
+      attemptCount: 1,
+    });
+
+    await assert.rejects(
+      () => journal.recover({}, running, driver),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
+    const records = await store.listEffectRecords('run');
+    assert.equal(records.length, 1);
+    assert.equal(records[0].state, EffectState.failed);
+    assert.equal(records[0].diagnostics.runHead, undefined);
+    assert.equal(records[0].resolutionInputRef, undefined);
+  });
+
+  it('redacts successful recovery diagnostics before persistence and keeps legitimate recovery identity', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+    const secret = 'sk-recovery-effect-secret-12345678';
+    driver.recover = async (_context, record) => ({
+      resolutionInputBytes: fixtureResolutionInputBytes(record, fromUtf8('recovered:resolution')),
+      driverTransactionRef: 'recover-legitimate-1',
+      diagnostics: { accessToken: secret, recoveredBy: 'fixture' },
+    });
+    const observed = await journal.observe(hostRequest(), { manifest: driver.manifest() });
+    const running = await store.putEffectRecord(createEffectRecord({
+      ...observed,
+      state: EffectState.running,
+      attemptCount: 1,
+    }));
+
+    const recovered = await journal.recover({}, running, driver);
+
+    assert.equal(recovered.record.driverTransactionRef, 'recover-legitimate-1');
+    assert.deepEqual(recovered.record.diagnostics, {
+      accessToken: '[redacted]',
+      recovered: true,
+      recoveredBy: 'fixture',
+    });
+    assert.equal(JSON.stringify(recovered.record).includes(secret), false);
+  });
+
+  it('rejects recovered ResolutionInputs carrying forbidden World evidence before persisting', async () => {
+    const store = new MemoryStore();
+    const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+    driver.recover = async (_context, record) => ({
+      resolutionInputBytes: fixtureResolutionInputBytes(
+        record,
+        fromUtf8(JSON.stringify({ turnReceiptBytes: [1, 2, 3] })),
+      ),
+    });
+    const observed = await journal.observe(hostRequest(), { manifest: driver.manifest() });
+    const running = await store.putEffectRecord({
+      ...observed,
+      state: EffectState.running,
+      attemptCount: 1,
+    });
+
+    await assert.rejects(
+      () => journal.recover({}, running, driver),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
+    const records = await store.listEffectRecords('run');
+
+    assert.equal(records.length, 1);
+    assert.equal(records[0].state, EffectState.failed);
+    assert.equal(records[0].resolutionInputRef, undefined);
+  });
+
   it('keeps pure driver failures recomputable before requiring operator recovery', async () => {
     const store = new MemoryStore();
     const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
@@ -1861,6 +2331,35 @@ describe('EffectJournal', () => {
     assert.equal(records.filter((record) => record.branchId === 'alternate').length, 1);
   });
 
+  it('uses admitted store records during branch-local outcome scans', async () => {
+    const store = new MemoryStore();
+    const mainJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+    const alternateJournal = new EffectJournal({ store, runId: 'run', branchId: 'alternate', parentTurnClosureFingerprint: 'turn:0' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+
+    await mainJournal.resolve({}, hostRequest(), driver);
+    const listEffectRecords = store.listEffectRecords.bind(store);
+    let getterCalls = 0;
+    store.listEffectRecords = async (runId) => (await listEffectRecords(runId)).map((record) => ({
+      ...record,
+      diagnostics: Object.defineProperty({ safe: true }, 'authorization', {
+        enumerable: true,
+        get() {
+          getterCalls += 1;
+          return 'Bearer sk-store-list-hook-secret-12345678';
+        },
+      }),
+    }));
+
+    const alternate = await alternateJournal.resolve({}, hostRequest(), driver);
+
+    assert.equal(alternate.reused, true);
+    assert.equal(alternate.record.branchId, 'alternate');
+    assert.deepEqual(alternate.record.diagnostics, { safe: true, branchLocalReuse: 'main' });
+    assert.equal(getterCalls, 0);
+    assert.equal(driver.calls, 1);
+  });
+
   it('scans all same-key records for conflicts before reusing a branch-local outcome', async () => {
     const store = new MemoryStore();
     const mainJournal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
@@ -1909,6 +2408,54 @@ describe('EffectJournal', () => {
     assert.equal(alternate.reused, true);
     assert.equal(alternate.record.state, EffectState.resolved);
     assert.equal(driver.calls, 1);
+  });
+
+  it('skips an invalid earlier cross-branch outcome when a later valid outcome exists', async () => {
+    const store = new MemoryStore();
+    const invalidJournal = new EffectJournal({ store, runId: 'run', branchId: 'invalid', parentTurnClosureFingerprint: 'turn:invalid' });
+    const targetJournal = new EffectJournal({ store, runId: 'run', branchId: 'target', parentTurnClosureFingerprint: 'turn:target' });
+    const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent, response: 'resolution:fresh' });
+    const observed = await invalidJournal.observe(hostRequest(), { manifest: driver.manifest() });
+    const invalidResolutionInputRef = await store.putBlob(encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xbadn,
+      status: 0,
+      responseValueImageBytes: fromUtf8('invalid earlier response'),
+      hostClaimBytes: new Uint8Array(),
+      attemptNumber: 1,
+      metadata: new Uint8Array(),
+    }));
+    const validResolutionInputBytes = fixtureResolutionInputBytes(hostRequest(), fromUtf8('valid later response'));
+    const validResolutionInputRef = await store.putBlob(validResolutionInputBytes);
+    await store.putEffectRecord({
+      ...observed,
+      state: EffectState.resolved,
+      attemptCount: 1,
+      resolutionInputRef: invalidResolutionInputRef,
+    });
+    await store.putEffectRecord({
+      ...observed,
+      branchId: 'valid',
+      state: EffectState.resolved,
+      attemptCount: 1,
+      resolutionInputRef: validResolutionInputRef,
+    });
+    let beforeInvokeCalled = false;
+
+    const resolved = await targetJournal.resolve({}, hostRequest(), driver, {
+      beforeInvoke() {
+        beforeInvokeCalled = true;
+        const error = new Error('valid cached outcome must avoid live invocation');
+        error.code = 'ERR_TEST_LIVE_INVOCATION';
+        throw error;
+      },
+    });
+
+    assert.equal(resolved.reused, true);
+    assert.deepEqual(resolved.resolutionInputBytes, validResolutionInputBytes);
+    assert.equal(resolved.record.branchId, 'target');
+    assert.equal(resolved.record.diagnostics.branchLocalReuse, 'valid');
+    assert.equal(beforeInvokeCalled, false);
+    assert.equal(driver.calls, 0);
   });
 
   it('reuses cross-branch outcomes before live preflight', async () => {

@@ -2589,6 +2589,34 @@ describe('RunController and WorldWorker', () => {
     }
   });
 
+  it('binds policy-safe drivers ahead of approval-deferred candidates', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const approvalDeferred = fixtureEffectDriver({
+      driverId: 'approval-deferred-best-effort',
+      recoveryClass: EffectRecoveryClass.bestEffort,
+    });
+    const policySafe = fixtureEffectDriver({ driverId: 'policy-safe-pure' });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [approvalDeferred, policySafe],
+      effectPolicy: {
+        allowBestEffort: true,
+        allowedAuthorityLabels: new Set(['test']),
+      },
+      effectContextFactory: async (context) => context,
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(approvalDeferred.invocationCount, 0);
+    assert.equal(policySafe.invocationCount, 1);
+  });
+
   it('leaves approval-denied partial routes unresolved before invoking effects', async () => {
     const requests = [
       fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'partial-approval-key:1', idempotencyKeyFingerprint: 0xa09n }),
@@ -3620,7 +3648,7 @@ describe('RunController and WorldWorker', () => {
     }
   });
 
-  it('does not let branch-local observed effects shadow cached model replays', async () => {
+  it('does not let branch-local placeholders or invalid earlier outcomes shadow cached model replays', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
       closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
@@ -3640,6 +3668,7 @@ describe('RunController and WorldWorker', () => {
         allowedToolIds: ['actuate', 'read_file', 'write_file'],
       },
     }));
+    const requestBytesRef = await store.putBlob(requestBytes);
     const baseRecord = {
       runId,
       parentTurnClosureFingerprint: 'world:closure:cached-model-parent',
@@ -3655,8 +3684,17 @@ describe('RunController and WorldWorker', () => {
       responseSchema: { status: 'ok' },
       requestBytesChecksum: `sha256:${sha256Hex(requestBytes)}`,
       requestIdentityChecksum: `sha256:${sha256Hex(effectIdentityBytes)}`,
+      requestBytesRef,
       driverRecoveryClass: EffectRecoveryClass.idempotent,
     };
+    const invalidResolutionInputRef = await store.putBlob(encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xbadn,
+      status: 0,
+      responseValueImageBytes: agentActionValueImage({ variant: 'final', text: 'invalid-cached-model' }),
+      hostClaimBytes: fromUtf8('invalid-claim'),
+      attemptNumber: 1,
+      metadata: fromUtf8('invalid-metadata'),
+    }));
     const resolutionInputRef = await store.putBlob(encodeResolutionInputBytes({
       targetHostRequestFingerprint: 0xa01n,
       status: 0,
@@ -3664,6 +3702,12 @@ describe('RunController and WorldWorker', () => {
       hostClaimBytes: fromUtf8('claim'),
       attemptNumber: 1,
       metadata: fromUtf8('metadata'),
+    }));
+    await store.putEffectRecord(createEffectRecord({
+      ...baseRecord,
+      branchId: 'invalid-cached-branch',
+      state: EffectState.resolved,
+      resolutionInputRef: invalidResolutionInputRef,
     }));
     await store.putEffectRecord(createEffectRecord({
       ...baseRecord,
@@ -3709,9 +3753,11 @@ describe('RunController and WorldWorker', () => {
       });
 
       const result = await controller.advance(runId, branchId);
+      const current = await store.getEffectRecord(runId, baseRecord.idempotencyKey, branchId);
 
       assert.equal(result.status, 'advanced');
       assert.equal(fetchCalled, false);
+      assert.equal(current.diagnostics.branchLocalReuse, 'cached-branch');
     } finally {
       globalThis.fetch = originalFetch;
     }

@@ -1,7 +1,8 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -61,6 +62,88 @@ describe('Capability sidecar transport', () => {
     );
   });
 
+  it('validates frame and timeout limits at public boundaries', () => {
+    const frame = encodeSidecarFrame({
+      command: CapabilitySidecarCommand.resolve,
+      payload: { ok: true },
+    });
+    const frameLimitError = {
+      code: 'ERR_CAPABILITY_SIDECAR_FRAME_LIMIT_INVALID',
+      message: 'maximumFrameBytes must be a positive safe integer',
+    };
+    const timeoutError = {
+      code: 'ERR_CAPABILITY_SIDECAR_TIMEOUT_INVALID',
+      message: 'timeoutMs must be an integer in 1..2147483647',
+    };
+    const assertValidationError = (operation, expected, label) => {
+      assert.throws(operation, (error) => {
+        assert.equal(error.code, expected.code, `${label}: code`);
+        assert.equal(error.message, expected.message, `${label}: message`);
+        return true;
+      });
+    };
+
+    for (const { label, value } of [
+      { label: 'zero', value: 0 },
+      { label: 'negative', value: -1 },
+      { label: 'fractional', value: 1.5 },
+      { label: 'NaN', value: Number.NaN },
+      { label: 'infinite', value: Number.POSITIVE_INFINITY },
+      { label: 'unsafe integer', value: Number.MAX_SAFE_INTEGER + 1 },
+      { label: 'string', value: '1024' },
+      { label: 'null', value: null },
+    ]) {
+      assertValidationError(
+        () => new CapabilitySidecar({ command: ['true'], maximumFrameBytes: value }),
+        frameLimitError,
+        `constructor maximumFrameBytes ${label}`,
+      );
+      assertValidationError(
+        () => decodeSidecarFrame(frame, value),
+        frameLimitError,
+        `decode maximumFrameBytes ${label}`,
+      );
+    }
+
+    for (const { label, value } of [
+      { label: 'zero', value: 0 },
+      { label: 'negative', value: -1 },
+      { label: 'fractional', value: 1.5 },
+      { label: 'NaN', value: Number.NaN },
+      { label: 'infinite', value: Number.POSITIVE_INFINITY },
+      { label: 'above timer maximum', value: 2_147_483_648 },
+      { label: 'string', value: '1000' },
+      { label: 'null', value: null },
+    ]) {
+      assertValidationError(
+        () => new CapabilitySidecar({ command: ['true'], timeoutMs: value }),
+        timeoutError,
+        `constructor timeoutMs ${label}`,
+      );
+    }
+
+    const defaults = new CapabilitySidecar({ command: ['true'] });
+    assert.equal(defaults.maximumFrameBytes, 1024 * 1024);
+    assert.equal(defaults.timeoutMs, 5000);
+    for (const maximumFrameBytes of [1, Number.MAX_SAFE_INTEGER]) {
+      assert.equal(
+        new CapabilitySidecar({ command: ['true'], maximumFrameBytes }).maximumFrameBytes,
+        maximumFrameBytes,
+      );
+    }
+    for (const timeoutMs of [1, 2_147_483_647]) {
+      assert.equal(new CapabilitySidecar({ command: ['true'], timeoutMs }).timeoutMs, timeoutMs);
+    }
+    assert.throws(
+      () => decodeSidecarFrame(frame, 1),
+      { code: 'ERR_CAPABILITY_SIDECAR_FRAME_TOO_LARGE' },
+    );
+    assert.deepEqual(decodeSidecarFrame(frame, Number.MAX_SAFE_INTEGER), {
+      command: CapabilitySidecarCommand.resolve,
+      payload: { ok: true },
+    });
+  });
+
   it('keeps marked default contexts receiver-local in sidecar frames', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-sidecar-context-'));
     try {
@@ -104,6 +187,114 @@ describe('Capability sidecar transport', () => {
       assert.deepEqual(custom.contextKeys, ['policy', 'trace']);
       assert.deepEqual(custom.context.policy, { allowedOrigins: ['https://custom.example'] });
       assert.equal(custom.context.trace, true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('pins bare Bun commands to the current runtime instead of ambient PATH', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-sidecar-bun-runtime-'));
+    const originalPath = process.env.PATH;
+    try {
+      const fakeBin = path.join(root, 'bin');
+      const fakeBunPath = path.join(fakeBin, 'bun');
+      const fakeMarkerPath = path.join(root, 'fake-bun-invoked');
+      const sidecarPath = path.join(root, 'sidecar.mjs');
+      await mkdir(fakeBin);
+      await writeFile(fakeBunPath, `#!/bin/sh
+printf '%s\\n' invoked > ${JSON.stringify(fakeMarkerPath)}
+cat >/dev/null
+printf '%s\\n' '{"command":"manifest","payload":{"driverId":"fake-bun"}}'
+`);
+      await chmod(fakeBunPath, 0o755);
+      await writeFile(sidecarPath, `
+        await new Response(Bun.stdin.stream()).text();
+        process.stdout.write(JSON.stringify({
+          command: 'manifest',
+          payload: { driverId: 'pinned-bun-runtime' }
+        }) + '\\n');
+      `);
+      process.env.PATH = `${fakeBin}${path.delimiter}${originalPath ?? ''}`;
+
+      const manifest = await new CapabilitySidecar({
+        command: ['bun', sidecarPath],
+        timeoutMs: 1000,
+      }).manifest();
+
+      assert.equal(manifest.driverId, 'pinned-bun-runtime');
+      await assert.rejects(readFile(fakeMarkerPath), { code: 'ENOENT' });
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the captured Bun runtime after process.execPath mutation', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-sidecar-bun-identity-'));
+    try {
+      const fakeBunPath = path.join(root, 'fake-bun');
+      const fakeMarkerPath = path.join(root, 'fake-bun-invoked');
+      const directSidecarPath = path.join(root, 'direct-sidecar.mjs');
+      const shebangSidecarPath = path.join(root, 'shebang-sidecar');
+      const probePath = path.join(root, 'probe.mjs');
+      const sidecarSource = `
+        const input = await new Response(Bun.stdin.stream()).text();
+        const frame = JSON.parse(input);
+        process.stdout.write(JSON.stringify({
+          command: frame.command,
+          payload: {
+            driverId: 'captured-bun-runtime',
+            runtimeExecutable: process.execPath
+          }
+        }) + '\\n');
+      `;
+      await writeFile(fakeBunPath, `#!/bin/sh
+printf '%s\\n' invoked > ${JSON.stringify(fakeMarkerPath)}
+exit 97
+`);
+      await chmod(fakeBunPath, 0o755);
+      await writeFile(directSidecarPath, sidecarSource);
+      await writeFile(shebangSidecarPath, `#!/usr/bin/env bun\n${sidecarSource}`);
+      await chmod(shebangSidecarPath, 0o755);
+      await writeFile(probePath, `
+        import assert from 'node:assert/strict';
+        import { CapabilitySidecar } from ${JSON.stringify(new URL('../src/sidecars/capability_sidecar.mjs', import.meta.url).href)};
+
+        const originalExecutable = process.execPath;
+        const originalDescriptor = Object.getOwnPropertyDescriptor(process, 'execPath');
+        const directSidecar = new CapabilitySidecar({
+          command: ['bun', ${JSON.stringify(directSidecarPath)}],
+          timeoutMs: 1000
+        });
+        const shebangSidecar = new CapabilitySidecar({
+          command: [${JSON.stringify(shebangSidecarPath)}],
+          timeoutMs: 1000
+        });
+        Object.defineProperty(process, 'execPath', {
+          ...originalDescriptor,
+          value: ${JSON.stringify(fakeBunPath)}
+        });
+        try {
+          const syncManifest = directSidecar.manifest();
+          const directFrame = await directSidecar.request('manifest');
+          const shebangFrame = await shebangSidecar.request('manifest');
+          assert.equal(syncManifest.runtimeExecutable, originalExecutable);
+          assert.equal(directFrame.payload.runtimeExecutable, originalExecutable);
+          assert.equal(shebangFrame.payload.runtimeExecutable, originalExecutable);
+        } finally {
+          Object.defineProperty(process, 'execPath', originalDescriptor);
+        }
+      `);
+
+      const result = spawnSync(process.execPath, [probePath], {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+
+      assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+      await assert.rejects(readFile(fakeMarkerPath), { code: 'ENOENT' });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

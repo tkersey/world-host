@@ -2,12 +2,16 @@ import { createHash } from 'node:crypto';
 
 import { EffectRecoveryClass, ResponseStatusCode, assertDriverCanResolve, assertDriverManifest, assertDurableRecoveryAllowed } from './actuator.mjs';
 import { assertCapabilityResolutionBoundary } from './capability_driver.mjs';
+import { immutablePolicySet } from './immutable_set.mjs';
 import { assertBytes, fail, fromUtf8, stableJson, toHex } from './store.mjs';
 import { decodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
 import { decodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
 
 const FIXTURE_MODEL_AUTHORITY_LABELS = new Set(['model:fixture', 'model:fixture-agent']);
 const TERMINAL_REUSABLE_OUTCOME_STATES = new Set(['resolved', 'submitted', 'closure_committed']);
+const APPLY = Reflect.apply;
+const NativeString = String;
+const STRING_TO_UPPER_CASE = String.prototype.toUpperCase;
 
 export class CapabilityReport {
   constructor(fields) {
@@ -34,17 +38,17 @@ export function createRunPolicy(input = {}) {
     requireApprovalForNetworkEffects: input.requireApprovalForNetworkEffects === true,
     requireApprovalForBestEffort: input.requireApprovalForBestEffort !== false,
     maximumLiveModelCalls: nonNegativeSafeInteger(input.maximumLiveModelCalls ?? 0, 'maximumLiveModelCalls'),
-    allowedAuthorityLabels: new Set(iterable(input.allowedAuthorityLabels)),
-    allowedCapabilityPacks: new Set(iterable(input.allowedCapabilityPacks)),
-    deniedCapabilityPacks: new Set(iterable(input.deniedCapabilityPacks)),
-    allowedFileRoots: new Set(iterable(input.allowedFileRoots)),
-    allowedHttpOrigins: new Set(iterable(input.allowedHttpOrigins)),
-    allowedHttpMethods: new Set(iterable(input.allowedHttpMethods).map((item) => String(item).toUpperCase())),
+    allowedAuthorityLabels: immutablePolicySet(input.allowedAuthorityLabels),
+    allowedCapabilityPacks: immutablePolicySet(input.allowedCapabilityPacks),
+    deniedCapabilityPacks: immutablePolicySet(input.deniedCapabilityPacks),
+    allowedFileRoots: immutablePolicySet(input.allowedFileRoots),
+    allowedHttpOrigins: immutablePolicySet(input.allowedHttpOrigins),
+    allowedHttpMethods: immutablePolicySet(input.allowedHttpMethods, upperCaseString),
     maximumConcurrentEffects: positiveSafeInteger(input.maximumConcurrentEffects ?? 1, 'maximumConcurrentEffects'),
     maximumRequestBytes,
     maximumPromptBytes,
     maximumResponseBytes: positiveSafeInteger(input.maximumResponseBytes ?? 1024 * 1024, 'maximumResponseBytes'),
-    acceptedSupervisionPolicies: new Set(iterable(input.acceptedSupervisionPolicies ?? ['default'])),
+    acceptedSupervisionPolicies: immutablePolicySet(input.acceptedSupervisionPolicies ?? ['default']),
   });
 }
 
@@ -58,11 +62,8 @@ function nonNegativeSafeInteger(value, field) {
   return value;
 }
 
-function iterable(value) {
-  if (value == null) return [];
-  if (value instanceof Set) return [...value];
-  if (Array.isArray(value)) return value;
-  return [value];
+function upperCaseString(value) {
+  return APPLY(STRING_TO_UPPER_CASE, APPLY(NativeString, undefined, [value]), []);
 }
 
 export function createHostCapabilityManifest(input = {}) {
@@ -84,6 +85,7 @@ export function preflightCapabilities({
   policy: policyInput = createRunPolicy(),
   effectRecords = [],
   effectResolutionInputs = new Map(),
+  allowApprovalDeferredRoutes = false,
 }) {
   const policy = createRunPolicy(policyInput);
   const blockers = [];
@@ -130,7 +132,7 @@ export function preflightCapabilities({
   }
 
   for (const request of pendingRequests) {
-    const candidates = findDriverManifestsForRequest(manifests, request, policy);
+    const candidates = findDriverManifestsForRequest(manifests, request, policy, { allowApprovalDeferredRoutes });
     if (!candidates.length) {
       const structuralRoute = findDriverManifestForRequest(manifests, request);
       if (structuralRoute) {
@@ -954,18 +956,27 @@ function driverMatchesExceptRequestSize(manifest, request) {
     request.requestBytes?.byteLength > manifest.maximumRequestBytes;
 }
 
-function findDriverManifestsForRequest(manifests, request, policy = null) {
-  const matches = [];
+function findDriverManifestsForRequest(manifests, request, policy = null, { allowApprovalDeferredRoutes = false } = {}) {
+  const policySafeMatches = [];
+  const approvalDeferredMatches = [];
   for (const manifest of manifests) {
     try {
       assertDriverCanResolve(manifest, request);
-      if (policy && policyBlockers(manifest, request, policy).length) continue;
-      matches.push(manifest);
+      const blockers = policy ? policyBlockers(manifest, request, policy) : [];
+      if (!blockers.length) {
+        policySafeMatches.push(manifest);
+      } else if (allowApprovalDeferredRoutes && approvalOnlyBlockers(blockers)) {
+        approvalDeferredMatches.push(manifest);
+      }
     } catch {
       continue;
     }
   }
-  return matches;
+  return policySafeMatches.length ? policySafeMatches : approvalDeferredMatches;
+}
+
+function approvalOnlyBlockers(blockers) {
+  return blockers.length > 0 && blockers.every((blocker) => blocker === 'ERR_CAPABILITY_APPROVAL_REQUIRED');
 }
 
 function selectPreferredAuthorityManifest(manifests, preferredAuthorityLabels) {

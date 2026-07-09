@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { receiverLocalEffectContext } from '../core/effect_context.mjs';
 import { assertBytes, fail, fromUtf8, stableJson } from '../core/store.mjs';
 
+const TRUSTED_BUN_EXECUTABLE = process.execPath;
+
 export const CapabilitySidecarCommand = Object.freeze({
   manifest: 'manifest',
   preflight: 'preflight',
@@ -28,6 +30,7 @@ const EMPTY_BUN_ENV_FILE = process.platform === 'win32' ? 'NUL' : '/dev/null';
 const EMPTY_BUN_CONFIG_FILE = process.platform === 'win32' ? 'NUL' : '/dev/null';
 const SIDECAR_FRAME_PAYLOAD_OVERHEAD_BYTES = 4096;
 const SIDECAR_FRAME_PAYLOAD_EXPANSION = 6;
+const MAXIMUM_SIDECAR_TIMEOUT_MS = 2_147_483_647;
 const SIDECAR_SYNC_HELPER_ARG = '--world-host-sidecar-sync-helper';
 const BUN_RUNTIME_VALUE_OPTIONS = new Set([
   '--conditions',
@@ -153,6 +156,8 @@ export class CapabilitySidecar {
     if (packFingerprint != null && (typeof packFingerprint !== 'string' || packFingerprint.length === 0)) {
       fail('ERR_CAPABILITY_SIDECAR_PACK_FINGERPRINT_INVALID', 'sidecar pack fingerprint must be a string');
     }
+    const validatedTimeoutMs = sidecarTimeoutMs(timeoutMs);
+    const validatedMaximumFrameBytes = sidecarMaximumFrameBytes(maximumFrameBytes);
     const childEnv = sidecarUserEnv(env);
     if (bareScriptEntrypoint(command[0])) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar script entrypoints must be path-qualified');
@@ -178,8 +183,8 @@ export class CapabilitySidecar {
     sidecarSpawnArgv(command, cwd ?? undefined, childEnv);
     this.command = Object.freeze([...command]);
     this.cwd = cwd == null ? undefined : path.resolve(cwd);
-    this.timeoutMs = timeoutMs;
-    this.maximumFrameBytes = maximumFrameBytes;
+    this.timeoutMs = validatedTimeoutMs;
+    this.maximumFrameBytes = validatedMaximumFrameBytes;
     this.env = sidecarEnv({ PATH: sidecarPath(), ...childEnv });
     this.packFingerprint = packFingerprint;
   }
@@ -336,11 +341,26 @@ export function encodeSidecarFrame(frame) {
 }
 
 export function decodeSidecarFrame(bytes, maximumFrameBytes = 1024 * 1024) {
+  const validatedMaximumFrameBytes = sidecarMaximumFrameBytes(maximumFrameBytes);
   const input = assertBytes(bytes, 'frame');
-  if (input.byteLength > maximumFrameBytes) fail('ERR_CAPABILITY_SIDECAR_FRAME_TOO_LARGE');
+  if (input.byteLength > validatedMaximumFrameBytes) fail('ERR_CAPABILITY_SIDECAR_FRAME_TOO_LARGE');
   const text = new TextDecoder().decode(input).trim();
   const parsed = JSON.parse(text);
   return decodeBytes(parsed);
+}
+
+function sidecarMaximumFrameBytes(value) {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    fail('ERR_CAPABILITY_SIDECAR_FRAME_LIMIT_INVALID', 'maximumFrameBytes must be a positive safe integer');
+  }
+  return value;
+}
+
+function sidecarTimeoutMs(value) {
+  if (!Number.isInteger(value) || value < 1 || value > MAXIMUM_SIDECAR_TIMEOUT_MS) {
+    fail('ERR_CAPABILITY_SIDECAR_TIMEOUT_INVALID', 'timeoutMs must be an integer in 1..2147483647');
+  }
+  return value;
 }
 
 async function runSidecarCommand({ argv, input, timeoutMs, maximumFrameBytes, env, cwd }) {
@@ -427,7 +447,7 @@ async function runSidecarCommand({ argv, input, timeoutMs, maximumFrameBytes, en
 }
 
 function runSidecarCommandSync({ argv, input, timeoutMs, maximumFrameBytes, env, cwd }) {
-  const result = spawnSync(process.execPath, [fileURLToPath(import.meta.url), SIDECAR_SYNC_HELPER_ARG], {
+  const result = spawnSync(TRUSTED_BUN_EXECUTABLE, [fileURLToPath(import.meta.url), SIDECAR_SYNC_HELPER_ARG], {
     input: Buffer.from(JSON.stringify({
       argv,
       inputBase64: Buffer.from(input).toString('base64'),
@@ -511,12 +531,12 @@ function sidecarSpawnArgv(argv, cwd = undefined, env = undefined) {
     if (bunShebangArgs) {
       const shebangArgv = ['bun', ...bunShebangArgs, ...argv];
       assertSupportedBunEnvFileOptions(shebangArgv);
-      return [process.execPath, emptyEnvFileArg, emptyConfigArg, noInstallArg, ...bunShebangArgs, ...argv];
+      return [TRUSTED_BUN_EXECUTABLE, emptyEnvFileArg, emptyConfigArg, noInstallArg, ...bunShebangArgs, ...argv];
     }
     return argv;
   }
   assertSupportedBunEnvFileOptions(argv);
-  return [argv[0], emptyEnvFileArg, emptyConfigArg, noInstallArg, ...argv.slice(1)];
+  return [TRUSTED_BUN_EXECUTABLE, emptyEnvFileArg, emptyConfigArg, noInstallArg, ...argv.slice(1)];
 }
 
 function bunWrapperCommand(argv, cwd = undefined, searchPath = undefined) {
@@ -1158,7 +1178,7 @@ function commandBaseName(value) {
 function pathQualifiedSidecarRuntime(value) {
   if (!value.includes('/') && !value.includes('\\')) return false;
   if (!JS_RUNTIMES.has(commandBaseName(value))) return false;
-  return path.resolve(value) !== path.resolve(process.execPath);
+  return path.resolve(value) !== path.resolve(TRUSTED_BUN_EXECUTABLE);
 }
 
 function bunShebangEntrypoint(value) {

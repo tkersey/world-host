@@ -173,10 +173,12 @@ function assertCapabilityResolutionBoundary(value) {
 function assertNoWorldEvidenceByteField(value) {
   const payload = parseJsonBytes(value);
   if (payload !== null) assertNoWorldEvidenceKeys(payload);
-  const valueImagePayload = parseCanonicalValueImagePayload(value);
-  if (valueImagePayload !== null) {
-    const decodedPayload = parseJsonBytes(valueImagePayload);
+  const valueImage = parseCanonicalValueImage(value);
+  if (valueImage !== null) {
+    const decodedPayload = parseJsonBytes(valueImage.payload);
     if (decodedPayload !== null) assertNoWorldEvidenceKeys(decodedPayload);
+    const decodedLabel = parseJsonBytes(valueImage.diagnosticTypeLabel);
+    if (decodedLabel !== null) assertNoWorldEvidenceKeys(decodedLabel, ['diagnosticTypeLabel']);
   }
 }
 
@@ -196,10 +198,10 @@ function parseJsonBytes(value) {
   }
 }
 
-function parseCanonicalValueImagePayload(value) {
+function parseCanonicalValueImage(value) {
   if (!(value instanceof Uint8Array) || value.byteLength === 0) return null;
   try {
-    return decodeCanonicalValueImagePayload(value);
+    return decodeCanonicalValueImage(value);
   } catch {
     return null;
   }
@@ -264,7 +266,7 @@ function decodeResolutionInputBytes(value) {
   return out;
 }
 
-function decodeCanonicalValueImagePayload(value) {
+function decodeCanonicalValueImage(value) {
   const reader = new ResolutionInputReader(value);
   if (reader.u32() !== 1) fail('ERR_WORLD_VALUE_IMAGE_UNSUPPORTED');
   if (reader.u32() !== 1) fail('ERR_WORLD_VALUE_IMAGE_UNSUPPORTED');
@@ -274,9 +276,9 @@ function decodeCanonicalValueImagePayload(value) {
   reader.optionalU64();
   reader.u8();
   const payload = reader.portableBytes();
-  reader.optionalPortableBytes();
+  const diagnosticTypeLabel = reader.optionalPortableBytes();
   reader.done();
-  return payload;
+  return { payload, diagnosticTypeLabel };
 }
 
 class ResolutionInputReader {

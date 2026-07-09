@@ -143,14 +143,15 @@ export class RunController {
     }));
     const parentClosureBytes = await this.store.getBlob(parentHead.turnClosureRef);
     assertParentHeadMatchesClosure(parentHead, parentClosureBytes);
-    const needsHostEffectPolicy = approvalAwarePendingPreflightPolicy(policy, this.effectContextFactory);
+    const allowApprovalDeferredRoutes = this.effectContextFactory !== defaultEffectContextFactory;
     let needsHostEffectPlan = prepareNeedsHostEffectPlan(
       parentHead,
       parentClosureBytes,
       this.hostRequestMapper,
       this.effectDrivers,
-      needsHostEffectPolicy,
+      policy,
       application,
+      { allowApprovalDeferredRoutes },
     );
     if (needsHostEffectPlan?.pending.length > 0) {
       const effectRecords = await this.store.listEffectRecords(runId);
@@ -163,12 +164,19 @@ export class RunController {
         currentBranchId: branchId,
         pendingRequests,
         drivers: this.effectDrivers,
-        policy: needsHostEffectPolicy,
+        policy,
         effectRecords,
         effectResolutionInputs,
+        allowApprovalDeferredRoutes,
       });
       assertCapabilityReportAccepted(preflightReport);
-      needsHostEffectPlan = bindEffectPlanToPreflightReport(needsHostEffectPlan, preflightReport, this.effectDrivers, needsHostEffectPolicy);
+      needsHostEffectPlan = bindEffectPlanToPreflightReport(
+        needsHostEffectPlan,
+        preflightReport,
+        this.effectDrivers,
+        policy,
+        { allowApprovalDeferredRoutes },
+      );
     }
     const imageBytes = await this.store.getBlob(application.executableImageRef);
     const executableHostFingerprint = `sha256:${await sha256Hex(imageBytes)}`;
@@ -876,39 +884,40 @@ function capabilityPolicyForSelectedEffect(policy = {}, manifest = {}, hostReque
   };
 }
 
-function approvalAwarePendingPreflightPolicy(policy, effectContextFactory) {
-  if (effectContextFactory === defaultEffectContextFactory) return policy;
-  return createRunPolicy({
-    ...policy,
-    requireApprovalForDestructiveEffects: false,
-    requireApprovalForNetworkEffects: false,
-    requireApprovalForBestEffort: false,
-  });
-}
-
 function modelLiveBudget(policy, model, options) {
   if (!model) return 0;
   const budget = policy.maximumLiveModelCalls ?? 0;
   return options.allowCachedLiveModelReplay ? Math.max(1, budget) : budget;
 }
 
-function selectEffectDriver(drivers, hostRequest, policy = {}, preferredAuthorityLabels = []) {
-  let firstMatch = null;
-  let selected = null;
-  let selectedScore = 0;
+function selectEffectDriver(drivers, hostRequest, policy = {}, preferredAuthorityLabels = [], { allowApprovalDeferredRoutes = false } = {}) {
+  const policySafeCandidates = [];
+  const approvalDeferredCandidates = [];
   for (const driver of drivers) {
     const manifest = driverManifest(driver);
-    if (manifest && driverSupportsManifest(manifest, hostRequest, policy)) {
-      const selection = { driver, manifest };
-      firstMatch ??= selection;
-      const score = authorityPreferenceScore(manifest, preferredAuthorityLabels);
-      if (score > selectedScore) {
-        selected = selection;
-        selectedScore = score;
-      }
+    if (!manifest) continue;
+    const approvalDeferred = allowApprovalDeferredRoutes && driverManifestRequiresApproval(manifest, hostRequest, policy);
+    if (!driverSupportsManifest(manifest, hostRequest, policy, { ignoreApprovalRequirement: approvalDeferred })) continue;
+    (approvalDeferred ? approvalDeferredCandidates : policySafeCandidates).push({ driver, manifest });
+  }
+  return selectPreferredEffectDriver(
+    policySafeCandidates.length ? policySafeCandidates : approvalDeferredCandidates,
+    preferredAuthorityLabels,
+  );
+}
+
+function selectPreferredEffectDriver(candidates, preferredAuthorityLabels) {
+  if (!candidates.length) return null;
+  let selected = candidates[0];
+  let selectedScore = authorityPreferenceScore(selected.manifest, preferredAuthorityLabels);
+  for (const candidate of candidates.slice(1)) {
+    const score = authorityPreferenceScore(candidate.manifest, preferredAuthorityLabels);
+    if (score > selectedScore) {
+      selected = candidate;
+      selectedScore = score;
     }
   }
-  return selected ?? firstMatch;
+  return selected;
 }
 
 function authorityPreferenceScore(manifest, preferredAuthorityLabels) {
@@ -925,7 +934,7 @@ function driverSupports(driver, hostRequest) {
   return manifest ? driverSupportsManifest(manifest, hostRequest) : false;
 }
 
-function driverSupportsManifest(manifest, hostRequest, policy = {}) {
+function driverSupportsManifest(manifest, hostRequest, policy = {}, { ignoreApprovalRequirement = false } = {}) {
   const structuralMatch = manifest.supportedActuatorRefs?.includes(hostRequest.actuatorRef) === true &&
     manifest.supportedDescriptorFingerprints?.includes(hostRequest.descriptorFingerprint) === true &&
     manifest.supportedActuationClasses?.includes(hostRequest.actuationClass) === true &&
@@ -975,7 +984,11 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}) {
     }
   }
   if (policy.allowPartialEffectBatch === true && driverManifestIsHuman(manifest, hostRequest) && policy.allowHumanEffects !== true) return false;
-  if (policy.allowPartialEffectBatch === true && driverManifestRequiresApproval(manifest, hostRequest, policy)) return false;
+  if (
+    policy.allowPartialEffectBatch === true &&
+    ignoreApprovalRequirement !== true &&
+    driverManifestRequiresApproval(manifest, hostRequest, policy)
+  ) return false;
   try {
     assertDurableRecoveryAllowed(manifest.recoveryClass, policy);
   } catch {
@@ -1415,7 +1428,15 @@ function assertNextClosureManifestMatchesWorker(worker, inspected) {
   }
 }
 
-function prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, hostRequestMapper, effectDrivers, policy, application = {}) {
+function prepareNeedsHostEffectPlan(
+  parentHead,
+  parentClosureBytes,
+  hostRequestMapper,
+  effectDrivers,
+  policy,
+  application = {},
+  { allowApprovalDeferredRoutes = false } = {},
+) {
   if (parentHead.status !== 'needs_host') return null;
   let parentSummary;
   try {
@@ -1442,6 +1463,7 @@ function prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, hostRequestM
       hostRequest,
       policy,
       preferredAuthorityLabelsForHostRequest(hostRequest, application, effectDrivers, policy),
+      { allowApprovalDeferredRoutes },
     );
     if (selection) pending.push({ index, worldHostRequest, hostRequest, ...selection });
     else unresolvedHostRequests.push(unresolvedHostRequestDiagnostic(index, hostRequest));
@@ -1463,7 +1485,13 @@ function prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, hostRequestM
   return { parentSummary, pending, unresolvedHostRequests };
 }
 
-function bindEffectPlanToPreflightReport(plan, report, effectDrivers, policy) {
+function bindEffectPlanToPreflightReport(
+  plan,
+  report,
+  effectDrivers,
+  policy,
+  { allowApprovalDeferredRoutes = false } = {},
+) {
   const selectedRoutes = report.selectedPendingRequestRoutes ?? [];
   const selectedByRequest = new Map(selectedRoutes.map((route) => [preflightRouteKey(route), route]));
   const unresolvedByRequest = new Map((report.unresolvedPendingRequestRoutes ?? []).map((route) => [preflightRouteKey(route), route]));
@@ -1482,7 +1510,13 @@ function bindEffectPlanToPreflightReport(plan, report, effectDrivers, policy) {
       }
       fail('ERR_HOST_REQUEST_DRIVER_UNAVAILABLE', 'preflight report missing selected HostRequest route', unresolvedHostRequestDiagnostic(item.index, item.hostRequest));
     }
-    const selection = selectEffectDriverByPreflightRoute(effectDrivers, item.hostRequest, policy, route);
+    const selection = selectEffectDriverByPreflightRoute(
+      effectDrivers,
+      item.hostRequest,
+      policy,
+      route,
+      { allowApprovalDeferredRoutes },
+    );
     if (!selection) fail('ERR_HOST_REQUEST_DRIVER_UNAVAILABLE', 'preflight-covered driver unavailable for pending HostRequest', {
       ...unresolvedHostRequestDiagnostic(item.index, item.hostRequest),
       driverId: route.driverId,
@@ -1523,12 +1557,19 @@ function hostRequestWithPendingIndex(hostRequest, index, worldHostRequest = null
   return next;
 }
 
-function selectEffectDriverByPreflightRoute(drivers, hostRequest, policy, route) {
+function selectEffectDriverByPreflightRoute(
+  drivers,
+  hostRequest,
+  policy,
+  route,
+  { allowApprovalDeferredRoutes = false } = {},
+) {
   if (!Number.isSafeInteger(route.driverIndex) || route.driverIndex < 0 || route.driverIndex >= drivers.length) return null;
   const driver = drivers[route.driverIndex];
   const manifest = driverManifest(driver);
   if (manifest?.driverId !== route.driverId) return null;
-  if (!driverSupportsManifest(manifest, hostRequest, policy)) return null;
+  const approvalDeferred = allowApprovalDeferredRoutes && driverManifestRequiresApproval(manifest, hostRequest, policy);
+  if (!driverSupportsManifest(manifest, hostRequest, policy, { ignoreApprovalRequirement: approvalDeferred })) return null;
   return { driver, manifest };
 }
 

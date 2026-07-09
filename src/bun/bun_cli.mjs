@@ -38,6 +38,13 @@ const DEFAULT_CAPABILITY_PACK_PROBE_CHILD_OUTPUT_BYTES = 1024 * 1024;
 const CAPABILITY_PACK_PROBE_SETTLE_MS = 25;
 const CAPABILITY_PACK_PROBE_CHILD_ARG = '--world-host-capability-probe-child';
 const CAPABILITY_PACK_PROBE_IMPORT_ROOT_ENV = 'WORLD_HOST_CAPABILITY_PACK_PROBE_IMPORT_ROOT';
+const CAPABILITY_PACK_PROBE_FILE_ROOT_ENV = 'WORLD_HOST_CAPABILITY_PACK_PROBE_FILE_ROOT';
+const CAPABILITY_PACK_PROBE_FILE_ROOT_PREFIX = 'world-host-capability-probe-files-';
+const CAPABILITY_PACK_PROBE_FILE_NAME = 'world-host-abi-probe.txt';
+const CAPABILITY_PACK_PROBE_FILE_CONTENT = 'world-host capability pack ABI probe\n';
+const DEFINE_PROPERTY = Object.defineProperty;
+const GET_OWN_PROPERTY_DESCRIPTOR = Object.getOwnPropertyDescriptor;
+const DELETE_PROPERTY = Reflect.deleteProperty;
 let capabilityPackProbeGlobalLock = Promise.resolve();
 export async function runBunCli(args, io, options = {}) {
   const command = args[0] ?? 'help';
@@ -121,8 +128,16 @@ async function runCapabilityCommand(args, io, options = {}) {
       }
     }
     if (trustedExecuteAdapters) {
-      if (args.includes(CAPABILITY_PACK_PROBE_CHILD_ARG) || options.isolateTrustedCapabilityPackAdapters === false) {
-        await assertCapabilityPackAdapterAbi(checked, artifacts, pack);
+      const isolatedProbeChild = args.includes(CAPABILITY_PACK_PROBE_CHILD_ARG);
+      const isolationDisabled = options.isolateTrustedCapabilityPackAdapters === false;
+      if (isolationDisabled && !isolatedProbeChild && checked.adapter.kind === 'in_process') {
+        fail(
+          'ERR_CAPABILITY_PACK_ADAPTER_PROBE_ISOLATION_REQUIRED',
+          'trusted in-process capability pack probes require process isolation',
+        );
+      }
+      if (isolatedProbeChild || isolationDisabled) {
+        await assertCapabilityPackAdapterAbi(checked, artifacts, { isolatedProbeChild });
       } else {
         await assertCapabilityPackAdapterAbiIsolated(pack, checked);
       }
@@ -145,10 +160,10 @@ async function runCapabilityCommand(args, io, options = {}) {
 async function assertCapabilityPackAdapterAbiIsolated(packRoot, packManifest) {
   const binPath = fileURLToPath(new URL('../../bin/world-host.mjs', import.meta.url));
   let importRoot = null;
+  let probeFileRoot = null;
   try {
-    if (packManifest.adapter.kind === 'in_process') {
-      importRoot = await mkdtemp(path.join(tmpdir(), 'world-host-capability-adapter-imports-'));
-    }
+    importRoot = await mkdtemp(path.join(tmpdir(), 'world-host-capability-adapter-imports-'));
+    probeFileRoot = await createCapabilityPackProbeFileRoot();
     const result = await runWorldHostProbeChild([
       'capability',
       'check-pack',
@@ -157,7 +172,10 @@ async function assertCapabilityPackAdapterAbiIsolated(packRoot, packManifest) {
       '--trusted-execute-adapters',
       CAPABILITY_PACK_PROBE_CHILD_ARG,
     ], binPath, {
-      env: importRoot == null ? {} : { [CAPABILITY_PACK_PROBE_IMPORT_ROOT_ENV]: importRoot },
+      env: {
+        [CAPABILITY_PACK_PROBE_IMPORT_ROOT_ENV]: importRoot,
+        [CAPABILITY_PACK_PROBE_FILE_ROOT_ENV]: probeFileRoot,
+      },
       timeoutMs: capabilityPackProbeChildTimeoutMs(packManifest),
     });
     if (result.timedOut) {
@@ -186,6 +204,7 @@ async function assertCapabilityPackAdapterAbiIsolated(packRoot, packManifest) {
     });
   } finally {
     if (importRoot != null) await rm(importRoot, { recursive: true, force: true });
+    if (probeFileRoot != null) await rm(probeFileRoot, { recursive: true, force: true });
   }
 }
 
@@ -311,42 +330,60 @@ function pathInside(root, target) {
   return relative.length > 0 && !relative.startsWith('..') && !path.isAbsolute(relative);
 }
 
-async function assertCapabilityPackAdapterAbi(packManifest, artifacts, packRoot) {
-  await withDeterministicCapabilityPackProbeNetwork(packManifest, null, async (probeNetwork) => {
-    let adapterImportRoot = null;
-    let driver;
-    let sidecar = false;
-    try {
-      if (packManifest.adapter.kind === 'in_process') {
-        const adapterImport = await capabilityPackAdapterImportTarget(packManifest, artifacts);
-        adapterImportRoot = adapterImport.root;
-        const module = await withCapabilityPackProbeTimeout('import', import(adapterImport.url));
-        await probeNetwork?.assertNoViolations();
-        const Driver = module[packManifest.adapter.exportName];
-        if (typeof Driver !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_EXPORT');
-        driver = new Driver(capabilityPackAdapterOptions(packManifest));
-        await probeNetwork?.assertNoViolations();
-      } else if (packManifest.adapter.kind === 'sidecar') {
-        if (externalCapabilityPackEffectProbe(packManifest, null)) {
-          fail('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED', 'network sidecar probes must not perform live external effects');
+async function assertCapabilityPackAdapterAbi(packManifest, artifacts, { isolatedProbeChild = false } = {}) {
+  const probeFileRoot = await capabilityPackProbeFileRoot({ isolatedProbeChild });
+  try {
+    await withDeterministicCapabilityPackProbeNetwork(packManifest, null, async (probeNetwork) => {
+      let adapterSnapshotRoot = null;
+      let driver;
+      let sidecar = false;
+      try {
+        if (packManifest.adapter.kind === 'in_process') {
+          const adapterImport = await capabilityPackAdapterImportTarget(packManifest, artifacts);
+          adapterSnapshotRoot = adapterImport.root;
+          const module = await withCapabilityPackProbeTimeout('import', import(adapterImport.url));
+          await probeNetwork?.assertNoViolations();
+          const Driver = module[packManifest.adapter.exportName];
+          if (typeof Driver !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_EXPORT');
+          driver = new Driver(capabilityPackAdapterOptions(packManifest, probeFileRoot.root));
+          await probeNetwork?.assertNoViolations();
+        } else if (packManifest.adapter.kind === 'sidecar') {
+          if (externalCapabilityPackEffectProbe(packManifest, null)) {
+            fail('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED', 'network sidecar probes must not perform live external effects');
+          }
+          if (fileCapabilityPackEffectProbe(packManifest, null)) {
+            fail('ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED', 'file sidecar probes must not perform live external effects');
+          }
+          adapterSnapshotRoot = await capabilityPackAdapterSnapshot(packManifest, artifacts);
+          driver = new CapabilitySidecar({
+            command: packManifest.adapter.command,
+            cwd: adapterSnapshotRoot,
+            packFingerprint: packManifest.packFingerprint,
+          });
+          sidecar = true;
+        } else {
+          return;
         }
-        driver = new CapabilitySidecar({ command: packManifest.adapter.command, cwd: packRoot, packFingerprint: packManifest.packFingerprint });
-        sidecar = true;
-      } else {
-        return;
+        const capabilityDriver = defineCapabilityDriver(driver);
+        if (packManifest.canRecover === true && typeof driver.recover !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_RECOVER');
+        const driverManifest = sidecar
+          ? await withCapabilityPackProbeTimeout('manifest', capabilityPackSidecarManifest(driver, packManifest))
+          : capabilityDriver.manifest();
+        await probeNetwork?.assertNoViolations();
+        assertCapabilityPackDriverManifestMatches(packManifest, driverManifest);
+        await assertCapabilityPackAdapterProbe(packManifest, capabilityDriver, driverManifest, {
+          driver,
+          sidecar,
+          probeNetwork,
+          probeFileRoot: probeFileRoot.root,
+        });
+      } finally {
+        if (adapterSnapshotRoot != null) await rm(adapterSnapshotRoot, { recursive: true, force: true });
       }
-      const capabilityDriver = defineCapabilityDriver(driver);
-      if (packManifest.canRecover === true && typeof driver.recover !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_RECOVER');
-      const driverManifest = sidecar
-        ? await withCapabilityPackProbeTimeout('manifest', capabilityPackSidecarManifest(driver, packManifest))
-        : capabilityDriver.manifest();
-      await probeNetwork?.assertNoViolations();
-      assertCapabilityPackDriverManifestMatches(packManifest, driverManifest);
-      await assertCapabilityPackAdapterProbe(packManifest, capabilityDriver, driverManifest, { driver, sidecar, probeNetwork });
-    } finally {
-      if (adapterImportRoot != null) await rm(adapterImportRoot, { recursive: true, force: true });
-    }
-  });
+    });
+  } finally {
+    if (probeFileRoot.locallyOwned) await rm(probeFileRoot.root, { recursive: true, force: true });
+  }
 }
 
 async function capabilityPackSidecarManifest(sidecarDriver, packManifest) {
@@ -358,15 +395,20 @@ async function capabilityPackSidecarManifest(sidecarDriver, packManifest) {
   return raw.packFingerprint == null ? manifest : Object.freeze({ ...manifest, packFingerprint: raw.packFingerprint });
 }
 
-async function assertCapabilityPackAdapterProbe(packManifest, capabilityDriver, driverManifest, { driver, sidecar = false, probeNetwork = null } = {}) {
+async function assertCapabilityPackAdapterProbe(packManifest, capabilityDriver, driverManifest, { driver, sidecar = false, probeNetwork = null, probeFileRoot } = {}) {
   const hostRequests = capabilityPackSidecarProbeHostRequests(driverManifest);
   for (const hostRequest of hostRequests) {
-    await assertCapabilityPackAdapterProbeRequest(packManifest, capabilityDriver, driverManifest, hostRequest, { driver, sidecar, probeNetwork });
+    await assertCapabilityPackAdapterProbeRequest(packManifest, capabilityDriver, driverManifest, hostRequest, {
+      driver,
+      sidecar,
+      probeNetwork,
+      probeFileRoot,
+    });
   }
 }
 
-async function assertCapabilityPackAdapterProbeRequest(packManifest, capabilityDriver, driverManifest, hostRequest, { driver, sidecar = false, probeNetwork = null } = {}) {
-  const policy = capabilityPackSidecarProbePolicy(driverManifest, hostRequest);
+async function assertCapabilityPackAdapterProbeRequest(packManifest, capabilityDriver, driverManifest, hostRequest, { driver, sidecar = false, probeNetwork = null, probeFileRoot } = {}) {
+  const policy = capabilityPackSidecarProbePolicy(driverManifest, hostRequest, probeFileRoot);
   const context = { worldHostCapabilityPackAbiProbe: true, policy };
   probeNetwork?.setProbeHostRequest?.(hostRequest);
   probeNetwork?.setProbePolicy(policy);
@@ -386,6 +428,12 @@ async function assertCapabilityPackAdapterProbeRequest(packManifest, capabilityD
   probeNetwork?.setPhase('shadow');
   await withCapabilityPackProbeTimeout('shadow', capabilityDriver.shadow(context, hostRequest, { worldHostCapabilityPackAbiProbe: true }));
   await probeNetwork?.assertNoViolations();
+  probeNetwork?.beginWorldIdempotencyObservation(capabilityPackProbeWorldIdempotencyObservation(
+    packManifest,
+    driverManifest,
+    hostRequest,
+    'resolve',
+  ));
   probeNetwork?.setPhase('resolve');
   const resolution = driver.resolve(context, hostRequest);
   probeNetwork?.allowReturnedPromise(resolution);
@@ -402,9 +450,16 @@ async function assertCapabilityPackAdapterProbeRequest(packManifest, capabilityD
     driverManifest,
     policy,
   );
+  probeNetwork?.assertWorldIdempotencyObserved();
   await probeNetwork?.assertNoViolations();
   if (packManifest.canRecover === true) {
     if (typeof capabilityDriver.recover !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_RECOVER');
+    probeNetwork?.beginWorldIdempotencyObservation(capabilityPackProbeWorldIdempotencyObservation(
+      packManifest,
+      driverManifest,
+      hostRequest,
+      'recover',
+    ));
     probeNetwork?.setPhase('recover');
     const recoveryResult = driver.recover(context, capabilityPackSidecarProbeEffectRecord(driverManifest, hostRequest));
     probeNetwork?.allowReturnedPromise(recoveryResult);
@@ -420,6 +475,7 @@ async function assertCapabilityPackAdapterProbeRequest(packManifest, capabilityD
     } else {
       assertNoWorldEvidenceKeys(recovery);
     }
+    probeNetwork?.assertWorldIdempotencyObserved({ requireObserved: false });
     await probeNetwork?.assertNoViolations();
   }
 }
@@ -485,11 +541,38 @@ async function withDeterministicCapabilityPackProbeNetwork(driverManifest, hostR
       clearInterval: globalThis.clearInterval,
       setImmediate: globalThis.setImmediate,
       clearImmediate: globalThis.clearImmediate,
+      bunBuild: globalThis.Bun?.build,
       bunFile: globalThis.Bun?.file,
+      bunGlob: globalThis.Bun?.Glob,
+      bunMmap: globalThis.Bun?.mmap,
+      bunResolve: globalThis.Bun?.resolve,
+      bunResolveSync: globalThis.Bun?.resolveSync,
       bunWrite: globalThis.Bun?.write,
       bunSleep: globalThis.Bun?.sleep,
       promiseResolve: globalThis.Promise?.resolve,
       queueMicrotask: globalThis.queueMicrotask,
+      Request: globalThis.Request,
+    };
+    const previousDescriptors = {
+      fetch: GET_OWN_PROPERTY_DESCRIPTOR(globalThis, 'fetch'),
+      WebSocket: GET_OWN_PROPERTY_DESCRIPTOR(globalThis, 'WebSocket'),
+      EventSource: GET_OWN_PROPERTY_DESCRIPTOR(globalThis, 'EventSource'),
+      setTimeout: GET_OWN_PROPERTY_DESCRIPTOR(globalThis, 'setTimeout'),
+      clearTimeout: GET_OWN_PROPERTY_DESCRIPTOR(globalThis, 'clearTimeout'),
+      setInterval: GET_OWN_PROPERTY_DESCRIPTOR(globalThis, 'setInterval'),
+      clearInterval: GET_OWN_PROPERTY_DESCRIPTOR(globalThis, 'clearInterval'),
+      setImmediate: GET_OWN_PROPERTY_DESCRIPTOR(globalThis, 'setImmediate'),
+      clearImmediate: GET_OWN_PROPERTY_DESCRIPTOR(globalThis, 'clearImmediate'),
+      bunBuild: globalThis.Bun == null ? undefined : GET_OWN_PROPERTY_DESCRIPTOR(globalThis.Bun, 'build'),
+      bunFile: globalThis.Bun == null ? undefined : GET_OWN_PROPERTY_DESCRIPTOR(globalThis.Bun, 'file'),
+      bunGlob: globalThis.Bun == null ? undefined : GET_OWN_PROPERTY_DESCRIPTOR(globalThis.Bun, 'Glob'),
+      bunMmap: globalThis.Bun == null ? undefined : GET_OWN_PROPERTY_DESCRIPTOR(globalThis.Bun, 'mmap'),
+      bunResolve: globalThis.Bun == null ? undefined : GET_OWN_PROPERTY_DESCRIPTOR(globalThis.Bun, 'resolve'),
+      bunResolveSync: globalThis.Bun == null ? undefined : GET_OWN_PROPERTY_DESCRIPTOR(globalThis.Bun, 'resolveSync'),
+      bunWrite: globalThis.Bun == null ? undefined : GET_OWN_PROPERTY_DESCRIPTOR(globalThis.Bun, 'write'),
+      bunSleep: globalThis.Bun == null ? undefined : GET_OWN_PROPERTY_DESCRIPTOR(globalThis.Bun, 'sleep'),
+      promiseResolve: globalThis.Promise == null ? undefined : GET_OWN_PROPERTY_DESCRIPTOR(globalThis.Promise, 'resolve'),
+      queueMicrotask: GET_OWN_PROPERTY_DESCRIPTOR(globalThis, 'queueMicrotask'),
     };
     const hadGlobals = {
       fetch: Object.prototype.hasOwnProperty.call(globalThis, 'fetch'),
@@ -501,7 +584,12 @@ async function withDeterministicCapabilityPackProbeNetwork(driverManifest, hostR
       clearInterval: Object.prototype.hasOwnProperty.call(globalThis, 'clearInterval'),
       setImmediate: Object.prototype.hasOwnProperty.call(globalThis, 'setImmediate'),
       clearImmediate: Object.prototype.hasOwnProperty.call(globalThis, 'clearImmediate'),
+      bunBuild: globalThis.Bun != null && Object.prototype.hasOwnProperty.call(globalThis.Bun, 'build'),
       bunFile: globalThis.Bun != null && Object.prototype.hasOwnProperty.call(globalThis.Bun, 'file'),
+      bunGlob: globalThis.Bun != null && Object.prototype.hasOwnProperty.call(globalThis.Bun, 'Glob'),
+      bunMmap: globalThis.Bun != null && Object.prototype.hasOwnProperty.call(globalThis.Bun, 'mmap'),
+      bunResolve: globalThis.Bun != null && Object.prototype.hasOwnProperty.call(globalThis.Bun, 'resolve'),
+      bunResolveSync: globalThis.Bun != null && Object.prototype.hasOwnProperty.call(globalThis.Bun, 'resolveSync'),
       bunWrite: globalThis.Bun != null && Object.prototype.hasOwnProperty.call(globalThis.Bun, 'write'),
       bunSleep: globalThis.Bun != null && Object.prototype.hasOwnProperty.call(globalThis.Bun, 'sleep'),
       promiseResolve: globalThis.Promise != null && Object.prototype.hasOwnProperty.call(globalThis.Promise, 'resolve'),
@@ -509,7 +597,9 @@ async function withDeterministicCapabilityPackProbeNetwork(driverManifest, hostR
     };
     let activeProbeResponseStatus = null;
     const deterministicFetch = async (input, init = {}) => {
-      deterministicNetwork.assertHttpAllowed('fetch', input, init?.method ?? input?.method ?? 'GET');
+      const request = new previousGlobals.Request(input, init);
+      deterministicNetwork.assertHttpAllowed('fetch', request, request.method);
+      deterministicNetwork.observeFetchRequest(request);
       if (activeProbeResponseStatus === 'http_error') {
         return new Response('', {
           status: 503,
@@ -560,48 +650,67 @@ async function withDeterministicCapabilityPackProbeNetwork(driverManifest, hostR
     deterministicNetwork.setProbeHostRequest = (request) => {
       activeProbeResponseStatus = request?.responseSchema?.status ?? null;
     };
-    globalThis.fetch = deterministicNetwork.fetch;
-    if (hadGlobals.WebSocket) globalThis.WebSocket = deterministicNetwork.WebSocket;
-    if (hadGlobals.EventSource) globalThis.EventSource = deterministicNetwork.EventSource;
-    globalThis.setTimeout = deterministicNetwork.setTimeout;
-    globalThis.clearTimeout = deterministicNetwork.clearTimeout;
-    globalThis.setInterval = deterministicNetwork.setInterval;
-    globalThis.clearInterval = deterministicNetwork.clearInterval;
-    if (typeof previousGlobals.setImmediate === 'function') globalThis.setImmediate = deterministicNetwork.setImmediate;
-    if (typeof previousGlobals.clearImmediate === 'function') globalThis.clearImmediate = deterministicNetwork.clearImmediate;
-    if (globalThis.Bun && typeof previousGlobals.bunFile === 'function') globalThis.Bun.file = deterministicNetwork.file;
-    if (globalThis.Bun && typeof previousGlobals.bunWrite === 'function') globalThis.Bun.write = deterministicNetwork.write;
-    if (globalThis.Bun && typeof previousGlobals.bunSleep === 'function') globalThis.Bun.sleep = deterministicNetwork.sleep;
-    globalThis.Promise.resolve = deterministicNetwork.promiseResolve;
-    globalThis.queueMicrotask = deterministicNetwork.queueMicrotask;
+    const restorations = [
+      [globalThis.Promise, 'resolve', previousDescriptors.promiseResolve, 'Promise.resolve'],
+      [globalThis, 'fetch', previousDescriptors.fetch, 'globalThis.fetch'],
+      [globalThis, 'WebSocket', previousDescriptors.WebSocket, 'globalThis.WebSocket'],
+      [globalThis, 'EventSource', previousDescriptors.EventSource, 'globalThis.EventSource'],
+      [globalThis, 'setTimeout', previousDescriptors.setTimeout, 'globalThis.setTimeout'],
+      [globalThis, 'clearTimeout', previousDescriptors.clearTimeout, 'globalThis.clearTimeout'],
+      [globalThis, 'setInterval', previousDescriptors.setInterval, 'globalThis.setInterval'],
+      [globalThis, 'clearInterval', previousDescriptors.clearInterval, 'globalThis.clearInterval'],
+      [globalThis, 'setImmediate', previousDescriptors.setImmediate, 'globalThis.setImmediate'],
+      [globalThis, 'clearImmediate', previousDescriptors.clearImmediate, 'globalThis.clearImmediate'],
+      [globalThis.Bun, 'build', previousDescriptors.bunBuild, 'Bun.build'],
+      [globalThis.Bun, 'file', previousDescriptors.bunFile, 'Bun.file'],
+      [globalThis.Bun, 'Glob', previousDescriptors.bunGlob, 'Bun.Glob'],
+      [globalThis.Bun, 'mmap', previousDescriptors.bunMmap, 'Bun.mmap'],
+      [globalThis.Bun, 'resolve', previousDescriptors.bunResolve, 'Bun.resolve'],
+      [globalThis.Bun, 'resolveSync', previousDescriptors.bunResolveSync, 'Bun.resolveSync'],
+      [globalThis.Bun, 'write', previousDescriptors.bunWrite, 'Bun.write'],
+      [globalThis.Bun, 'sleep', previousDescriptors.bunSleep, 'Bun.sleep'],
+      [globalThis, 'queueMicrotask', previousDescriptors.queueMicrotask, 'globalThis.queueMicrotask'],
+    ];
     let result;
-    let fnError = null;
+    let probeError = null;
     try {
+      globalThis.fetch = deterministicNetwork.fetch;
+      if (hadGlobals.WebSocket) globalThis.WebSocket = deterministicNetwork.WebSocket;
+      if (hadGlobals.EventSource) globalThis.EventSource = deterministicNetwork.EventSource;
+      globalThis.setTimeout = deterministicNetwork.setTimeout;
+      globalThis.clearTimeout = deterministicNetwork.clearTimeout;
+      globalThis.setInterval = deterministicNetwork.setInterval;
+      globalThis.clearInterval = deterministicNetwork.clearInterval;
+      if (typeof previousGlobals.setImmediate === 'function') globalThis.setImmediate = deterministicNetwork.setImmediate;
+      if (typeof previousGlobals.clearImmediate === 'function') globalThis.clearImmediate = deterministicNetwork.clearImmediate;
+      if (globalThis.Bun && typeof previousGlobals.bunBuild === 'function') globalThis.Bun.build = deniedCapabilityPackProbeFileApi(deterministicNetwork, 'Bun.build');
+      if (globalThis.Bun && typeof previousGlobals.bunFile === 'function') globalThis.Bun.file = deterministicNetwork.file;
+      if (globalThis.Bun && typeof previousGlobals.bunGlob === 'function') globalThis.Bun.Glob = deniedCapabilityPackProbeFileApi(deterministicNetwork, 'Bun.Glob');
+      if (globalThis.Bun && typeof previousGlobals.bunMmap === 'function') globalThis.Bun.mmap = deniedCapabilityPackProbeFileApi(deterministicNetwork, 'Bun.mmap');
+      if (globalThis.Bun && typeof previousGlobals.bunResolve === 'function') globalThis.Bun.resolve = deniedCapabilityPackProbeFileApi(deterministicNetwork, 'Bun.resolve');
+      if (globalThis.Bun && typeof previousGlobals.bunResolveSync === 'function') globalThis.Bun.resolveSync = deniedCapabilityPackProbeFileApi(deterministicNetwork, 'Bun.resolveSync');
+      if (globalThis.Bun && typeof previousGlobals.bunWrite === 'function') globalThis.Bun.write = deterministicNetwork.write;
+      if (globalThis.Bun && typeof previousGlobals.bunSleep === 'function') globalThis.Bun.sleep = deterministicNetwork.sleep;
+      globalThis.Promise.resolve = deterministicNetwork.promiseResolve;
+      globalThis.queueMicrotask = deterministicNetwork.queueMicrotask;
       result = await fn(deterministicNetwork);
     } catch (error) {
-      fnError = error;
-    } finally {
-      try {
-        deterministicNetwork.setPhase('closed');
-        await deterministicNetwork.assertNoViolations();
-      } finally {
-        restoreCapabilityPackProbeGlobal('fetch', previousGlobals.fetch, hadGlobals.fetch);
-        restoreCapabilityPackProbeGlobal('WebSocket', previousGlobals.WebSocket, hadGlobals.WebSocket);
-        restoreCapabilityPackProbeGlobal('EventSource', previousGlobals.EventSource, hadGlobals.EventSource);
-        restoreCapabilityPackProbeGlobal('setTimeout', previousGlobals.setTimeout, hadGlobals.setTimeout);
-        restoreCapabilityPackProbeGlobal('clearTimeout', previousGlobals.clearTimeout, hadGlobals.clearTimeout);
-        restoreCapabilityPackProbeGlobal('setInterval', previousGlobals.setInterval, hadGlobals.setInterval);
-        restoreCapabilityPackProbeGlobal('clearInterval', previousGlobals.clearInterval, hadGlobals.clearInterval);
-        restoreCapabilityPackProbeGlobal('setImmediate', previousGlobals.setImmediate, hadGlobals.setImmediate);
-        restoreCapabilityPackProbeGlobal('clearImmediate', previousGlobals.clearImmediate, hadGlobals.clearImmediate);
-        if (globalThis.Bun) restoreCapabilityPackProbeGlobalProperty(globalThis.Bun, 'file', previousGlobals.bunFile, hadGlobals.bunFile);
-        if (globalThis.Bun) restoreCapabilityPackProbeGlobalProperty(globalThis.Bun, 'write', previousGlobals.bunWrite, hadGlobals.bunWrite);
-        if (globalThis.Bun) restoreCapabilityPackProbeGlobalProperty(globalThis.Bun, 'sleep', previousGlobals.bunSleep, hadGlobals.bunSleep);
-        restoreCapabilityPackProbeGlobalProperty(globalThis.Promise, 'resolve', previousGlobals.promiseResolve, hadGlobals.promiseResolve);
-        restoreCapabilityPackProbeGlobal('queueMicrotask', previousGlobals.queueMicrotask, hadGlobals.queueMicrotask);
-      }
+      probeError = error;
     }
-    if (fnError) throw fnError;
+    try {
+      deterministicNetwork.setPhase('closed');
+      await deterministicNetwork.assertNoViolations();
+    } catch (error) {
+      probeError = error;
+    }
+    const cleanupFailures = restoreCapabilityPackProbeProperties(restorations);
+    if (cleanupFailures.length > 0) {
+      fail('ERR_CAPABILITY_PACK_ADAPTER_PROBE_CLEANUP_FAILED', 'capability pack probe globals could not be restored', {
+        failures: cleanupFailures,
+        probeErrorCode: probeError?.code ?? null,
+      });
+    }
+    if (probeError) throw probeError;
     return result;
   });
 }
@@ -628,6 +737,7 @@ function deterministicCapabilityPackProbeNetwork({ fetch, setTimeout, clearTimeo
   let allowedOrigins = new Set();
   let allowedMethods = new Set();
   let allowedFileRoots = [];
+  let worldIdempotencyObservation = null;
   let violations = [];
   const pendingTimeouts = new Set();
   const pendingIntervals = new Set();
@@ -641,6 +751,12 @@ function deterministicCapabilityPackProbeNetwork({ fetch, setTimeout, clearTimeo
   };
   const assertFileAllowed = (api, target) => {
     if (((phase === 'resolve' || phase === 'recover') || asyncContinuationNetworkAllowedDepth > 0) && fileAllowed === true && fileProbeTargetAllowed(target, allowedFileRoots)) return;
+    violations.push(api);
+    if (phase === 'closed' || phase === 'resolve-await' || phase === 'resolve-returned' ||
+      phase === 'recover-await' || phase === 'recover-returned') return;
+    failNetworkEffect(api);
+  };
+  const rejectUnconfinedFileApi = (api) => {
     violations.push(api);
     if (phase === 'closed' || phase === 'resolve-await' || phase === 'resolve-returned' ||
       phase === 'recover-await' || phase === 'recover-returned') return;
@@ -818,6 +934,47 @@ function deterministicCapabilityPackProbeNetwork({ fetch, setTimeout, clearTimeo
       phaseToken += 1;
     },
     assertHttpAllowed,
+    rejectUnconfinedFileApi,
+    beginWorldIdempotencyObservation(observation) {
+      worldIdempotencyObservation = {
+        ...observation,
+        fetchCount: 0,
+        invalidFetchCount: 0,
+      };
+    },
+    observeFetchRequest(request) {
+      if (worldIdempotencyObservation == null) return;
+      worldIdempotencyObservation.fetchCount += 1;
+      if (worldIdempotencyObservation.enforce !== true) return;
+      const observed = request.headers.get(worldIdempotencyObservation.headerName);
+      if (observed !== worldIdempotencyObservation.expectedValue) {
+        worldIdempotencyObservation.invalidFetchCount += 1;
+        fail('ERR_CAPABILITY_PACK_ADAPTER_IDEMPOTENCY_NOT_PROPAGATED', 'capability pack adapter fetch did not propagate World idempotency', {
+          phase: worldIdempotencyObservation.phase,
+          headerName: worldIdempotencyObservation.headerName,
+          fetchCount: worldIdempotencyObservation.fetchCount,
+        });
+      }
+    },
+    assertWorldIdempotencyObserved({ requireObserved = true } = {}) {
+      const observation = worldIdempotencyObservation;
+      worldIdempotencyObservation = null;
+      if (observation?.enforce !== true) return;
+      if (observation.invalidFetchCount > 0) {
+        fail('ERR_CAPABILITY_PACK_ADAPTER_IDEMPOTENCY_NOT_PROPAGATED', 'capability pack adapter fetch did not propagate World idempotency', {
+          phase: observation.phase,
+          headerName: observation.headerName,
+          fetchCount: observation.fetchCount,
+          invalidFetchCount: observation.invalidFetchCount,
+        });
+      }
+      if (requireObserved !== true || observation.fetchCount > 0) return;
+      fail('ERR_CAPABILITY_PACK_ADAPTER_IDEMPOTENCY_NOT_PROPAGATED', 'capability pack adapter claimed World idempotency propagation without an observed fetch', {
+        phase: observation.phase,
+        headerName: observation.headerName,
+        fetchCount: 0,
+      });
+    },
     allowReturnedPromise(value) {
       const state = trackedPromiseStates.get(value);
       if (state) {
@@ -1009,6 +1166,12 @@ function deterministicCapabilityPackProbeNetwork({ fetch, setTimeout, clearTimeo
   };
 }
 
+function deniedCapabilityPackProbeFileApi(probeNetwork, api) {
+  return function () {
+    return probeNetwork.rejectUnconfinedFileApi(api);
+  };
+}
+
 function fileProbeTargetAllowed(target, allowedFileRoots) {
   if (allowedFileRoots.length === 0) return false;
   let targetPath;
@@ -1029,24 +1192,37 @@ function fileProbeTargetAllowed(target, allowedFileRoots) {
   });
 }
 
-function restoreCapabilityPackProbeGlobal(name, value, hadOwnProperty) {
-  if (hadOwnProperty) {
-    globalThis[name] = value;
-  } else {
-    delete globalThis[name];
+function restoreCapabilityPackProbeProperties(restorations) {
+  const failures = [];
+  for (let index = 0; index < restorations.length; index += 1) {
+    const restoration = restorations[index];
+    const target = restoration[0];
+    const name = restoration[1];
+    const descriptor = restoration[2];
+    const label = restoration[3];
+    if (target == null) continue;
+    try {
+      if (descriptor === undefined) {
+        if (!DELETE_PROPERTY(target, name)) failures[failures.length] = label;
+      } else {
+        DEFINE_PROPERTY(target, name, descriptor);
+      }
+    } catch {
+      failures[failures.length] = label;
+    }
   }
-}
-
-function restoreCapabilityPackProbeGlobalProperty(target, name, value, hadOwnProperty) {
-  if (hadOwnProperty) {
-    target[name] = value;
-  } else {
-    delete target[name];
-  }
+  return failures;
 }
 
 function externalCapabilityPackEffectProbe(driverManifest, hostRequest) {
   return manifestNetworkCapabilityPackEffectProbe(driverManifest);
+}
+
+function fileCapabilityPackEffectProbe(driverManifest, hostRequest = null) {
+  if (hostRequest?.actuationClass === 'file') return true;
+  if (hostRequest) return false;
+  return (driverManifest.supportedActuationClasses ?? []).includes('file') ||
+    (driverManifest.authorityLabels ?? []).some((label) => typeof label === 'string' && label.startsWith('file:'));
 }
 
 function networkCapabilityPackEffectProbe(driverManifest, hostRequest = null) {
@@ -1071,12 +1247,27 @@ function networkCapabilityPackAuthorityLabel(driverManifest) {
   return (driverManifest.authorityLabels ?? []).some((label) => label === 'model:http-json' || (typeof label === 'string' && label.startsWith('network:')));
 }
 
+function capabilityPackProbeWorldIdempotencyObservation(packManifest, driverManifest, hostRequest, phase) {
+  return Object.freeze({
+    enforce: packManifest.propagatesWorldIdempotencyKey === true && networkCapabilityPackEffectProbe(driverManifest, hostRequest),
+    expectedValue: hostRequest.idempotencyKeyWorldFingerprint,
+    headerName: capabilityPackProbeWorldIdempotencyHeaderName(driverManifest),
+    phase,
+  });
+}
+
+function capabilityPackProbeWorldIdempotencyHeaderName(driverManifest) {
+  const diagnostics = driverManifest.diagnostics ?? {};
+  const value = diagnostics.requestRendering?.idempotencyHeaderName ?? diagnostics.idempotencyHeaderName;
+  return typeof value === 'string' && value.length > 0 ? value : 'Idempotency-Key';
+}
+
 function assertCapabilityPackSidecarProbeResolution(value, hostRequest, driverManifest, policy) {
   assertCapabilityResolutionBoundary(value);
   assertResolutionAccepted(value.resolutionInputBytes, hostRequest, driverManifest, policy);
 }
 
-function capabilityPackSidecarProbePolicy(driverManifest, hostRequest) {
+function capabilityPackSidecarProbePolicy(driverManifest, hostRequest, probeFileRoot) {
   const actuationClasses = new Set(driverManifest.supportedActuationClasses ?? []);
   const diagnostics = driverManifest.diagnostics ?? {};
   const { origins, methods } = capabilityPackSidecarProbeHttpPolicy(diagnostics, hostRequest);
@@ -1096,7 +1287,7 @@ function capabilityPackSidecarProbePolicy(driverManifest, hostRequest) {
     allowedMethods: methods,
     allowedHttpOrigins: origins,
     allowedHttpMethods: methods,
-    allowedFileRoots: capabilityPackSidecarProbeFileRoots(driverManifest),
+    allowedFileRoots: [probeFileRoot],
     maximumConcurrentEffects: Math.max(1, driverManifest.concurrencyLimit ?? 1),
     maximumRequestBytes: Math.max(1, driverManifest.maximumRequestBytes ?? 1, hostRequest.requestBytes?.byteLength ?? 0),
     maximumPromptBytes: Math.max(1, driverManifest.maximumRequestBytes ?? 1, hostRequest.requestBytes?.byteLength ?? 0),
@@ -1115,13 +1306,6 @@ function capabilityPackSidecarProbeHttpPolicy(diagnostics, hostRequest) {
   if (diagnostics.defaultMethod) methods.add(String(diagnostics.defaultMethod).toUpperCase());
   if (request?.method) methods.add(String(request.method).toUpperCase());
   return { origins: [...origins], methods: [...methods] };
-}
-
-function capabilityPackSidecarProbeFileRoots(driverManifest) {
-  return [
-    driverManifest.diagnostics?.root,
-    ...(driverManifest.diagnostics?.allowedFileRoots ?? []),
-  ].filter((item) => typeof item === 'string' && item.length > 0);
 }
 
 function addHttpOrigin(origins, value) {
@@ -1287,6 +1471,14 @@ function assertCapabilityPackDriverManifestMatches(packManifest, driverManifest)
 async function capabilityPackAdapterImportTarget(packManifest, artifacts) {
   const checksum = packManifest.checksums.find((item) => item.path === packManifest.adapter.module)?.checksum;
   if (!checksum) fail('ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED', `referenced artifact is not checksum-covered: ${packManifest.adapter.module}`);
+  const root = await capabilityPackAdapterSnapshot(packManifest, artifacts);
+  return Object.freeze({
+    root,
+    url: pathToFileURL(path.resolve(root, packManifest.adapter.module)).href,
+  });
+}
+
+async function capabilityPackAdapterSnapshot(packManifest, artifacts) {
   const root = await capabilityPackAdapterImportRoot();
   for (const item of packManifest.checksums) {
     const bytes = artifacts[item.path];
@@ -1296,10 +1488,7 @@ async function capabilityPackAdapterImportTarget(packManifest, artifacts) {
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, bytes, { flag: 'wx' });
   }
-  return Object.freeze({
-    root,
-    url: pathToFileURL(path.resolve(root, packManifest.adapter.module)).href,
-  });
+  return root;
 }
 
 async function capabilityPackAdapterImportRoot() {
@@ -1315,12 +1504,84 @@ async function capabilityPackAdapterImportRoot() {
   return actual;
 }
 
-function capabilityPackAdapterOptions(packManifest) {
-  const base = { packFingerprint: packManifest.packFingerprint };
+function capabilityPackAdapterOptions(packManifest, probeFileRoot) {
+  const base = {
+    packFingerprint: packManifest.packFingerprint,
+    root: probeFileRoot,
+    ...(packManifest.requiredSecrets.length > 0
+      ? { secretProvider: capabilityPackProbeSecretProvider(packManifest.requiredSecrets) }
+      : {}),
+  };
   if (packManifest.driverId === 'generic-http-json' || packManifest.driverId === 'generic-http-json-model') {
     return { ...base, endpointUrl: 'https://example.invalid/decide' };
   }
   return base;
+}
+
+function capabilityPackProbeSecretProvider(descriptors) {
+  const byName = new Map(descriptors.map((descriptor, index) => [descriptor.name, {
+    descriptor,
+    value: `world-host-probe-placeholder-${index}-${sha256BytesHex(fromUtf8(descriptor.name)).slice(0, 12)}`,
+  }]));
+  const entry = (name) => byName.get(name) ?? null;
+  return Object.freeze({
+    describe(name) {
+      const found = entry(name);
+      return found == null
+        ? Object.freeze({ name, class: 'opaque', provider: 'world-host-probe', required: true, redacted: true })
+        : Object.freeze({ ...found.descriptor, provider: 'world-host-probe', redacted: true });
+    },
+    has(name) {
+      return entry(name) != null;
+    },
+    get(name, purpose = 'capability-pack-abi-probe') {
+      const found = entry(name);
+      if (found == null) fail('ERR_SECRET_MISSING', `missing secret: ${name}`, { name, purpose });
+      return found.value;
+    },
+    accessReport(name, purpose = 'capability-pack-abi-probe') {
+      return Object.freeze({ name, purpose, available: entry(name) != null, valueRedacted: true });
+    },
+  });
+}
+
+async function createCapabilityPackProbeFileRoot() {
+  const root = await mkdtemp(path.join(tmpdir(), CAPABILITY_PACK_PROBE_FILE_ROOT_PREFIX));
+  try {
+    await writeFile(path.join(root, CAPABILITY_PACK_PROBE_FILE_NAME), CAPABILITY_PACK_PROBE_FILE_CONTENT, {
+      flag: 'wx',
+      mode: 0o600,
+    });
+    return root;
+  } catch (error) {
+    await rm(root, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function capabilityPackProbeFileRoot({ isolatedProbeChild }) {
+  if (!isolatedProbeChild) {
+    return Object.freeze({ root: await createCapabilityPackProbeFileRoot(), locallyOwned: true });
+  }
+  const ownerRoot = process.env[CAPABILITY_PACK_PROBE_FILE_ROOT_ENV];
+  if (ownerRoot == null || ownerRoot.length === 0) {
+    fail('ERR_CAPABILITY_PACK_ADAPTER_FILE_ROOT', 'isolated capability pack probes require a parent-owned file root');
+  }
+  const actual = await realpath(ownerRoot).catch(() => fail('ERR_CAPABILITY_PACK_ADAPTER_FILE_ROOT', 'capability pack probe file root is not readable'));
+  const tempRoot = await realpath(tmpdir());
+  if (!pathInside(tempRoot, actual) || !path.basename(actual).startsWith(CAPABILITY_PACK_PROBE_FILE_ROOT_PREFIX)) {
+    fail('ERR_CAPABILITY_PACK_ADAPTER_FILE_ROOT', 'capability pack probe file root must be a world-host temp directory');
+  }
+  const probePath = path.join(actual, CAPABILITY_PACK_PROBE_FILE_NAME);
+  const info = await lstat(probePath).catch(() => fail('ERR_CAPABILITY_PACK_ADAPTER_FILE_ROOT', 'capability pack probe file is missing'));
+  if (info.isSymbolicLink() || !info.isFile()) {
+    fail('ERR_CAPABILITY_PACK_ADAPTER_FILE_ROOT', 'capability pack probe file must be a regular file');
+  }
+  const probeActual = await realpath(probePath);
+  if (!pathInside(actual, probeActual)) {
+    fail('ERR_CAPABILITY_PACK_ADAPTER_FILE_ROOT', 'capability pack probe file escapes its root');
+  }
+  return Object.freeze({ root: actual, locallyOwned: false });
 }
 
 function assertSameCapabilityPackManifestField(field, packValue, driverValue) {

@@ -415,6 +415,10 @@ function credentialPathKey(value) {
   return /^(?:credentials?|authorization|bearer|tokens?|secrets?|password|(?:api|access|private)[_-]?keys?)$/i.test(value);
 }
 
+function credentialResponsePathKey(value) {
+  return credentialPathKey(value) || /^(?:access[_-]?token|refresh[_-]?token|client[_-]?secret)$/i.test(value);
+}
+
 function credentialUrlSentinel(value) {
   return /^(?:redacted|opaque|required|none|null|example(?:[-_].*)?|fixture(?:[-_].*)?|no-(?:credentials?|secrets?|tokens?))$/i.test(value);
 }
@@ -459,7 +463,7 @@ function assertNoCredentialShapedResponseValue(value) {
     if (
       credentialQueryValue(text) ||
       credentialAssignmentText(text) ||
-      (path.some(credentialPathKey) && text.length > 0 && !credentialUrlSentinel(text))
+      (path.some(credentialResponsePathKey) && text.length > 0 && !credentialUrlSentinel(text))
     ) {
       fail('ERR_SECRET_PERSISTED', 'HTTP response contained credential-shaped data');
     }

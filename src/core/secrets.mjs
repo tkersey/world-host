@@ -31,9 +31,12 @@ export class SecretAccessReport {
 }
 
 export class EnvSecretProvider extends SecretProvider {
+  #env;
+
   constructor(env = globalThis.process?.env ?? {}) {
     super();
-    this.env = env;
+    this.#env = env;
+    Object.freeze(this);
   }
 
   describe(name) {
@@ -41,12 +44,12 @@ export class EnvSecretProvider extends SecretProvider {
   }
 
   has(name) {
-    return typeof this.env[name] === 'string' && this.env[name].length > 0;
+    return typeof this.#env[name] === 'string' && this.#env[name].length > 0;
   }
 
   get(name, purpose = 'capability') {
     if (!this.has(name)) fail('ERR_SECRET_MISSING', `missing secret: ${name}`, { name, purpose });
-    return this.env[name];
+    return this.#env[name];
   }
 
   accessReport(name, purpose = 'capability') {
@@ -54,14 +57,64 @@ export class EnvSecretProvider extends SecretProvider {
   }
 }
 
+export function scopeSecretProvider(secretProvider, descriptors) {
+  const declaredNames = new Set(secretDescriptors(descriptors).map((descriptor) => descriptor.name));
+  const assertDeclared = (name, purpose = null) => {
+    if (!declaredNames.has(name)) fail('ERR_SECRET_UNDECLARED', `undeclared secret: ${name}`, { name, purpose });
+  };
+  return Object.freeze({
+    describe(name) {
+      assertDeclared(name);
+      return secretProvider.describe(name);
+    },
+    get(name, purpose = 'capability') {
+      assertDeclared(name, purpose);
+      return secretProvider.get(name, purpose);
+    },
+    has(name) {
+      assertDeclared(name);
+      return secretProviderHas(secretProvider, name);
+    },
+    accessReport(name, purpose = 'capability') {
+      assertDeclared(name, purpose);
+      if (secretProvider?.accessReport == null) {
+        return new SecretAccessReport({ name, purpose, available: secretProviderHas(secretProvider, name) });
+      }
+      if (typeof secretProvider.accessReport !== 'function') {
+        fail('ERR_SECRET_PROVIDER_CONTRACT', 'secret provider accessReport must be a function', { method: 'accessReport' });
+      }
+      return secretProvider.accessReport(name, purpose);
+    },
+  });
+}
+
 export function assertRequiredSecretsAvailable(secretProvider, descriptors) {
-  for (const descriptorLike of descriptors ?? []) {
-    const descriptor = descriptorLike instanceof SecretDescriptor
-      ? descriptorLike
-      : new SecretDescriptor(typeof descriptorLike === 'string' ? { name: descriptorLike } : descriptorLike);
-    if (descriptor.required && !secretProvider.has(descriptor.name)) fail('ERR_SECRET_MISSING', `missing secret: ${descriptor.name}`, { name: descriptor.name });
+  for (const descriptor of secretDescriptors(descriptors)) {
+    if (descriptor.required && !secretProviderHas(secretProvider, descriptor.name)) fail('ERR_SECRET_MISSING', `missing secret: ${descriptor.name}`, { name: descriptor.name });
   }
   return true;
+}
+
+function secretDescriptors(descriptors) {
+  if (!Array.isArray(descriptors)) fail('ERR_SECRET_DESCRIPTORS_INVALID', 'secret descriptors must be an array');
+  return Array.from(descriptors, secretDescriptor);
+}
+
+function secretProviderHas(secretProvider, name) {
+  if (typeof secretProvider?.has !== 'function') {
+    fail('ERR_SECRET_PROVIDER_CONTRACT', 'secret provider has must be a function', { method: 'has', name });
+  }
+  const available = secretProvider.has(name);
+  if (typeof available !== 'boolean') {
+    fail('ERR_SECRET_PROVIDER_CONTRACT', 'secret provider has must return a synchronous boolean', { method: 'has', name });
+  }
+  return available;
+}
+
+function secretDescriptor(descriptorLike) {
+  return descriptorLike instanceof SecretDescriptor
+    ? descriptorLike
+    : new SecretDescriptor(typeof descriptorLike === 'string' ? { name: descriptorLike } : descriptorLike);
 }
 
 export function secretBytes(value) {

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 
 import { GenericHttpJsonCapabilityDriver } from '../src/drivers/generic_http_json_capability_driver.mjs';
-import { EnvSecretProvider } from '../src/core/secrets.mjs';
+import { EnvSecretProvider, scopeSecretProvider } from '../src/core/secrets.mjs';
 import { redactCapabilityDiagnostics } from '../src/core/capability_policy.mjs';
 import { fromUtf8, stableJson } from '../src/core/store.mjs';
 import { decodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
@@ -31,12 +31,13 @@ if ((config.destructive === true || (live && liveSmokeUsesUnsafeMethod(configure
 }
 if (secretProviderName !== 'env') throw new Error('ERR_LIVE_SMOKE_SECRET_PROVIDER_UNSUPPORTED');
 
+const secretHeaders = config.secretHeaders ?? {};
 const driver = new GenericHttpJsonCapabilityDriver({
   endpointUrl: config.endpointUrl,
   origins: [allowOrigin],
   methods: configuredMethods,
-  secretHeaders: config.secretHeaders ?? {},
-  secretProvider: new EnvSecretProvider(),
+  secretHeaders,
+  secretProvider: scopeSecretProvider(new EnvSecretProvider(), Object.values(secretHeaders)),
   responseExtractionPath: config.responseExtractionPath ?? null,
 });
 

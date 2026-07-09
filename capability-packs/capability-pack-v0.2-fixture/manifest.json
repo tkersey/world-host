@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "packFingerprint": "sha256:a914196968a030da438966ada48cb366b02bb5e1c1b8a1cc3d82aa2c361c9304",
+  "packFingerprint": "sha256:0cc7901339c643026db97e462426e1fd75895736d579d7579ae2b2dfac69e075",
   "packageName": "world-capability-fixture",
   "packageVersion": "0.2.0",
   "driverId": "fixture-agent-model",
@@ -45,7 +45,7 @@
   "checksums": [
     {
       "path": "adapter.mjs",
-      "checksum": "sha256:1798f1feec928dbdb01842bcd661ad50badb9315b384c946fe9546a72cfdc2b5"
+      "checksum": "sha256:878ed99149d4f75269e0546cc7e11a4c524e87e99fb60b4c167a08adb64f4b9d"
     },
     {
       "path": "README.md",
@@ -57,12 +57,12 @@
     },
     {
       "path": "conformance.json",
-      "checksum": "sha256:93403682355ae86840b0bd964c6c6288c3de7a6a358c129d52215c2beae05c55"
+      "checksum": "sha256:27ae87a4749d38450965091833134fee603031a04234de056d61f8b0f0e594ec"
     }
   ],
   "docs": [
     "README.md",
     "non-claims.md"
   ],
-  "conformanceReceiptFingerprint": "sha256:8e65c7df535c61af8674cf9446b32d760a9a0d772bc5dce0aaf230e7f63e4b49"
+  "conformanceReceiptFingerprint": "sha256:5773d341a30d20f097eb0529c0c4e4bec89f4fd9c9226b4301a0218f6b7050eb"
 }

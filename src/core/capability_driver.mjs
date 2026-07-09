@@ -1,4 +1,5 @@
 import { assertDriverCanResolve, assertDriverManifest, defineActuatorDriver } from './actuator.mjs';
+import { receiverLocalEffectContext } from './effect_context.mjs';
 import { assertBytes, fail, fromUtf8, stableJson } from './store.mjs';
 import { decodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
 import { decodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
@@ -59,16 +60,16 @@ export function defineCapabilityDriver(driver) {
       return raw.packFingerprint == null ? manifest : Object.freeze({ ...manifest, packFingerprint: raw.packFingerprint });
     },
     async preflight(context, hostRequest) {
-      return assertCapabilityPreflightReport(await driver.preflight(context, hostRequest));
+      return assertCapabilityPreflightReport(await driver.preflight(receiverLocalEffectContext(context), hostRequest));
     },
     async resolve(context, hostRequest) {
-      const result = await actuator.resolve(context, hostRequest);
+      const result = await actuator.resolve(receiverLocalEffectContext(context), hostRequest);
       assertCapabilityResolutionBoundary(result);
       return result;
     },
     recover: typeof actuator.recover === 'function'
       ? async (context, effectRecord) => {
-          const result = await actuator.recover(context, effectRecord);
+          const result = await actuator.recover(receiverLocalEffectContext(context), effectRecord);
           if (result?.operatorInterventionRequired === true) {
             assertNoWorldEvidenceKeys(result);
             return result;
@@ -78,13 +79,17 @@ export function defineCapabilityDriver(driver) {
         }
       : undefined,
     async dryRun(context, hostRequest) {
-      return assertDryRunReport(await driver.dryRun(context, hostRequest));
+      return assertDryRunReport(await driver.dryRun(receiverLocalEffectContext(context), hostRequest));
     },
     async shadow(context, hostRequest, recordedResolution) {
-      return assertShadowReport(await driver.shadow(context, hostRequest, recordedResolution));
+      return assertShadowReport(await driver.shadow(receiverLocalEffectContext(context), hostRequest, recordedResolution));
     },
-    cancel: typeof actuator.cancel === 'function' ? actuator.cancel : undefined,
-    query: typeof actuator.query === 'function' ? actuator.query : undefined,
+    cancel: typeof actuator.cancel === 'function'
+      ? (context, effectRecord) => actuator.cancel(receiverLocalEffectContext(context), effectRecord)
+      : undefined,
+    query: typeof actuator.query === 'function'
+      ? (context, externalTransactionRef) => actuator.query(receiverLocalEffectContext(context), externalTransactionRef)
+      : undefined,
   });
 }
 

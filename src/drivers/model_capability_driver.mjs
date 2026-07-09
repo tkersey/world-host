@@ -121,6 +121,12 @@ export class GenericHttpJsonModelDriver {
         failureCode: error.code ?? 'ERR_AGENT_ACTION_MALFORMED',
       });
     }
+    if (hostRequest.responseSchema?.status === 'failed') {
+      return modelResolutionFromTransport(result, resolution, {
+        status: 'failed',
+        failureCode: 'ERR_MODEL_OK_STATUS_UNSUPPORTED',
+      });
+    }
     modelResponseStatus(hostRequest, 'ok', 'ERR_MODEL_OK_STATUS_UNSUPPORTED', 'successful model output cannot satisfy fixed response schema');
     return modelResolutionFromTransport(result, resolution, {
       status: 'ok',
@@ -175,7 +181,7 @@ export class GenericHttpJsonModelDriver {
     const target = modelPolicyTarget(hostRequest, manifest);
     return new DryRunReport({
       wouldInvoke: true,
-      proposedAction: { endpoint: redactedEndpoint(target.url), observationBytes: prompt.observation.length },
+      proposedAction: { endpoint: redactedEndpoint(target.url), observationBytes: fromUtf8(prompt.observation).byteLength },
     });
   }
 

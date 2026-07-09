@@ -18,6 +18,7 @@ import {
   world_host_capability_pack_format_version,
 } from '../src/core/capability_pack.mjs';
 import { DryRunReport, assertCapabilityResolutionBoundary, assertNoWorldEvidenceKeys, capabilityHostClaimBytes, defineCapabilityDriver } from '../src/core/capability_driver.mjs';
+import { markDefaultEffectContext } from '../src/core/effect_context.mjs';
 import { assertCapabilityPolicyAllows, createCapabilityPolicy, redactCapabilityDiagnostics } from '../src/core/capability_policy.mjs';
 import { networkPolicyHostRequest, runCapabilityMode } from '../src/core/capability_modes.mjs';
 import { preflightCapabilities } from '../src/core/capabilities.mjs';
@@ -4112,6 +4113,101 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.equal((await driver.shadow({}, modelRequest('goal=async'), null)).schemaAccepted, true);
   });
 
+  it('keeps in-process capability hook contexts receiver-local', async () => {
+    const fixture = new FixtureAgentModelCapabilityDriver();
+    const seen = new Map();
+    const capture = (hook, receiver, context) => {
+      assert.equal(receiver, implementation);
+      seen.set(hook, context);
+    };
+    const implementation = {
+      manifest() {
+        return fixture.manifest();
+      },
+      preflight(context, hostRequest) {
+        capture('preflight', this, context);
+        return fixture.preflight(context, hostRequest);
+      },
+      async resolve(context, hostRequest) {
+        capture('resolve', this, context);
+        return await fixture.resolve(context, hostRequest);
+      },
+      async recover(context) {
+        capture('recover', this, context);
+        return await fixture.resolve(context, modelRequest('goal=invoke', 'receiver-local-recover'));
+      },
+      dryRun(context, hostRequest) {
+        capture('dryRun', this, context);
+        return fixture.dryRun(context, hostRequest);
+      },
+      shadow(context, hostRequest, recordedResolution) {
+        capture('shadow', this, context);
+        return fixture.shadow(context, hostRequest, recordedResolution);
+      },
+      cancel(context, effectRecord) {
+        capture('cancel', this, context);
+        return { cancelled: effectRecord.effectId };
+      },
+      query(context, externalTransactionRef) {
+        capture('query', this, context);
+        return { externalTransactionRef };
+      },
+    };
+    const driver = defineCapabilityDriver(implementation);
+    const request = modelRequest('goal=invoke', 'receiver-local-context');
+    const controllerKeys = [
+      'application',
+      'branchId',
+      'driverManifest',
+      'hostRequest',
+      'options',
+      'parentClosureBytes',
+      'parentHead',
+      'run',
+      'worker',
+      'worldHostRequest',
+    ];
+    const exercise = async (context, expectedKeys) => {
+      seen.clear();
+      await driver.preflight(context, request);
+      await driver.resolve(context, request);
+      await driver.recover(context, { effectId: 'recover' });
+      await driver.dryRun(context, request);
+      await driver.shadow(context, request, null);
+      assert.deepEqual(driver.cancel(context, { effectId: 'cancel' }), { cancelled: 'cancel' });
+      assert.deepEqual(driver.query(context, 'transaction:1'), { externalTransactionRef: 'transaction:1' });
+      assert.deepEqual([...seen.keys()].sort(), ['cancel', 'dryRun', 'preflight', 'query', 'recover', 'resolve', 'shadow']);
+      for (const hookContext of seen.values()) {
+        assert.notEqual(hookContext, context);
+        assert.deepEqual(Object.keys(hookContext).sort(), expectedKeys);
+        assert.equal(hookContext.action, context.action);
+        assert.equal(hookContext.policy, context.policy);
+        for (const key of controllerKeys) assert.equal(Object.hasOwn(hookContext, key), false);
+      }
+    };
+    const controllerContext = {
+      application: { applicationId: 'app-1' },
+      branchId: 'main',
+      driverManifest: fixture.manifest(),
+      hostRequest: request,
+      options: { source: 'controller' },
+      parentClosureBytes: fromUtf8('parent-closure'),
+      parentHead: { generation: 1 },
+      run: { runId: 'run-1' },
+      worker: { workerId: 'worker-1' },
+      worldHostRequest: { requestFingerprint: 0xa1n },
+      action: { approved: true },
+      policy: { allowLiveEffects: true },
+      trace: 'custom-trace',
+    };
+
+    await exercise(markDefaultEffectContext({ ...controllerContext }), ['action', 'policy']);
+    await exercise(
+      { ...controllerContext, secretProvider: { receiverLocal: true } },
+      ['action', 'policy', 'secretProvider', 'trace'],
+    );
+  });
+
   it('keeps secrets receiver-local and redacted', async () => {
     const env = new EnvSecretProvider({ API_TOKEN: 'fixture-token-value' });
     assert.equal(env.has('API_TOKEN'), true);
@@ -4182,6 +4278,7 @@ describe('Capability Plane v0.2 core contracts', () => {
     try {
       const headerPath = path.join(root, 'idempotency-header.txt');
       const methodPath = path.join(root, 'method.txt');
+      const secretHeaderPath = path.join(root, 'secret-header.txt');
       const preload = path.join(root, 'mock-fetch.mjs');
       await writeFile(preload, `
         import { writeFileSync } from 'node:fs';
@@ -4189,6 +4286,10 @@ describe('Capability Plane v0.2 core contracts', () => {
           writeFileSync(process.env.WORLD_HOST_TEST_FETCH_HEADER_FILE, String(init.headers?.['Idempotency-Key'] ?? ''));
           if (process.env.WORLD_HOST_TEST_FETCH_METHOD_FILE) {
             writeFileSync(process.env.WORLD_HOST_TEST_FETCH_METHOD_FILE, String(init.method ?? ''));
+          }
+          if (process.env.WORLD_HOST_TEST_FETCH_SECRET_HEADER_FILE) {
+            const matched = init.headers?.Authorization === process.env.WORLD_HOST_TEST_EXPECTED_SECRET_HEADER;
+            writeFileSync(process.env.WORLD_HOST_TEST_FETCH_SECRET_HEADER_FILE, matched ? 'matched' : 'mismatched');
           }
           const status = Number(process.env.WORLD_HOST_TEST_FETCH_STATUS ?? '200');
           return new Response(status === 200 ? '{}' : 'failed', {
@@ -4199,8 +4300,16 @@ describe('Capability Plane v0.2 core contracts', () => {
       `);
       const endpointUrl = 'https://allowed.example/decide';
       const idempotencyKey = 'operator-selected-live-smoke-key';
+      const secretName = 'WORLD_HOST_TEST_DECLARED_SECRET_HEADER';
+      const secretValue = 'Bearer live-smoke-declared-secret';
       const config = path.join(root, 'config.json');
-      await writeFile(config, JSON.stringify({ endpointUrl, idempotencyKey, body: { ok: true }, methods: ['GET'] }));
+      await writeFile(config, JSON.stringify({
+        endpointUrl,
+        idempotencyKey,
+        body: { ok: true },
+        methods: ['GET'],
+        secretHeaders: { Authorization: secretName },
+      }));
       const result = await runBunProcess([
         process.execPath,
         '--preload',
@@ -4213,12 +4322,25 @@ describe('Capability Plane v0.2 core contracts', () => {
         '--allow-origin',
         'https://allowed.example',
         '--live',
-      ], { env: { ...process.env, WORLD_HOST_LIVE_SMOKE: '1', WORLD_HOST_TEST_FETCH_HEADER_FILE: headerPath, WORLD_HOST_TEST_FETCH_STATUS: '200' } });
+      ], {
+        env: {
+          ...process.env,
+          WORLD_HOST_LIVE_SMOKE: '1',
+          WORLD_HOST_TEST_FETCH_HEADER_FILE: headerPath,
+          WORLD_HOST_TEST_FETCH_SECRET_HEADER_FILE: secretHeaderPath,
+          WORLD_HOST_TEST_EXPECTED_SECRET_HEADER: secretValue,
+          WORLD_HOST_TEST_FETCH_STATUS: '200',
+          [secretName]: secretValue,
+        },
+      });
       assert.equal(result.code, 0, result.stderr || result.stdout);
+      assert.equal(result.stdout.includes(secretValue), false);
+      assert.equal(result.stderr.includes(secretValue), false);
       assert.equal(
         await Bun.file(headerPath).text(),
         `world:key:live-smoke:${createHash('sha256').update(fromUtf8(idempotencyKey)).digest('hex')}`,
       );
+      assert.equal(await Bun.file(secretHeaderPath).text(), 'matched');
       const methodOnlyConfig = path.join(root, 'method-only.json');
       await writeFile(methodOnlyConfig, JSON.stringify({ endpointUrl, idempotencyKey: 'method-only-live-smoke-key', body: { ok: true }, method: 'GET' }));
       const methodOnlyResult = await runBunProcess([
@@ -4273,7 +4395,15 @@ describe('Capability Plane v0.2 core contracts', () => {
         '--allow-origin',
         'https://allowed.example',
         '--live',
-      ], { env: { ...process.env, WORLD_HOST_LIVE_SMOKE: '1', WORLD_HOST_TEST_FETCH_HEADER_FILE: headerPath, WORLD_HOST_TEST_FETCH_STATUS: '500' } });
+      ], {
+        env: {
+          ...process.env,
+          WORLD_HOST_LIVE_SMOKE: '1',
+          WORLD_HOST_TEST_FETCH_HEADER_FILE: headerPath,
+          WORLD_HOST_TEST_FETCH_STATUS: '500',
+          [secretName]: secretValue,
+        },
+      });
       assert.notEqual(failingResult.code, 0);
       assert.match(failingResult.stderr, /ERR_LIVE_SMOKE_HTTP_ERROR_RESOLUTION/);
     } finally {
@@ -5266,6 +5396,20 @@ describe('Capability Plane v0.2 core contracts', () => {
         metadata: fromUtf8('world-evidence-http-shadow'),
       });
       assert.equal(packDriver.shadow({}, httpRequest(), worldEvidenceHttpResolution).schemaAccepted, false);
+      const diagnosticLabelWorldEvidenceHttpResolution = encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xa2n,
+        status: 0,
+        responseValueImageBytes: encodeCanonicalValueImage({
+          bytes: fromUtf8(stableJson({ status: 'ok' })),
+          dynamicSize: true,
+          diagnosticTypeLabel: fromUtf8(stableJson({ runHead: { generation: 1 } })),
+        }),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('diagnostic-label-world-evidence-http-shadow'),
+      });
+      assert.equal(driver.shadow({}, httpRequest(), diagnosticLabelWorldEvidenceHttpResolution).schemaAccepted, false);
+      assert.equal(packDriver.shadow({}, httpRequest(), diagnosticLabelWorldEvidenceHttpResolution).schemaAccepted, false);
       const queryDryRunRequest = {
         ...httpRequest(),
         requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/decide?mode=delete', method: 'POST', body: { prompt: 'hi' } })),
@@ -5370,6 +5514,68 @@ describe('Capability Plane v0.2 core contracts', () => {
         });
       assert.equal(decodeResolutionInputBytes(packSecretShapedBody.resolutionInputBytes).status, 2);
       assert.equal(packSecretShapedBody.diagnostics.failureCode, 'ERR_SECRET_PERSISTED');
+
+      for (const [driverLabel, ResponseDriver] of [
+        ['source', GenericHttpJsonCapabilityDriver],
+        ['pack', HttpJsonPackCapabilityDriver],
+      ]) {
+        for (const credentialKey of [
+          'access_token',
+          'access-token',
+          'accessToken',
+          'refresh_token',
+          'refresh-token',
+          'refreshToken',
+          'client_secret',
+          'client-secret',
+          'clientSecret',
+        ]) {
+          globalThis.fetch = async () => new Response(stableJson({ [credentialKey]: 'credential-response-value' }), {
+            status: 200,
+            headers: { 'x-request-id': `request-${driverLabel}-${credentialKey}` },
+          });
+          const credentialKeyResponse = await new ResponseDriver({
+            endpointUrl: 'https://allowed.example/decide',
+          }).resolve({
+            policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+          }, {
+            ...httpRequest(),
+            responseSchema: { status: 'failed' },
+            idempotencyKeyBytes: fromUtf8(`http-key-${driverLabel}-${credentialKey}`),
+            idempotencyKeyWorldFingerprint: `world:key:http-${driverLabel}-${credentialKey}`,
+          });
+          assert.equal(decodeResolutionInputBytes(credentialKeyResponse.resolutionInputBytes).status, 2);
+          assert.equal(credentialKeyResponse.diagnostics.failureCode, 'ERR_SECRET_PERSISTED');
+        }
+
+        globalThis.fetch = async () => new Response(stableJson({
+          access_token_count: 'available',
+          refresh_tokenized: 'available',
+          client_secretary: 'available',
+          access_token: 'redacted',
+          'access-token': 'required',
+          accessToken: 'opaque',
+          refresh_token: 'fixture-token',
+          'refresh-token': 'no-token',
+          refreshToken: 'example-token',
+          client_secret: 'none',
+          'client-secret': 'null',
+          clientSecret: 'redacted',
+        }), {
+          status: 200,
+          headers: { 'x-request-id': `request-${driverLabel}-benign-credential-keys` },
+        });
+        const benignCredentialKeyResponse = await new ResponseDriver({
+          endpointUrl: 'https://allowed.example/decide',
+        }).resolve({
+          policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+        }, {
+          ...httpRequest(),
+          idempotencyKeyBytes: fromUtf8(`http-key-${driverLabel}-benign-credential-keys`),
+          idempotencyKeyWorldFingerprint: `world:key:http-${driverLabel}-benign-credential-keys`,
+        });
+        assert.equal(decodeResolutionInputBytes(benignCredentialKeyResponse.resolutionInputBytes).status, 0);
+      }
 
       let secretHasCalls = 0;
       let secretGetCalls = 0;
@@ -6739,6 +6945,20 @@ describe('Capability Plane v0.2 core contracts', () => {
       metadata: fromUtf8('world-evidence-approval-shadow'),
     });
     assert.equal(packApproval.shadow({}, approvalRequest(), worldEvidenceApprovalResolution).schemaAccepted, false);
+    const diagnosticLabelWorldEvidenceApprovalResolution = encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xa3n,
+      status: 0,
+      responseValueImageBytes: encodeCanonicalValueImage({
+        bytes: fromUtf8(stableJson({ decision: 'approved' })),
+        dynamicSize: true,
+        diagnosticTypeLabel: fromUtf8(stableJson({ runHead: { generation: 1 } })),
+      }),
+      hostClaimBytes: new Uint8Array(),
+      attemptNumber: 1,
+      metadata: fromUtf8('diagnostic-label-world-evidence-approval-shadow'),
+    });
+    assert.equal(approval.shadow({}, approvalRequest(), diagnosticLabelWorldEvidenceApprovalResolution).schemaAccepted, false);
+    assert.equal(packApproval.shadow({}, approvalRequest(), diagnosticLabelWorldEvidenceApprovalResolution).schemaAccepted, false);
     assert.equal(approval.preflight({}, httpRequest()).accepted, false);
     const proposedApproval = approval.dryRun({}, {
       ...approvalRequest(),
@@ -7248,6 +7468,10 @@ describe('Capability Plane v0.2 core contracts', () => {
       const driver = new GenericHttpJsonModelDriver({ endpointUrl: 'https://allowed.example/decide' });
       assert.deepEqual(driver.manifest().supportedResponseStatuses, ['ok', 'http_error', 'failed', 'deferred']);
       assert.equal(driver.dryRun({}, genericHttpModelRequest('goal=invoke', 'model-dry-key')).wouldInvoke, true);
+      assert.equal(
+        driver.dryRun({}, genericHttpModelRequest('é😀', 'model-dry-unicode-key')).proposedAction.observationBytes,
+        6,
+      );
       assert.throws(
         () => driver.dryRun({
           policy: { maximumRequestBytes: 1, maximumPromptBytes: 4096 },
@@ -7394,6 +7618,31 @@ describe('Capability Plane v0.2 core contracts', () => {
         attemptNumber: 1,
         metadata: new Uint8Array(),
       })).schemaAccepted, false);
+      const diagnosticLabelWorldEvidenceFixtureResolution = encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xa1n,
+        status: 0,
+        responseValueImageBytes: encodeCanonicalValueImage({
+          bytes: fromUtf8(stableJson({
+            schema: 'boundary.Agent.Action.v0',
+            action: { variant: 'tool', toolId: 'actuate', payload: '' },
+          })),
+          dynamicSize: true,
+          diagnosticTypeLabel: fromUtf8(stableJson({ runHead: { generation: 1 } })),
+        }),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: new Uint8Array(),
+      });
+      assert.equal(new FixtureAgentModelCapabilityDriver().shadow(
+        {},
+        fixturePackShadowRequest,
+        diagnosticLabelWorldEvidenceFixtureResolution,
+      ).schemaAccepted, false);
+      assert.equal(fixturePackShadowDriver.shadow(
+        {},
+        fixturePackShadowRequest,
+        diagnosticLabelWorldEvidenceFixtureResolution,
+      ).schemaAccepted, false);
       assert.equal(fixturePackShadowDriver.shadow({}, fixturePackShadowRequest, encodeResolutionInputBytes({
         targetHostRequestFingerprint: 0xa1n,
         status: 0,
@@ -7670,6 +7919,61 @@ describe('Capability Plane v0.2 core contracts', () => {
       });
       assert.equal(replayedLiveModel.reused, true);
       assert.equal(liveModelFetchCount, 1);
+
+      let fixedFailedLiveFetchCount = 0;
+      globalThis.fetch = async () => {
+        fixedFailedLiveFetchCount += 1;
+        return new Response('{"action":{"variant":"final","text":"valid output for fixed failed schema"}}', {
+          status: 200,
+          headers: { 'x-request-id': 'request-live-model-fixed-failed' },
+        });
+      };
+      const fixedFailedLiveJournalOptions = {
+        store: new MemoryStore(),
+        runId: 'model-live-fixed-failed-run',
+        branchId: 'main',
+        parentTurnClosureFingerprint: 'world:turn-closure:parent',
+      };
+      const fixedFailedLiveRequest = {
+        ...genericHttpModelRequest('goal=fixed-failed', 'model-live-fixed-failed-key'),
+        responseSchema: { status: 'failed' },
+      };
+      const fixedFailedLiveModel = await runCapabilityMode({
+        mode: 'live',
+        driver,
+        hostRequest: fixedFailedLiveRequest,
+        journalOptions: fixedFailedLiveJournalOptions,
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          maximumLiveModelCalls: 1,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      });
+      const fixedFailedLiveResolution = decodeResolutionInputBytes(fixedFailedLiveModel.resolutionInputBytes);
+      const fixedFailedLiveMetadata = JSON.parse(new TextDecoder().decode(fixedFailedLiveResolution.metadata));
+      assert.equal(fixedFailedLiveResolution.status, 2);
+      assert.equal(fixedFailedLiveResolution.responseValueImageBytes.byteLength, 0);
+      assert.equal(fixedFailedLiveMetadata.failureCode, 'ERR_MODEL_OK_STATUS_UNSUPPORTED');
+      assert.equal(fixedFailedLiveModel.record.state, 'resolved');
+      assert.equal(fixedFailedLiveFetchCount, 1);
+      const replayedFixedFailedLiveModel = await runCapabilityMode({
+        mode: 'live',
+        driver,
+        hostRequest: fixedFailedLiveRequest,
+        journalOptions: fixedFailedLiveJournalOptions,
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          maximumLiveModelCalls: 0,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+      });
+      assert.equal(replayedFixedFailedLiveModel.reused, true);
+      assert.equal(decodeResolutionInputBytes(replayedFixedFailedLiveModel.resolutionInputBytes).status, 2);
+      assert.equal(fixedFailedLiveFetchCount, 1);
 
       globalThis.fetch = async () => new Response('{"action":{"variant":"tool","toolId":"unknown_tool","payload":""}}', { status: 200 });
       const unknownAction = await driver.resolve({

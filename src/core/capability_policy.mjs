@@ -1,7 +1,11 @@
 import { EffectRecoveryClass } from './actuator.mjs';
+import { immutablePolicySet } from './immutable_set.mjs';
 import { fail } from './store.mjs';
 
 const FIXTURE_MODEL_AUTHORITY_LABELS = new Set(['model:fixture', 'model:fixture-agent']);
+const APPLY = Reflect.apply;
+const NativeString = String;
+const STRING_TO_UPPER_CASE = String.prototype.toUpperCase;
 
 export function createCapabilityPolicy(input = {}) {
   return new CapabilityPolicy(input);
@@ -21,12 +25,12 @@ export class CapabilityPolicy {
     this.maximumRequestBytes = positiveSafeInteger(input.maximumRequestBytes ?? 1024 * 1024, 'maximumRequestBytes');
     this.maximumPromptBytes = positiveSafeInteger(input.maximumPromptBytes ?? this.maximumRequestBytes, 'maximumPromptBytes');
     this.maximumResponseBytes = positiveSafeInteger(input.maximumResponseBytes ?? 1024 * 1024, 'maximumResponseBytes');
-    this.allowedOrigins = new Set(iterable(input.allowedOrigins));
-    this.allowedMethods = new Set(iterable(input.allowedMethods).map((item) => String(item).toUpperCase()));
-    this.allowedFileRoots = new Set(iterable(input.allowedFileRoots));
-    this.allowedAuthorityLabels = new Set(iterable(input.allowedAuthorityLabels));
-    this.allowedCapabilityPacks = new Set(iterable(input.allowedCapabilityPacks));
-    this.deniedCapabilityPacks = new Set(iterable(input.deniedCapabilityPacks));
+    this.allowedOrigins = immutablePolicySet(input.allowedOrigins);
+    this.allowedMethods = immutablePolicySet(input.allowedMethods, upperCaseString);
+    this.allowedFileRoots = immutablePolicySet(input.allowedFileRoots);
+    this.allowedAuthorityLabels = immutablePolicySet(input.allowedAuthorityLabels);
+    this.allowedCapabilityPacks = immutablePolicySet(input.allowedCapabilityPacks);
+    this.deniedCapabilityPacks = immutablePolicySet(input.deniedCapabilityPacks);
     this.redactionPolicy = input.redactionPolicy ?? 'secret-shaped';
     this.dryRun = input.dryRun === true;
     this.shadowMode = input.shadowMode === true;
@@ -111,10 +115,10 @@ export function createApprovalPolicy(input = {}) {
 
 export class AuthorityGrant {
   constructor(input = {}) {
-    this.authorityLabels = new Set(iterable(input.authorityLabels));
-    this.capabilityPacks = new Set(iterable(input.capabilityPacks));
-    this.origins = new Set(iterable(input.origins));
-    this.fileRoots = new Set(iterable(input.fileRoots));
+    this.authorityLabels = immutablePolicySet(input.authorityLabels);
+    this.capabilityPacks = immutablePolicySet(input.capabilityPacks);
+    this.origins = immutablePolicySet(input.origins);
+    this.fileRoots = immutablePolicySet(input.fileRoots);
     this.receiverLocal = input.receiverLocal !== false;
     Object.freeze(this.authorityLabels);
     Object.freeze(this.capabilityPacks);
@@ -334,9 +338,6 @@ function concreteSecretKeyMaterial(value) {
     /(?:^|[?&;,\s{])(?:credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key)\s*[:=]\s*\S+/i.test(value);
 }
 
-function iterable(value) {
-  if (value == null) return [];
-  if (value instanceof Set) return [...value];
-  if (Array.isArray(value)) return value;
-  return [value];
+function upperCaseString(value) {
+  return APPLY(STRING_TO_UPPER_CASE, APPLY(NativeString, undefined, [value]), []);
 }
