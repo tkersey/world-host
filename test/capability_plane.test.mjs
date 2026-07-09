@@ -4672,7 +4672,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(new GenericHttpJsonCapabilityDriver({
         endpointUrl: 'https://allowed.example/decide',
         maximumRequestBytes: 4,
-      }).manifest().maximumRequestBytes, 4);
+      }).manifest().maximumRequestBytes, 4120);
       const packDriver = new HttpJsonPackCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' });
       assert.deepEqual(packDriver.manifest().supportedResponseStatuses, ['ok', 'http_error', 'failed', 'deferred']);
       globalThis.fetch = async () => new Response('transport failed', { status: 500 });
@@ -5994,7 +5994,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       };
       const tinyBodyDriver = new GenericHttpJsonCapabilityDriver({
         endpointUrl: 'https://allowed.example/decide',
-        maximumRequestBytes: 2,
+        maximumRequestBytes: 1,
       });
       await assert.rejects(
         () => runCapabilityMode({
@@ -6020,7 +6020,11 @@ describe('Capability Plane v0.2 core contracts', () => {
             allowedMethods: ['POST'],
           },
         }),
-        { code: 'ERR_HOST_REQUEST_TOO_LARGE' },
+        (error) => {
+          assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+          assert.ok(error.details.blockers.includes('ERR_HTTP_REQUEST_TOO_LARGE'));
+          return true;
+        },
       );
       assert.equal(tinyBodyFetchCalled, false);
 

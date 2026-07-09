@@ -476,6 +476,37 @@ describe('capability preflight and reference drivers', () => {
     }]);
   });
 
+  it('advertises generic HTTP request capacity for rendered host envelopes', () => {
+    const body = { prompt: 'body fits configured renderer limit' };
+    const renderedBodyBytes = fromUtf8(stableJson(body)).byteLength;
+    const request = {
+      ...httpRequest('https://payload.example/not-target', 'POST'),
+      requestBytes: fromUtf8(stableJson({ url: 'https://payload.example/not-target', method: 'POST', body })),
+    };
+    const driver = new GenericHttpJsonCapabilityDriver({
+      endpointUrl: 'https://allowed.example/decide',
+      maximumRequestBytes: renderedBodyBytes,
+    });
+
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+        maximumRequestBytes: 4096,
+      }),
+    });
+
+    assert.equal(request.requestBytes.byteLength > renderedBodyBytes, true);
+    assert.equal(driver.manifest().maximumRequestBytes > request.requestBytes.byteLength, true);
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.everyPendingRequestCovered, true);
+  });
+
   it('derives configured HTTP endpoint origins and singleton methods during preflight', () => {
     const request = {
       ...httpRequest('https://payload.example/not-target'),
