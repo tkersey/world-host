@@ -28,7 +28,6 @@ for (const name of names) {
   const artifacts = {};
   for (const item of checked.checksums) artifacts[item.path] = new Uint8Array(await readPackFile(packRoot, item.path));
   await assertCapabilityPackChecksums(checked, artifacts);
-  if (trustedExecuteAdapters) await assertAdapterManifestMatchesPack(name, packRoot);
   if (checked.conformanceCorpusFingerprint != null) {
     const receipt = JSON.parse(await readPackFile(packRoot, 'conformance.json', 'utf8'));
     assertCapabilityConformanceReceipt(receipt);
@@ -39,6 +38,7 @@ for (const name of names) {
       throw new Error(`ERR_CAPABILITY_CONFORMANCE_RECEIPT_FINGERPRINT:${name}`);
     }
   }
+  if (trustedExecuteAdapters) await assertAdapterManifestMatchesPack(name, packRoot);
   results.push({
     pack: name,
     driverId: checked.driverId,

@@ -111,13 +111,6 @@ async function runCapabilityCommand(args, io, options = {}) {
     const artifacts = {};
     for (const item of checked.checksums) artifacts[item.path] = new Uint8Array(await readPackFile(pack, item.path));
     await assertCapabilityPackChecksums(checked, artifacts);
-    if (trustedExecuteAdapters) {
-      if (args.includes(CAPABILITY_PACK_PROBE_CHILD_ARG) || options.isolateTrustedCapabilityPackAdapters === false) {
-        await assertCapabilityPackAdapterAbi(checked, artifacts, pack);
-      } else {
-        await assertCapabilityPackAdapterAbiIsolated(pack, checked);
-      }
-    }
     if (checked.conformanceCorpusFingerprint != null) {
       const receipt = assertCapabilityConformanceReceipt(JSON.parse(await readPackFile(pack, 'conformance.json', 'utf8')));
       if (receipt.driverId !== checked.driverId) fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH', 'conformance receipt driverId does not match manifest');
@@ -125,6 +118,13 @@ async function runCapabilityCommand(args, io, options = {}) {
       if (receipt.corpusFingerprint !== checked.conformanceCorpusFingerprint) fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH', 'conformance receipt corpusFingerprint does not match manifest');
       if (await capabilityConformanceReceiptFingerprint(receipt) !== checked.conformanceReceiptFingerprint) {
         fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH', 'conformance receipt fingerprint does not match manifest');
+      }
+    }
+    if (trustedExecuteAdapters) {
+      if (args.includes(CAPABILITY_PACK_PROBE_CHILD_ARG) || options.isolateTrustedCapabilityPackAdapters === false) {
+        await assertCapabilityPackAdapterAbi(checked, artifacts, pack);
+      } else {
+        await assertCapabilityPackAdapterAbiIsolated(pack, checked);
       }
     }
     io.stdout.write(`${JSON.stringify(redact({
@@ -158,6 +158,7 @@ async function assertCapabilityPackAdapterAbiIsolated(packRoot, packManifest) {
       CAPABILITY_PACK_PROBE_CHILD_ARG,
     ], binPath, {
       env: importRoot == null ? {} : { [CAPABILITY_PACK_PROBE_IMPORT_ROOT_ENV]: importRoot },
+      timeoutMs: capabilityPackProbeChildTimeoutMs(packManifest),
     });
     if (result.timedOut) {
       fail('ERR_CAPABILITY_PACK_ADAPTER_PROBE_TIMEOUT', 'capability pack adapter probe child timed out', {
@@ -188,9 +189,8 @@ async function assertCapabilityPackAdapterAbiIsolated(packRoot, packManifest) {
   }
 }
 
-function runWorldHostProbeChild(args, binPath, { env = {} } = {}) {
+function runWorldHostProbeChild(args, binPath, { env = {}, timeoutMs = capabilityPackProbeTimeoutMs() } = {}) {
   return new Promise((resolve, reject) => {
-    const timeoutMs = capabilityPackProbeTimeoutMs();
     const outputLimitBytes = capabilityPackProbeChildOutputBytes();
     const child = spawn(process.execPath, [binPath, ...args], {
       cwd: process.cwd(),
@@ -441,6 +441,20 @@ async function withCapabilityPackProbeTimeout(phase, value) {
 function capabilityPackProbeTimeoutMs() {
   const parsed = Number.parseInt(process.env.WORLD_HOST_CAPABILITY_PACK_PROBE_TIMEOUT_MS ?? '', 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_CAPABILITY_PACK_PROBE_TIMEOUT_MS;
+}
+
+function capabilityPackProbeChildTimeoutMs(packManifest) {
+  const phaseTimeoutMs = capabilityPackProbeTimeoutMs();
+  const routeCount = Math.max(
+    1,
+    (packManifest.supportedActuatorRefs?.length ?? 1) *
+      (packManifest.supportedDescriptorFingerprints?.length ?? 1) *
+      (packManifest.supportedActuationClasses?.length ?? 1) *
+      Math.max(1, packManifest.supportedResponseStatuses?.length ?? 1),
+  );
+  const phasesPerRoute = packManifest.canRecover === true ? 5 : 4;
+  const phaseBudget = 2 + (routeCount * phasesPerRoute);
+  return (phaseBudget * (phaseTimeoutMs + CAPABILITY_PACK_PROBE_SETTLE_MS)) + Math.max(250, phaseTimeoutMs);
 }
 
 function capabilityPackProbeChildOutputBytes() {

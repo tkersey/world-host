@@ -22,7 +22,7 @@ import { MemoryStore } from '../src/stores/memory_store.mjs';
 import { FixtureAgentModelDriver } from '../src/drivers/fixture_agent_model_driver.mjs';
 import { SandboxFileDriver } from '../src/drivers/sandbox_file_driver.mjs';
 import { refreshAgentRuntimePackChecksums } from '../scripts/agent_runtime_pack_lib.mjs';
-import { capabilityPackFingerprint } from '../src/core/capability_pack.mjs';
+import { capabilityConformanceReceiptFingerprint, capabilityPackFingerprint } from '../src/core/capability_pack.mjs';
 
 const DEFAULT_SIDECAR_TRANSPORTABLE_BYTES = Math.floor(((1024 * 1024) - 4096) / 6);
 
@@ -1376,6 +1376,44 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('validates capability conformance receipts before trusted adapter execution', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-conformance-first-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      const adapterBytes = fromUtf8(`
+        throw Object.assign(new Error('adapter imported before conformance receipt validation'), { code: 'ERR_ADAPTER_IMPORTED_BEFORE_RECEIPT_VALIDATION' });
+        export class CapabilityDriver {}
+      `);
+      await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.checksums = manifest.checksums.map((item) => item.path === 'adapter.mjs'
+        ? { ...item, checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` }
+        : item);
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH' },
+      );
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_CONFORMANCE_PACK_FINGERPRINT/);
+      assert.doesNotMatch(`${result.stdout}${result.stderr}`, /adapter imported before conformance receipt validation/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('allows receipt-less capability packs during CLI check-pack', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-receiptless-'));
     const pack = path.join(root, 'capability-pack-v0.2-fixture');
@@ -1397,6 +1435,84 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(code, 0);
       assert.equal(JSON.parse(output).packFingerprint, manifest.packFingerprint);
     } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('uses a phase-scaled hard-kill budget for trusted capability pack probe children', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-probe-child-budget-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    const previousTimeout = process.env.WORLD_HOST_CAPABILITY_PACK_PROBE_TIMEOUT_MS;
+    try {
+      process.env.WORLD_HOST_CAPABILITY_PACK_PROBE_TIMEOUT_MS = '30';
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('phase-scaled-child-budget'),
+      })).toString('base64');
+      const adapterBytes = fromUtf8(`
+        const resolutionInputBytes = new Uint8Array(Buffer.from('${validResolutionBase64}', 'base64'));
+        function spendPhaseBudget() {
+          const start = Date.now();
+          while (Date.now() - start < 10) {}
+        }
+        export class CapabilityDriver {
+          constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
+          manifest() {
+            return {
+              driverId: 'fixture-agent-model',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: ['fixture:agent-model'],
+              supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+              supportedActuationClasses: ['model'],
+              supportedResponseStatuses: ['ok'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'pure',
+              concurrencyLimit: 1,
+              authorityLabels: ['model:fixture-agent']
+            };
+          }
+          preflight() { spendPhaseBudget(); return { accepted: true, blockers: [] }; }
+          dryRun() { spendPhaseBudget(); return { wouldInvoke: false }; }
+          shadow() { spendPhaseBudget(); return { liveInvoked: false, schemaAccepted: false }; }
+          resolve() { spendPhaseBudget(); return { resolutionInputBytes }; }
+          recover() { spendPhaseBudget(); return { operatorInterventionRequired: true }; }
+        }
+      `);
+      await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      Object.assign(manifest, {
+        supportedResponseStatuses: ['ok'],
+        conformanceCorpusFingerprint: null,
+        conformanceReceiptFingerprint: null,
+      });
+      manifest.checksums = manifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
+        .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      let output = '';
+      const code = await runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      });
+      assert.equal(code, 0);
+      assert.equal(JSON.parse(output).trustedAdapterExecution, true);
+    } finally {
+      if (previousTimeout == null) {
+        delete process.env.WORLD_HOST_CAPABILITY_PACK_PROBE_TIMEOUT_MS;
+      } else {
+        process.env.WORLD_HOST_CAPABILITY_PACK_PROBE_TIMEOUT_MS = previousTimeout;
+      }
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -1632,6 +1748,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       manifest.packFingerprint = await capabilityPackFingerprint(manifest);
       const receipt = JSON.parse(await readFile(path.join(pack, 'conformance.json'), 'utf8'));
       receipt.packFingerprint = manifest.packFingerprint;
+      manifest.conformanceReceiptFingerprint = await capabilityConformanceReceiptFingerprint(receipt);
       const receiptBytes = fromUtf8(`${JSON.stringify(receipt, null, 2)}\n`);
       await writeFile(path.join(pack, 'conformance.json'), receiptBytes);
       manifest.checksums = manifest.checksums.map((item) => item.path === 'conformance.json'
@@ -3977,6 +4094,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       manifest.packFingerprint = await capabilityPackFingerprint(manifest);
       const receipt = JSON.parse(await readFile(path.join(pack, 'conformance.json'), 'utf8'));
       receipt.packFingerprint = manifest.packFingerprint;
+      manifest.conformanceReceiptFingerprint = await capabilityConformanceReceiptFingerprint(receipt);
       const receiptBytes = fromUtf8(`${JSON.stringify(receipt, null, 2)}\n`);
       await writeFile(path.join(pack, 'conformance.json'), receiptBytes);
       manifest.checksums = manifest.checksums.map((item) => item.path === 'conformance.json'
@@ -4048,6 +4166,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       manifest.packFingerprint = await capabilityPackFingerprint(manifest);
       let receipt = JSON.parse(await readFile(path.join(pack, 'conformance.json'), 'utf8'));
       receipt.packFingerprint = manifest.packFingerprint;
+      manifest.conformanceReceiptFingerprint = await capabilityConformanceReceiptFingerprint(receipt);
       let receiptBytes = fromUtf8(`${JSON.stringify(receipt, null, 2)}\n`);
       await writeFile(path.join(pack, 'conformance.json'), receiptBytes);
       manifest.checksums = manifest.checksums.map((item) => item.path === 'conformance.json'
@@ -4093,6 +4212,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       manifest.packFingerprint = await capabilityPackFingerprint(manifest);
       receipt = JSON.parse(await readFile(path.join(pack, 'conformance.json'), 'utf8'));
       receipt.packFingerprint = manifest.packFingerprint;
+      manifest.conformanceReceiptFingerprint = await capabilityConformanceReceiptFingerprint(receipt);
       receiptBytes = fromUtf8(`${JSON.stringify(receipt, null, 2)}\n`);
       await writeFile(path.join(pack, 'conformance.json'), receiptBytes);
       manifest.checksums = manifest.checksums.map((item) => item.path === 'conformance.json'
