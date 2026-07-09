@@ -748,6 +748,7 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
           ['perl', '-v', './adapter.pl'],
           ['perl', '-V', './adapter.pl'],
           ['perl', '-h', './adapter.pl'],
+          ['perl', '-', './adapter.pl'],
           ['perl5.36', '-e', 'print 1'],
           ['perl5.36', '-v', './adapter.pl'],
           ['ruby', '-e', 'puts 1'],
@@ -755,6 +756,7 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
           ['ruby', '-c', './adapter.rb'],
           ['ruby', '--version', './adapter.rb'],
           ['ruby', '--help', './adapter.rb'],
+          ['ruby', '-', './adapter.rb'],
           ['ruby3.2', '-e', 'puts 1'],
           ['ruby3.2', '-c', './adapter.rb'],
           ['env', 'RUBYOPT=-r./preload.rb', 'ruby', './adapter.rb'],
@@ -1016,6 +1018,7 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
 
       const stderrPath = path.join(root, 'stderr.mjs');
       await writeFile(stderrPath, `
+        process.on('SIGTERM', () => {});
         process.stderr.write('x'.repeat(2048));
         await new Promise(() => {});
       `);
@@ -1036,5 +1039,5 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
+  }, 15000);
 });

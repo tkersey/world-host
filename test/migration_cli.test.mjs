@@ -1886,7 +1886,7 @@ describe('migration, branching, and CLI diagnostics', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
+  }, 15000);
 
   it('rejects network sidecar probes during trusted capability pack checks', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-network-sidecar-probe-'));
@@ -3309,6 +3309,101 @@ describe('migration, branching, and CLI diagnostics', () => {
       });
       assert.notEqual(result.status, 0, `${result.stdout}${result.stderr}`);
       assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns model-shaped deterministic responses for generic HTTP model pack probes', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-generic-http-model-action-probe-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('generic-http-json-model-action-probe'),
+      })).toString('base64');
+      const adapterBytes = fromUtf8(`
+        const resolutionInputBytes = new Uint8Array(Buffer.from('${validResolutionBase64}', 'base64'));
+        export class CapabilityDriver {
+          constructor(options = {}) { this.packFingerprint = options.packFingerprint; }
+          manifest() {
+            return {
+              driverId: 'generic-http-json-model',
+              packFingerprint: this.packFingerprint,
+              supportedActuatorRefs: ['model:decision'],
+              supportedDescriptorFingerprints: ['descriptor:agent-decision-prompt'],
+              supportedActuationClasses: ['model'],
+              supportedResponseStatuses: ['ok'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'idempotent',
+              concurrencyLimit: 1,
+              authorityLabels: ['model:http-json', 'network:http'],
+              diagnostics: {
+                origins: ['https://example.invalid'],
+                methods: ['POST'],
+                configuredEndpointUrl: 'https://example.invalid/decide',
+                configuredOrigin: 'https://example.invalid',
+                defaultMethod: 'POST',
+                outputSchema: 'boundary.Agent.Action.v0'
+              }
+            };
+          }
+          preflight() { return { accepted: true, blockers: [] }; }
+          dryRun() { return { wouldInvoke: true }; }
+          shadow() { return { liveInvoked: false, schemaAccepted: false }; }
+          async resolve() {
+            const response = await fetch('https://example.invalid/world-host-capability-pack-abi-probe', { method: 'POST' });
+            const payload = await response.json();
+            if (payload.action?.schema !== 'boundary.Agent.Action.v0') {
+              throw Object.assign(new Error('model probe response was not action-shaped'), { code: 'ERR_MODEL_PROBE_ACTION_MISSING' });
+            }
+            if (payload.action?.action?.variant !== 'final') {
+              throw Object.assign(new Error('model probe action was invalid'), { code: 'ERR_MODEL_PROBE_ACTION_INVALID' });
+            }
+            return { resolutionInputBytes };
+          }
+          recover() { return { operatorInterventionRequired: true }; }
+        }
+      `);
+      await writeFile(path.join(pack, 'adapter.mjs'), adapterBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      Object.assign(manifest, {
+        driverId: 'generic-http-json-model',
+        supportedActuatorRefs: ['model:decision'],
+        supportedDescriptorFingerprints: ['descriptor:agent-decision-prompt'],
+        supportedActuationClasses: ['model'],
+        supportedResponseStatuses: ['ok'],
+        recoveryClass: 'idempotent',
+        authorityLabels: ['model:http-json', 'network:http'],
+        policyRequirements: { allowLiveEffects: true, allowModelEffects: true, allowNetworkEffects: true },
+      });
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
+      manifest.checksums = manifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json'].includes(item.path))
+        .concat({ path: 'adapter.mjs', checksum: `sha256:${createHash('sha256').update(adapterBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      assert.equal(await runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      }), 0);
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

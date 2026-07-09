@@ -514,7 +514,13 @@ async function withDeterministicCapabilityPackProbeNetwork(driverManifest, hostR
       if (activeProbeResponseStatus === 'deferred') {
         throw Object.assign(new Error('world-host deterministic probe timeout'), { name: 'AbortError' });
       }
-      return new Response(stableJson({ worldHostCapabilityPackAbiProbe: true }), {
+      return new Response(stableJson({
+        worldHostCapabilityPackAbiProbe: true,
+        action: {
+          schema: 'boundary.Agent.Action.v0',
+          action: { variant: 'final', text: 'world-host capability pack ABI probe' },
+        },
+      }), {
         status: 200,
         headers: {
           'content-type': 'application/json',

@@ -3016,6 +3016,12 @@ describe('capability preflight and reference drivers', () => {
       const failedDecoded = decodeResolutionInputBytes(failed.resolutionInputBytes);
       assert.equal(failedDecoded.status, 1);
       assert.equal(failedDecoded.responseValueImageBytes.byteLength, 0);
+      globalThis.fetch = async () => new Response('{"ok":true}', { status: 200 });
+      await assert.rejects(
+        () => driver.resolve({}, httpRequest('https://allowed.example/fail-closed-ok', 'GET', { status: 'http_error' })),
+        { code: 'ERR_HTTP_OK_STATUS_UNSUPPORTED' },
+      );
+      globalThis.fetch = async () => new Response('server failed', { status: 500 });
       await assert.rejects(
         () => driver.resolve({}, httpRequest('https://allowed.example/fail-ok')),
         { code: 'ERR_HTTP_ERROR_STATUS_UNSUPPORTED' },

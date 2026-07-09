@@ -2,6 +2,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { closeSync, openSync, readSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { receiverLocalEffectContext } from '../core/effect_context.mjs';
 import { assertBytes, fail, fromUtf8, stableJson } from '../core/store.mjs';
@@ -27,6 +28,7 @@ const EMPTY_BUN_ENV_FILE = process.platform === 'win32' ? 'NUL' : '/dev/null';
 const EMPTY_BUN_CONFIG_FILE = process.platform === 'win32' ? 'NUL' : '/dev/null';
 const SIDECAR_FRAME_PAYLOAD_OVERHEAD_BYTES = 4096;
 const SIDECAR_FRAME_PAYLOAD_EXPANSION = 6;
+const SIDECAR_SYNC_HELPER_ARG = '--world-host-sidecar-sync-helper';
 const BUN_RUNTIME_VALUE_OPTIONS = new Set([
   '--conditions',
   '--config',
@@ -425,26 +427,62 @@ async function runSidecarCommand({ argv, input, timeoutMs, maximumFrameBytes, en
 }
 
 function runSidecarCommandSync({ argv, input, timeoutMs, maximumFrameBytes, env, cwd }) {
-  const spawnArgv = sidecarSpawnArgv(argv, cwd, env);
-  const result = spawnSync(spawnArgv[0], spawnArgv.slice(1), {
-    input: Buffer.from(input),
-    timeout: timeoutMs,
+  const result = spawnSync(process.execPath, [fileURLToPath(import.meta.url), SIDECAR_SYNC_HELPER_ARG], {
+    input: Buffer.from(JSON.stringify({
+      argv,
+      inputBase64: Buffer.from(input).toString('base64'),
+      timeoutMs,
+      maximumFrameBytes,
+      env,
+      cwd,
+    })),
+    timeout: timeoutMs + 1000,
+    killSignal: 'SIGKILL',
     maxBuffer: maximumFrameBytes * 2 + 1024,
     shell: false,
-    env,
-    cwd,
+    env: process.env,
   });
-  const stderr = result.stderr ? Buffer.from(result.stderr).toString('utf8') : '';
-  if (Buffer.byteLength(stderr) > maximumFrameBytes) fail('ERR_CAPABILITY_SIDECAR_STDERR_TOO_LARGE');
-  const stdout = result.stdout ? new Uint8Array(result.stdout) : new Uint8Array();
-  if (stdout.byteLength > maximumFrameBytes) fail('ERR_CAPABILITY_SIDECAR_FRAME_TOO_LARGE');
   if (result.error) {
     if (result.error.code === 'ETIMEDOUT') fail('ERR_CAPABILITY_SIDECAR_TIMEOUT');
     if (result.error.code === 'ENOBUFS') fail('ERR_CAPABILITY_SIDECAR_FRAME_TOO_LARGE');
     throw result.error;
   }
-  if (result.status !== 0) fail('ERR_CAPABILITY_SIDECAR_EXIT', `sidecar exited ${result.status ?? result.signal}: stderr ${Buffer.byteLength(stderr)} bytes redacted`);
-  return decodeSidecarFrame(stdout, maximumFrameBytes);
+  const stdout = result.stdout ? Buffer.from(result.stdout).toString('utf8') : '';
+  if (result.status !== 0) {
+    const stderr = result.stderr ? Buffer.from(result.stderr).toString('utf8') : '';
+    fail('ERR_CAPABILITY_SIDECAR_EXIT', `sidecar helper exited ${result.status ?? result.signal}: stderr ${Buffer.byteLength(stderr)} bytes redacted`);
+  }
+  let payload;
+  try {
+    payload = JSON.parse(stdout);
+  } catch {
+    fail('ERR_CAPABILITY_SIDECAR_OUTPUT_INVALID');
+  }
+  if (!payload.ok) fail(payload.code ?? 'ERR_CAPABILITY_SIDECAR_OUTPUT_INVALID', payload.message ?? payload.code);
+  return decodeBytes(payload.response);
+}
+
+async function runSidecarSyncHelper() {
+  try {
+    let stdin = '';
+    for await (const chunk of process.stdin) stdin += Buffer.from(chunk).toString('utf8');
+    const payload = JSON.parse(stdin);
+    const response = await runSidecarCommand({
+      argv: payload.argv,
+      input: Uint8Array.from(Buffer.from(payload.inputBase64, 'base64')),
+      timeoutMs: payload.timeoutMs,
+      maximumFrameBytes: payload.maximumFrameBytes,
+      env: payload.env,
+      cwd: payload.cwd,
+    });
+    process.stdout.write(`${JSON.stringify({ ok: true, response: encodeBytes(response) })}\n`);
+  } catch (error) {
+    process.stdout.write(`${JSON.stringify({
+      ok: false,
+      code: error?.code ?? 'ERR_CAPABILITY_SIDECAR_OUTPUT_INVALID',
+      message: error?.message ?? String(error),
+    })}\n`);
+  }
 }
 
 function sidecarSpawnArgv(argv, cwd = undefined, env = undefined) {
@@ -1027,11 +1065,11 @@ function unsupportedNonJavaScriptRuntimeOption(runtime, value) {
   if (runtime === 'ruby' || runtime === 'rscript') {
     return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=') ||
       value === '-r' || value.startsWith('-r') ||
-      (runtime === 'ruby' && (value === '-c' || value.startsWith('-c') || value === '-v' || value === '--version' || value === '-h' || value === '--help')) ||
+      (runtime === 'ruby' && (value === '-' || value === '-c' || value.startsWith('-c') || value === '-v' || value === '--version' || value === '-h' || value === '--help')) ||
       (runtime === 'rscript' && (value === '--version' || value === '--help' || value === '-'));
   }
   if (runtime === 'perl') {
-    return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=') ||
+    return value === '-' || value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=') ||
       value === '-m' || value.startsWith('-m') || value === '-M' || value.startsWith('-M') ||
       value === '-c' || value.startsWith('-c') || value === '-d' || value.startsWith('-d') ||
       value === '-v' || value.startsWith('-V') || value === '-h' || value === '--help';
@@ -1348,4 +1386,8 @@ function concat(left, right) {
   out.set(left, 0);
   out.set(right, left.byteLength);
   return out;
+}
+
+if (process.argv[2] === SIDECAR_SYNC_HELPER_ARG && process.argv[1] === fileURLToPath(import.meta.url)) {
+  await runSidecarSyncHelper();
 }

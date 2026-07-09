@@ -50,6 +50,7 @@ export class HttpJsonDriver {
       if (response.status >= 300 && response.status < 400 && response.headers.get('location')) fail('ERR_HTTP_REDIRECT_REJECTED');
       if (!response.ok) await discardResponseBody(response);
       const responseStatus = response.ok ? 'ok' : httpErrorResponseStatus(hostRequest);
+      if (response.ok) okResponseStatus(hostRequest);
       const bytes = response.ok
         ? await readResponseBytes(response, this.maximumResponseBytes)
         : new Uint8Array();
@@ -99,6 +100,12 @@ function httpErrorResponseStatus(hostRequest) {
   const status = hostRequest?.responseSchema?.status;
   if (status == null || status === 'http_error') return 'http_error';
   fail('ERR_HTTP_ERROR_STATUS_UNSUPPORTED', 'HTTP error response cannot satisfy fixed response schema');
+}
+
+function okResponseStatus(hostRequest) {
+  const status = hostRequest?.responseSchema?.status;
+  if (status == null || status === 'ok') return 'ok';
+  fail('ERR_HTTP_OK_STATUS_UNSUPPORTED', 'HTTP ok response cannot satisfy fixed response schema');
 }
 
 async function discardResponseBody(response) {
