@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "packFingerprint": "sha256:596fe2424792d2635f94262af11c2369a2772e11940b179e36dd2c13265d7e63",
+  "packFingerprint": "sha256:f5efc746f24439a512a7261e219f5e0941fcbd377ece30577495609bca094a34",
   "packageName": "world-capability-http-json",
   "packageVersion": "0.2.0",
   "driverId": "generic-http-json",
@@ -45,7 +45,7 @@
     "allowLiveEffects": true,
     "allowNetworkEffects": true
   },
-  "maximumRequestBytes": 65536,
+  "maximumRequestBytes": 397312,
   "maximumResponseBytes": 1048574,
   "conformanceCorpusFingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
   "metadataBytes": "",
@@ -57,7 +57,7 @@
   "checksums": [
     {
       "path": "adapter.mjs",
-      "checksum": "sha256:327e8fdfb6cacfc513829e58460f2c67638f886b05ead58962991aa026fb793f"
+      "checksum": "sha256:18ca64fb60cc9ad05114c1a0c87f4b8fc7bfc371a4b5721862288c96d9e09965"
     },
     {
       "path": "README.md",
@@ -69,12 +69,12 @@
     },
     {
       "path": "conformance.json",
-      "checksum": "sha256:be6755dde2d0172a95e2d63a0503e6e7d7d9cdc46e1225b3d6e31ebe97e89127"
+      "checksum": "sha256:ba974d9a5c08ccad1fdc84cc25a988cef52c3245aa6aeab9e59172c33ed0f585"
     }
   ],
   "docs": [
     "README.md",
     "non-claims.md"
   ],
-  "conformanceReceiptFingerprint": "sha256:aaa682486aeba0938abbfe28a6fbb8fa583652bdf794384dcdd59aa005dd29a8"
+  "conformanceReceiptFingerprint": "sha256:0c6f94d2a57896774fced5c0526455652eedad8786611d7e9b88548206dd6fb4"
 }
