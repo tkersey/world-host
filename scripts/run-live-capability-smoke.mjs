@@ -27,17 +27,18 @@ const config = JSON.parse(await readFile(configPath, 'utf8'));
 if (config.destructive === true && !allowDestructive) throw new Error('ERR_LIVE_SMOKE_DESTRUCTIVE_REQUIRES_OPT_IN');
 if (secretProviderName !== 'env') throw new Error('ERR_LIVE_SMOKE_SECRET_PROVIDER_UNSUPPORTED');
 
+const configuredMethods = config.methods ?? [config.method ?? 'POST'];
 const driver = new GenericHttpJsonCapabilityDriver({
   endpointUrl: config.endpointUrl,
   origins: [allowOrigin],
-  methods: config.methods ?? ['POST'],
+  methods: configuredMethods,
   secretHeaders: config.secretHeaders ?? {},
   secretProvider: new EnvSecretProvider(),
   responseExtractionPath: config.responseExtractionPath ?? null,
 });
 
 const idempotencyKeyBytes = fromUtf8(config.idempotencyKey ?? 'live-smoke-key');
-const requestMethod = config.method ?? config.methods?.[0] ?? 'POST';
+const requestMethod = config.method ?? configuredMethods[0] ?? 'POST';
 const hostRequest = {
   hostRequestFingerprint: 'world:host-request:0000000000000c02',
   idempotencyKeyBytes,
@@ -55,7 +56,7 @@ const diagnostics = live
         allowLiveEffects: true,
         allowNetworkEffects: true,
         allowedOrigins: [allowOrigin],
-        allowedMethods: config.methods ?? ['POST'],
+        allowedMethods: configuredMethods,
       },
     }, hostRequest))
   : await driver.dryRun({}, hostRequest);

@@ -4130,11 +4130,15 @@ describe('Capability Plane v0.2 core contracts', () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-live-smoke-'));
     try {
       const headerPath = path.join(root, 'idempotency-header.txt');
+      const methodPath = path.join(root, 'method.txt');
       const preload = path.join(root, 'mock-fetch.mjs');
       await writeFile(preload, `
         import { writeFileSync } from 'node:fs';
         globalThis.fetch = async (_url, init = {}) => {
           writeFileSync(process.env.WORLD_HOST_TEST_FETCH_HEADER_FILE, String(init.headers?.['Idempotency-Key'] ?? ''));
+          if (process.env.WORLD_HOST_TEST_FETCH_METHOD_FILE) {
+            writeFileSync(process.env.WORLD_HOST_TEST_FETCH_METHOD_FILE, String(init.method ?? ''));
+          }
           const status = Number(process.env.WORLD_HOST_TEST_FETCH_STATUS ?? '200');
           return new Response(status === 200 ? '{}' : 'failed', {
             status,
@@ -4164,6 +4168,31 @@ describe('Capability Plane v0.2 core contracts', () => {
         await Bun.file(headerPath).text(),
         `world:key:live-smoke:${createHash('sha256').update(fromUtf8(idempotencyKey)).digest('hex')}`,
       );
+      const methodOnlyConfig = path.join(root, 'method-only.json');
+      await writeFile(methodOnlyConfig, JSON.stringify({ endpointUrl, idempotencyKey: 'method-only-live-smoke-key', body: { ok: true }, method: 'GET' }));
+      const methodOnlyResult = await runBunProcess([
+        process.execPath,
+        '--preload',
+        preload,
+        'scripts/run-live-capability-smoke.mjs',
+        '--config',
+        methodOnlyConfig,
+        '--secret-provider',
+        'env',
+        '--allow-origin',
+        'https://allowed.example',
+        '--live',
+      ], {
+        env: {
+          ...process.env,
+          WORLD_HOST_LIVE_SMOKE: '1',
+          WORLD_HOST_TEST_FETCH_HEADER_FILE: headerPath,
+          WORLD_HOST_TEST_FETCH_METHOD_FILE: methodPath,
+          WORLD_HOST_TEST_FETCH_STATUS: '200',
+        },
+      });
+      assert.equal(methodOnlyResult.code, 0, methodOnlyResult.stderr || methodOnlyResult.stdout);
+      assert.equal(await Bun.file(methodPath).text(), 'GET');
       const failingResult = await runBunProcess([
         process.execPath,
         '--preload',
