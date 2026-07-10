@@ -58,6 +58,9 @@ export function defineActuatorDriver(driver) {
       return Object.freeze({ ...manifest, packFingerprint: raw.packFingerprint });
     },
     resolve: driver.resolve.bind(driver),
+    assertRequestSupported: typeof driver.assertRequestSupported === 'function'
+      ? driver.assertRequestSupported.bind(driver)
+      : undefined,
     recover: typeof driver.recover === 'function' ? driver.recover.bind(driver) : undefined,
     query: typeof driver.query === 'function' ? driver.query.bind(driver) : undefined,
     cancel: typeof driver.cancel === 'function' ? driver.cancel.bind(driver) : undefined,
@@ -103,6 +106,19 @@ export function assertDriverCanResolve(manifest, hostRequest) {
     fail('ERR_RESPONSE_STATUS_NOT_SUPPORTED');
   }
   if (hostRequest.requestBytes?.byteLength > manifest.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
+  return true;
+}
+
+export function assertDriverRequestSupported(driver, manifest, hostRequest) {
+  assertDriverCanResolve(manifest, hostRequest);
+  if (typeof driver?.assertRequestSupported !== 'function') return true;
+  const result = driver.assertRequestSupported(hostRequest);
+  if (result && typeof result.then === 'function') {
+    fail('ERR_ACTUATOR_DRIVER_REQUEST_ADMISSION_ASYNC', 'driver request admission must be synchronous');
+  }
+  if (result !== true) {
+    fail('ERR_ACTUATOR_DRIVER_REQUEST_ADMISSION_INVALID', 'driver request admission must return true or throw');
+  }
   return true;
 }
 

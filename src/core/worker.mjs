@@ -1,5 +1,5 @@
 import { EffectJournal, EffectState } from './effect_journal.mjs';
-import { EffectRecoveryClass, assertDurableRecoveryAllowed } from './actuator.mjs';
+import { EffectRecoveryClass, assertDriverRequestSupported, assertDurableRecoveryAllowed } from './actuator.mjs';
 import { assertCapabilityReportAccepted, createRunPolicy, preflightCapabilities } from './capabilities.mjs';
 import { defineCapabilityDriver } from './capability_driver.mjs';
 import { isDefaultEffectContext, markDefaultEffectContext } from './effect_context.mjs';
@@ -897,7 +897,7 @@ function selectEffectDriver(drivers, hostRequest, policy = {}, preferredAuthorit
     const manifest = driverManifest(driver);
     if (!manifest) continue;
     const approvalDeferred = allowApprovalDeferredRoutes && driverManifestRequiresApproval(manifest, hostRequest, policy);
-    if (!driverSupportsManifest(manifest, hostRequest, policy, { ignoreApprovalRequirement: approvalDeferred })) continue;
+    if (!driverSupports(driver, hostRequest, policy, { ignoreApprovalRequirement: approvalDeferred })) continue;
     (approvalDeferred ? approvalDeferredCandidates : policySafeCandidates).push({ driver, manifest });
   }
   return selectPreferredEffectDriver(
@@ -929,9 +929,15 @@ function driverManifest(driver) {
   return driver.manifest();
 }
 
-function driverSupports(driver, hostRequest) {
+function driverSupports(driver, hostRequest, policy = {}, options = {}) {
   const manifest = driverManifest(driver);
-  return manifest ? driverSupportsManifest(manifest, hostRequest) : false;
+  if (!manifest || !driverSupportsManifest(manifest, hostRequest, policy, options)) return false;
+  try {
+    assertDriverRequestSupported(driver, manifest, hostRequest);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function driverSupportsManifest(manifest, hostRequest, policy = {}, { ignoreApprovalRequirement = false } = {}) {
@@ -1569,7 +1575,7 @@ function selectEffectDriverByPreflightRoute(
   const manifest = driverManifest(driver);
   if (manifest?.driverId !== route.driverId) return null;
   const approvalDeferred = allowApprovalDeferredRoutes && driverManifestRequiresApproval(manifest, hostRequest, policy);
-  if (!driverSupportsManifest(manifest, hostRequest, policy, { ignoreApprovalRequirement: approvalDeferred })) return null;
+  if (!driverSupports(driver, hostRequest, policy, { ignoreApprovalRequirement: approvalDeferred })) return null;
   return { driver, manifest };
 }
 

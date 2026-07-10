@@ -1056,7 +1056,7 @@ function nonJavaScriptRuntimeName(runtime) {
 function unsupportedNonJavaScriptRuntimeOption(runtime, value) {
   runtime = nonJavaScriptRuntimeName(runtime);
   if (/^python(?:\d+(?:\.\d+)*)?$/.test(runtime) || /^pypy(?:\d+)?$/.test(runtime)) {
-    return value === '-c' || value.startsWith('-c') || value === '-m' || value.startsWith('-m') ||
+    return value === '-' || value === '-c' || value.startsWith('-c') || value === '-m' || value.startsWith('-m') ||
       value === '-h' || value === '--help' || value === '-V' || value === '--version';
   }
   if (runtime === 'php') {

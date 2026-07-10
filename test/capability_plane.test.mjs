@@ -2915,6 +2915,8 @@ describe('Capability Plane v0.2 core contracts', () => {
     for (const [command, artifactPath] of [
       [['perl', '-v', './adapter.pl'], './adapter.pl'],
       [['perl', '-V', './adapter.pl'], './adapter.pl'],
+      [['python3', '-', './adapter.py'], './adapter.py'],
+      [['pypy3', '-', './adapter.py'], './adapter.py'],
       [['ruby', '-', './adapter.rb'], './adapter.rb'],
       [['ruby', '-c', './adapter.rb'], './adapter.rb'],
     ]) {
@@ -3366,7 +3368,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_CAPABILITY_PACK_CREDENTIAL_FORBIDDEN' },
     );
     const adapterChecksum = `sha256:${await sha256Hex(artifact)}`;
-    for (const artifactPath of ['docs/example.php', 'scripts/example.lua', 'analysis/example.R']) {
+    for (const artifactPath of ['docs/example.php', 'scripts/example.lua', 'analysis/example.R', 'cmd/leaky.go']) {
       const secretTextArtifact = fromUtf8('Authorization: Bearer sk-artifact-secret-value\n');
       const secretTextArtifactChecksum = `sha256:${await sha256Hex(secretTextArtifact)}`;
       await assert.rejects(
@@ -7974,6 +7976,63 @@ describe('Capability Plane v0.2 core contracts', () => {
       assert.equal(replayedFixedFailedLiveModel.reused, true);
       assert.equal(decodeResolutionInputBytes(replayedFixedFailedLiveModel.resolutionInputBytes).status, 2);
       assert.equal(fixedFailedLiveFetchCount, 1);
+
+      for (const [status, wireStatus] of [['http_error', 1], ['deferred', 4]]) {
+        let fixedNonOkFetchCount = 0;
+        globalThis.fetch = async () => {
+          fixedNonOkFetchCount += 1;
+          return new Response('{"action":{"variant":"final","text":"valid output for fixed non-ok schema"}}', {
+            status: 200,
+            headers: { 'x-request-id': `request-live-model-fixed-${status}` },
+          });
+        };
+        const fixedNonOkJournalOptions = {
+          store: new MemoryStore(),
+          runId: `model-live-fixed-${status}-run`,
+          branchId: 'main',
+          parentTurnClosureFingerprint: 'world:turn-closure:parent',
+        };
+        const fixedNonOkRequest = {
+          ...genericHttpModelRequest(`goal=fixed-${status}`, `model-live-fixed-${status}-key`),
+          responseSchema: { status },
+        };
+        const fixedNonOkModel = await runCapabilityMode({
+          mode: 'live',
+          driver,
+          hostRequest: fixedNonOkRequest,
+          journalOptions: fixedNonOkJournalOptions,
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            maximumLiveModelCalls: 1,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        });
+        const fixedNonOkResolution = decodeResolutionInputBytes(fixedNonOkModel.resolutionInputBytes);
+        const fixedNonOkMetadata = JSON.parse(new TextDecoder().decode(fixedNonOkResolution.metadata));
+        assert.equal(fixedNonOkResolution.status, wireStatus);
+        assert.equal(fixedNonOkResolution.responseValueImageBytes.byteLength, 0);
+        assert.equal(fixedNonOkMetadata.failureCode, 'ERR_MODEL_OK_STATUS_UNSUPPORTED');
+        assert.equal(fixedNonOkModel.record.state, 'resolved');
+        assert.equal(fixedNonOkFetchCount, 1);
+        const replayedFixedNonOkModel = await runCapabilityMode({
+          mode: 'live',
+          driver,
+          hostRequest: fixedNonOkRequest,
+          journalOptions: fixedNonOkJournalOptions,
+          policy: {
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+            maximumLiveModelCalls: 0,
+            allowedOrigins: ['https://allowed.example'],
+            allowedMethods: ['POST'],
+          },
+        });
+        assert.equal(replayedFixedNonOkModel.reused, true);
+        assert.equal(decodeResolutionInputBytes(replayedFixedNonOkModel.resolutionInputBytes).status, wireStatus);
+        assert.equal(fixedNonOkFetchCount, 1);
+      }
 
       globalThis.fetch = async () => new Response('{"action":{"variant":"tool","toolId":"unknown_tool","payload":""}}', { status: 200 });
       const unknownAction = await driver.resolve({

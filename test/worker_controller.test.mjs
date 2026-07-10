@@ -981,6 +981,31 @@ describe('RunController and WorldWorker', () => {
     assert.equal((await store.listEffectRecords(runId)).length, 0);
   });
 
+  it('applies driver-owned request admission before worker selection', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const driver = fixtureEffectDriver();
+    driver.assertRequestSupported = () => {
+      const error = new Error('request shape rejected by driver owner');
+      error.code = 'ERR_RESPONSE_STATUS_NOT_SUPPORTED';
+      throw error;
+    };
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [driver],
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_HOST_REQUEST_DRIVER_UNAVAILABLE' },
+    );
+    assert.equal(driver.invocationCount, 0);
+    assert.equal((await store.listEffectRecords(runId)).length, 0);
+  });
+
   it('rejects receiver-policy-denied drivers before resolving effects', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',

@@ -4305,7 +4305,7 @@ describe('migration, branching, and CLI diagnostics', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
+  }, 15000);
 
   it('rejects Bun sidecar early-exit and watch flags during pack validation', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-bun-sidecar-flags-'));

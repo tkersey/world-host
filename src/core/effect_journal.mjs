@@ -1,7 +1,7 @@
 import {
   EffectRecoveryClass,
   ResponseStatusCode,
-  assertDriverCanResolve,
+  assertDriverRequestSupported,
   assertDurableRecoveryAllowed,
   assertRecoveryClass,
   defineActuatorDriver,
@@ -159,7 +159,7 @@ export class EffectJournal {
   async resolve(context, hostRequest, driverLike, options = {}) {
     const driver = defineActuatorDriver(driverLike);
     const manifest = driver.manifest();
-    assertDriverCanResolve(manifest, hostRequest);
+    assertDriverRequestSupported(driver, manifest, hostRequest);
     assertDriverRecoveryHookSufficient(manifest, driver);
     const journalHostRequest = journaledHostRequest(hostRequest, manifest);
     const prepared = await prepareHostRequest(journalHostRequest);

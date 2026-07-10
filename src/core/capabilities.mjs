@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { EffectRecoveryClass, ResponseStatusCode, assertDriverCanResolve, assertDriverManifest, assertDurableRecoveryAllowed } from './actuator.mjs';
+import { EffectRecoveryClass, ResponseStatusCode, assertDriverCanResolve, assertDriverManifest, assertDriverRequestSupported, assertDurableRecoveryAllowed } from './actuator.mjs';
 import { assertCapabilityResolutionBoundary } from './capability_driver.mjs';
 import { immutablePolicySet } from './immutable_set.mjs';
 import { assertBytes, fail, fromUtf8, stableJson, toHex } from './store.mjs';
@@ -132,11 +132,14 @@ export function preflightCapabilities({
   }
 
   for (const request of pendingRequests) {
-    const candidates = findDriverManifestsForRequest(manifests, request, policy, { allowApprovalDeferredRoutes });
+    const candidates = findDriverManifestsForRequest(manifests, request, policy, { allowApprovalDeferredRoutes }, drivers);
     if (!candidates.length) {
       const structuralRoute = findDriverManifestForRequest(manifests, request);
       if (structuralRoute) {
-        const structuralBlockers = policyBlockers(structuralRoute, request, policy);
+        const structuralBlockers = [
+          ...driverRequestAdmissionBlockers(structuralRoute, request, drivers),
+          ...policyBlockers(structuralRoute, request, policy),
+        ];
         if (policy.allowPartialEffectBatch === true && structuralBlockers.length) {
           coveredRequests.push({ actuatorRef: request.actuatorRef, descriptorFingerprint: request.descriptorFingerprint, driverId: structuralRoute.driverId });
           unresolvedPendingRequestRoutes.push(unresolvedPendingRequestRoute(structuralRoute, request, structuralBlockers));
@@ -956,12 +959,13 @@ function driverMatchesExceptRequestSize(manifest, request) {
     request.requestBytes?.byteLength > manifest.maximumRequestBytes;
 }
 
-function findDriverManifestsForRequest(manifests, request, policy = null, { allowApprovalDeferredRoutes = false } = {}) {
+function findDriverManifestsForRequest(manifests, request, policy = null, { allowApprovalDeferredRoutes = false } = {}, drivers = null) {
   const policySafeMatches = [];
   const approvalDeferredMatches = [];
   for (const manifest of manifests) {
     try {
       assertDriverCanResolve(manifest, request);
+      if (drivers) assertDriverRequestSupported(drivers[manifest.driverIndex], manifest, request);
       const blockers = policy ? policyBlockers(manifest, request, policy) : [];
       if (!blockers.length) {
         policySafeMatches.push(manifest);
@@ -973,6 +977,15 @@ function findDriverManifestsForRequest(manifests, request, policy = null, { allo
     }
   }
   return policySafeMatches.length ? policySafeMatches : approvalDeferredMatches;
+}
+
+function driverRequestAdmissionBlockers(manifest, request, drivers) {
+  try {
+    assertDriverRequestSupported(drivers?.[manifest.driverIndex], manifest, request);
+    return [];
+  } catch (error) {
+    return [error.code ?? 'ERR_HOST_REQUEST_DRIVER_UNAVAILABLE'];
+  }
 }
 
 function approvalOnlyBlockers(blockers) {

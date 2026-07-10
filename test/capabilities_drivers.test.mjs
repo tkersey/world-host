@@ -2993,6 +2993,72 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.responseStatusesSupported, false);
   });
 
+  it('applies driver-owned request admission before route selection and effect persistence', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-sandbox-admission-'));
+    try {
+      const driver = new SandboxFileDriver({ root });
+      const readNotFound = {
+        ...fileRequest('missing.txt'),
+        pendingRequestIndex: 0,
+        responseSchema: { status: 'not_found' },
+      };
+      const writeNotFound = {
+        ...fileRequest('out.txt', { operation: 'write', content: 'must-not-run' }),
+        pendingRequestIndex: 1,
+        responseSchema: { status: 'not_found' },
+      };
+      const report = preflightCapabilities({
+        application: { requiredActuators: [], requiredRuntimeLimits: {} },
+        currentHead: { generation: 0 },
+        pendingRequests: [readNotFound, writeNotFound],
+        drivers: [driver],
+        policy: createRunPolicy({
+          allowBestEffort: true,
+          allowPartialEffectBatch: true,
+          requireApprovalForBestEffort: false,
+          requireApprovalForDestructiveEffects: false,
+          allowedAuthorityLabels: ['file:sandbox'],
+          allowedFileRoots: [path.resolve(root)],
+        }),
+      });
+
+      assert.deepEqual(report.blockers, []);
+      assert.equal(report.selectedPendingRequestRoutes.length, 1);
+      assert.equal(report.selectedPendingRequestRoutes[0].pendingRequestIndex, 0);
+      assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
+      assert.equal(report.unresolvedPendingRequestRoutes[0].pendingRequestIndex, 1);
+      assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('ERR_RESPONSE_STATUS_NOT_SUPPORTED'));
+
+      const wrapped = defineActuatorDriver(driver);
+      assert.equal(wrapped.assertRequestSupported(readNotFound), true);
+      assert.throws(
+        () => wrapped.assertRequestSupported(writeNotFound),
+        { code: 'ERR_RESPONSE_STATUS_NOT_SUPPORTED' },
+      );
+
+      const store = new MemoryStore();
+      const journal = new EffectJournal({
+        store,
+        runId: 'sandbox-admission-run',
+        branchId: 'main',
+        parentTurnClosureFingerprint: 'world:turn-closure:parent',
+        policy: { allowBestEffort: true },
+      });
+      await assert.rejects(
+        () => journal.resolve({}, {
+          ...writeNotFound,
+          hostRequestFingerprint: 'world:host-request:0000000000000ad1',
+          idempotencyKeyBytes: fromUtf8('sandbox-admission-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:sandbox-admission',
+        }, driver),
+        { code: 'ERR_RESPONSE_STATUS_NOT_SUPPORTED' },
+      );
+      assert.equal((await store.listEffectRecords('sandbox-admission-run')).length, 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('reports receiver byte-limit policy blockers for otherwise matching drivers', () => {
     const report = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },

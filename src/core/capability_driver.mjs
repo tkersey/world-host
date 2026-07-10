@@ -1,4 +1,4 @@
-import { assertDriverCanResolve, assertDriverManifest, defineActuatorDriver } from './actuator.mjs';
+import { assertDriverCanResolve, assertDriverManifest, assertDriverRequestSupported, defineActuatorDriver } from './actuator.mjs';
 import { receiverLocalEffectContext } from './effect_context.mjs';
 import { assertBytes, fail, fromUtf8, stableJson } from './store.mjs';
 import { decodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
@@ -60,8 +60,18 @@ export function defineCapabilityDriver(driver) {
       return raw.packFingerprint == null ? manifest : Object.freeze({ ...manifest, packFingerprint: raw.packFingerprint });
     },
     async preflight(context, hostRequest) {
+      try {
+        assertDriverRequestSupported(actuator, actuator.manifest(), hostRequest);
+      } catch (error) {
+        return new CapabilityPreflightReport({
+          accepted: false,
+          blockers: [error.code ?? 'ERR_CAPABILITY_PREFLIGHT_REJECTED'],
+          diagnostics: { message: error.message },
+        });
+      }
       return assertCapabilityPreflightReport(await driver.preflight(receiverLocalEffectContext(context), hostRequest));
     },
+    assertRequestSupported: actuator.assertRequestSupported,
     async resolve(context, hostRequest) {
       const result = await actuator.resolve(receiverLocalEffectContext(context), hostRequest);
       assertCapabilityResolutionBoundary(result);

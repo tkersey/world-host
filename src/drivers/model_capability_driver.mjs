@@ -121,9 +121,9 @@ export class GenericHttpJsonModelDriver {
         failureCode: error.code ?? 'ERR_AGENT_ACTION_MALFORMED',
       });
     }
-    if (hostRequest.responseSchema?.status === 'failed') {
+    if (hostRequest.responseSchema?.status && hostRequest.responseSchema.status !== 'ok') {
       return modelResolutionFromTransport(result, resolution, {
-        status: 'failed',
+        status: hostRequest.responseSchema.status,
         failureCode: 'ERR_MODEL_OK_STATUS_UNSUPPORTED',
       });
     }
@@ -304,7 +304,7 @@ function recordedResolutionInputBytes(recordedResolution) {
 }
 
 function transportResponseSchema(responseSchema) {
-  if (!responseSchema || responseSchema.status !== 'failed') return responseSchema;
+  if (!responseSchema || responseSchema.status === 'ok') return responseSchema;
   return null;
 }
 
@@ -389,7 +389,9 @@ function modelResolutionFromTransport(result, resolution, { status, responseValu
 }
 
 function modelStatusForTransportStatus(status, responseSchema = null) {
-  if ((status === 1 || status === 2 || status === 4) && responseSchema?.status === 'failed') return 'failed';
+  if ((status === 1 || status === 2 || status === 4) && ['failed', 'http_error', 'deferred'].includes(responseSchema?.status)) {
+    return responseSchema.status;
+  }
   if (status === 1) return 'http_error';
   if (status === 4) return 'deferred';
   return 'failed';

@@ -38,14 +38,18 @@ export class SandboxFileDriver {
     };
   }
 
+  assertRequestSupported(hostRequest) {
+    assertSandboxFileRequestSupported(parseJsonBytes(hostRequest.requestBytes), hostRequest, 'ERR_RESPONSE_STATUS_NOT_SUPPORTED');
+    return true;
+  }
+
   async resolve(context, hostRequest) {
     const request = parseJsonBytes(hostRequest.requestBytes);
+    assertSandboxFileRequestSupported(request, hostRequest, 'ERR_SANDBOX_FILE_RESPONSE_SCHEMA_UNSUPPORTED');
     if (request.operation === 'read') return await this.#read(request.path, hostRequest);
     if (request.operation === 'write') {
-      if (hostRequest.responseSchema?.status && hostRequest.responseSchema.status !== 'ok') fail('ERR_SANDBOX_FILE_RESPONSE_SCHEMA_UNSUPPORTED');
       return await this.#write(request.path, request.content ?? '', hostRequest.idempotencyKeyWorldFingerprint, hostRequest);
     }
-    fail('ERR_SANDBOX_FILE_OPERATION_UNSUPPORTED');
   }
 
   async recover(context, effectRecord) {
@@ -204,6 +208,15 @@ export class SandboxFileDriver {
     this.canonicalRoot ??= await realpath(this.root);
     return this.canonicalRoot;
   }
+}
+
+function assertSandboxFileRequestSupported(request, hostRequest, responseStatusError) {
+  if (request?.operation === 'read') return true;
+  if (request?.operation === 'write') {
+    if (hostRequest.responseSchema?.status && hostRequest.responseSchema.status !== 'ok') fail(responseStatusError);
+    return true;
+  }
+  fail('ERR_SANDBOX_FILE_OPERATION_UNSUPPORTED');
 }
 
 function noFollowFlag() {
