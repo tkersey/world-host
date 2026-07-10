@@ -3102,13 +3102,16 @@ function unsupportedNonJavaScriptRuntimeOption(runtime, value) {
   if (runtime === 'ruby' || runtime === 'rscript') {
     return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=') ||
       value === '-r' || value.startsWith('-r') ||
-      (runtime === 'ruby' && (value === '-' || value === '-c' || value.startsWith('-c') || value === '-v' || value === '--version' || value === '-h' || value === '--help')) ||
+      (runtime === 'ruby' && (value === '-' || value === '-c' || value.startsWith('-c') ||
+        value === '-n' || value.startsWith('-n') || value === '-p' || value.startsWith('-p') ||
+        value === '-v' || value === '--version' || value === '-h' || value === '--help')) ||
       (runtime === 'rscript' && (value === '--version' || value === '--help' || value === '-'));
   }
   if (runtime === 'perl') {
     return value === '-' || value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=') ||
       value === '-m' || value.startsWith('-m') || value === '-M' || value.startsWith('-M') ||
       value === '-c' || value.startsWith('-c') || value === '-d' || value.startsWith('-d') ||
+      value === '-n' || value.startsWith('-n') || value === '-p' || value.startsWith('-p') ||
       value === '-v' || value.startsWith('-V') || value === '-h' || value === '--help';
   }
   return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=');

@@ -2929,6 +2929,10 @@ describe('Capability Plane v0.2 core contracts', () => {
     for (const [command, artifactPath] of [
       [['perl', '-v', './adapter.pl'], './adapter.pl'],
       [['perl', '-V', './adapter.pl'], './adapter.pl'],
+      [['perl', '-n', './adapter.pl'], './adapter.pl'],
+      [['perl', '-np', './adapter.pl'], './adapter.pl'],
+      [['perl', '-p', './adapter.pl'], './adapter.pl'],
+      [['perl', '-pn', './adapter.pl'], './adapter.pl'],
       [['python3', '-VV', './adapter.py'], './adapter.py'],
       [['pypy3', '-VV', './adapter.py'], './adapter.py'],
       [['python3', '--help-all', './adapter.py'], './adapter.py'],
@@ -2947,6 +2951,10 @@ describe('Capability Plane v0.2 core contracts', () => {
       [['pypy3', '-', './adapter.py'], './adapter.py'],
       [['ruby', '-', './adapter.rb'], './adapter.rb'],
       [['ruby', '-c', './adapter.rb'], './adapter.rb'],
+      [['ruby', '-n', './adapter.rb'], './adapter.rb'],
+      [['ruby', '-np', './adapter.rb'], './adapter.rb'],
+      [['ruby', '-p', './adapter.rb'], './adapter.rb'],
+      [['ruby', '-pn', './adapter.rb'], './adapter.rb'],
     ]) {
       await assert.rejects(
         () => assertCapabilityPackChecksums({
