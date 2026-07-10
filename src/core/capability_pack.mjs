@@ -469,7 +469,6 @@ export async function assertCapabilityPackChecksums(manifestLike, artifacts = {}
   assertSidecarDenoConfigsDoNotDefineImportMaps(manifest, artifacts);
   assertSidecarNodeConfigsDoNotLoadModules(manifest, artifacts);
   assertSidecarNodeEnvFilesDoNotLoadModules(manifest, artifacts);
-  assertAdapterArtifactSelfContained(manifest, artifacts);
   assertSidecarAdapterArtifactsSelfContained(manifest, artifacts);
   return true;
 }
@@ -479,15 +478,6 @@ function semanticArtifactChecksums(manifest) {
     .filter((item) => item.path !== CONFORMANCE_RECEIPT_PATH)
     .map((item) => ({ path: item.path, checksum: item.checksum }))
     .sort((left, right) => left.path.localeCompare(right.path));
-}
-
-function assertAdapterArtifactSelfContained(manifest, artifacts) {
-  if (manifest.adapter.kind !== 'in_process' || !manifest.adapter.module) return;
-  assertJavaScriptAdapterArtifactSelfContained(manifest.adapter.module, artifacts, 'adapter', checksumPathSet(manifest), new Set(), {
-    ...adapterScannerOptionsForManifest(manifest),
-    bunResolutionAliases: true,
-    typeScriptCapableRuntime: true,
-  });
 }
 
 function assertSidecarAdapterArtifactsSelfContained(manifest, artifacts) {
@@ -2063,7 +2053,6 @@ function assertReferencedArtifactsCovered(manifest, artifacts) {
     ...manifest.docs,
     ...(manifest.conformanceCorpusFingerprint ? ['conformance.json'] : []),
   ]);
-  if (manifest.adapter.kind === 'in_process' && manifest.adapter.module) required.add(manifest.adapter.module);
   if (manifest.adapter.kind === 'sidecar') {
     for (const artifactPath of sidecarCommandArtifacts(manifest.adapter.command, artifacts)) required.add(artifactPath);
   }
@@ -3342,16 +3331,13 @@ function sidecarArtifactPath(value) {
 
 function normalizeAdapter(adapter) {
   if (!adapter || typeof adapter !== 'object') fail('ERR_CAPABILITY_ADAPTER_INVALID');
-  const kind = adapter.kind ?? 'in_process';
-  if (!['in_process', 'sidecar'].includes(kind)) fail('ERR_CAPABILITY_ADAPTER_INVALID', 'adapter kind must be in_process or sidecar');
-  if (kind === 'in_process') {
-    const module = optionalRelativePath(adapter.module, 'adapter.module');
-    if (!javascriptArtifactPath(module)) fail('ERR_CAPABILITY_ADAPTER_INVALID', 'in_process adapter module must be a JavaScript artifact');
-    return Object.freeze({
-      kind,
-      module,
-      exportName: requiredString(adapter.exportName, 'adapter.exportName'),
-    });
+  const kind = adapter.kind;
+  if (!['receiver', 'sidecar'].includes(kind)) fail('ERR_CAPABILITY_ADAPTER_INVALID', 'adapter kind must be receiver or sidecar');
+  if (kind === 'receiver') {
+    if (Object.keys(adapter).some((key) => key !== 'kind')) {
+      fail('ERR_CAPABILITY_ADAPTER_INVALID', 'receiver adapters cannot select pack-supplied executable code');
+    }
+    return Object.freeze({ kind });
   }
   if (!Array.isArray(adapter.command) || adapter.command.length === 0) {
     fail('ERR_CAPABILITY_ADAPTER_INVALID', 'sidecar adapter command must be a non-empty argv array');

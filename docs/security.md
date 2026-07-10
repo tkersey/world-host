@@ -7,10 +7,11 @@ The implemented v0 host protections are:
 - immutable SHA-256 blob addressing as storage checksum only, not trust;
 - receiver-local capability preflight;
 - exact driver manifest routing by ActuatorRef, descriptor fingerprint, actuation class, and response status;
+- receiver capability packs resolve `driverId` only through world-host's closed registry; unknown drivers and attempts to select pack-supplied in-process code fail closed;
 - sandbox file path escape and symlink rejection;
 - HTTP origin and method allowlists;
 - credential redaction in CLI-shaped diagnostics;
 - no runtime dependencies, shell driver, native World helper process, or child-process protocol encoding in the World wire boundary;
-- optional capability sidecars are host-owned effect resolvers with bounded frames, explicit timeouts, and untrusted output.
+- optional capability sidecars remain the explicit out-of-process extension boundary, with pack-relative checksum-covered artifacts, bounded frames, explicit timeouts, and untrusted output.
 
 Explicit non-claims: no exactly-once effects, signing, encryption, distributed consensus, hostile-host protection, multi-writer durability, or malicious-runtime protection.

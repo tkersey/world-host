@@ -9,6 +9,7 @@ import {
   capabilityConformanceReceiptFingerprint,
   validateCapabilityPackManifest,
 } from '../src/core/capability_pack.mjs';
+import { assertReceiverCapabilityPackDriverManifestMatches } from '../src/drivers/capability_pack_driver_registry.mjs';
 
 const trustedExecuteAdapters = process.argv.includes('--trusted-execute-adapters');
 const root = path.resolve('capability-packs');
@@ -38,6 +39,7 @@ for (const name of names) {
       throw new Error(`ERR_CAPABILITY_CONFORMANCE_RECEIPT_FINGERPRINT:${name}`);
     }
   }
+  assertReceiverCapabilityPackDriverManifestMatches(checked);
   if (trustedExecuteAdapters) await assertAdapterManifestMatchesPack(name, packRoot);
   results.push({
     pack: name,

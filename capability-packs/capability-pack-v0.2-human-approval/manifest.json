@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "packFingerprint": "sha256:cde4e139749362f576eae42f93d9f2a741094a7ae81b572f93559df2c9722e60",
+  "packFingerprint": "sha256:9e86d87c09c77b1ed1030d82cbd4857b82151ba8ad97e3548d910cb1a5f8d32c",
   "packageName": "world-capability-human-approval",
   "packageVersion": "0.2.0",
   "driverId": "human-approval",
@@ -40,18 +40,12 @@
   "conformanceCorpusFingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
   "metadataBytes": "",
   "adapter": {
-    "kind": "in_process",
-    "module": "adapter.mjs",
-    "exportName": "CapabilityDriver"
+    "kind": "receiver"
   },
   "checksums": [
     {
-      "path": "adapter.mjs",
-      "checksum": "sha256:b6b64a65ef5e08385e927b23cb58a3b2c106bb7c81aa7579b3b5cfb11e4606e1"
-    },
-    {
       "path": "README.md",
-      "checksum": "sha256:af5118e5ce83442dde2b9877cdf585f68750a05825a5ae9078a3025af2b48d01"
+      "checksum": "sha256:5bae8a8813d57a95732e202d51f0fbe4de829f5259d1d96d041a1fd375e111b7"
     },
     {
       "path": "non-claims.md",
@@ -59,12 +53,12 @@
     },
     {
       "path": "conformance.json",
-      "checksum": "sha256:72e47c638cd4fbab1f752053868e90a3666ef85a1d5f5992258393d0af72ab69"
+      "checksum": "sha256:3418ab53eccda42681184ca3a2c4695f565c7351b11dd36b11ce319dd1cd7fed"
     }
   ],
   "docs": [
     "README.md",
     "non-claims.md"
   ],
-  "conformanceReceiptFingerprint": "sha256:62a66e50f148bc8849ad8b682d65614a07621431ff51d14ab8beb1f461996e95"
+  "conformanceReceiptFingerprint": "sha256:fa58a65d03a6bba882af21936843a64f354e54c75b5be26d7348fe1459041972"
 }

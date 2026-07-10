@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { clearTimeout as clearHostTimeout, setTimeout as setHostTimeout } from 'node:timers';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { inspect as inspectValue } from 'node:util';
 
 import { createApplicationRecord } from '../core/application.mjs';
@@ -21,6 +21,11 @@ import { carrierVersionSummary } from '../protocol/world_manifest.mjs';
 import { EffectJournal, EffectState, assertResolutionAccepted } from '../core/effect_journal.mjs';
 import { assertCapabilityResolutionBoundary, assertNoWorldEvidenceKeys, defineCapabilityDriver } from '../core/capability_driver.mjs';
 import { FixtureAgentModelDriver } from '../drivers/fixture_agent_model_driver.mjs';
+import {
+  assertCapabilityPackDriverManifestMatches,
+  assertReceiverCapabilityPackDriverManifestMatches,
+  createReceiverCapabilityPackDriver,
+} from '../drivers/capability_pack_driver_registry.mjs';
 import { SandboxFileDriver } from '../drivers/sandbox_file_driver.mjs';
 import { CapabilitySidecar, CapabilitySidecarCommand } from '../sidecars/capability_sidecar.mjs';
 import { BunWorldWorker } from './bun_worker.mjs';
@@ -127,15 +132,10 @@ async function runCapabilityCommand(args, io, options = {}) {
         fail('ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH', 'conformance receipt fingerprint does not match manifest');
       }
     }
+    assertReceiverCapabilityPackDriverManifestMatches(checked);
     if (trustedExecuteAdapters) {
       const isolatedProbeChild = args.includes(CAPABILITY_PACK_PROBE_CHILD_ARG);
       const isolationDisabled = options.isolateTrustedCapabilityPackAdapters === false;
-      if (isolationDisabled && !isolatedProbeChild && checked.adapter.kind === 'in_process') {
-        fail(
-          'ERR_CAPABILITY_PACK_ADAPTER_PROBE_ISOLATION_REQUIRED',
-          'trusted in-process capability pack probes require process isolation',
-        );
-      }
       if (isolatedProbeChild || isolationDisabled) {
         await assertCapabilityPackAdapterAbi(checked, artifacts, { isolatedProbeChild });
       } else {
@@ -338,14 +338,11 @@ async function assertCapabilityPackAdapterAbi(packManifest, artifacts, { isolate
       let driver;
       let sidecar = false;
       try {
-        if (packManifest.adapter.kind === 'in_process') {
-          const adapterImport = await capabilityPackAdapterImportTarget(packManifest, artifacts);
-          adapterSnapshotRoot = adapterImport.root;
-          const module = await withCapabilityPackProbeTimeout('import', import(adapterImport.url));
-          await probeNetwork?.assertNoViolations();
-          const Driver = module[packManifest.adapter.exportName];
-          if (typeof Driver !== 'function') fail('ERR_CAPABILITY_PACK_ADAPTER_EXPORT');
-          driver = new Driver(capabilityPackAdapterOptions(packManifest, probeFileRoot.root));
+        if (packManifest.adapter.kind === 'receiver') {
+          driver = createReceiverCapabilityPackDriver(
+            packManifest,
+            capabilityPackAdapterOptions(packManifest, probeFileRoot.root),
+          );
           await probeNetwork?.assertNoViolations();
         } else if (packManifest.adapter.kind === 'sidecar') {
           if (externalCapabilityPackEffectProbe(packManifest, null)) {
@@ -1451,33 +1448,6 @@ function bytesHex(bytes) {
   return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-function assertCapabilityPackDriverManifestMatches(packManifest, driverManifest) {
-  if (driverManifest.packFingerprint !== packManifest.packFingerprint) fail('ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH', 'adapter manifest field mismatch: packFingerprint');
-  for (const field of [
-    'driverId',
-    'supportedActuatorRefs',
-    'supportedDescriptorFingerprints',
-    'supportedActuationClasses',
-    'supportedResponseStatuses',
-    'recoveryClass',
-    'maximumRequestBytes',
-    'maximumResponseBytes',
-    'authorityLabels',
-  ]) {
-    assertSameCapabilityPackManifestField(field, packManifest[field], driverManifest[field]);
-  }
-}
-
-async function capabilityPackAdapterImportTarget(packManifest, artifacts) {
-  const checksum = packManifest.checksums.find((item) => item.path === packManifest.adapter.module)?.checksum;
-  if (!checksum) fail('ERR_CAPABILITY_PACK_CHECKSUM_REQUIRED', `referenced artifact is not checksum-covered: ${packManifest.adapter.module}`);
-  const root = await capabilityPackAdapterSnapshot(packManifest, artifacts);
-  return Object.freeze({
-    root,
-    url: pathToFileURL(path.resolve(root, packManifest.adapter.module)).href,
-  });
-}
-
 async function capabilityPackAdapterSnapshot(packManifest, artifacts) {
   const root = await capabilityPackAdapterImportRoot();
   for (const item of packManifest.checksums) {
@@ -1582,12 +1552,6 @@ async function capabilityPackProbeFileRoot({ isolatedProbeChild }) {
     fail('ERR_CAPABILITY_PACK_ADAPTER_FILE_ROOT', 'capability pack probe file escapes its root');
   }
   return Object.freeze({ root: actual, locallyOwned: false });
-}
-
-function assertSameCapabilityPackManifestField(field, packValue, driverValue) {
-  if (JSON.stringify(packValue) !== JSON.stringify(driverValue)) {
-    fail('ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH', `adapter manifest field mismatch: ${field}`);
-  }
 }
 
 async function runAgentCommand(args, io, options) {

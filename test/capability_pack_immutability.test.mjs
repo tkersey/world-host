@@ -328,7 +328,7 @@ function fixtureCapabilityManifest() {
     conformanceCorpusFingerprint: null,
     conformanceReceiptFingerprint: null,
     metadataBytes: '',
-    adapter: { kind: 'in_process', module: 'adapter.mjs', exportName: 'CapabilityDriver' },
+    adapter: { kind: 'receiver' },
     checksums: [],
     docs: [],
   };

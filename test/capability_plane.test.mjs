@@ -1,7 +1,7 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -33,13 +33,27 @@ import {
 } from '../src/drivers/model_capability_driver.mjs';
 import { GenericHttpJsonCapabilityDriver } from '../src/drivers/generic_http_json_capability_driver.mjs';
 import { HumanApprovalCapabilityDriver } from '../src/drivers/human_approval_capability_driver.mjs';
-import { CapabilityDriver as FixturePackCapabilityDriver } from '../capability-packs/capability-pack-v0.2-fixture/adapter.mjs';
-import { CapabilityDriver as HttpJsonPackCapabilityDriver } from '../capability-packs/capability-pack-v0.2-http-json/adapter.mjs';
-import { CapabilityDriver as HumanApprovalPackCapabilityDriver } from '../capability-packs/capability-pack-v0.2-human-approval/adapter.mjs';
+import { createReceiverCapabilityPackDriver } from '../src/drivers/capability_pack_driver_registry.mjs';
 import { fromUtf8, stableJson, toHex } from '../src/core/store.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
 import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
 import { encodeCanonicalValueImage } from '../src/protocol/world_loaded_value_codec.mjs';
+
+const fixturePackManifest = JSON.parse(await readFile(new URL('../capability-packs/capability-pack-v0.2-fixture/manifest.json', import.meta.url), 'utf8'));
+const httpJsonPackManifest = JSON.parse(await readFile(new URL('../capability-packs/capability-pack-v0.2-http-json/manifest.json', import.meta.url), 'utf8'));
+const humanApprovalPackManifest = JSON.parse(await readFile(new URL('../capability-packs/capability-pack-v0.2-human-approval/manifest.json', import.meta.url), 'utf8'));
+
+function FixturePackCapabilityDriver(options = {}) {
+  return createReceiverCapabilityPackDriver(fixturePackManifest, options);
+}
+
+function HttpJsonPackCapabilityDriver(options = {}) {
+  return createReceiverCapabilityPackDriver(httpJsonPackManifest, options);
+}
+
+function HumanApprovalPackCapabilityDriver(options = {}) {
+  return createReceiverCapabilityPackDriver(humanApprovalPackManifest, options);
+}
 
 function captureThrown(fn) {
   try {
@@ -597,7 +611,7 @@ describe('Capability Plane v0.2 core contracts', () => {
           ...manifest,
           docs: [],
           checksums: [{ path: `${name}.mjs`, checksum }],
-          adapter: { kind: 'in_process', module: `${name}.mjs`, exportName: 'CapabilityDriver' },
+          adapter: { kind: 'sidecar', command: ['bun', `${name}.mjs`] },
         }, { [`${name}.mjs`]: adapter }),
         { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
       );
@@ -720,7 +734,7 @@ describe('Capability Plane v0.2 core contracts', () => {
     const extensionlessTypeScriptLocalHelperChecksum = `sha256:${await sha256Hex(extensionlessTypeScriptLocalHelper)}`;
     assert.equal(await assertCapabilityPackChecksums({
       ...manifest,
-      adapter: { kind: 'in_process', module: 'adapter.ts', exportName: 'CapabilityDriver' },
+      adapter: { kind: 'sidecar', command: ['bun', 'adapter.ts'] },
       docs: [],
       checksums: [
         { path: 'adapter.ts', checksum: typeScriptExtensionlessLocalImportAdapterChecksum },
@@ -790,7 +804,7 @@ describe('Capability Plane v0.2 core contracts', () => {
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
-        adapter: { ...manifest.adapter, module: 'dir/adapter.mjs' },
+        adapter: { kind: 'sidecar', command: ['bun', 'dir/adapter.mjs'] },
         docs: [],
         checksums: [
           { path: 'dir/adapter.mjs', checksum: nestedLocalImportAdapterChecksum },
@@ -801,7 +815,7 @@ describe('Capability Plane v0.2 core contracts', () => {
     );
     assert.equal(await assertCapabilityPackChecksums({
       ...manifest,
-      adapter: { ...manifest.adapter, module: 'dir/adapter.mjs' },
+      adapter: { kind: 'sidecar', command: ['bun', 'dir/adapter.mjs'] },
       docs: [],
       checksums: [
         { path: 'dir/adapter.mjs', checksum: nestedLocalImportAdapterChecksum },
@@ -849,7 +863,7 @@ describe('Capability Plane v0.2 core contracts', () => {
     const typeScriptJsImportAdapterChecksum = `sha256:${await sha256Hex(typeScriptJsImportAdapter)}`;
     assert.equal(await assertCapabilityPackChecksums({
       ...manifest,
-      adapter: { ...manifest.adapter, module: 'adapter.ts' },
+      adapter: { kind: 'sidecar', command: ['bun', 'adapter.ts'] },
       docs: [],
       checksums: [
         { path: 'adapter.ts', checksum: typeScriptJsImportAdapterChecksum },
@@ -858,7 +872,7 @@ describe('Capability Plane v0.2 core contracts', () => {
     }, { 'adapter.ts': typeScriptJsImportAdapter, 'helper.ts': localHelper }), true);
     assert.equal(await assertCapabilityPackChecksums({
       ...manifest,
-      adapter: { ...manifest.adapter, module: 'adapter.ts' },
+      adapter: { kind: 'sidecar', command: ['bun', 'adapter.ts'] },
       docs: [],
       checksums: [
         { path: 'adapter.ts', checksum: typeScriptJsImportAdapterChecksum },
@@ -869,7 +883,7 @@ describe('Capability Plane v0.2 core contracts', () => {
     await assert.rejects(
       () => assertCapabilityPackChecksums({
         ...manifest,
-        adapter: { ...manifest.adapter, module: 'adapter.ts' },
+        adapter: { kind: 'sidecar', command: ['bun', 'adapter.ts'] },
         docs: [],
         checksums: [
           { path: 'adapter.ts', checksum: typeScriptJsImportAdapterChecksum },
@@ -3457,12 +3471,20 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_CAPABILITY_OPERATION_LABEL_AUTHORITY_FORBIDDEN' },
     );
     assert.throws(
+      () => assertCapabilityManifest({ ...manifest, adapter: {} }),
+      { code: 'ERR_CAPABILITY_ADAPTER_INVALID' },
+    );
+    assert.throws(
+      () => assertCapabilityManifest({ ...manifest, adapter: { kind: 'receiver', module: 'adapter.mjs' } }),
+      { code: 'ERR_CAPABILITY_ADAPTER_INVALID' },
+    );
+    assert.throws(
       () => assertCapabilityManifest({ ...manifest, adapter: { kind: 'in_process', module: '/tmp/driver.mjs' } }),
-      { code: 'ERR_CAPABILITY_HOST_PATH_FORBIDDEN' },
+      { code: 'ERR_CAPABILITY_ADAPTER_INVALID' },
     );
     assert.throws(
       () => assertCapabilityManifest({ ...manifest, adapter: { kind: 'in_process', module: 'adapter.mjs' } }),
-      { code: 'ERR_CAPABILITY_MANIFEST_INVALID' },
+      { code: 'ERR_CAPABILITY_ADAPTER_INVALID' },
     );
     assert.throws(
       () => assertCapabilityManifest({ ...manifest, adapter: { kind: 'in_process', module: 'config.json', exportName: 'driver' } }),
@@ -3471,6 +3493,20 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.throws(
       () => assertCapabilityManifest({ ...manifest, adapter: { kind: 'sidecar', command: ['/tmp/provider'] } }),
       { code: 'ERR_CAPABILITY_HOST_PATH_FORBIDDEN' },
+    );
+    assert.throws(
+      () => createReceiverCapabilityPackDriver({
+        ...fixturePackManifest,
+        driverId: 'unregistered-receiver-driver',
+      }),
+      { code: 'ERR_CAPABILITY_PACK_RECEIVER_DRIVER_UNKNOWN' },
+    );
+    assert.throws(
+      () => createReceiverCapabilityPackDriver({
+        ...fixturePackManifest,
+        supportedResponseStatuses: ['ok'],
+      }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH' },
     );
     assert.throws(
       () => assertCapabilityManifest({ ...manifest, policyRequirements: { allowedFileRoots: ['/etc'] } }),
@@ -4115,7 +4151,7 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.equal((await driver.shadow({}, modelRequest('goal=async'), null)).schemaAccepted, true);
   });
 
-  it('keeps in-process capability hook contexts receiver-local', async () => {
+  it('keeps receiver-owned capability hook contexts receiver-local', async () => {
     const fixture = new FixtureAgentModelCapabilityDriver();
     const seen = new Map();
     const capture = (hook, receiver, context) => {
@@ -5058,7 +5094,7 @@ describe('Capability Plane v0.2 core contracts', () => {
           policy: {
             maximumRequestBytes: 4096,
             maximumPromptBytes: 4096,
-            deniedCapabilityPacks: ['generic-http-json'],
+            deniedCapabilityPacks: [httpJsonPackManifest.packFingerprint],
           },
         }, { ...httpRequest(), requestBytes: fromUtf8(stableJson({ body: 'pack' })) }),
         { code: 'ERR_CAPABILITY_PACK_DENIED' },
@@ -5249,10 +5285,10 @@ describe('Capability Plane v0.2 core contracts', () => {
         });
       };
 
-      const runtimePackFingerprint = 'sha256:'.concat('4'.repeat(64));
+      const runtimePackFingerprint = httpJsonPackManifest.packFingerprint;
       const pinnedPackDriver = defineCapabilityDriver(new HttpJsonPackCapabilityDriver({
         endpointUrl: 'https://allowed.example/decide',
-        packFingerprint: runtimePackFingerprint,
+        packFingerprint: 'sha256:'.concat('4'.repeat(64)),
       }));
       assert.equal(pinnedPackDriver.manifest().packFingerprint, runtimePackFingerprint);
       assert.throws(
@@ -6797,9 +6833,12 @@ describe('Capability Plane v0.2 core contracts', () => {
     const approval = new HumanApprovalCapabilityDriver({ mode: 'noninteractive-allow' });
     assert.deepEqual(approval.manifest().supportedResponseStatuses, ['ok']);
     assert.deepEqual(new HumanApprovalCapabilityDriver({ mode: 'noninteractive-deny' }).manifest().supportedResponseStatuses, ['rejected']);
-    const packApproval = new HumanApprovalPackCapabilityDriver({ mode: 'noninteractive-allow' });
-    assert.deepEqual(packApproval.manifest().supportedResponseStatuses, ['ok']);
-    assert.deepEqual(new HumanApprovalPackCapabilityDriver({ mode: 'noninteractive-deny' }).manifest().supportedResponseStatuses, ['rejected']);
+    const packApproval = new HumanApprovalPackCapabilityDriver();
+    assert.deepEqual(packApproval.manifest().supportedResponseStatuses, ['rejected']);
+    assert.throws(
+      () => new HumanApprovalPackCapabilityDriver({ mode: 'noninteractive-allow' }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH' },
+    );
     assert.equal(packApproval.preflight({}, approvalRequest()).accepted, false);
     const promptLimitedApprovalRequest = {
       ...approvalRequest(),
@@ -6811,12 +6850,12 @@ describe('Capability Plane v0.2 core contracts', () => {
       maximumRequestBytes: 4096,
       maximumPromptBytes: 4,
     };
-    const promptLimitedPackApprovalReport = packApproval.preflight({
+    const promptLimitedPackApprovalReport = approval.preflight({
       policy: promptLimitedApprovalPolicy,
     }, promptLimitedApprovalRequest);
     assert.equal(promptLimitedPackApprovalReport.accepted, false);
     assert.ok(promptLimitedPackApprovalReport.blockers.includes('ERR_CAPABILITY_PROMPT_TOO_LARGE'));
-    const promptOnlyLimitedPackApprovalReport = packApproval.preflight({
+    const promptOnlyLimitedPackApprovalReport = approval.preflight({
       policy: {
         allowLiveEffects: true,
         allowHumanEffects: true,
@@ -6828,7 +6867,7 @@ describe('Capability Plane v0.2 core contracts', () => {
     });
     assert.equal(promptOnlyLimitedPackApprovalReport.accepted, true);
     await assert.rejects(
-      () => packApproval.resolve({
+      () => approval.resolve({
         policy: promptLimitedApprovalPolicy,
       }, promptLimitedApprovalRequest),
       { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
@@ -6840,13 +6879,13 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
     );
     assert.throws(
-      () => packApproval.dryRun({
+      () => approval.dryRun({
         policy: promptLimitedApprovalPolicy,
       }, promptLimitedApprovalRequest),
       { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
     );
     assert.throws(
-      () => packApproval.shadow({
+      () => approval.shadow({
         policy: promptLimitedApprovalPolicy,
       }, promptLimitedApprovalRequest, fromUtf8('recorded')),
       { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
@@ -6866,14 +6905,18 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
     );
     assert.equal(promptLimitedApprovalProviderCalled, false);
-    const unsupportedPackApproval = new HumanApprovalPackCapabilityDriver({ mode: 'interactive', prompt: async () => true });
-    const unsupportedPackApprovalReport = unsupportedPackApproval.preflight({
+    assert.throws(
+      () => new HumanApprovalPackCapabilityDriver({ mode: 'interactive', prompt: async () => true }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH' },
+    );
+    const unsupportedApproval = new HumanApprovalCapabilityDriver({ mode: 'interactive', prompt: async () => true });
+    const unsupportedPackApprovalReport = unsupportedApproval.preflight({
       policy: { allowLiveEffects: true, allowHumanEffects: true },
     }, approvalRequest());
     assert.equal(unsupportedPackApprovalReport.accepted, false);
     assert.ok(unsupportedPackApprovalReport.blockers.includes('ERR_HUMAN_APPROVAL_MODE_UNSUPPORTED'));
     await assert.rejects(
-      () => unsupportedPackApproval.resolve({
+      () => unsupportedApproval.resolve({
         policy: { allowLiveEffects: true, allowHumanEffects: true },
       }, approvalRequest()),
       { code: 'ERR_HUMAN_APPROVAL_MODE_UNSUPPORTED' },
@@ -6885,14 +6928,13 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_HUMAN_APPROVAL_MODE_UNSUPPORTED' },
     );
     assert.throws(
-      () => unsupportedPackApproval.dryRun({
+      () => unsupportedApproval.dryRun({
         policy: { allowLiveEffects: true, allowHumanEffects: true },
       }, approvalRequest()),
       { code: 'ERR_HUMAN_APPROVAL_MODE_UNSUPPORTED' },
     );
-    const pinnedApprovalPackFingerprint = 'sha256:'.concat('6'.repeat(64));
+    const pinnedApprovalPackFingerprint = humanApprovalPackManifest.packFingerprint;
     const pinnedPackApproval = new HumanApprovalPackCapabilityDriver({
-      mode: 'noninteractive-allow',
       packFingerprint: pinnedApprovalPackFingerprint,
     });
     await assert.rejects(
@@ -6916,7 +6958,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_CAPABILITY_PACK_NOT_ALLOWED' },
     );
     await assert.rejects(
-      () => packApproval.resolve({
+      () => approval.resolve({
         policy: {
           allowLiveEffects: true,
           allowHumanEffects: true,
@@ -6926,34 +6968,35 @@ describe('Capability Plane v0.2 core contracts', () => {
       { code: 'ERR_CAPABILITY_RESPONSE_LIMIT_EXCEEDS_POLICY' },
     );
     await assert.rejects(
-      () => packApproval.resolve({}, approvalRequest()),
+      () => approval.resolve({}, approvalRequest()),
       { code: 'ERR_CAPABILITY_LIVE_DENIED' },
     );
     await assert.rejects(
-      () => packApproval.resolve({
+      () => approval.resolve({
         policy: { allowLiveEffects: true, allowHumanEffects: true },
       }, { ...approvalRequest(), responseSchema: { status: 'rejected' } }),
       { code: 'ERR_HUMAN_APPROVAL_RESPONSE_SCHEMA_UNSUPPORTED' },
     );
     assert.throws(
-      () => packApproval.shadow({
+      () => approval.shadow({
         policy: { allowLiveEffects: true, allowHumanEffects: true },
       }, { ...approvalRequest(), responseSchema: { status: 'rejected' } }, fromUtf8('recorded')),
       { code: 'ERR_HUMAN_APPROVAL_RESPONSE_SCHEMA_UNSUPPORTED' },
     );
+    const rejectedApprovalRequest = { ...approvalRequest(), responseSchema: { status: 'rejected' } };
     const packApprovalResolution = await packApproval.resolve({
       policy: { allowLiveEffects: true, allowHumanEffects: true },
-    }, approvalRequest());
+    }, rejectedApprovalRequest);
     const approvalResolution = await approval.resolve({
       policy: { allowLiveEffects: true, allowHumanEffects: true },
     }, approvalRequest());
-    assert.equal(decodeResolutionInputBytes(packApprovalResolution.resolutionInputBytes).status, 0);
+    assert.equal(decodeResolutionInputBytes(packApprovalResolution.resolutionInputBytes).status, 1);
     assert.equal(approval.shadow({}, approvalRequest(), null).schemaAccepted, false);
     assert.equal(approval.shadow({}, approvalRequest(), fromUtf8('recorded')).schemaAccepted, false);
     assert.equal(approval.shadow({}, approvalRequest(), approvalResolution.resolutionInputBytes).schemaAccepted, true);
-    assert.equal(packApproval.shadow({}, approvalRequest(), null).schemaAccepted, false);
-    assert.equal(packApproval.shadow({}, approvalRequest(), fromUtf8('recorded')).schemaAccepted, false);
-    assert.equal(packApproval.shadow({}, approvalRequest(), packApprovalResolution.resolutionInputBytes).schemaAccepted, true);
+    assert.equal(packApproval.shadow({}, rejectedApprovalRequest, null).schemaAccepted, false);
+    assert.equal(packApproval.shadow({}, rejectedApprovalRequest, fromUtf8('recorded')).schemaAccepted, false);
+    assert.equal(packApproval.shadow({}, rejectedApprovalRequest, packApprovalResolution.resolutionInputBytes).schemaAccepted, true);
     const worldEvidenceApprovalResolution = encodeResolutionInputBytes({
       targetHostRequestFingerprint: 0xa3n,
       status: 0,
@@ -6962,7 +7005,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       attemptNumber: 1,
       metadata: fromUtf8('world-evidence-approval-shadow'),
     });
-    assert.equal(packApproval.shadow({}, approvalRequest(), worldEvidenceApprovalResolution).schemaAccepted, false);
+    assert.equal(packApproval.shadow({}, rejectedApprovalRequest, worldEvidenceApprovalResolution).schemaAccepted, false);
     const diagnosticLabelWorldEvidenceApprovalResolution = encodeResolutionInputBytes({
       targetHostRequestFingerprint: 0xa3n,
       status: 0,
@@ -6976,7 +7019,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       metadata: fromUtf8('diagnostic-label-world-evidence-approval-shadow'),
     });
     assert.equal(approval.shadow({}, approvalRequest(), diagnosticLabelWorldEvidenceApprovalResolution).schemaAccepted, false);
-    assert.equal(packApproval.shadow({}, approvalRequest(), diagnosticLabelWorldEvidenceApprovalResolution).schemaAccepted, false);
+    assert.equal(packApproval.shadow({}, rejectedApprovalRequest, diagnosticLabelWorldEvidenceApprovalResolution).schemaAccepted, false);
     assert.equal(approval.preflight({}, httpRequest()).accepted, false);
     const proposedApproval = approval.dryRun({}, {
       ...approvalRequest(),
@@ -7084,7 +7127,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       })),
     });
     assert.equal(oversizedFixturePackPreflight.accepted, false);
-    assert.ok(oversizedFixturePackPreflight.blockers.includes('request-limit-exceeded'));
+    assert.ok(oversizedFixturePackPreflight.blockers.includes('ERR_HOST_REQUEST_TOO_LARGE'));
     const fixturePackResolution = await defineCapabilityDriver(fixturePackDriver).resolve({}, modelRequest('goal=invoke', 'fixture-pack-wire-key'));
     assert.equal(decodeResolutionInputBytes(fixturePackResolution.resolutionInputBytes).status, 0);
     assert.deepEqual(
@@ -8728,7 +8771,7 @@ function fixtureCapabilityManifest() {
     conformanceCorpusFingerprint: null,
     conformanceReceiptFingerprint: null,
     metadataBytes: '',
-    adapter: { kind: 'in_process', module: 'adapter.mjs', exportName: 'driver' },
+    adapter: { kind: 'sidecar', command: ['bun', 'adapter.mjs'] },
     checksums: [],
     docs: ['README.md'],
   };
