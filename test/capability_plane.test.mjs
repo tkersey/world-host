@@ -33,7 +33,10 @@ import {
 } from '../src/drivers/model_capability_driver.mjs';
 import { GenericHttpJsonCapabilityDriver } from '../src/drivers/generic_http_json_capability_driver.mjs';
 import { HumanApprovalCapabilityDriver } from '../src/drivers/human_approval_capability_driver.mjs';
-import { createReceiverCapabilityPackDriver } from '../src/drivers/capability_pack_driver_registry.mjs';
+import {
+  assertReceiverCapabilityPackDriverManifestMatches,
+  createReceiverCapabilityPackDriver,
+} from '../src/drivers/capability_pack_driver_registry.mjs';
 import { fromUtf8, stableJson, toHex } from '../src/core/store.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
 import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
@@ -3523,6 +3526,21 @@ describe('Capability Plane v0.2 core contracts', () => {
       }),
       { code: 'ERR_CAPABILITY_PACK_RECEIVER_DRIVER_UNKNOWN' },
     );
+    const modelPackFingerprint = `sha256:${'1'.repeat(64)}`;
+    const modelDriverManifest = new GenericHttpJsonModelDriver({
+      endpointUrl: 'https://example.invalid/decide',
+      packFingerprint: modelPackFingerprint,
+    }).manifest();
+    const modelPackManifest = {
+      ...modelDriverManifest,
+      adapter: { kind: 'receiver' },
+      policyRequirements: { allowedOrigins: [], allowedMethods: [] },
+      requiredSecrets: [],
+    };
+    assert.equal(assertReceiverCapabilityPackDriverManifestMatches(modelPackManifest), true);
+    assert.equal(createReceiverCapabilityPackDriver(modelPackManifest, {
+      endpointUrl: 'https://example.invalid/decide',
+    }).manifest().driverId, 'generic-http-json-model');
     assert.throws(
       () => createReceiverCapabilityPackDriver({
         ...fixturePackManifest,

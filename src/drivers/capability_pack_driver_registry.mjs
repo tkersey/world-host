@@ -2,11 +2,12 @@ import { fail } from '../core/store.mjs';
 import { assertRequiredSecretsAvailable, scopeSecretProvider } from '../core/secrets.mjs';
 import { GenericHttpJsonCapabilityDriver } from './generic_http_json_capability_driver.mjs';
 import { HumanApprovalCapabilityDriver } from './human_approval_capability_driver.mjs';
-import { FixtureAgentModelCapabilityDriver } from './model_capability_driver.mjs';
+import { FixtureAgentModelCapabilityDriver, GenericHttpJsonModelDriver } from './model_capability_driver.mjs';
 
 const RECEIVER_DRIVER_FACTORIES = new Map([
   ['fixture-agent-model', (options) => new FixtureAgentModelCapabilityDriver(options)],
   ['generic-http-json', (options) => new GenericHttpJsonCapabilityDriver(options)],
+  ['generic-http-json-model', (options) => new GenericHttpJsonModelDriver(options)],
   ['human-approval', (options) => new HumanApprovalCapabilityDriver(options)],
 ]);
 
@@ -139,7 +140,7 @@ function normalizeHttpMethod(value) {
 }
 
 function receiverDriverManifestCheckOptions(packManifest) {
-  if (packManifest.driverId === 'generic-http-json') {
+  if (packManifest.driverId === 'generic-http-json' || packManifest.driverId === 'generic-http-json-model') {
     return { endpointUrl: 'https://example.invalid/decide' };
   }
   return {};
