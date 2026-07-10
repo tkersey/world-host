@@ -5548,6 +5548,22 @@ describe('Capability Plane v0.2 core contracts', () => {
           });
           assert.equal(decodeResolutionInputBytes(credentialKeyResponse.resolutionInputBytes).status, 2);
           assert.equal(credentialKeyResponse.diagnostics.failureCode, 'ERR_SECRET_PERSISTED');
+
+          const credentialExtractionResponse = await new ResponseDriver({
+            endpointUrl: 'https://allowed.example/decide',
+            responseExtractionPath: credentialKey,
+          }).resolve({
+            policy: { allowLiveEffects: true, allowNetworkEffects: true, allowedOrigins: ['https://allowed.example'], allowedMethods: ['POST'] },
+          }, {
+            ...httpRequest(),
+            responseSchema: { status: 'failed' },
+            idempotencyKeyBytes: fromUtf8(`http-key-${driverLabel}-${credentialKey}-extraction`),
+            idempotencyKeyWorldFingerprint: `world:key:http-${driverLabel}-${credentialKey}-extraction`,
+          });
+          const credentialExtractionResolution = decodeResolutionInputBytes(credentialExtractionResponse.resolutionInputBytes);
+          assert.equal(credentialExtractionResolution.status, 2);
+          assert.equal(credentialExtractionResolution.responseValueImageBytes.byteLength, 0);
+          assert.equal(credentialExtractionResponse.diagnostics.failureCode, 'ERR_SECRET_PERSISTED');
         }
 
         globalThis.fetch = async () => new Response(stableJson({

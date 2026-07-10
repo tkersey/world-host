@@ -149,6 +149,7 @@ export class GenericHttpJsonCapabilityDriver {
         try {
           const bytes = await readResponseBytes(response, this.maximumResponseBytes);
           const json = bytes.byteLength ? JSON.parse(new TextDecoder().decode(bytes)) : null;
+          assertNoCredentialShapedResponseValue(json);
           const body = extractPath(json, this.responseExtractionPath);
           const payload = { status: 'ok', statusCode: response.status, body };
           assertNoCredentialShapedResponseValue(payload);

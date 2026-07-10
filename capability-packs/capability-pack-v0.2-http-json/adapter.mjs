@@ -1548,6 +1548,7 @@ class GenericHttpJsonCapabilityDriver {
         try {
           const bytes2 = await readResponseBytes(response, this.maximumResponseBytes);
           const json = bytes2.byteLength ? JSON.parse(new TextDecoder().decode(bytes2)) : null;
+          assertNoCredentialShapedResponseValue(json);
           const body = extractPath(json, this.responseExtractionPath);
           const payload = { status: "ok", statusCode: response.status, body };
           assertNoCredentialShapedResponseValue(payload);
