@@ -2108,7 +2108,7 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   }, 15000);
 
-  it('rejects Bun sidecar early-exit and watch flags during pack validation', async () => {
+  it('rejects sidecar early-exit and Bun watch flags during pack validation', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-bun-sidecar-flags-'));
     const packs = path.join(root, 'capability-packs');
     const pack = path.join(packs, 'capability-pack-v0.2-fixture');
@@ -2137,6 +2137,8 @@ describe('migration, branching, and CLI diagnostics', () => {
         ['bun', '--version', 'sidecar.mjs'],
         ['bun', '--revision', 'sidecar.mjs'],
         ['bun', '--help', 'sidecar.mjs'],
+        ['python3', '-VV', 'sidecar.mjs'],
+        ['pypy3', '-VV', 'sidecar.mjs'],
         ['bun', '--watch', 'sidecar.mjs', 'extra.mjs'],
         ['bun', '--hot', 'sidecar.mjs', 'extra.mjs'],
       ]) {

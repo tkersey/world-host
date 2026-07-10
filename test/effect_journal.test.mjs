@@ -451,6 +451,31 @@ describe('EffectJournal', () => {
     assert.equal(records[0].resolutionInputRef, undefined);
   });
 
+  it('rejects raw driver transaction refs and standalone host claims with World evidence before persisting', async () => {
+    for (const carried of [
+      { driverTransactionRef: { runHead: { generation: 1 } } },
+      { hostClaimBytes: fromUtf8(JSON.stringify({ turnReceiptBytes: [1, 2, 3] })) },
+    ]) {
+      const store = new MemoryStore();
+      const journal = new EffectJournal({ store, runId: 'run', branchId: 'main', parentTurnClosureFingerprint: 'turn:0' });
+      const driver = fixtureDriver({ recoveryClass: EffectRecoveryClass.idempotent });
+      driver.resolve = async (_context, request) => ({
+        resolutionInputBytes: fixtureResolutionInputBytes(request, fromUtf8('resolution')),
+        ...carried,
+      });
+
+      await assert.rejects(
+        () => journal.resolve({}, hostRequest(), driver),
+        { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+      );
+      const records = await store.listEffectRecords('run');
+      assert.equal(records.length, 1);
+      assert.equal(records[0].driverTransactionRef, undefined);
+      assert.equal(records[0].hostClaimRef, undefined);
+      assert.equal(records[0].resolutionInputRef, undefined);
+    }
+  });
+
   it('redacts driver diagnostics before durable resolve writes and preserves legitimate transaction refs', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-effect-metadata-'));
     try {
@@ -541,6 +566,10 @@ describe('EffectJournal', () => {
     assert.throws(
       () => assertEffectRecord({ ...observed, driverTransactionRef: `Bearer ${secret}` }),
       { code: 'ERR_SECRET_PERSISTED' },
+    );
+    assert.throws(
+      () => assertEffectRecord({ ...observed, driverTransactionRef: { runHead: { generation: 1 } } }),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
     );
   });
 

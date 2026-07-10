@@ -2929,6 +2929,8 @@ describe('Capability Plane v0.2 core contracts', () => {
     for (const [command, artifactPath] of [
       [['perl', '-v', './adapter.pl'], './adapter.pl'],
       [['perl', '-V', './adapter.pl'], './adapter.pl'],
+      [['python3', '-VV', './adapter.py'], './adapter.py'],
+      [['pypy3', '-VV', './adapter.py'], './adapter.py'],
       [['python3', '-', './adapter.py'], './adapter.py'],
       [['pypy3', '-', './adapter.py'], './adapter.py'],
       [['ruby', '-', './adapter.rb'], './adapter.rb'],

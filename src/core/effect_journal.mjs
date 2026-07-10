@@ -961,6 +961,7 @@ function assertDriverTransactionRefDurable(value) {
   if (stableJson(durable) !== stableJson(redacted)) {
     fail('ERR_SECRET_PERSISTED', 'driverTransactionRef contains secret-shaped data');
   }
+  assertNoWorldEvidenceKeys(durable);
   return durable;
 }
 
@@ -1248,6 +1249,7 @@ function validateAgentAction(action, validation) {
 function assertDriverCarriedBytesAccepted(resolved, manifest, policy) {
   assertNoWorldEvidenceKeys(resolved.diagnostics);
   if (!resolved.hostClaimBytes) return;
+  assertNoWorldEvidenceKeys(resolved.hostClaimBytes);
   const maximumResponseBytes = policy.maximumResponseBytes === undefined
     ? manifest.maximumResponseBytes
     : Math.min(manifest.maximumResponseBytes, policy.maximumResponseBytes);

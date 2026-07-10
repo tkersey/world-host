@@ -3080,7 +3080,7 @@ function unsupportedNonJavaScriptRuntimeOption(runtime, value) {
   if (typeof value !== 'string') return false;
   if (/^python(?:\d+(?:\.\d+)*)?$/.test(runtime) || /^pypy(?:\d+)?$/.test(runtime)) {
     return value === '-' || value === '-c' || value.startsWith('-c') || value === '-m' || value.startsWith('-m') ||
-      value === '-h' || value === '--help' || value === '-V' || value === '--version';
+      value === '-h' || value === '--help' || /^-V+$/.test(value) || value === '--version';
   }
   if (runtime === 'php') return unsupportedPhpRuntimeOption(value);
   if (runtime === 'lua' || runtime === 'luajit') {
