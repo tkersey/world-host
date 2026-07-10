@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { inspect as inspectValue } from 'node:util';
 
 import { createApplicationRecord } from '../core/application.mjs';
-import { assertDriverManifest } from '../core/actuator.mjs';
+import { assertDriverManifest, authorityLabelDeclaresNetwork } from '../core/actuator.mjs';
 import { exportCarrierRun, forkRunBranch, importCarrierRun } from '../core/migration.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from '../core/run.mjs';
 import { assertBlobRef, fail, fromUtf8, makeBlobRef, stableJson } from '../core/store.mjs';
@@ -1241,7 +1241,7 @@ function manifestNetworkCapabilityPackEffectProbe(driverManifest) {
 }
 
 function networkCapabilityPackAuthorityLabel(driverManifest) {
-  return (driverManifest.authorityLabels ?? []).some((label) => label === 'model:http-json' || (typeof label === 'string' && label.startsWith('network:')));
+  return (driverManifest.authorityLabels ?? []).some(authorityLabelDeclaresNetwork);
 }
 
 function capabilityPackProbeWorldIdempotencyObservation(packManifest, driverManifest, hostRequest, phase) {
@@ -1483,9 +1483,27 @@ function capabilityPackAdapterOptions(packManifest, probeFileRoot) {
       : {}),
   };
   if (packManifest.driverId === 'generic-http-json' || packManifest.driverId === 'generic-http-json-model') {
-    return { ...base, endpointUrl: 'https://example.invalid/decide' };
+    const allowedOrigin = packManifest.policyRequirements.allowedOrigins[0] ?? null;
+    const allowedMethod = packManifest.policyRequirements.allowedMethods[0] ?? null;
+    return {
+      ...base,
+      endpointUrl: capabilityPackProbeEndpointUrl(allowedOrigin),
+      ...(allowedMethod == null ? {} : { methods: [allowedMethod] }),
+    };
   }
   return base;
+}
+
+function capabilityPackProbeEndpointUrl(allowedOrigin) {
+  if (allowedOrigin == null) return 'https://example.invalid/decide';
+  try {
+    return new URL('/world-host-capability-pack-abi-probe', allowedOrigin).href;
+  } catch {
+    fail(
+      'ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH',
+      'receiver driver cannot realize policyRequirements.allowedOrigins',
+    );
+  }
 }
 
 function capabilityPackProbeSecretProvider(descriptors) {

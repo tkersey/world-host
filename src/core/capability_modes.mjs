@@ -1,5 +1,5 @@
 import { EffectJournal, EffectState, assertResolutionAccepted, journaledHostRequest } from './effect_journal.mjs';
-import { assertDriverCanResolve } from './actuator.mjs';
+import { assertDriverCanResolve, authorityLabelDeclaresNetwork } from './actuator.mjs';
 import { assertCapabilityPolicyAllows, createCapabilityPolicy } from './capability_policy.mjs';
 import { assertCapabilityResolutionBoundary, defineCapabilityDriver } from './capability_driver.mjs';
 import { fail, fromUtf8, stableJson } from './store.mjs';
@@ -166,7 +166,7 @@ function shadowRequiresLivePolicy(manifest, hostRequest) {
   const labels = manifest?.authorityLabels ?? [];
   return ['http', 'file', 'human'].includes(hostRequest?.actuationClass) ||
     (manifest?.supportedActuationClasses ?? []).some((item) => ['http', 'file', 'human'].includes(item)) ||
-    labels.some((label) => label.startsWith('network:') || label.startsWith('file:') || label.startsWith('human:')) ||
+    labels.some((label) => authorityLabelDeclaresNetwork(label) || label.startsWith('file:') || label.startsWith('human:')) ||
     isLiveModelCall(manifest, hostRequest);
 }
 
@@ -303,7 +303,7 @@ function assertFixtureModeAllowed(manifest, hostRequest) {
   const requestedLiveActuationClasses = liveActuationClasses.has(hostRequest?.actuationClass) ? [hostRequest.actuationClass] : [];
   const liveModelActuationClasses = isLiveModelCall(manifest, hostRequest) ? ['model'] : [];
   const liveAuthorityLabels = (manifest.authorityLabels ?? []).filter((label) => (
-    label.startsWith('network:') ||
+    authorityLabelDeclaresNetwork(label) ||
     label.startsWith('file:') ||
     label.startsWith('human:') ||
     (label.startsWith('model:') && !label.startsWith('model:fixture'))

@@ -13,6 +13,8 @@ world_host_capability_driver_abi_version = 1
 
 Semantic identity is structural: descriptor fingerprint, ActuatorRef, actuation class, response statuses, recovery class, authority labels, byte limits, policy requirements, and secret descriptors. Display labels are diagnostics only. Operation-label dispatch is not authority.
 
-No credentials or host-specific absolute filesystem paths belong in a pack. A pack may declare required secret names or classes; the receiver maps those descriptors to local providers.
+No credentials or host-specific absolute filesystem paths belong in a pack. Secret descriptors are the complete name-level authority exposed to a receiver driver: the receiver scopes its local provider to those names, and every descriptor marked `required` must be available when the operational driver is constructed. Optional descriptors may be absent.
+
+Nonempty `policyRequirements.allowedOrigins` and `policyRequirements.allowedMethods` are upper bounds on receiver HTTP driver configuration. The receiver may configure a subset, and its runtime policy must still grant the concrete effect; a pack never grants authority. Empty lists leave that configuration receiver-local rather than denying every target.
 
 Reference packs live under `capability-packs/` and are conformance fixtures, not production provider integrations. Their receiver adapters contain no executable artifact; world-host supplies the registered driver implementation.

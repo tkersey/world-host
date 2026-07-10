@@ -1432,6 +1432,38 @@ describe('migration, branching, and CLI diagnostics', () => {
     }
   });
 
+  it('derives trusted receiver probes from nonempty pack HTTP policy bounds', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-bounded-probe-'));
+    const pack = path.join(root, 'capability-pack-v0.2-http-json');
+    try {
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-http-json'), pack, { recursive: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
+      manifest.checksums = manifest.checksums.filter((item) => item.path !== 'conformance.json');
+      manifest.policyRequirements = {
+        ...manifest.policyRequirements,
+        allowedOrigins: ['https://probe.allowed.example'],
+        allowedMethods: ['PUT'],
+      };
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      const quiet = { stdout: { write() {} }, stderr: { write() {} } };
+      assert.equal(await runBunCli(['capability', 'check-pack', '--pack', pack], quiet), 0);
+      assert.equal(await runBunCli([
+        'capability',
+        'check-pack',
+        '--pack',
+        pack,
+        '--trusted-execute-adapters',
+      ], quiet), 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('never executes checksum-covered pack modules for receiver adapters', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-no-exec-'));
     const pack = path.join(root, 'capability-pack-v0.2-fixture');

@@ -1,4 +1,5 @@
 import { fail } from '../core/store.mjs';
+import { assertRequiredSecretsAvailable, scopeSecretProvider } from '../core/secrets.mjs';
 import { GenericHttpJsonCapabilityDriver } from './generic_http_json_capability_driver.mjs';
 import { HumanApprovalCapabilityDriver } from './human_approval_capability_driver.mjs';
 import { FixtureAgentModelCapabilityDriver } from './model_capability_driver.mjs';
@@ -33,7 +34,11 @@ export function assertReceiverCapabilityPackDriverRegistered(packManifest) {
 
 export function assertReceiverCapabilityPackDriverManifestMatches(packManifest) {
   if (packManifest?.adapter?.kind !== 'receiver') return true;
-  createReceiverCapabilityPackDriver(packManifest, receiverDriverManifestCheckOptions(packManifest));
+  instantiateReceiverCapabilityPackDriver(
+    packManifest,
+    receiverDriverManifestCheckOptions(packManifest),
+    { bindReceiverAuthority: false },
+  );
   return true;
 }
 
@@ -50,17 +55,87 @@ export function assertCapabilityPackDriverManifestMatches(packManifest, driverMa
 }
 
 export function createReceiverCapabilityPackDriver(packManifest, options = {}) {
+  return instantiateReceiverCapabilityPackDriver(packManifest, options, { bindReceiverAuthority: true });
+}
+
+function instantiateReceiverCapabilityPackDriver(packManifest, options, { bindReceiverAuthority }) {
   if (packManifest?.adapter?.kind !== 'receiver') {
     fail('ERR_CAPABILITY_PACK_RECEIVER_ADAPTER_REQUIRED', 'capability pack must select a receiver-owned driver');
   }
   assertReceiverCapabilityPackDriverRegistered(packManifest);
   const factory = RECEIVER_DRIVER_FACTORIES.get(packManifest.driverId);
+  const receiverOptions = bindReceiverAuthority
+    ? bindReceiverCapabilityPackOptions(packManifest, options)
+    : options;
   const driver = factory({
-    ...options,
+    ...receiverOptions,
     packFingerprint: packManifest.packFingerprint,
   });
-  assertCapabilityPackDriverManifestMatches(packManifest, driver.manifest());
+  const driverManifest = driver.manifest();
+  assertCapabilityPackDriverManifestMatches(packManifest, driverManifest);
+  if (bindReceiverAuthority) assertReceiverCapabilityPackPolicyBounds(packManifest, driverManifest);
   return driver;
+}
+
+function bindReceiverCapabilityPackOptions(packManifest, options) {
+  const descriptors = packManifest.requiredSecrets ?? [];
+  const required = descriptors.filter((descriptor) => descriptor?.required !== false);
+  const secretProvider = options.secretProvider ?? null;
+  if (secretProvider == null) {
+    if (required.length > 0) fail('ERR_SECRET_PROVIDER_REQUIRED', 'required capability-pack secrets need a receiver-local provider');
+    return { ...options };
+  }
+  const scopedSecretProvider = scopeSecretProvider(secretProvider, descriptors);
+  assertRequiredSecretsAvailable(scopedSecretProvider, descriptors);
+  return { ...options, secretProvider: scopedSecretProvider };
+}
+
+function assertReceiverCapabilityPackPolicyBounds(packManifest, driverManifest) {
+  assertReceiverCapabilityPackPolicyListBound(
+    packManifest,
+    driverManifest,
+    'allowedOrigins',
+    'origins',
+    normalizeHttpOrigin,
+  );
+  assertReceiverCapabilityPackPolicyListBound(
+    packManifest,
+    driverManifest,
+    'allowedMethods',
+    'methods',
+    normalizeHttpMethod,
+  );
+}
+
+function assertReceiverCapabilityPackPolicyListBound(packManifest, driverManifest, requirementField, diagnosticField, normalize) {
+  const bounds = packManifest.policyRequirements?.[requirementField] ?? [];
+  if (!Array.isArray(bounds) || bounds.length === 0) return;
+  const configured = driverManifest.diagnostics?.[diagnosticField];
+  const normalizedBounds = bounds.map(normalize);
+  const normalizedConfigured = Array.isArray(configured) ? configured.map(normalize) : null;
+  if (
+    normalizedConfigured == null ||
+    normalizedBounds.some((value) => value == null) ||
+    normalizedConfigured.some((value) => value == null || !normalizedBounds.includes(value))
+  ) {
+    fail(
+      'ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH',
+      `receiver driver exceeds pack policy requirements: ${requirementField}`,
+    );
+  }
+}
+
+function normalizeHttpOrigin(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeHttpMethod(value) {
+  return typeof value === 'string' && value.length > 0 ? value.toUpperCase() : null;
 }
 
 function receiverDriverManifestCheckOptions(packManifest) {

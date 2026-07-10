@@ -1,5 +1,5 @@
 import { EffectJournal, EffectState } from './effect_journal.mjs';
-import { EffectRecoveryClass, assertDriverRequestSupported, assertDurableRecoveryAllowed } from './actuator.mjs';
+import { EffectRecoveryClass, assertDriverRequestSupported, assertDurableRecoveryAllowed, authorityLabelDeclaresNetwork } from './actuator.mjs';
 import { assertCapabilityReportAccepted, createRunPolicy, preflightCapabilities } from './capabilities.mjs';
 import { defineCapabilityDriver } from './capability_driver.mjs';
 import { isDefaultEffectContext, markDefaultEffectContext } from './effect_context.mjs';
@@ -849,7 +849,7 @@ function capabilityPolicyForSelectedEffect(policy = {}, manifest = {}, hostReque
   const actuationClasses = manifest?.supportedActuationClasses ?? [];
   const network = hostRequest?.actuationClass === 'http' ||
     actuationClasses.includes('http') ||
-    authorityLabels.some((label) => label.startsWith('network:'));
+    authorityLabels.some(authorityLabelDeclaresNetwork);
   const file = hostRequest?.actuationClass === 'file' ||
     actuationClasses.includes('file') ||
     authorityLabels.some((label) => label.startsWith('file:'));
@@ -966,7 +966,7 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}, { ignoreAppr
   const allowedAuthorityLabels = policySet(policy.allowedAuthorityLabels);
   if (allowedAuthorityLabels.size && manifest.authorityLabels.some((label) => !allowedAuthorityLabels.has(label))) return false;
   const allowedHttpOrigins = policySet(policy.allowedHttpOrigins);
-  if (hostRequest.actuationClass === 'http' || manifest.authorityLabels.includes('network:http')) {
+  if (hostRequest.actuationClass === 'http' || manifest.authorityLabels.some(authorityLabelDeclaresNetwork)) {
     const origin = requestOriginForManifest(hostRequest, manifest);
     const driverOrigins = Array.isArray(manifest.diagnostics?.origins) ? new Set(manifest.diagnostics.origins) : null;
     if (driverOrigins && (!origin || !driverOrigins.has(origin))) return false;
@@ -1006,7 +1006,7 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}, { ignoreAppr
 function hostRequestPolicyPromptByteLength(manifest, hostRequest) {
   if (hostRequest.policyRequestBytes) return hostRequest.policyRequestBytes.byteLength;
   if (driverManifestChargesLiveModelBudget(manifest, hostRequest) || driverManifestIsHuman(manifest, hostRequest)) return hostRequest.requestBytes?.byteLength;
-  if (hostRequest.actuationClass === 'http' || manifest.authorityLabels.includes('network:http')) return httpRequestBodyPolicyByteLength(manifest, hostRequest);
+  if (hostRequest.actuationClass === 'http' || manifest.authorityLabels.some(authorityLabelDeclaresNetwork)) return httpRequestBodyPolicyByteLength(manifest, hostRequest);
   return undefined;
 }
 
@@ -1044,7 +1044,7 @@ function driverManifestIsFile(manifest, hostRequest) {
 function driverManifestIsNetwork(manifest, hostRequest) {
   return hostRequest?.actuationClass === 'http' ||
     (manifest.supportedActuationClasses ?? []).includes('http') ||
-    (manifest.authorityLabels ?? []).some((label) => label.startsWith('network:'));
+    (manifest.authorityLabels ?? []).some(authorityLabelDeclaresNetwork);
 }
 
 function driverManifestRequiresApproval(manifest, hostRequest, policy) {

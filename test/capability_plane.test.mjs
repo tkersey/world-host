@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { ActuationClass, EffectRecoveryClass } from '../src/core/actuator.mjs';
+import { ActuationClass, EffectRecoveryClass, authorityLabelDeclaresNetwork } from '../src/core/actuator.mjs';
 import { EffectJournal, EffectState } from '../src/core/effect_journal.mjs';
 import {
   assertCapabilityManifest,
@@ -3581,6 +3581,278 @@ describe('Capability Plane v0.2 core contracts', () => {
     );
   });
 
+  it('bounds reverse-ordered sidecar alias propagation and preserves admitted detection', async () => {
+    const manifest = fixtureCapabilityManifest();
+    const reverseAliasChain = (depth, tail, body = 'export const CapabilityDriver = {};') => {
+      const preseededLiteralAlias = tail === '"constructor"' ? 'dangerousAliasSeed' : null;
+      return [
+        ...Array.from({ length: depth }, (_, index) => {
+          const target = index + 1 < depth ? `alias${index + 1}` : (preseededLiteralAlias ?? tail);
+          return `const alias${index} = ${target};`;
+        }),
+        ...(preseededLiteralAlias ? [`const ${preseededLiteralAlias} = ${tail};`] : []),
+        body,
+      ].join('\n');
+    };
+    const checkSource = async (source) => {
+      const adapter = fromUtf8(`${source}\n`);
+      const checksum = `sha256:${await sha256Hex(adapter)}`;
+      return assertCapabilityPackChecksums({
+        ...manifest,
+        docs: [],
+        checksums: [{ path: 'adapter.mjs', checksum }],
+      }, { 'adapter.mjs': adapter });
+    };
+
+    for (const tail of ['Reflect', '"constructor"', 'import.meta']) {
+      await assert.doesNotReject(() => checkSource(reverseAliasChain(32, tail)));
+      await assert.rejects(
+        () => checkSource(reverseAliasChain(33, tail)),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+        `expected ${tail} aliases to fail closed after 32 change waves`,
+      );
+    }
+
+    await assert.rejects(
+      () => checkSource(reverseAliasChain(
+        8,
+        'import.meta',
+        'export function CapabilityDriver() { return alias0.env.PATH; }',
+      )),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+      'expected an admitted reverse import.meta chain to retain host-API detection',
+    );
+
+    await assert.rejects(
+      () => checkSource(reverseAliasChain(33, 'import.meta')),
+      (error) => {
+        assert.equal(error.code, 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT');
+        assert.equal(error.details.hostApi, 'alias-propagation-limit');
+        return true;
+      },
+    );
+  });
+
+  it('denies Bun.secrets regardless of declared sidecar authority', async () => {
+    const manifest = {
+      ...fixtureCapabilityManifest(),
+      supportedActuationClasses: ['file', 'http'],
+      authorityLabels: ['file:fixture', 'network:https'],
+      docs: [],
+    };
+    for (const source of [
+      "export async function CapabilityDriver() { return Bun.secrets.get({ service: 'fixture', name: 'value' }); }\n",
+      "export async function CapabilityDriver() { return Bun?.secrets.get({ service: 'fixture', name: 'value' }); }\n",
+      "export async function CapabilityDriver() { return Bun['secrets'].get({ service: 'fixture', name: 'value' }); }\n",
+    ]) {
+      const adapter = fromUtf8(source);
+      const checksum = `sha256:${await sha256Hex(adapter)}`;
+      await assert.rejects(
+        () => assertCapabilityPackChecksums({
+          ...manifest,
+          checksums: [{ path: 'adapter.mjs', checksum }],
+        }, { 'adapter.mjs': adapter }),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_IMPORT' },
+      );
+    }
+  });
+
+  it('confines receiver pack drivers to declared secrets and checks required availability', () => {
+    const requiredSecretManifest = {
+      ...httpJsonPackManifest,
+      requiredSecrets: [{
+        name: 'HTTP_AUTHORIZATION',
+        class: 'header',
+        required: true,
+        purpose: 'authorization header',
+      }],
+    };
+    const options = { endpointUrl: 'https://allowed.example/decide' };
+
+    assert.throws(
+      () => createReceiverCapabilityPackDriver(requiredSecretManifest, options),
+      { code: 'ERR_SECRET_PROVIDER_REQUIRED' },
+    );
+    assert.throws(
+      () => createReceiverCapabilityPackDriver(requiredSecretManifest, {
+        ...options,
+        secretProvider: new EnvSecretProvider({}),
+      }),
+      { code: 'ERR_SECRET_MISSING' },
+    );
+    assert.doesNotThrow(() => createReceiverCapabilityPackDriver(httpJsonPackManifest, options));
+
+    const providerCalls = [];
+    const provider = {
+      describe(name) {
+        providerCalls.push(['describe', name]);
+        return { name, provider: 'test', redacted: true };
+      },
+      has(name) {
+        providerCalls.push(['has', name]);
+        return true;
+      },
+      get(name, purpose) {
+        providerCalls.push(['get', name, purpose]);
+        return 'Bearer receiver-secret';
+      },
+    };
+    const driver = createReceiverCapabilityPackDriver(requiredSecretManifest, {
+      ...options,
+      secretHeaders: { Authorization: 'UNDECLARED_SECRET' },
+      secretProvider: provider,
+    });
+    assert.deepEqual(providerCalls, [['has', 'HTTP_AUTHORIZATION']]);
+    providerCalls.length = 0;
+
+    const report = driver.preflight({
+      policy: {
+        allowLiveEffects: true,
+        allowNetworkEffects: true,
+        allowedOrigins: ['https://allowed.example'],
+        allowedMethods: ['POST'],
+      },
+    }, httpRequest());
+    assert.equal(report.accepted, false);
+    assert.ok(report.blockers.includes('ERR_SECRET_UNDECLARED'));
+    assert.deepEqual(providerCalls, []);
+  });
+
+  it('constrains receiver HTTP configuration to nonempty pack policy bounds', () => {
+    const boundedManifest = {
+      ...httpJsonPackManifest,
+      policyRequirements: {
+        ...httpJsonPackManifest.policyRequirements,
+        allowedOrigins: ['https://allowed.example', 'https://backup.example'],
+        allowedMethods: ['POST', 'PUT'],
+      },
+    };
+
+    assert.doesNotThrow(() => createReceiverCapabilityPackDriver(boundedManifest, {
+      endpointUrl: 'https://allowed.example/decide',
+      origins: ['https://allowed.example'],
+      methods: ['post'],
+    }));
+    assert.throws(
+      () => createReceiverCapabilityPackDriver(boundedManifest, {
+        endpointUrl: 'https://allowed.example/decide',
+        origins: ['https://denied.example'],
+      }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH' },
+    );
+    assert.throws(
+      () => createReceiverCapabilityPackDriver(boundedManifest, {
+        endpointUrl: 'https://allowed.example/decide',
+        methods: ['DELETE'],
+      }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH' },
+    );
+    assert.throws(
+      () => createReceiverCapabilityPackDriver({
+        ...boundedManifest,
+        policyRequirements: {
+          ...boundedManifest.policyRequirements,
+          allowedMethods: ['PUT'],
+        },
+      }, {
+        endpointUrl: 'https://allowed.example/decide',
+      }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH' },
+    );
+    assert.throws(
+      () => createReceiverCapabilityPackDriver(boundedManifest, {
+        endpointUrl: 'https://denied.example/decide',
+      }),
+      { code: 'ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH' },
+    );
+
+    assert.doesNotThrow(() => createReceiverCapabilityPackDriver({
+      ...boundedManifest,
+      policyRequirements: {
+        ...boundedManifest.policyRequirements,
+        allowedOrigins: [],
+        allowedMethods: [],
+      },
+    }, {
+      endpointUrl: 'https://receiver-local.example/decide',
+      methods: ['DELETE'],
+    }));
+  });
+
+  it('classifies model:http-json as network authority without broadening model labels', () => {
+    assert.equal(authorityLabelDeclaresNetwork('model:http-json'), true);
+    assert.equal(authorityLabelDeclaresNetwork('network:http'), true);
+    assert.equal(authorityLabelDeclaresNetwork('model:fixture'), false);
+    assert.equal(authorityLabelDeclaresNetwork('model:local'), false);
+
+    const manifest = {
+      driverId: 'label-only-http-model',
+      supportedActuationClasses: ['model'],
+      authorityLabels: ['model:http-json'],
+      recoveryClass: EffectRecoveryClass.idempotent,
+      maximumResponseBytes: 1024,
+      diagnostics: {
+        endpointSource: 'config',
+        configuredEndpointUrl: 'https://allowed.example/decide',
+        defaultMethod: 'POST',
+      },
+    };
+    const hostRequest = networkPolicyHostRequest(
+      genericHttpModelRequest('goal=label-only-network-policy', 'label-only-network-policy-key'),
+      manifest,
+    );
+    const basePolicy = {
+      allowLiveEffects: true,
+      maximumLiveModelCalls: 1,
+      allowedAuthorityLabels: ['model:http-json'],
+    };
+
+    assert.throws(
+      () => assertCapabilityPolicyAllows({ manifest, hostRequest, policy: basePolicy, mode: 'live' }),
+      { code: 'ERR_CAPABILITY_NETWORK_DENIED' },
+    );
+    assert.throws(
+      () => assertCapabilityPolicyAllows({
+        manifest,
+        hostRequest,
+        policy: { ...basePolicy, allowNetworkEffects: true },
+        mode: 'live',
+      }),
+      { code: 'ERR_CAPABILITY_ORIGIN_ALLOWLIST_REQUIRED' },
+    );
+    assert.throws(
+      () => assertCapabilityPolicyAllows({
+        manifest,
+        hostRequest,
+        policy: {
+          ...basePolicy,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+        },
+        mode: 'live',
+      }),
+      { code: 'ERR_CAPABILITY_METHOD_ALLOWLIST_REQUIRED' },
+    );
+    const approvalPolicy = {
+      ...basePolicy,
+      allowNetworkEffects: true,
+      allowedOrigins: ['https://allowed.example'],
+      allowedMethods: ['POST'],
+      requireApprovalForNetworkEffects: true,
+    };
+    assert.throws(
+      () => assertCapabilityPolicyAllows({ manifest, hostRequest, policy: approvalPolicy, mode: 'live' }),
+      { code: 'ERR_CAPABILITY_APPROVAL_REQUIRED' },
+    );
+    assert.equal(assertCapabilityPolicyAllows({
+      manifest,
+      hostRequest,
+      policy: approvalPolicy,
+      action: { approved: true },
+      mode: 'live',
+    }), true);
+  });
+
   it('denies live, network, file, and best-effort capabilities by default', () => {
     const manifest = {
       driverId: 'network',
@@ -3806,7 +4078,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       hostRequest: { ...genericHttpModelRequest('goal=policy-mixed-labels', 'model-policy-mixed-key') },
       policy: { allowLiveEffects: true },
       mode: 'live',
-    }), { code: 'ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED' });
+    }), { code: 'ERR_CAPABILITY_NETWORK_DENIED' });
     assert.throws(() => assertCapabilityPolicyAllows({
       manifest: {
         driverId: 'deterministic-model-http',
@@ -3818,7 +4090,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       hostRequest: { ...genericHttpModelRequest('goal=policy', 'model-policy-key') },
       policy: { allowLiveEffects: true },
       mode: 'live',
-    }), { code: 'ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED' });
+    }), { code: 'ERR_CAPABILITY_NETWORK_DENIED' });
     assert.throws(() => assertCapabilityPolicyAllows({
       manifest: {
         driverId: 'unlabeled-model-http',
@@ -4087,6 +4359,24 @@ describe('Capability Plane v0.2 core contracts', () => {
       },
       mode: 'live',
     }), { code: 'ERR_CAPABILITY_NETWORK_TARGET_REQUIRED' });
+    for (const credential of ['Basic a', 'Bearer b']) {
+      const url = new URL('https://allowed.example/decide');
+      url.searchParams.set('value', credential);
+      assert.throws(() => assertCapabilityPolicyAllows({
+        manifest: { ...manifest, recoveryClass: EffectRecoveryClass.idempotent },
+        hostRequest: {
+          ...httpRequest(),
+          requestBytes: fromUtf8(stableJson({ url: url.href, method: 'POST' })),
+        },
+        policy: {
+          allowLiveEffects: true,
+          allowNetworkEffects: true,
+          allowedOrigins: ['https://allowed.example'],
+          allowedMethods: ['POST'],
+        },
+        mode: 'live',
+      }), { code: 'ERR_CAPABILITY_NETWORK_TARGET_REQUIRED' });
+    }
     assert.throws(() => assertCapabilityPolicyAllows({
       manifest: { ...manifest, recoveryClass: EffectRecoveryClass.idempotent },
       hostRequest: {
@@ -4880,7 +5170,7 @@ describe('Capability Plane v0.2 core contracts', () => {
         mode: 'approval',
         driver: deterministicModelLiveEffectDriver(() => {
           approvalBudgetDeniedModelResolveCalled = true;
-        }),
+        }, { authorityLabels: ['model:live'], driverId: 'approval-budget-model' }),
         hostRequest: genericHttpModelRequest('goal=approval-budget-denied', 'model-approval-budget-denied-key'),
         approval: () => ({ approved: true }),
         journalOptions: {
@@ -7777,7 +8067,7 @@ describe('Capability Plane v0.2 core contracts', () => {
           mode: 'live',
           driver: deterministicModelLiveEffectDriver(() => {
             runModeBudgetDeniedResolveCalled = true;
-          }),
+          }, { authorityLabels: ['model:live'], driverId: 'run-mode-budget-model' }),
           hostRequest: genericHttpModelRequest('goal=run-mode-budget-denied', 'model-run-mode-budget-denied-key'),
           journalOptions: {
             store: new MemoryStore(),

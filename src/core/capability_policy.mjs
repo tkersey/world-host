@@ -1,4 +1,4 @@
-import { EffectRecoveryClass } from './actuator.mjs';
+import { EffectRecoveryClass, authorityLabelDeclaresNetwork } from './actuator.mjs';
 import { immutablePolicySet } from './immutable_set.mjs';
 import { fail } from './store.mjs';
 
@@ -184,7 +184,7 @@ function redactCapabilityDiagnosticsValue(value, seen) {
 function isNetwork(manifest, hostRequest) {
   return hostRequest?.actuationClass === 'http' ||
     (manifest?.supportedActuationClasses ?? []).includes('http') ||
-    (manifest?.authorityLabels ?? []).some((label) => label.startsWith('network:'));
+    (manifest?.authorityLabels ?? []).some(authorityLabelDeclaresNetwork);
 }
 
 function isFile(manifest, hostRequest) {
@@ -282,7 +282,7 @@ function credentialQueryKey(value) {
 
 function credentialQueryValue(value) {
   return /sk-[A-Za-z0-9_-]{8,}/.test(value) ||
-    /\b(?:bearer|basic)\s+[A-Za-z0-9._~+/-]{8,}={0,2}/i.test(value);
+    /\b(?:bearer|basic)\s+\S+/i.test(value);
 }
 
 function credentialAssignmentText(value) {

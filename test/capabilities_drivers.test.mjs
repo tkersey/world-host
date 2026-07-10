@@ -1456,7 +1456,7 @@ describe('capability preflight and reference drivers', () => {
       descriptorFingerprint: 'descriptor:world-model-bridge',
       actuationClass: 'world:actuation-class:1',
     });
-    const wrappedDriver = fixtureDriverWithAuthority(['model:http-json'], {
+    const wrappedDriver = fixtureDriverWithAuthority(['model:live'], {
       driverId: 'wrapped-live-model',
       actuatorRef: 'world:model-bridge',
       descriptorFingerprint: 'descriptor:world-model-bridge',
@@ -1467,7 +1467,7 @@ describe('capability preflight and reference drivers', () => {
       currentHead: { generation: 0 },
       pendingRequests: [wrappedModelRequest('first'), wrappedModelRequest('second')],
       drivers: [wrappedDriver],
-      policy: createRunPolicy({ allowedAuthorityLabels: ['model:http-json'], maximumLiveModelCalls: 1 }),
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
     });
     const cachedModelRequest = {
       ...modelRequest('cached'),
@@ -2030,6 +2030,70 @@ describe('capability preflight and reference drivers', () => {
     });
     assert.ok(preflightReport.blockers.includes('prompt-limit-exceeds-policy'));
     assert.equal(preflightReport.valueSizeLimitsSupported, false);
+  });
+
+  it('treats label-only model:http-json routes as network during receiver preflight', () => {
+    const request = {
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClass: 'model',
+      responseSchema: { status: 'ok' },
+      idempotencyKeyWorldFingerprint: 'world:key:label-only-model-network',
+      requestBytes: fromUtf8(stableJson({
+        schema: 'boundary.Agent.DecisionPrompt.v0',
+        observation: 'goal=label-only-model-network',
+      })),
+    };
+    const driver = fixtureDriverWithAuthority(['model:http-json'], {
+      driverId: 'label-only-http-model',
+      actuatorRef: request.actuatorRef,
+      descriptorFingerprint: request.descriptorFingerprint,
+      actuationClasses: ['model'],
+      recoveryClass: EffectRecoveryClass.idempotent,
+      diagnostics: {
+        endpointSource: 'config',
+        configuredEndpointUrl: 'https://allowed.example/decide',
+        defaultMethod: 'POST',
+        origins: ['https://allowed.example'],
+        methods: ['POST'],
+      },
+    });
+    const report = (policy) => preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:http-json'],
+        maximumLiveModelCalls: 1,
+        ...policy,
+      }),
+    });
+
+    const missingAllowlists = report({});
+    assert.ok(missingAllowlists.blockers.includes('http-origin-allowlist-required'));
+    assert.ok(missingAllowlists.blockers.includes('http-method-allowlist-required'));
+
+    const deniedTarget = report({
+      allowedHttpOrigins: ['https://denied.example'],
+      allowedHttpMethods: ['GET'],
+    });
+    assert.ok(deniedTarget.blockers.includes('http-origin-denied:https://allowed.example'));
+    assert.ok(deniedTarget.blockers.includes('http-method-denied:POST'));
+
+    const approvalRequired = report({
+      allowedHttpOrigins: ['https://allowed.example'],
+      allowedHttpMethods: ['POST'],
+      requireApprovalForNetworkEffects: true,
+    });
+    assert.ok(approvalRequired.blockers.includes('ERR_CAPABILITY_APPROVAL_REQUIRED'));
+
+    const accepted = report({
+      allowedHttpOrigins: ['https://allowed.example'],
+      allowedHttpMethods: ['POST'],
+    });
+    assert.deepEqual(accepted.blockers, []);
+    assert.equal(accepted.selectedPendingRequestRoutes[0].driverId, 'label-only-http-model');
   });
 
   it('enforces prompt byte limits during live model receiver preflight', () => {

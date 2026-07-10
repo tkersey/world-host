@@ -17,6 +17,11 @@ export const ActuationClass = Object.freeze({
   host: 'host',
 });
 
+export function authorityLabelDeclaresNetwork(label) {
+  return typeof label === 'string' &&
+    (label === 'model:http-json' || label.startsWith('network:'));
+}
+
 const RECOVERY_CLASSES = new Set(Object.values(EffectRecoveryClass));
 export const ResponseStatusCode = Object.freeze({
   responded: 0,

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { EffectRecoveryClass, ResponseStatusCode, assertDriverCanResolve, assertDriverManifest, assertDriverRequestSupported, assertDurableRecoveryAllowed } from './actuator.mjs';
+import { EffectRecoveryClass, ResponseStatusCode, assertDriverCanResolve, assertDriverManifest, assertDriverRequestSupported, assertDurableRecoveryAllowed, authorityLabelDeclaresNetwork } from './actuator.mjs';
 import { assertCapabilityResolutionBoundary } from './capability_driver.mjs';
 import { immutablePolicySet } from './immutable_set.mjs';
 import { assertBytes, fail, fromUtf8, stableJson, toHex } from './store.mjs';
@@ -1200,7 +1200,7 @@ function configuredRouteMethod(route) {
 function isHttpRoute(route, request) {
   return request?.actuationClass === 'http' ||
     (route?.supportedActuationClasses ?? []).includes('http') ||
-    (route?.authorityLabels ?? []).some((label) => label.startsWith('network:'));
+    (route?.authorityLabels ?? []).some(authorityLabelDeclaresNetwork);
 }
 
 function isLiveModelRoute(route, request) {

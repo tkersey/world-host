@@ -2829,6 +2829,62 @@ describe('RunController and WorldWorker', () => {
     }
   });
 
+  it('requires network approval for label-only model:http-json controller drivers', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const driver = fixtureEffectDriver({
+      driverId: 'label-only-http-model',
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClasses: ['model'],
+      responseStatuses: ['ok'],
+      recoveryClass: EffectRecoveryClass.idempotent,
+      authorityLabels: ['model:http-json'],
+      diagnostics: {
+        endpointSource: 'config',
+        configuredEndpointUrl: 'https://allowed.example/decide',
+        defaultMethod: 'POST',
+        origins: ['https://allowed.example'],
+        methods: ['POST'],
+      },
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [driver],
+      effectContextFactory: async () => ({}),
+      effectPolicy: {
+        allowedAuthorityLabels: new Set(['model:http-json']),
+        allowedHttpOrigins: new Set(['https://allowed.example']),
+        allowedHttpMethods: new Set(['POST']),
+        maximumLiveModelCalls: 1,
+        requireApprovalForNetworkEffects: true,
+      },
+      hostRequestMapper: () => ({
+        actuatorRef: 'model:decision',
+        descriptorFingerprint: 'descriptor:agent-decision-prompt',
+        actuationClass: 'model',
+        responseSchema: { status: 'ok' },
+        idempotencyKeyBytes: fromUtf8('label-only-model-network-key'),
+        idempotencyKeyWorldFingerprint: 'world:key:label-only-model-network',
+        requestBytes: fromUtf8(stableJson({
+          schema: 'boundary.Agent.DecisionPrompt.v0',
+          observation: 'goal=label-only-model-network',
+        })),
+        hostRequestFingerprint: 'world:host-request:0000000000000a01',
+      }),
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_CAPABILITY_APPROVAL_REQUIRED' },
+    );
+    assert.equal(driver.invocationCount, 0);
+    assert.equal((await store.listEffectRecords(runId)).length, 0);
+  });
+
   it('applies prompt byte limits to model request bytes before resolving effects', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',

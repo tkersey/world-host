@@ -1,4 +1,4 @@
-import { EffectRecoveryClass, ResponseStatusCode, assertRecoveryClass } from './actuator.mjs';
+import { EffectRecoveryClass, ResponseStatusCode, assertRecoveryClass, authorityLabelDeclaresNetwork } from './actuator.mjs';
 import { assertBytes, fail, fromUtf8, stableJson, toHex } from './store.mjs';
 import { carrierManifest } from '../protocol/world_manifest.mjs';
 
@@ -46,6 +46,7 @@ const CAPABILITY_MANIFEST_FIELDS = new Set([
 const SECRET_PATTERN = /credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key/i;
 const CONFORMANCE_RECEIPT_PATH = 'conformance.json';
 const HOST_NETWORK_GLOBALS = new Set(['fetch', 'WebSocket', 'EventSource']);
+const MAX_ADAPTER_ALIAS_PROPAGATION_WAVES = 32;
 const ADAPTER_IMPORT_SCANNERS = globalThis.Bun?.Transpiler ? Object.freeze({
   js: new globalThis.Bun.Transpiler({ loader: 'js' }),
   jsx: new globalThis.Bun.Transpiler({ loader: 'jsx' }),
@@ -665,7 +666,7 @@ function adapterScannerOptionsForManifest(manifest) {
   return {
     allowHostFile: actuationClasses.includes('file') || authorityLabels.some((label) => label.startsWith('file:')),
     allowHostNetwork: actuationClasses.includes('http') ||
-      authorityLabels.some((label) => label === 'model:http-json' || label.startsWith('network:')),
+      authorityLabels.some(authorityLabelDeclaresNetwork),
   };
 }
 
@@ -752,15 +753,16 @@ function computedHostMemberAccess(text, openBracket) {
 
 function adapterAliasesHostApiAccess(text, options = {}) {
   const aliases = new Map();
-  let previousSize;
-  do {
-    previousSize = aliases.size;
+  const converged = adapterAliasesConverged(() => {
+    const previousSize = aliases.size;
     scanAdapterAliasIdentifiers(text, (identifier, index, previousSignificant) => {
       const target = previousSignificant !== '.' ? hostAliasAssignmentAt(text, index, aliases) : null;
       if (target) aliases.set(identifier, target);
       return null;
     });
-  } while (aliases.size !== previousSize);
+    return aliases.size !== previousSize;
+  });
+  if (!converged) return 'alias-propagation-limit';
   if (!aliases.size) return null;
   return scanAdapterAliasIdentifiers(text, (identifier, index, _previousSignificant, identifierOffset) => {
     const target = aliases.get(identifier);
@@ -774,6 +776,13 @@ function adapterAliasesHostApiAccess(text, options = {}) {
     const member = directHostMemberAccess(text, index) ?? directHostMemberAccess(text, skipClosingCalleeParens(text, index));
     return member && unsafeHostGlobalMember(target, member.name, options) ? `${target}.${member.name}` : null;
   });
+}
+
+function adapterAliasesConverged(propagate) {
+  for (let wave = 0; wave <= MAX_ADAPTER_ALIAS_PROPAGATION_WAVES; wave += 1) {
+    if (!propagate()) return true;
+  }
+  return false;
 }
 
 function scanAdapterAliasIdentifiers(text, visitor) {
@@ -1124,7 +1133,7 @@ function unsafeHostGlobalMember(identifier, member, options = {}) {
   if (identifier === 'Bun') {
     if (['connect', 'fetch', 'listen', 'redis', 's3', 'serve', 'sql', 'udpSocket'].includes(member)) return true;
     if (['build', 'file', 'Glob', 'mmap', 'resolve', 'resolveSync', 'write'].includes(member)) return !options.allowHostFile;
-    return ['$', 'env', 'FFI', 'password', 'spawn', 'spawnSync'].includes(member);
+    return ['$', 'env', 'FFI', 'password', 'secrets', 'spawn', 'spawnSync'].includes(member);
   }
   if (identifier === 'process') {
     return ['abort', 'binding', 'chdir', 'cwd', 'dlopen', 'env', 'exit', 'kill', 'report'].includes(member);
@@ -1411,16 +1420,17 @@ function adapterAliasesReflectiveGetter(text) {
   const identifier = '[A-Za-z_$][A-Za-z0-9_$]*';
   const reflectAliases = new Set(['Reflect']);
   const aliasDeclaration = new RegExp(`\\b(?:const|let|var)\\s+(${identifier})\\s*=\\s*(${identifier})\\b`, 'g');
-  for (let changed = true; changed;) {
-    changed = false;
+  const converged = adapterAliasesConverged(() => {
+    const previousSize = reflectAliases.size;
     aliasDeclaration.lastIndex = 0;
     for (const match of text.matchAll(aliasDeclaration)) {
       if (reflectAliases.has(match[2]) && !reflectAliases.has(match[1])) {
         reflectAliases.add(match[1]);
-        changed = true;
       }
     }
-  }
+    return reflectAliases.size !== previousSize;
+  });
+  if (!converged) return true;
   const reflectAliasPattern = [...reflectAliases].join('|');
   const getterAccess = `(?:\\.\\s*get|\\[\\s*(["'\`])get\\1\\s*\\])`;
   const getterDeclaration = new RegExp(`\\b(?:const|let|var)\\s+${identifier}\\s*=\\s*(?:${reflectAliasPattern})\\s*${getterAccess}`);
@@ -1437,16 +1447,17 @@ function adapterAliasesDangerousComputedMember(text) {
     if (dangerousMemberName(literal)) literalAliases.add(match[1]);
   }
   const aliasDeclaration = new RegExp(`\\b(?:const|let|var)\\s+(${identifier})\\s*=\\s*(${identifier})\\b`, 'g');
-  for (let changed = true; changed;) {
-    changed = false;
+  const converged = adapterAliasesConverged(() => {
+    const previousSize = literalAliases.size;
     aliasDeclaration.lastIndex = 0;
     for (const match of text.matchAll(aliasDeclaration)) {
       if (literalAliases.has(match[2]) && !literalAliases.has(match[1])) {
         literalAliases.add(match[1]);
-        changed = true;
       }
     }
-  }
+    return literalAliases.size !== previousSize;
+  });
+  if (!converged) return true;
   if (!literalAliases.size) return false;
   const aliasPattern = [...literalAliases].map(escapeRegExp).join('|');
   const dangerousReceiver = '(?:process|globalThis|global|window|self)';
