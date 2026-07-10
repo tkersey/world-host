@@ -26,7 +26,7 @@ export class HttpJsonDriver {
       recoveryClass: EffectRecoveryClass.idempotent,
       concurrencyLimit: 4,
       authorityLabels: ['network:http'],
-      diagnostics: { origins: [...this.origins], methods: [...this.methods] },
+      diagnostics: { origins: [...this.origins], methods: [...this.methods], defaultMethod: defaultHttpJsonMethod(this.methods) },
     };
   }
 
@@ -34,9 +34,9 @@ export class HttpJsonDriver {
     const request = parseJsonBytes(hostRequest.requestBytes);
     const url = new URL(request.url);
     if (!this.origins.has(url.origin)) fail('ERR_HTTP_ORIGIN_REJECTED');
-    const method = String(request.method ?? 'GET').toUpperCase();
+    const method = String(request.method ?? defaultHttpJsonMethod(this.methods)).toUpperCase();
     if (!this.methods.has(method)) fail('ERR_HTTP_METHOD_REJECTED');
-    const body = request.body === undefined ? undefined : JSON.stringify(request.body);
+    const body = request.body === undefined || bodylessHttpMethod(method) ? undefined : JSON.stringify(request.body);
     if (body && fromUtf8(body).byteLength > this.maximumRequestBytes) fail('ERR_HTTP_REQUEST_TOO_LARGE');
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -48,10 +48,12 @@ export class HttpJsonDriver {
       };
       const response = await fetch(url, { method, headers, body, signal: controller.signal, redirect: 'manual' });
       if (response.status >= 300 && response.status < 400 && response.headers.get('location')) fail('ERR_HTTP_REDIRECT_REJECTED');
-      const responseStatus = response.ok ? 'ok' : 'http_error';
+      if (!response.ok) await discardResponseBody(response);
+      const responseStatus = response.ok ? 'ok' : httpErrorResponseStatus(hostRequest);
+      if (response.ok) okResponseStatus(hostRequest);
       const bytes = response.ok
         ? await readResponseBytes(response, this.maximumResponseBytes)
-        : await discardResponseBody(response);
+        : new Uint8Array();
       const text = response.ok ? new TextDecoder().decode(bytes) : '';
       return {
         resolutionInputBytes: encodeResolutionInputBytes({
@@ -79,10 +81,31 @@ export class HttpJsonDriver {
       descriptorFingerprint: effectRecord.descriptorFingerprint,
       actuationClass: 'http',
       requestBytes: effectRecord.requestBytes,
+      responseSchema: effectRecord.responseSchema,
       idempotencyKeyWorldFingerprint: effectRecord.idempotencyKeyWorldFingerprint,
       hostRequestFingerprint: effectRecord.hostRequestFingerprint,
     });
   }
+}
+
+function defaultHttpJsonMethod(methods) {
+  return methods.has('GET') ? 'GET' : [...methods][0] ?? 'GET';
+}
+
+function bodylessHttpMethod(method) {
+  return method === 'GET' || method === 'HEAD';
+}
+
+function httpErrorResponseStatus(hostRequest) {
+  const status = hostRequest?.responseSchema?.status;
+  if (status == null || status === 'http_error') return 'http_error';
+  fail('ERR_HTTP_ERROR_STATUS_UNSUPPORTED', 'HTTP error response cannot satisfy fixed response schema');
+}
+
+function okResponseStatus(hostRequest) {
+  const status = hostRequest?.responseSchema?.status;
+  if (status == null || status === 'ok') return 'ok';
+  fail('ERR_HTTP_OK_STATUS_UNSUPPORTED', 'HTTP ok response cannot satisfy fixed response schema');
 }
 
 async function discardResponseBody(response) {

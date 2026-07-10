@@ -60,6 +60,7 @@ async function fixtureStore() {
     applianceManifestRef: manifestRef,
     requiredActuators: [],
     requiredRuntimeLimits: {},
+    installationDiagnostics: { manifestSource: 'host-generated-install-summary' },
   });
   await store.createApplication(app);
   const head = createRunHead({

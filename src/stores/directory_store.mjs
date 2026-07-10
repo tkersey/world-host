@@ -112,11 +112,12 @@ export class DirectoryStore extends ClosureStore {
   }
 
   async putEffectRecord(record) {
-    const key = effectFileKey(record.branchId, record.idempotencyKey);
-    const file = path.join(effectsDir(this.root, record.runId), `${key}.json`);
+    const admitted = assertEffectRecord(record);
+    const key = effectFileKey(admitted.branchId, admitted.idempotencyKey);
+    const file = path.join(effectsDir(this.root, admitted.runId), `${key}.json`);
     await mkdir(path.dirname(file), { recursive: true });
-    await writeJsonReplace(file, record);
-    return record;
+    await writeJsonReplace(file, admitted);
+    return admitted;
   }
 
   async getEffectRecord(runId, idempotencyKey, branchId = null) {
@@ -167,10 +168,10 @@ export class DirectoryStore extends ClosureStore {
     const application = assertBundleApplicationMatchesRun(bundle);
     const runRecord = createImportRunRecord(bundle.run);
     const headRecord = createRunHead(bundle.head);
-    const normalizedBundle = { ...bundle, application, run: runRecord, head: headRecord };
+    const effectRecords = (bundle.effects ?? []).map((effect) => assertEffectRecord(effect));
+    const normalizedBundle = { ...bundle, application, run: runRecord, head: headRecord, effects: effectRecords };
     assertBundleEffectsScoped(normalizedBundle);
     assertBundleSelectedHeadMatchesRun(normalizedBundle);
-    const effectRecords = (bundle.effects ?? []).map((effect) => assertEffectRecord(effect));
     assertUniqueEffectRecords(effectRecords);
     const requiredBlobRefs = collectBlobRefs(runRecord, application, headRecord, effectRecords);
     const requiredBlobChecksums = new Set(requiredBlobRefs.map((ref) => ref.checksum));
@@ -419,6 +420,7 @@ function collectBlobRefs(...values) {
     add(value.applianceManifestRef);
     add(value.turnClosureRef);
     add(value.requestBytesRef);
+    add(value.effectIdentityBytesRef);
     add(value.resolutionInputRef);
     add(value.hostClaimRef);
     add(value.receiverPolicyRef);

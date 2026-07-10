@@ -1,0 +1,16 @@
+{
+  "driverId": "human-approval",
+  "packFingerprint": "sha256:9e86d87c09c77b1ed1030d82cbd4857b82151ba8ad97e3548d910cb1a5f8d32c",
+  "corpusFingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "vectors": [
+    {
+      "name": "noninteractive-approval-fixture",
+      "status": "passed",
+      "proves": "approval is host claim only"
+    }
+  ],
+  "nonClaims": [
+    "no-world-evidence-authored",
+    "not-cryptographic-attestation"
+  ]
+}

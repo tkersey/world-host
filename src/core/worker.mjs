@@ -1,14 +1,24 @@
-import { EffectJournal } from './effect_journal.mjs';
-import { assertDurableRecoveryAllowed } from './actuator.mjs';
+import { EffectJournal, EffectState } from './effect_journal.mjs';
+import { EffectRecoveryClass, assertDriverRequestSupported, assertDurableRecoveryAllowed, authorityLabelDeclaresNetwork } from './actuator.mjs';
 import { assertCapabilityReportAccepted, createRunPolicy, preflightCapabilities } from './capabilities.mjs';
+import { defineCapabilityDriver } from './capability_driver.mjs';
+import { isDefaultEffectContext, markDefaultEffectContext } from './effect_context.mjs';
+import { assertCapabilityPreflightAccepted, journaledHostRequest, networkPolicyHostRequest } from './capability_modes.mjs';
+import { assertCapabilityPolicyAllows } from './capability_policy.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from './run.mjs';
-import { assertBytes, fail, fromUtf8, toHex } from './store.mjs';
+import { assertBlobRef, assertBytes, fail, fromUtf8, stableJson, toHex } from './store.mjs';
 import { decodeApplianceManifest, decodeResolutionInputBytes, encodeRestoreTurnInput, resolutionResponded } from '../protocol/world_appliance_wire_codec.mjs';
 import { inspectTurnOutput, summarizeTurnClosureForRunHead } from '../protocol/world_universal_appliance_codec.mjs';
 import { wyhash64 } from '../protocol/world_loaded_value_codec.mjs';
 
 const runMetadataLocksByStore = new WeakMap();
 const runMetadataLocksByKey = new Map();
+const EFFECT_OUTCOME_STATES = new Set([
+  EffectState.resolved,
+  EffectState.submitted,
+  EffectState.closureCommitted,
+]);
+const FIXTURE_MODEL_AUTHORITY_LABELS = new Set(['model:fixture', 'model:fixture-agent']);
 
 export class WorldWorker {
   constructor() {
@@ -123,30 +133,50 @@ export class RunController {
     const parentHead = await this.store.readHead(runId, branchId);
     assertHeadContinuable(parentHead);
     const policy = createRunPolicy(options.effectPolicy ?? this.effectPolicy);
+    const applianceManifest = await decodeStoredApplicationManifestForPreflight(this.store, application);
     assertCapabilityReportAccepted(preflightCapabilities({
       application,
+      applianceManifest,
       currentHead: parentHead,
       drivers: this.effectDrivers,
       policy,
     }));
     const parentClosureBytes = await this.store.getBlob(parentHead.turnClosureRef);
     assertParentHeadMatchesClosure(parentHead, parentClosureBytes);
-    const needsHostEffectPlan = prepareNeedsHostEffectPlan(
+    const allowApprovalDeferredRoutes = this.effectContextFactory !== defaultEffectContextFactory;
+    let needsHostEffectPlan = prepareNeedsHostEffectPlan(
       parentHead,
       parentClosureBytes,
       this.hostRequestMapper,
       this.effectDrivers,
       policy,
       application,
+      { allowApprovalDeferredRoutes },
     );
     if (needsHostEffectPlan?.pending.length > 0) {
-      assertCapabilityReportAccepted(preflightCapabilities({
+      const effectRecords = await this.store.listEffectRecords(runId);
+      const pendingRequests = needsHostEffectPlan.pending.map((item) => item.hostRequest);
+      const effectResolutionInputs = await loadEffectResolutionInputs(this.store, effectRecords, pendingRequests);
+      const preflightReport = preflightCapabilities({
         application,
+        applianceManifest,
         currentHead: parentHead,
-        pendingRequests: needsHostEffectPlan.pending.map((item) => item.hostRequest),
+        currentBranchId: branchId,
+        pendingRequests,
         drivers: this.effectDrivers,
         policy,
-      }));
+        effectRecords,
+        effectResolutionInputs,
+        allowApprovalDeferredRoutes,
+      });
+      assertCapabilityReportAccepted(preflightReport);
+      needsHostEffectPlan = bindEffectPlanToPreflightReport(
+        needsHostEffectPlan,
+        preflightReport,
+        this.effectDrivers,
+        policy,
+        { allowApprovalDeferredRoutes },
+      );
     }
     const imageBytes = await this.store.getBlob(application.executableImageRef);
     const executableHostFingerprint = `sha256:${await sha256Hex(imageBytes)}`;
@@ -164,6 +194,7 @@ export class RunController {
         workerMayBeDirty = true;
         await worker.loadExecutable(imageBytes);
       }
+      assertLoadedApplianceManifestAccepted(worker, application, parentHead, policy);
       await assertStoredApplicationManifestMatchesWorker(worker, this.store, application);
       assertParentClosureManifestMatchesWorker(worker, parentHead, parentClosureBytes);
       if (!workerReused && parentHead.status !== 'genesis' && typeof worker.restoreFromTurnClosure === 'function') {
@@ -294,7 +325,7 @@ export class RunController {
         unresolved.policy = 'allowPartialEffectBatch';
       }
     }
-    const effects = await this.#resolveEffectBatch({
+    const batch = await this.#resolveEffectBatch({
       journal,
       pending: plan.pending,
       run,
@@ -306,11 +337,13 @@ export class RunController {
       options,
       policy,
     });
-    const resolutions = assertEffectTargetsPendingRequests(effects, plan.pending);
+    const effects = batch.effects;
+    const unresolvedHostRequests = [...plan.unresolvedHostRequests, ...batch.unresolvedHostRequests];
+    const resolutions = assertEffectTargetsPendingRequests(effects, batch.pending);
     return {
       journal,
       effects,
-      unresolvedHostRequests: plan.unresolvedHostRequests,
+      unresolvedHostRequests,
       turnInputBytes: encodeRestoreTurnInput({
         manifestFingerprint: plan.parentSummary.manifestFingerprint,
         parentTurnClosureBytes: parentClosureBytes,
@@ -325,29 +358,163 @@ export class RunController {
   }
 
   async #resolveEffectBatch({ journal, pending, run, branchId, application, parentHead, parentClosureBytes, worker, options, policy }) {
-    const effects = new Array(pending.length);
-    const pendingPositions = new Map(pending.map((item, index) => [item, index]));
-    const groups = groupPendingEffects(pending);
+    const selected = [];
+    const unresolvedHostRequests = [];
+    for (const item of pending) {
+      assertSelectedEffectPreContextPolicyAllows(policy);
+      const context = await this.effectContextFactory({
+        run,
+        branchId,
+        application,
+        parentHead,
+        parentClosureBytes,
+        worker,
+        options,
+        policy,
+        driverManifest: item.manifest,
+        hostRequest: item.hostRequest,
+        worldHostRequest: item.worldHostRequest,
+      });
+      const selectedContext = normalizeSelectedEffectContext(context, policy, item.manifest, item.hostRequest);
+      try {
+        assertSelectedEffectPolicyAllows(item.manifest, item.hostRequest, policy, selectedContext?.action, { allowCachedLiveModelReplay: true });
+      } catch (error) {
+        if (policy.allowPartialEffectBatch === true && error?.code === 'ERR_CAPABILITY_APPROVAL_REQUIRED') {
+          unresolvedHostRequests.push({
+            ...unresolvedHostRequestDiagnostic(item.index, item.hostRequest),
+            blockers: [error.code],
+            policy: 'allowPartialEffectBatch',
+          });
+          continue;
+        }
+        throw error;
+      }
+      selected.push({ ...item, context: selectedContext });
+    }
+    if (selected.length === 0 && unresolvedHostRequests.length > 0) {
+      fail('ERR_PARTIAL_EFFECT_BATCH_EMPTY', 'partial effect batch has no covered HostRequests', {
+        unresolvedHostRequestCount: unresolvedHostRequests.length,
+      });
+    }
+    const effects = new Array(selected.length);
+    const resolvedPending = new Array(selected.length);
+    const lateUnresolvedHostRequests = new Array(selected.length);
+    const pendingPositions = new Map(selected.map((item, index) => [item, index]));
+    const groups = groupPendingEffects(selected);
     await runGroupedBounded(groups, policy, async (item) => {
-      const resolved = await journal.resolve(
-        await this.effectContextFactory({
-          run,
-          branchId,
-          application,
-          parentHead,
-          parentClosureBytes,
-          worker,
-          options,
-          hostRequest: item.hostRequest,
-          worldHostRequest: item.worldHostRequest,
-        }),
-        item.hostRequest,
-        item.driver,
-      );
-      effects[pendingPositions.get(item)] = { ...resolved, worldHostRequest: item.worldHostRequest };
+      assertSelectedEffectPreContextPolicyAllows(policy);
+      const context = item.context;
+      assertSelectedEffectPolicyAllows(item.manifest, item.hostRequest, policy, context?.action, { allowCachedLiveModelReplay: true });
+      const journalHostRequest = journaledHostRequest(item.hostRequest, item.manifest);
+      const driver = controllerResolveDriver(item.driver);
+      const position = pendingPositions.get(item);
+      let resolved;
+      try {
+        resolved = await journal.resolve(
+          context,
+          journalHostRequest,
+          driver,
+          {
+            beforeInvoke: async (preflightContext, preflightHostRequest) => {
+              assertSelectedEffectPolicyAllows(item.manifest, item.hostRequest, policy, context?.action);
+              if (typeof driver?.preflight === 'function') {
+                assertCapabilityPreflightAccepted(await driver.preflight(preflightContext, preflightHostRequest));
+              }
+            },
+          },
+        );
+      } catch (error) {
+        if (policy.allowPartialEffectBatch === true && error?.code === 'ERR_CAPABILITY_PREFLIGHT_BLOCKED') {
+          const diagnostic = unresolvedHostRequestDiagnostic(item.index, item.hostRequest);
+          diagnostic.blockers = Array.isArray(error.details?.blockers) && error.details.blockers.length > 0
+            ? [...error.details.blockers]
+            : [error.code];
+          diagnostic.policy = 'allowPartialEffectBatch';
+          lateUnresolvedHostRequests[position] = diagnostic;
+          return;
+        }
+        throw error;
+      }
+      effects[position] = { ...resolved, worldHostRequest: item.worldHostRequest };
+      resolvedPending[position] = item;
     });
-    return effects;
+    const resolvedEffects = effects.filter(Boolean);
+    const resolvedPendingRequests = resolvedPending.filter(Boolean);
+    const allUnresolvedHostRequests = [
+      ...unresolvedHostRequests,
+      ...lateUnresolvedHostRequests.filter(Boolean),
+    ];
+    if (resolvedEffects.length === 0 && allUnresolvedHostRequests.length > 0) {
+      fail('ERR_PARTIAL_EFFECT_BATCH_EMPTY', 'partial effect batch has no covered HostRequests', {
+        unresolvedHostRequestCount: allUnresolvedHostRequests.length,
+      });
+    }
+    return { effects: resolvedEffects, pending: resolvedPendingRequests, unresolvedHostRequests: allUnresolvedHostRequests };
   }
+}
+
+async function loadEffectResolutionInputs(store, effectRecords, pendingRequests = []) {
+  const pendingKeys = await pendingRequestReusableKeys(pendingRequests);
+  if (pendingKeys.worldFingerprints.size === 0 && pendingKeys.idempotencyKeyBytesHex.size === 0) return new Map();
+  const inputs = new Map();
+  for (const record of effectRecords) {
+    if (!record?.resolutionInputRef) continue;
+    if (!EFFECT_OUTCOME_STATES.has(record.state)) continue;
+    if (!effectRecordMatchesPendingKey(record, pendingKeys)) continue;
+    const ref = assertBlobRef(record.resolutionInputRef);
+    const key = `${ref.algorithm}:${ref.checksum}:${ref.byteLength}`;
+    if (inputs.has(key)) continue;
+    inputs.set(key, await store.getBlob(ref));
+  }
+  return inputs;
+}
+
+async function pendingRequestReusableKeys(pendingRequests) {
+  const keys = {
+    worldFingerprints: new Set(),
+    idempotencyKeyBytesHex: new Set(),
+  };
+  for (const request of pendingRequests ?? []) {
+    if (typeof request?.idempotencyKeyWorldFingerprint === 'string' && request.idempotencyKeyWorldFingerprint.length > 0) {
+      keys.worldFingerprints.add(request.idempotencyKeyWorldFingerprint);
+    }
+    if (request?.idempotencyKeyBytes != null) {
+      const idempotencyKeyBytes = assertBytes(request.idempotencyKeyBytes, 'idempotencyKeyBytes');
+      keys.idempotencyKeyBytesHex.add(toHex(idempotencyKeyBytes));
+      if (typeof request?.idempotencyKeyWorldFingerprint !== 'string' || request.idempotencyKeyWorldFingerprint.length === 0) {
+        keys.worldFingerprints.add(`sha256:${await sha256Hex(idempotencyKeyBytes)}`);
+      }
+    }
+  }
+  return keys;
+}
+
+function effectRecordMatchesPendingKey(record, pendingKeys) {
+  if (pendingKeys.worldFingerprints.has(record.idempotencyKeyWorldFingerprint)) return true;
+  return record?.idempotencyKey?.format === 'world-idempotency-key-bytes.hex' &&
+    pendingKeys.idempotencyKeyBytesHex.has(record.idempotencyKey.bytesHex);
+}
+
+function controllerResolveDriver(driver) {
+  return exposesCapabilityAbi(driver) ? defineCapabilityDriver(driver) : driver;
+}
+
+function exposesCapabilityAbi(driver) {
+  return typeof driver?.preflight === 'function' && typeof driver?.dryRun === 'function' && typeof driver?.shadow === 'function';
+}
+
+function assertSelectedEffectPolicyAllows(manifest, hostRequest, policy, action = null, options = {}) {
+  assertCapabilityPolicyAllows({
+    manifest,
+    hostRequest: networkPolicyHostRequest(hostRequest, manifest),
+    policy: capabilityPolicyForSelectedEffect(policy, manifest, hostRequest, options),
+    mode: 'live',
+    action,
+  });
+}
+
+function assertSelectedEffectPreContextPolicyAllows(policy) {
+  if (policy?.auditOnly === true) fail('ERR_CAPABILITY_AUDIT_ONLY_DENIED');
 }
 
 async function recordBranchHeadProvenance(store, runId, branchId, parentHead, nextHead) {
@@ -637,26 +804,120 @@ async function defaultTurnInputFactory({ parentHead }) {
 }
 
 async function defaultEffectContextFactory(context) {
-  return context;
+  return markDefaultEffectContext({
+    ...context,
+    policy: capabilityPolicyForSelectedEffect(context.policy, context.driverManifest, context.hostRequest),
+  });
 }
 
-function selectEffectDriver(drivers, hostRequest, policy = {}, preferredAuthorityLabels = []) {
-  let firstMatch = null;
-  let selected = null;
-  let selectedScore = 0;
+function normalizeSelectedEffectContext(context, policy, manifest, hostRequest) {
+  const selected = context && typeof context === 'object' ? context : {};
+  const normalized = {
+    ...selected,
+    policy: selectedEffectCapabilityPolicy(selected.policy ?? policy, manifest, hostRequest),
+  };
+  return isDefaultEffectContext(selected) ? markDefaultEffectContext(normalized) : normalized;
+}
+
+function selectedEffectCapabilityPolicy(policy, manifest, hostRequest) {
+  return capabilityPolicyShape(policy) && !runHttpPolicyShape(policy)
+    ? policy
+    : capabilityPolicyForSelectedEffect(policy, manifest, hostRequest);
+}
+
+function capabilityPolicyShape(policy) {
+  return policy && typeof policy === 'object' && (
+    Object.prototype.hasOwnProperty.call(policy, 'allowLiveEffects') ||
+    Object.prototype.hasOwnProperty.call(policy, 'allowNetworkEffects') ||
+    Object.prototype.hasOwnProperty.call(policy, 'allowedOrigins') ||
+    Object.prototype.hasOwnProperty.call(policy, 'allowedMethods')
+  );
+}
+
+function runHttpPolicyShape(policy) {
+  return policy && typeof policy === 'object' && (
+    Object.prototype.hasOwnProperty.call(policy, 'allowedHttpOrigins') ||
+    Object.prototype.hasOwnProperty.call(policy, 'allowedHttpMethods')
+  ) && (
+    !Object.prototype.hasOwnProperty.call(policy, 'allowedOrigins') &&
+    !Object.prototype.hasOwnProperty.call(policy, 'allowedMethods')
+  );
+}
+
+function capabilityPolicyForSelectedEffect(policy = {}, manifest = {}, hostRequest = {}, options = {}) {
+  const authorityLabels = manifest?.authorityLabels ?? [];
+  const actuationClasses = manifest?.supportedActuationClasses ?? [];
+  const network = hostRequest?.actuationClass === 'http' ||
+    actuationClasses.includes('http') ||
+    authorityLabels.some(authorityLabelDeclaresNetwork);
+  const file = hostRequest?.actuationClass === 'file' ||
+    actuationClasses.includes('file') ||
+    authorityLabels.some((label) => label.startsWith('file:'));
+  const human = hostRequest?.actuationClass === 'human' ||
+    actuationClasses.includes('human') ||
+    authorityLabels.some((label) => label.startsWith('human:'));
+  const model = hostRequest?.actuationClass === 'model' ||
+    actuationClasses.includes('model') ||
+    authorityLabels.some((label) => label.startsWith('model:'));
+  const allowedHttpOrigins = policySet(policy.allowedHttpOrigins);
+  const allowedHttpMethods = policyUpperSet(policy.allowedHttpMethods);
+  return {
+    allowLiveEffects: true,
+    allowNetworkEffects: network,
+    allowFileEffects: file,
+    allowHumanEffects: human && policy.allowHumanEffects === true,
+    allowBestEffort: policy.allowBestEffort === true,
+    auditOnly: policy.auditOnly === true,
+    requireApprovalForDestructiveEffects: policy.requireApprovalForDestructiveEffects !== false,
+    requireApprovalForNetworkEffects: policy.requireApprovalForNetworkEffects === true,
+    requireApprovalForBestEffort: policy.requireApprovalForBestEffort !== false,
+    maximumLiveModelCalls: modelLiveBudget(policy, model, options),
+    maximumRequestBytes: policy.maximumRequestBytes,
+    maximumPromptBytes: policy.maximumPromptBytes,
+    maximumResponseBytes: policy.maximumResponseBytes,
+    allowedOrigins: [...allowedHttpOrigins],
+    allowedMethods: [...allowedHttpMethods],
+    allowedFileRoots: [...policySet(policy.allowedFileRoots)],
+    allowedAuthorityLabels: [...policySet(policy.allowedAuthorityLabels)],
+    allowedCapabilityPacks: [...policySet(policy.allowedCapabilityPacks)],
+    deniedCapabilityPacks: [...policySet(policy.deniedCapabilityPacks)],
+  };
+}
+
+function modelLiveBudget(policy, model, options) {
+  if (!model) return 0;
+  const budget = policy.maximumLiveModelCalls ?? 0;
+  return options.allowCachedLiveModelReplay ? Math.max(1, budget) : budget;
+}
+
+function selectEffectDriver(drivers, hostRequest, policy = {}, preferredAuthorityLabels = [], { allowApprovalDeferredRoutes = false } = {}) {
+  const policySafeCandidates = [];
+  const approvalDeferredCandidates = [];
   for (const driver of drivers) {
     const manifest = driverManifest(driver);
-    if (manifest && driverSupportsManifest(manifest, hostRequest, policy)) {
-      const selection = { driver, manifest };
-      firstMatch ??= selection;
-      const score = authorityPreferenceScore(manifest, preferredAuthorityLabels);
-      if (score > selectedScore) {
-        selected = selection;
-        selectedScore = score;
-      }
+    if (!manifest) continue;
+    const approvalDeferred = allowApprovalDeferredRoutes && driverManifestRequiresApproval(manifest, hostRequest, policy);
+    if (!driverSupports(driver, hostRequest, policy, { ignoreApprovalRequirement: approvalDeferred })) continue;
+    (approvalDeferred ? approvalDeferredCandidates : policySafeCandidates).push({ driver, manifest });
+  }
+  return selectPreferredEffectDriver(
+    policySafeCandidates.length ? policySafeCandidates : approvalDeferredCandidates,
+    preferredAuthorityLabels,
+  );
+}
+
+function selectPreferredEffectDriver(candidates, preferredAuthorityLabels) {
+  if (!candidates.length) return null;
+  let selected = candidates[0];
+  let selectedScore = authorityPreferenceScore(selected.manifest, preferredAuthorityLabels);
+  for (const candidate of candidates.slice(1)) {
+    const score = authorityPreferenceScore(candidate.manifest, preferredAuthorityLabels);
+    if (score > selectedScore) {
+      selected = candidate;
+      selectedScore = score;
     }
   }
-  return selected ?? firstMatch;
+  return selected;
 }
 
 function authorityPreferenceScore(manifest, preferredAuthorityLabels) {
@@ -668,12 +929,18 @@ function driverManifest(driver) {
   return driver.manifest();
 }
 
-function driverSupports(driver, hostRequest) {
+function driverSupports(driver, hostRequest, policy = {}, options = {}) {
   const manifest = driverManifest(driver);
-  return manifest ? driverSupportsManifest(manifest, hostRequest) : false;
+  if (!manifest || !driverSupportsManifest(manifest, hostRequest, policy, options)) return false;
+  try {
+    assertDriverRequestSupported(driver, manifest, hostRequest);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-function driverSupportsManifest(manifest, hostRequest, policy = {}) {
+function driverSupportsManifest(manifest, hostRequest, policy = {}, { ignoreApprovalRequirement = false } = {}) {
   const structuralMatch = manifest.supportedActuatorRefs?.includes(hostRequest.actuatorRef) === true &&
     manifest.supportedDescriptorFingerprints?.includes(hostRequest.descriptorFingerprint) === true &&
     manifest.supportedActuationClasses?.includes(hostRequest.actuationClass) === true &&
@@ -681,26 +948,53 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}) {
   if (!structuralMatch) return false;
   if (hostRequest.requestBytes?.byteLength > manifest.maximumRequestBytes) return false;
   if (policy.maximumRequestBytes !== undefined && hostRequest.requestBytes?.byteLength > policy.maximumRequestBytes) return false;
+  if (policy.allowPartialEffectBatch === true) {
+    const promptByteLength = hostRequestPolicyPromptByteLength(manifest, hostRequest);
+    if (policy.maximumPromptBytes !== undefined && promptByteLength > policy.maximumPromptBytes) return false;
+  }
   if (policy.maximumResponseBytes !== undefined && manifest.maximumResponseBytes > policy.maximumResponseBytes) return false;
+  const deniedCapabilityPacks = policySet(policy.deniedCapabilityPacks);
+  if (deniedCapabilityPacks.has(manifest.packFingerprint) || deniedCapabilityPacks.has(manifest.driverId)) return false;
+  const allowedCapabilityPacks = policySet(policy.allowedCapabilityPacks);
+  if (
+    allowedCapabilityPacks.size &&
+    !allowedCapabilityPacks.has(manifest.packFingerprint) &&
+    !allowedCapabilityPacks.has(manifest.driverId)
+  ) {
+    return false;
+  }
   const allowedAuthorityLabels = policySet(policy.allowedAuthorityLabels);
   if (allowedAuthorityLabels.size && manifest.authorityLabels.some((label) => !allowedAuthorityLabels.has(label))) return false;
   const allowedHttpOrigins = policySet(policy.allowedHttpOrigins);
-  if (hostRequest.actuationClass === 'http' || manifest.authorityLabels.includes('network:http')) {
-    const origin = requestOrigin(hostRequest);
+  if (hostRequest.actuationClass === 'http' || manifest.authorityLabels.some(authorityLabelDeclaresNetwork)) {
+    const origin = requestOriginForManifest(hostRequest, manifest);
     const driverOrigins = Array.isArray(manifest.diagnostics?.origins) ? new Set(manifest.diagnostics.origins) : null;
     if (driverOrigins && (!origin || !driverOrigins.has(origin))) return false;
+    if (policy.allowPartialEffectBatch === true && !allowedHttpOrigins.size) return false;
     if (allowedHttpOrigins.size && (!origin || !allowedHttpOrigins.has(origin))) return false;
-    const method = requestMethod(hostRequest);
+    const method = requestMethodForManifest(hostRequest, manifest);
     const driverMethods = Array.isArray(manifest.diagnostics?.methods)
       ? new Set(manifest.diagnostics.methods.map((item) => String(item).toUpperCase()))
       : null;
     if (driverMethods && (!method || !driverMethods.has(method))) return false;
+    const allowedHttpMethods = policyUpperSet(policy.allowedHttpMethods);
+    if (policy.allowPartialEffectBatch === true && !allowedHttpMethods.size) return false;
+    if (allowedHttpMethods.size && (!method || !allowedHttpMethods.has(method))) return false;
   }
   const allowedFileRoots = policySet(policy.allowedFileRoots);
-  if (allowedFileRoots.size && manifest.authorityLabels.includes('file:sandbox')) {
-    const root = manifest.diagnostics?.root;
-    if (!root || !allowedFileRoots.has(root)) return false;
+  if (driverManifestIsFile(manifest, hostRequest)) {
+    if (policy.allowPartialEffectBatch === true && !allowedFileRoots.size) return false;
+    if (allowedFileRoots.size) {
+      const root = manifest.diagnostics?.root;
+      if (!root || !allowedFileRoots.has(root)) return false;
+    }
   }
+  if (policy.allowPartialEffectBatch === true && driverManifestIsHuman(manifest, hostRequest) && policy.allowHumanEffects !== true) return false;
+  if (
+    policy.allowPartialEffectBatch === true &&
+    ignoreApprovalRequirement !== true &&
+    driverManifestRequiresApproval(manifest, hostRequest, policy)
+  ) return false;
   try {
     assertDurableRecoveryAllowed(manifest.recoveryClass, policy);
   } catch {
@@ -709,28 +1003,199 @@ function driverSupportsManifest(manifest, hostRequest, policy = {}) {
   return true;
 }
 
+function hostRequestPolicyPromptByteLength(manifest, hostRequest) {
+  if (hostRequest.policyRequestBytes) return hostRequest.policyRequestBytes.byteLength;
+  if (driverManifestChargesLiveModelBudget(manifest, hostRequest) || driverManifestIsHuman(manifest, hostRequest)) return hostRequest.requestBytes?.byteLength;
+  if (hostRequest.actuationClass === 'http' || manifest.authorityLabels.some(authorityLabelDeclaresNetwork)) return httpRequestBodyPolicyByteLength(manifest, hostRequest);
+  return undefined;
+}
+
+function httpRequestBodyPolicyByteLength(manifest, hostRequest) {
+  if (bodylessHttpMethod(requestMethodForManifest(hostRequest, manifest))) return 0;
+  if (manifest?.driverId === 'generic-http-json' && manifest?.diagnostics?.requestRendering?.requestTemplateFingerprint) {
+    return requestTemplateBodyByteLength(manifest.diagnostics.requestRendering);
+  }
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
+    const rendered = manifest?.driverId === 'http-json'
+      ? (Object.prototype.hasOwnProperty.call(payload, 'body') ? JSON.stringify(payload.body) : undefined)
+      : stableJson(Object.prototype.hasOwnProperty.call(payload, 'body') ? payload.body : payload);
+    return rendered === undefined ? 0 : fromUtf8(rendered).byteLength;
+  } catch {
+    return undefined;
+  }
+}
+
+function requestTemplateBodyByteLength(requestRendering) {
+  const byteLength = requestRendering?.requestTemplateBodyBytes;
+  return Number.isSafeInteger(byteLength) && byteLength >= 0 ? byteLength : undefined;
+}
+
+function bodylessHttpMethod(method) {
+  return method === 'GET' || method === 'HEAD';
+}
+
+function driverManifestIsFile(manifest, hostRequest) {
+  return hostRequest?.actuationClass === 'file' ||
+    (manifest.supportedActuationClasses ?? []).includes('file') ||
+    (manifest.authorityLabels ?? []).some((label) => label.startsWith('file:'));
+}
+
+function driverManifestIsNetwork(manifest, hostRequest) {
+  return hostRequest?.actuationClass === 'http' ||
+    (manifest.supportedActuationClasses ?? []).includes('http') ||
+    (manifest.authorityLabels ?? []).some(authorityLabelDeclaresNetwork);
+}
+
+function driverManifestRequiresApproval(manifest, hostRequest, policy) {
+  return (policy.requireApprovalForNetworkEffects === true && driverManifestIsNetwork(manifest, hostRequest)) ||
+    (policy.requireApprovalForDestructiveEffects !== false && driverManifestIsDestructiveFileRequest(manifest, hostRequest)) ||
+    (policy.requireApprovalForBestEffort !== false && manifest.recoveryClass === EffectRecoveryClass.bestEffort);
+}
+
+function driverManifestIsDestructiveFileRequest(manifest, hostRequest) {
+  if (!driverManifestIsFile(manifest, hostRequest)) return false;
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
+    return payload?.operation !== 'read';
+  } catch {
+    return true;
+  }
+}
+
+function driverManifestIsHuman(manifest, hostRequest) {
+  return hostRequest?.actuationClass === 'human' ||
+    (manifest.supportedActuationClasses ?? []).includes('human') ||
+    (manifest.authorityLabels ?? []).some((label) => label.startsWith('human:'));
+}
+
+function driverManifestChargesLiveModelBudget(manifest, hostRequest) {
+  if (!driverManifestIsModel(manifest, hostRequest)) return false;
+  const modelLabels = (manifest?.authorityLabels ?? []).filter((label) => label.startsWith('model:'));
+  if (!modelLabels.length) return true;
+  return modelLabels.some((label) => !FIXTURE_MODEL_AUTHORITY_LABELS.has(label));
+}
+
+function driverManifestIsModel(manifest, hostRequest) {
+  return hostRequest?.actuationClass === 'model' ||
+    (manifest.supportedActuationClasses ?? []).includes('model') ||
+    (manifest.authorityLabels ?? []).some((label) => label.startsWith('model:'));
+}
+
 function policySet(value) {
   if (value instanceof Set) return value;
   if (Array.isArray(value)) return new Set(value);
   return new Set();
 }
 
-function requestOrigin(hostRequest) {
+function policyUpperSet(value) {
+  return new Set([...policySet(value)].map((item) => String(item).toUpperCase()));
+}
+
+function requestOriginForManifest(hostRequest, manifest) {
   try {
     const request = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
-    return new URL(request.url).origin;
+    if (fixedConfiguredEndpointManifest(manifest)) return configuredManifestOrigin(manifest);
+    if (request.url === undefined && configuredEndpointManifest(manifest)) return configuredManifestOrigin(manifest);
+    return validatedRequestUrlOrigin(request.url);
   } catch {
     return null;
   }
 }
 
-function requestMethod(hostRequest) {
+function requestMethodForManifest(hostRequest, manifest) {
   try {
     const request = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
-    return String(request.method ?? 'GET').toUpperCase();
+    if (fixedConfiguredEndpointManifest(manifest)) return String(request.method ?? configuredManifestMethod(manifest) ?? 'POST').toUpperCase();
+    if (request.url === undefined && configuredEndpointManifest(manifest)) return String(request.method ?? configuredManifestMethod(manifest) ?? 'POST').toUpperCase();
+    const methods = Array.isArray(manifest?.diagnostics?.methods) ? manifest.diagnostics.methods : [];
+    return String(request.method ?? manifest?.diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : 'GET')).toUpperCase();
   } catch {
     return null;
   }
+}
+
+function fixedConfiguredEndpointManifest(manifest) {
+  return manifest?.diagnostics?.endpointSource === 'config';
+}
+
+function configuredEndpointManifest(manifest) {
+  return manifest?.diagnostics?.endpointSource === 'config' || manifest?.diagnostics?.endpointSource === 'request-or-config';
+}
+
+function configuredManifestOrigin(manifest) {
+  if (manifest?.diagnostics?.configuredOrigin) return validatedRequestUrlOrigin(manifest.diagnostics.configuredOrigin);
+  if (manifest?.diagnostics?.configuredEndpointUrl) {
+    try {
+      return validatedRequestUrlOrigin(manifest.diagnostics.configuredEndpointUrl);
+    } catch {
+      return null;
+    }
+  }
+  const origins = Array.isArray(manifest?.diagnostics?.origins) ? manifest.diagnostics.origins : [];
+  return origins.length === 1 ? validatedRequestUrlOrigin(origins[0]) : null;
+}
+
+function validatedRequestUrlOrigin(value) {
+  const parsed = new URL(value);
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+  if (parsed.username || parsed.password) return null;
+  if (credentialUrlPathOrFragment(parsed) || credentialUrlQuery(parsed)) return null;
+  return parsed.origin;
+}
+
+function credentialUrlPathOrFragment(url) {
+  const pathname = decodeUrlComponent(url.pathname);
+  const hash = decodeUrlComponent(url.hash);
+  if (credentialQueryValue(pathname) || credentialQueryValue(hash) || credentialAssignmentText(pathname) || credentialAssignmentText(hash)) {
+    return true;
+  }
+  const pathSegments = pathname.split('/').filter(Boolean);
+  for (let index = 0; index < pathSegments.length - 1; index += 1) {
+    if (credentialPathKey(pathSegments[index]) && !credentialUrlSentinel(pathSegments[index + 1])) return true;
+  }
+  return false;
+}
+
+function credentialUrlQuery(url) {
+  for (const [key, value] of url.searchParams) {
+    if (credentialQueryKey(key) || credentialQueryValue(value) || credentialAssignmentText(value)) return true;
+  }
+  return false;
+}
+
+function credentialQueryKey(value) {
+  return /credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key/i.test(value);
+}
+
+function credentialQueryValue(value) {
+  return /\b(?:bearer|basic)\s+\S+/i.test(value) || /sk-[A-Za-z0-9_-]{8,}/.test(value);
+}
+
+function credentialAssignmentText(value) {
+  return /(?:^|[\/#?&;,\s{])(?:credential|authorization|bearer|token|secret|password|(?:api|access|private)[_-]?key)\s*[:=]\s*["']?[A-Za-z0-9._~+/-]{8,}={0,2}/i.test(value);
+}
+
+function credentialPathKey(value) {
+  return /^(?:credentials?|authorization|bearer|tokens?|secrets?|password|(?:api|access|private)[_-]?keys?)$/i.test(value);
+}
+
+function credentialUrlSentinel(value) {
+  return /^(?:redacted|opaque|required|none|null|example(?:[-_].*)?|fixture(?:[-_].*)?|no-(?:credentials?|secrets?|tokens?))$/i.test(value);
+}
+
+function decodeUrlComponent(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function configuredManifestMethod(manifest) {
+  if (manifest?.diagnostics?.defaultMethod) return String(manifest.diagnostics.defaultMethod).toUpperCase();
+  const methods = Array.isArray(manifest?.diagnostics?.methods) ? manifest.diagnostics.methods : [];
+  return methods.length === 1 ? String(methods[0]).toUpperCase() : null;
 }
 
 function unresolvedHostRequestDiagnostic(index, hostRequest) {
@@ -889,15 +1354,66 @@ function assertParentClosureManifestMatchesWorker(worker, parentHead, parentClos
   }
 }
 
+async function decodeStoredApplicationManifestForPreflight(store, application) {
+  let bytes;
+  try {
+    bytes = await store.getBlob(application.applianceManifestRef);
+    return decodeApplianceManifest(bytes);
+  } catch (error) {
+    if (allowsStoredManifestInstallSummaryFallback(application, bytes)) {
+      return null;
+    }
+    fail('ERR_APPLICATION_MANIFEST_INVALID', 'stored appliance manifest is not decodable', {
+      cause: error?.message ?? String(error),
+    });
+  }
+}
+
+function isHostGeneratedInstallSummaryBytes(bytes) {
+  let parsed;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return false;
+  }
+  return parsed?.kind === 'world-host.install-summary' &&
+    parsed?.source === 'host-generated-install-summary' &&
+    parsed?.worldAuthoredEvidence === false;
+}
+
+function allowsStoredManifestInstallSummaryFallback(application, bytes) {
+  const manifestSource = application.installationDiagnostics?.manifestSource;
+  if (manifestSource === 'host-generated-install-summary') return true;
+  if (manifestSource == null) return isHostGeneratedInstallSummaryBytes(bytes);
+  return false;
+}
+
+function assertLoadedApplianceManifestAccepted(worker, application, parentHead, policy) {
+  if (typeof worker.readApplianceManifest !== 'function') return;
+  const applianceManifest = worker.readApplianceManifest()?.decoded;
+  if (!applianceManifest) return;
+  assertCapabilityReportAccepted(preflightCapabilities({
+    application: { ...application, requiredActuators: [], requiredHostAuthorityLabels: [], requiredRuntimeLimits: {} },
+    applianceManifest,
+    currentHead: parentHead,
+    drivers: [],
+    policy,
+  }));
+}
+
 async function assertStoredApplicationManifestMatchesWorker(worker, store, application) {
   if (typeof worker.readApplianceManifest !== 'function') return;
   const loaded = worker.readApplianceManifest()?.decoded?.manifestFingerprint;
   if (loaded == null) return;
   let stored;
+  let bytes;
   try {
-    stored = decodeApplianceManifest(await store.getBlob(application.applianceManifestRef));
+    bytes = await store.getBlob(application.applianceManifestRef);
+    stored = decodeApplianceManifest(bytes);
   } catch (error) {
-    if (application.installationDiagnostics?.manifestSource === 'host-generated-install-summary') return;
+    if (allowsStoredManifestInstallSummaryFallback(application, bytes)) {
+      return;
+    }
     fail('ERR_APPLICATION_MANIFEST_INVALID', 'stored appliance manifest is not decodable', {
       cause: error?.message ?? String(error),
     });
@@ -918,7 +1434,15 @@ function assertNextClosureManifestMatchesWorker(worker, inspected) {
   }
 }
 
-function prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, hostRequestMapper, effectDrivers, policy, application = {}) {
+function prepareNeedsHostEffectPlan(
+  parentHead,
+  parentClosureBytes,
+  hostRequestMapper,
+  effectDrivers,
+  policy,
+  application = {},
+  { allowApprovalDeferredRoutes = false } = {},
+) {
   if (parentHead.status !== 'needs_host') return null;
   let parentSummary;
   try {
@@ -939,11 +1463,13 @@ function prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, hostRequestM
       unresolvedHostRequests.push(unresolvedHostRequestDiagnostic(index, { diagnostics: { mapperError: error?.message ?? String(error) } }));
       continue;
     }
+    hostRequest = hostRequestWithPendingIndex(hostRequest, index, worldHostRequest);
     const selection = selectEffectDriver(
       effectDrivers,
       hostRequest,
       policy,
       preferredAuthorityLabelsForHostRequest(hostRequest, application, effectDrivers, policy),
+      { allowApprovalDeferredRoutes },
     );
     if (selection) pending.push({ index, worldHostRequest, hostRequest, ...selection });
     else unresolvedHostRequests.push(unresolvedHostRequestDiagnostic(index, hostRequest));
@@ -963,6 +1489,94 @@ function prepareNeedsHostEffectPlan(parentHead, parentClosureBytes, hostRequestM
     });
   }
   return { parentSummary, pending, unresolvedHostRequests };
+}
+
+function bindEffectPlanToPreflightReport(
+  plan,
+  report,
+  effectDrivers,
+  policy,
+  { allowApprovalDeferredRoutes = false } = {},
+) {
+  const selectedRoutes = report.selectedPendingRequestRoutes ?? [];
+  const selectedByRequest = new Map(selectedRoutes.map((route) => [preflightRouteKey(route), route]));
+  const unresolvedByRequest = new Map((report.unresolvedPendingRequestRoutes ?? []).map((route) => [preflightRouteKey(route), route]));
+  const unresolvedHostRequests = [...plan.unresolvedHostRequests];
+  const pending = [];
+  for (const item of plan.pending) {
+    const key = preflightRouteKey(item.hostRequest);
+    const route = selectedByRequest.get(key);
+    if (!route) {
+      const unresolvedRoute = unresolvedByRequest.get(key);
+      if (unresolvedRoute) {
+        const diagnostic = unresolvedHostRequestDiagnostic(item.index, item.hostRequest);
+        if (Array.isArray(unresolvedRoute.blockers) && unresolvedRoute.blockers.length > 0) diagnostic.blockers = [...unresolvedRoute.blockers];
+        unresolvedHostRequests.push(diagnostic);
+        continue;
+      }
+      fail('ERR_HOST_REQUEST_DRIVER_UNAVAILABLE', 'preflight report missing selected HostRequest route', unresolvedHostRequestDiagnostic(item.index, item.hostRequest));
+    }
+    const selection = selectEffectDriverByPreflightRoute(
+      effectDrivers,
+      item.hostRequest,
+      policy,
+      route,
+      { allowApprovalDeferredRoutes },
+    );
+    if (!selection) fail('ERR_HOST_REQUEST_DRIVER_UNAVAILABLE', 'preflight-covered driver unavailable for pending HostRequest', {
+      ...unresolvedHostRequestDiagnostic(item.index, item.hostRequest),
+      driverId: route.driverId,
+      driverIndex: route.driverIndex,
+    });
+    pending.push(item.driver === selection.driver ? item : { ...item, ...selection });
+  }
+  if (pending.length === 0 && unresolvedHostRequests.length > 0) {
+    fail('ERR_PARTIAL_EFFECT_BATCH_EMPTY', 'partial effect batch has no covered HostRequests', {
+      unresolvedHostRequestCount: unresolvedHostRequests.length,
+    });
+  }
+  return { ...plan, pending, unresolvedHostRequests };
+}
+
+function preflightRouteKey(route) {
+  if (Number.isSafeInteger(route.pendingRequestIndex)) return ['pending-index', route.pendingRequestIndex].join('\0');
+  return [
+    route.hostRequestFingerprint ?? '',
+    route.actuatorRef ?? '',
+    route.descriptorFingerprint ?? '',
+  ].join('\0');
+}
+
+function hostRequestWithPendingIndex(hostRequest, index, worldHostRequest = null) {
+  const next = { ...hostRequest };
+  if (worldHostRequest?.requestFingerprint != null) {
+    next.hostRequestFingerprint = `world:host-request:${fingerprintString(worldHostRequest.requestFingerprint)}`;
+  }
+  const worldHostReplyBinding = maybeHostReplyBindingDiagnostics(worldHostRequest);
+  if (worldHostReplyBinding) {
+    next.diagnostics = {
+      ...(next.diagnostics ?? {}),
+      worldHostReplyBinding,
+    };
+  }
+  next.pendingRequestIndex = index;
+  return next;
+}
+
+function selectEffectDriverByPreflightRoute(
+  drivers,
+  hostRequest,
+  policy,
+  route,
+  { allowApprovalDeferredRoutes = false } = {},
+) {
+  if (!Number.isSafeInteger(route.driverIndex) || route.driverIndex < 0 || route.driverIndex >= drivers.length) return null;
+  const driver = drivers[route.driverIndex];
+  const manifest = driverManifest(driver);
+  if (manifest?.driverId !== route.driverId) return null;
+  const approvalDeferred = allowApprovalDeferredRoutes && driverManifestRequiresApproval(manifest, hostRequest, policy);
+  if (!driverSupports(driver, hostRequest, policy, { ignoreApprovalRequirement: approvalDeferred })) return null;
+  return { driver, manifest };
 }
 
 function preferredAuthorityLabelsForHostRequest(hostRequest, application, effectDrivers, policy) {
@@ -999,6 +1613,16 @@ function driverSupportsRequiredActuator(manifest, requirement, policy) {
     return false;
   }
   if (policy.maximumResponseBytes !== undefined && manifest.maximumResponseBytes > policy.maximumResponseBytes) return false;
+  const deniedCapabilityPacks = policySet(policy.deniedCapabilityPacks);
+  if (deniedCapabilityPacks.has(manifest.packFingerprint) || deniedCapabilityPacks.has(manifest.driverId)) return false;
+  const allowedCapabilityPacks = policySet(policy.allowedCapabilityPacks);
+  if (
+    allowedCapabilityPacks.size &&
+    !allowedCapabilityPacks.has(manifest.packFingerprint) &&
+    !allowedCapabilityPacks.has(manifest.driverId)
+  ) {
+    return false;
+  }
   const allowedAuthorityLabels = policySet(policy.allowedAuthorityLabels);
   if (allowedAuthorityLabels.size && manifest.authorityLabels.some((label) => !allowedAuthorityLabels.has(label))) return false;
   return true;

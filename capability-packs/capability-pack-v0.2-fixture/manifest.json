@@ -1,0 +1,62 @@
+{
+  "formatVersion": 1,
+  "packFingerprint": "sha256:62dff020369ba7f5eb22cfe57ff47be34d775eebd7d2c3d18c1e867b01898d9c",
+  "packageName": "world-capability-fixture",
+  "packageVersion": "0.2.0",
+  "driverId": "fixture-agent-model",
+  "driverAbiVersion": 1,
+  "supportedWorldProtocolVersion": "v0.1.0",
+  "supportedApplianceAbiVersion": "v4",
+  "supportedTurnClosureVersion": "v1",
+  "supportedActuatorRefs": [
+    "fixture:agent-model"
+  ],
+  "supportedDescriptorFingerprints": [
+    "descriptor:fixture-agent-model"
+  ],
+  "supportedActuationClasses": [
+    "model"
+  ],
+  "supportedResponseStatuses": [
+    "ok",
+    "final"
+  ],
+  "recoveryClass": "pure",
+  "canDryRun": true,
+  "canShadow": true,
+  "canReplay": true,
+  "canRecover": true,
+  "propagatesWorldIdempotencyKey": true,
+  "requiresApproval": false,
+  "requiredSecrets": [],
+  "authorityLabels": [
+    "model:fixture-agent"
+  ],
+  "policyRequirements": {},
+  "maximumRequestBytes": 1048576,
+  "maximumResponseBytes": 1048576,
+  "conformanceCorpusFingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "metadataBytes": "",
+  "adapter": {
+    "kind": "receiver"
+  },
+  "checksums": [
+    {
+      "path": "README.md",
+      "checksum": "sha256:a9ca06ba2179d0a108a9428f1b1c531dcebadedd9ac47dc4688090a4f9e039ea"
+    },
+    {
+      "path": "non-claims.md",
+      "checksum": "sha256:c32695f3bf86108a4b6b4b1c51e2759e3633b9992689a5fde7a82bcc8057d33b"
+    },
+    {
+      "path": "conformance.json",
+      "checksum": "sha256:8506f6409115599ca039a1d23da4d128301007f79f78d711d00999c7660a8d2c"
+    }
+  ],
+  "docs": [
+    "README.md",
+    "non-claims.md"
+  ],
+  "conformanceReceiptFingerprint": "sha256:4edd6fd77a662bed1238182d49ae97816f10ad068dcece4529419c87182c19f5"
+}

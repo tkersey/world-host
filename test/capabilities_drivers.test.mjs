@@ -1,21 +1,260 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { link, mkdir, mkdtemp, readFile, symlink, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { EffectRecoveryClass, assertDriverManifest } from '../src/core/actuator.mjs';
+import { EffectRecoveryClass, assertDriverManifest, defineActuatorDriver } from '../src/core/actuator.mjs';
 import { createRunPolicy, preflightCapabilities } from '../src/core/capabilities.mjs';
-import { EffectJournal } from '../src/core/effect_journal.mjs';
+import { createAuthorityGrant, createCapabilityPolicy } from '../src/core/capability_policy.mjs';
+import { EffectJournal, EffectState, journaledHostRequest } from '../src/core/effect_journal.mjs';
+import { immutableSet } from '../src/core/immutable_set.mjs';
 import { FixtureModelDriver } from '../src/drivers/fixture_model_driver.mjs';
 import { SandboxFileDriver } from '../src/drivers/sandbox_file_driver.mjs';
 import { HttpJsonDriver } from '../src/drivers/http_json_driver.mjs';
-import { fromUtf8, stableJson } from '../src/core/store.mjs';
-import { decodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
+import { GenericHttpJsonCapabilityDriver } from '../src/drivers/generic_http_json_capability_driver.mjs';
+import { GenericHttpJsonModelDriver } from '../src/drivers/model_capability_driver.mjs';
+import { agentActionValueImage } from '../src/drivers/fixture_agent_model_driver.mjs';
+import { HumanApprovalCapabilityDriver } from '../src/drivers/human_approval_capability_driver.mjs';
+import { fromUtf8, makeBlobRef, stableJson } from '../src/core/store.mjs';
+import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
 
+const FIXTURE_FILE_ROOT = path.resolve('/tmp/world-host-fixture-file-root');
+
 describe('capability preflight and reference drivers', () => {
+  it('keeps policy membership sets immutable and Set-compatible', () => {
+    const capabilityPolicy = createCapabilityPolicy({
+      allowedOrigins: ['member'],
+      allowedMethods: ['member'],
+      allowedFileRoots: ['member'],
+      allowedAuthorityLabels: ['member'],
+      allowedCapabilityPacks: ['member'],
+      deniedCapabilityPacks: ['member'],
+    });
+    const authorityGrant = createAuthorityGrant({
+      authorityLabels: ['member'],
+      capabilityPacks: ['member'],
+      origins: ['member'],
+      fileRoots: ['member'],
+    });
+    const runPolicy = createRunPolicy({
+      allowedAuthorityLabels: ['member'],
+      allowedCapabilityPacks: ['member'],
+      deniedCapabilityPacks: ['member'],
+      allowedFileRoots: ['member'],
+      allowedHttpOrigins: ['member'],
+      allowedHttpMethods: ['member'],
+      acceptedSupervisionPolicies: ['member'],
+    });
+    const membershipSets = [
+      capabilityPolicy.allowedOrigins,
+      capabilityPolicy.allowedMethods,
+      capabilityPolicy.allowedFileRoots,
+      capabilityPolicy.allowedAuthorityLabels,
+      capabilityPolicy.allowedCapabilityPacks,
+      capabilityPolicy.deniedCapabilityPacks,
+      authorityGrant.authorityLabels,
+      authorityGrant.capabilityPacks,
+      authorityGrant.origins,
+      authorityGrant.fileRoots,
+      runPolicy.allowedAuthorityLabels,
+      runPolicy.allowedCapabilityPacks,
+      runPolicy.deniedCapabilityPacks,
+      runPolicy.allowedFileRoots,
+      runPolicy.allowedHttpOrigins,
+      runPolicy.allowedHttpMethods,
+      runPolicy.acceptedSupervisionPolicies,
+    ];
+
+    for (const membership of membershipSets) {
+      assert.ok(membership instanceof Set);
+      assert.equal(Object.isFrozen(membership), true);
+      assert.equal(membership.size, 1);
+      const expected = membership.has('MEMBER') ? 'MEMBER' : 'member';
+      assert.equal(membership.has(expected), true);
+      assert.deepEqual([...membership], [expected]);
+      let callbackOwner = null;
+      membership.forEach((value, key, owner) => {
+        assert.equal(value, expected);
+        assert.equal(key, expected);
+        callbackOwner = owner;
+      });
+      assert.equal(callbackOwner, membership);
+
+      assert.throws(() => membership.add('other'), TypeError);
+      assert.throws(() => membership.delete(expected), TypeError);
+      assert.throws(() => membership.clear(), TypeError);
+      assert.throws(() => Set.prototype.add.call(membership, 'other'), TypeError);
+      assert.throws(() => Set.prototype.delete.call(membership, expected), TypeError);
+      assert.throws(() => Set.prototype.clear.call(membership), TypeError);
+      assert.deepEqual([...membership], [expected]);
+    }
+
+    const source = new Set(['copied']);
+    const membership = immutableSet(source);
+    source.add('external-mutation');
+    assert.deepEqual([...membership], ['copied']);
+    assert.equal(membership.valueOf(), membership);
+  });
+
+  it('does not expose immutable Set targets to post-import intrinsic tampering', () => {
+    const originalAdd = Set.prototype.add;
+    let constructionTarget = null;
+    Set.prototype.add = function poisonedSetAdd(value) {
+      constructionTarget = this;
+      return Reflect.apply(originalAdd, this, [value]);
+    };
+
+    let membership;
+    try {
+      membership = immutableSet(['original']);
+    } finally {
+      Set.prototype.add = originalAdd;
+    }
+    assert.equal(constructionTarget, null);
+    assert.deepEqual([...membership], ['original']);
+
+    const has = Set.prototype.has;
+    const originalBindDescriptor = Object.getOwnPropertyDescriptor(has, 'bind');
+    let boundTarget = null;
+    Object.defineProperty(has, 'bind', {
+      configurable: true,
+      value(target) {
+        boundTarget = target;
+        return Reflect.apply(Function.prototype.bind, this, [target]);
+      },
+    });
+    try {
+      assert.equal(membership.has('original'), true);
+    } finally {
+      if (originalBindDescriptor) Object.defineProperty(has, 'bind', originalBindDescriptor);
+      else delete has.bind;
+    }
+    assert.equal(boundTarget, null);
+    assert.deepEqual([...membership], ['original']);
+  });
+
+  it('constructs policy membership through captured collection intrinsics', () => {
+    const setSource = new Set(['set-member']);
+    const arraySource = ['array-member'];
+    const immutableSource = immutableSet(['immutable-member']);
+    const originalSetIterator = Set.prototype[Symbol.iterator];
+    const originalArrayIterator = Array.prototype[Symbol.iterator];
+    const originalArrayMap = Array.prototype.map;
+    const originalString = globalThis.String;
+    const originalToUpperCase = String.prototype.toUpperCase;
+    let runPolicy;
+    let capabilityPolicy;
+    let authorityGrant;
+    try {
+      Set.prototype[Symbol.iterator] = function* poisonedSetIterator() {
+        yield 'set-iterator-injected';
+      };
+      Array.prototype[Symbol.iterator] = function* poisonedArrayIterator() {
+        yield 'array-iterator-injected';
+      };
+      Array.prototype.map = function poisonedArrayMap() {
+        return ['array-map-injected'];
+      };
+      globalThis.String = function poisonedStringConversion() {
+        return 'string-conversion-injected';
+      };
+      originalString.prototype.toUpperCase = function poisonedStringToUpperCase() {
+        return 'string-uppercase-injected';
+      };
+
+      runPolicy = createRunPolicy({
+        allowedAuthorityLabels: setSource,
+        allowedCapabilityPacks: arraySource,
+        allowedFileRoots: immutableSource,
+        allowedHttpOrigins: 'run-scalar',
+        allowedHttpMethods: ['get'],
+        deniedCapabilityPacks: null,
+      });
+      capabilityPolicy = createCapabilityPolicy({
+        allowedOrigins: setSource,
+        allowedMethods: ['post'],
+        allowedFileRoots: immutableSource,
+        allowedAuthorityLabels: 'capability-scalar',
+        allowedCapabilityPacks: arraySource,
+        deniedCapabilityPacks: null,
+      });
+      authorityGrant = createAuthorityGrant({
+        authorityLabels: setSource,
+        capabilityPacks: arraySource,
+        origins: immutableSource,
+        fileRoots: 'grant-scalar',
+      });
+    } finally {
+      Set.prototype[Symbol.iterator] = originalSetIterator;
+      Array.prototype[Symbol.iterator] = originalArrayIterator;
+      Array.prototype.map = originalArrayMap;
+      originalString.prototype.toUpperCase = originalToUpperCase;
+      globalThis.String = originalString;
+    }
+
+    assert.deepEqual([...runPolicy.allowedAuthorityLabels], ['set-member']);
+    assert.deepEqual([...runPolicy.allowedCapabilityPacks], ['array-member']);
+    assert.deepEqual([...runPolicy.allowedFileRoots], ['immutable-member']);
+    assert.deepEqual([...runPolicy.allowedHttpOrigins], ['run-scalar']);
+    assert.deepEqual([...runPolicy.allowedHttpMethods], ['GET']);
+    assert.equal(runPolicy.deniedCapabilityPacks.size, 0);
+
+    assert.deepEqual([...capabilityPolicy.allowedOrigins], ['set-member']);
+    assert.deepEqual([...capabilityPolicy.allowedMethods], ['POST']);
+    assert.deepEqual([...capabilityPolicy.allowedFileRoots], ['immutable-member']);
+    assert.deepEqual([...capabilityPolicy.allowedAuthorityLabels], ['capability-scalar']);
+    assert.deepEqual([...capabilityPolicy.allowedCapabilityPacks], ['array-member']);
+    assert.equal(capabilityPolicy.deniedCapabilityPacks.size, 0);
+
+    assert.deepEqual([...authorityGrant.authorityLabels], ['set-member']);
+    assert.deepEqual([...authorityGrant.capabilityPacks], ['array-member']);
+    assert.deepEqual([...authorityGrant.origins], ['immutable-member']);
+    assert.deepEqual([...authorityGrant.fileRoots], ['grant-scalar']);
+  });
+
+  it('keeps constructed run-policy authorization membership from widening', () => {
+    const policy = createRunPolicy({
+      allowedAuthorityLabels: ['network:http', 'test'],
+      allowedHttpOrigins: ['https://allowed.example'],
+      allowedHttpMethods: ['GET'],
+      deniedCapabilityPacks: ['denied-fixture'],
+      acceptedSupervisionPolicies: ['default'],
+    });
+
+    assert.throws(() => policy.allowedHttpOrigins.add('https://widened.example'), TypeError);
+    const originReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://widened.example/path')],
+      drivers: [new HttpJsonDriver({ origins: ['https://widened.example'] })],
+      policy,
+    });
+    assert.ok(originReport.blockers.includes('http-origin-denied:https://widened.example'));
+
+    assert.throws(() => policy.deniedCapabilityPacks.delete('denied-fixture'), TypeError);
+    const denyReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [fixtureRequest()],
+      drivers: [fixtureDriverWithAuthority(['test'], { driverId: 'denied-fixture' })],
+      policy,
+    });
+    assert.ok(denyReport.blockers.includes('ERR_CAPABILITY_PACK_DENIED'));
+
+    assert.throws(() => policy.acceptedSupervisionPolicies.add(0x123n), TypeError);
+    const supervisionReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      applianceManifest: { supervisionPolicyFingerprint: 0x123n },
+      currentHead: { generation: 0 },
+      policy,
+    });
+    assert.ok(supervisionReport.blockers.includes('supervision-policy-rejected'));
+  });
+
   it('accepts only exact driver manifest coverage under receiver-local policy', () => {
     const report = preflightCapabilities({
       application: { requiredActuators: [{ actuatorRef: 'fixture:model' }], requiredRuntimeLimits: {} },
@@ -28,16 +267,1049 @@ describe('capability preflight and reference drivers', () => {
     assert.equal(report.everyPendingRequestCovered, true);
   });
 
+  it('checks decoded appliance supervision fingerprints against receiver policy', () => {
+    const deniedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      applianceManifest: { supervisionPolicyFingerprint: 0x123n },
+      currentHead: { generation: 0 },
+      policy: createRunPolicy({ acceptedSupervisionPolicies: [0x456n] }),
+    });
+
+    assert.ok(deniedReport.blockers.includes('supervision-policy-rejected'));
+    assert.equal(deniedReport.runtimeCompatible, false);
+    assert.equal(deniedReport.supervisionPolicyAccepted, false);
+
+    const allowedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      applianceManifest: { supervisionPolicyFingerprint: 0x123n },
+      currentHead: { generation: 0 },
+      policy: createRunPolicy({ acceptedSupervisionPolicies: 0x123n }),
+    });
+
+    assert.deepEqual(allowedReport.blockers, []);
+    assert.equal(allowedReport.supervisionPolicyAccepted, true);
+  });
+
   it('rejects sender-style uncovered authority and HTTP origins outside local policy', () => {
     const report = preflightCapabilities({
       application: { requiredActuators: [], requiredRuntimeLimits: {} },
       currentHead: { generation: 0 },
       pendingRequests: [httpRequest('https://blocked.example/path')],
       drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'] })],
-      policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'], allowedHttpOrigins: ['https://allowed.example'] }),
+      policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'], allowedHttpOrigins: ['https://allowed.example'], allowedHttpMethods: ['GET'] }),
     });
     assert.ok(report.blockers.includes('http-origin-denied:https://blocked.example'));
     assert.ok(report.blockers.includes('http-origin-driver-denied:https://blocked.example'));
+    assert.equal(report.fileNetworkAuthoritiesAllowed, false);
+  });
+
+  it('applies HTTP policy to network-prefixed authority labels during route selection', () => {
+    const request = {
+      ...fixtureRequest(),
+      requestBytes: fromUtf8(stableJson({ prompt: 'hi' })),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [
+        fixtureDriverWithAuthority(['network:openai'], {
+          driverId: 'blocked-openai',
+          diagnostics: {
+            endpointSource: 'config',
+            configuredOrigin: 'https://blocked.example',
+            origins: ['https://blocked.example'],
+            defaultMethod: 'POST',
+            methods: ['POST'],
+          },
+        }),
+        fixtureDriverWithAuthority(['network:openai'], {
+          driverId: 'allowed-openai',
+          diagnostics: {
+            endpointSource: 'config',
+            configuredOrigin: 'https://allowed.example',
+            origins: ['https://allowed.example'],
+            defaultMethod: 'POST',
+            methods: ['POST'],
+          },
+        }),
+      ],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:openai'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.deepEqual(report.selectedPendingRequestRoutes, [{
+      actuatorRef: 'fixture:model',
+      descriptorFingerprint: 'descriptor:fixture-model',
+      driverId: 'allowed-openai',
+      driverIndex: 1,
+    }]);
+  });
+
+  it('uses configured HTTP driver default methods when request URLs omit methods during preflight', () => {
+    const request = {
+      ...httpRequest('https://allowed.example/path'),
+      requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/path', body: { prompt: 'hi' } })),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://fallback.example/decide',
+        allowEndpointFromRequest: true,
+        origins: ['https://allowed.example', 'https://fallback.example'],
+        methods: ['POST'],
+      })],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.everyPendingRequestCovered, true);
+    assert.deepEqual(report.coveredRequests, [{
+      actuatorRef: 'http:json',
+      descriptorFingerprint: 'descriptor:http-json',
+      driverId: 'generic-http-json',
+    }]);
+  });
+
+  it('uses raw HTTP driver configured default methods when request URLs omit methods during preflight', () => {
+    const request = {
+      ...httpRequest('https://allowed.example/path'),
+      requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/path', body: { prompt: 'hi' } })),
+    };
+    const driver = new HttpJsonDriver({
+      origins: ['https://allowed.example'],
+      methods: ['POST'],
+    });
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.equal(driver.manifest().diagnostics.defaultMethod, 'POST');
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.everyPendingRequestCovered, true);
+  });
+
+  it('mirrors raw HTTP default-method effect identity for reusable preflight records', () => {
+    const idempotencyKeyBytes = fromUtf8('raw-http-preflight-idempotency-key');
+    const requestBytes = fromUtf8(stableJson({ url: 'https://allowed.example/path', body: { prompt: 'hi' } }));
+    const request = {
+      ...httpRequest('https://allowed.example/path'),
+      idempotencyKeyBytes,
+      hostRequestFingerprint: 'world:host-request:0000000000000c11',
+      requestBytes,
+    };
+    const driver = new HttpJsonDriver({
+      origins: ['https://allowed.example'],
+      methods: ['POST'],
+    });
+    const canonicalIdentityBytes = journaledHostRequest(request, driver.manifest()).effectIdentityBytes;
+    const requestBytesChecksum = `sha256:${createHash('sha256').update(requestBytes).digest('hex')}`;
+    const requestIdentityChecksum = `sha256:${createHash('sha256').update(canonicalIdentityBytes).digest('hex')}`;
+    const resolutionInputBytes = encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xc11n,
+      status: 0,
+      responseValueImageBytes: fromUtf8('cached raw http response'),
+      hostClaimBytes: fromUtf8('host-claim:cached-raw-http-response'),
+      attemptNumber: 1,
+      metadata: fromUtf8('raw-http-default-method-preflight'),
+    });
+    const resolutionInputRef = blobRefForBytes(resolutionInputBytes);
+    const cachedEffectRecord = {
+      runId: 'run',
+      branchId: 'main',
+      parentTurnClosureFingerprint: 'turn:0',
+      hostRequestFingerprint: request.hostRequestFingerprint,
+      idempotencyKey: {
+        format: 'world-idempotency-key-bytes.hex',
+        bytesHex: Buffer.from(idempotencyKeyBytes).toString('hex'),
+      },
+      idempotencyKeyWorldFingerprint: 'world:key:raw-http-preflight',
+      actuatorRef: request.actuatorRef,
+      descriptorFingerprint: request.descriptorFingerprint,
+      actuationClass: request.actuationClass,
+      responseSchema: request.responseSchema,
+      requestBytesChecksum,
+      requestIdentityChecksum,
+      state: EffectState.resolved,
+      attemptCount: 1,
+      driverRecoveryClass: EffectRecoveryClass.idempotent,
+      resolutionInputRef,
+    };
+    const preflightWithCachedRecord = (effectRecord) => preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [request],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+      effectRecords: [effectRecord],
+      effectResolutionInputs: new Map([[blobRefKey(resolutionInputRef), resolutionInputBytes]]),
+    });
+    const report = preflightWithCachedRecord(cachedEffectRecord);
+    const legacyRawReport = preflightWithCachedRecord({
+      ...cachedEffectRecord,
+      requestIdentityChecksum: requestBytesChecksum,
+    });
+
+    assert.ok(canonicalIdentityBytes);
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.everyPendingRequestCovered, true);
+    assert.deepEqual(legacyRawReport.blockers, []);
+    assert.equal(legacyRawReport.everyPendingRequestCovered, true);
+  });
+
+  it('rejects legacy raw reusable records for configured preflight identities', () => {
+    const idempotencyKeyBytes = fromUtf8('configured-http-preflight-idempotency-key');
+    const requestBytes = fromUtf8(stableJson({ body: { prompt: 'configured' } }));
+    const request = {
+      ...httpRequest('https://allowed.example/decide'),
+      idempotencyKeyBytes,
+      hostRequestFingerprint: 'world:host-request:0000000000000c12',
+      requestBytes,
+    };
+    const requestBytesChecksum = `sha256:${createHash('sha256').update(requestBytes).digest('hex')}`;
+    const driver = new GenericHttpJsonCapabilityDriver({
+      endpointUrl: 'https://allowed.example/decide',
+      origins: ['https://allowed.example'],
+      methods: ['POST'],
+    });
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [request],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+      effectRecords: [{
+        runId: 'run',
+        branchId: 'main',
+        parentTurnClosureFingerprint: 'turn:0',
+        hostRequestFingerprint: request.hostRequestFingerprint,
+        idempotencyKey: {
+          format: 'world-idempotency-key-bytes.hex',
+          bytesHex: Buffer.from(idempotencyKeyBytes).toString('hex'),
+        },
+        idempotencyKeyWorldFingerprint: 'world:key:configured-http-preflight',
+        actuatorRef: request.actuatorRef,
+        descriptorFingerprint: request.descriptorFingerprint,
+        actuationClass: request.actuationClass,
+        responseSchema: request.responseSchema,
+        requestBytesChecksum,
+        requestIdentityChecksum: requestBytesChecksum,
+        state: EffectState.resolved,
+        attemptCount: 1,
+        driverRecoveryClass: EffectRecoveryClass.idempotent,
+      }],
+    });
+
+    assert.ok(journaledHostRequest(request, driver.manifest()).effectIdentityBytes);
+    assert.ok(report.blockers.includes('ERR_EFFECT_IDEMPOTENCY_CONFLICT'));
+  });
+
+  it('checks request-routed HTTP required actuators against declared request origins', () => {
+    const request = {
+      ...httpRequest('https://allowed.example/path', 'POST'),
+      requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/path', body: { prompt: 'hi' } })),
+    };
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [{ actuatorRef: 'http:json', descriptorFingerprint: 'descriptor:http-json' }],
+        requiredHostAuthorityLabels: ['network:http'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://fallback.example/decide',
+        allowEndpointFromRequest: true,
+        origins: ['https://allowed.example'],
+        methods: ['POST'],
+      })],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.everyRequiredActuatorCovered, true);
+    assert.equal(report.everyPendingRequestCovered, true);
+  });
+
+  it('leaves credentialed request-routed HTTP targets unresolved in partial preflight', () => {
+    const allowedRequest = {
+      ...httpRequest('https://allowed.example/path', 'POST'),
+      hostRequestFingerprint: 'world:host-request:http-allowed',
+      requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/path', body: { prompt: 'hi' } })),
+    };
+    const credentialedRequest = {
+      ...httpRequest('https://user:pass@allowed.example/decide', 'POST'),
+      hostRequestFingerprint: 'world:host-request:http-credentialed',
+      requestBytes: fromUtf8(stableJson({ url: 'https://user:pass@allowed.example/decide', body: { prompt: 'hi' } })),
+    };
+    const terminalCredentialPathRequest = {
+      ...httpRequest('https://allowed.example/token', 'POST'),
+      hostRequestFingerprint: 'world:host-request:http-terminal-token',
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [allowedRequest, credentialedRequest, terminalCredentialPathRequest],
+      drivers: [new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://fallback.example/decide',
+        allowEndpointFromRequest: true,
+        origins: ['https://allowed.example'],
+        methods: ['POST'],
+      })],
+      policy: createRunPolicy({
+        allowPartialEffectBatch: true,
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.selectedPendingRequestRoutes.length, 2);
+    assert.equal(report.selectedPendingRequestRoutes[0].hostRequestFingerprint, 'world:host-request:http-allowed');
+    assert.equal(report.selectedPendingRequestRoutes[1].hostRequestFingerprint, 'world:host-request:http-terminal-token');
+    assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
+    assert.equal(report.unresolvedPendingRequestRoutes[0].hostRequestFingerprint, 'world:host-request:http-credentialed');
+    assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('http-origin-denied:unknown'));
+    assert.equal(report.everyPendingRequestCovered, false);
+    assert.equal(report.fileNetworkAuthoritiesAllowed, false);
+  });
+
+  it('checks configured HTTP required actuators against any receiver-allowed method', () => {
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [{ actuatorRef: 'http:json', descriptorFingerprint: 'descriptor:http-json' }],
+        requiredHostAuthorityLabels: ['network:http'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      drivers: [new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        methods: ['GET', 'POST'],
+      })],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.everyRequiredActuatorCovered, true);
+  });
+
+  it('uses default HTTP methods for multi-method request URLs during preflight', () => {
+    const request = {
+      ...httpRequest('https://allowed.example/path'),
+      requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/path', body: { prompt: 'hi' } })),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://fallback.example/decide',
+        allowEndpointFromRequest: true,
+        origins: ['https://allowed.example', 'https://fallback.example'],
+        methods: ['POST', 'PUT'],
+      })],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.everyPendingRequestCovered, true);
+  });
+
+  it('rejects explicit fallback HTTP methods during preflight', () => {
+    const request = {
+      ...httpRequest('https://allowed.example/path'),
+      requestBytes: fromUtf8(stableJson({ method: 'DELETE', body: { prompt: 'hi' } })),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://allowed.example/path',
+        allowEndpointFromRequest: true,
+        origins: ['https://allowed.example'],
+        methods: ['POST'],
+      })],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.ok(report.blockers.includes('http-method-driver-denied:DELETE'));
+    assert.equal(report.coveredRequests.length, 1);
+  });
+
+  it('preflights fixed configured HTTP endpoints independently of payload url fields', () => {
+    const request = {
+      ...httpRequest('https://payload.example/not-target'),
+      requestBytes: fromUtf8(stableJson({ url: 'https://payload.example/not-target', body: { prompt: 'hi' } })),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.everyPendingRequestCovered, true);
+    assert.deepEqual(report.coveredRequests, [{
+      actuatorRef: 'http:json',
+      descriptorFingerprint: 'descriptor:http-json',
+      driverId: 'generic-http-json',
+    }]);
+  });
+
+  it('advertises generic HTTP request capacity for rendered host envelopes', () => {
+    const body = { prompt: 'body fits configured renderer limit' };
+    const renderedBodyBytes = fromUtf8(stableJson(body)).byteLength;
+    const request = {
+      ...httpRequest('https://payload.example/not-target', 'POST'),
+      requestBytes: fromUtf8(stableJson({ url: 'https://payload.example/not-target', method: 'POST', body })),
+    };
+    const driver = new GenericHttpJsonCapabilityDriver({
+      endpointUrl: 'https://allowed.example/decide',
+      maximumRequestBytes: renderedBodyBytes,
+    });
+
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+        maximumRequestBytes: 4096,
+      }),
+    });
+
+    assert.equal(request.requestBytes.byteLength > renderedBodyBytes, true);
+    assert.equal(driver.manifest().maximumRequestBytes > request.requestBytes.byteLength, true);
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.everyPendingRequestCovered, true);
+  });
+
+  it('derives configured HTTP endpoint origins and singleton methods during preflight', () => {
+    const request = {
+      ...httpRequest('https://payload.example/not-target'),
+      requestBytes: fromUtf8(stableJson({ body: { prompt: 'hi' } })),
+    };
+    const driver = {
+      manifest() {
+        return {
+          driverId: 'configured-url-only-put',
+          supportedActuatorRefs: ['http:json'],
+          supportedDescriptorFingerprints: ['descriptor:http-json'],
+          supportedActuationClasses: ['http'],
+          supportedResponseStatuses: ['ok'],
+          maximumRequestBytes: 4096,
+          maximumResponseBytes: 4096,
+          recoveryClass: EffectRecoveryClass.idempotent,
+          concurrencyLimit: 1,
+          authorityLabels: ['network:http'],
+          diagnostics: {
+            endpointSource: 'config',
+            configuredEndpointUrl: 'https://allowed.example/put',
+            methods: ['PUT'],
+          },
+        };
+      },
+    };
+
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['PUT'],
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.deepEqual(report.coveredRequests, [{
+      actuatorRef: 'http:json',
+      descriptorFingerprint: 'descriptor:http-json',
+      driverId: 'configured-url-only-put',
+    }]);
+  });
+
+  it('derives configured HTTP endpoint origins and default methods without pending requests', () => {
+    const driver = {
+      manifest() {
+        return {
+          driverId: 'configured-url-default-post',
+          supportedActuatorRefs: ['http:json'],
+          supportedDescriptorFingerprints: ['descriptor:http-json'],
+          supportedActuationClasses: ['http'],
+          supportedResponseStatuses: ['ok'],
+          maximumRequestBytes: 4096,
+          maximumResponseBytes: 4096,
+          recoveryClass: EffectRecoveryClass.idempotent,
+          concurrencyLimit: 1,
+          authorityLabels: ['network:http'],
+          diagnostics: {
+            endpointSource: 'config',
+            configuredEndpointUrl: 'https://allowed.example/decide',
+            defaultMethod: 'POST',
+          },
+        };
+      },
+    };
+
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [{ actuatorRef: 'http:json', descriptorFingerprint: 'descriptor:http-json' }],
+        requiredHostAuthorityLabels: ['network:http'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.everyRequiredActuatorCovered, true);
+    assert.equal(report.fileNetworkAuthoritiesAllowed, true);
+  });
+
+  it('binds requestless fixed configured HTTP endpoint policy to the configured origin', () => {
+    const driver = {
+      manifest() {
+        return {
+          driverId: 'configured-url-extra-origin',
+          supportedActuatorRefs: ['http:json'],
+          supportedDescriptorFingerprints: ['descriptor:http-json'],
+          supportedActuationClasses: ['http'],
+          supportedResponseStatuses: ['ok'],
+          maximumRequestBytes: 4096,
+          maximumResponseBytes: 4096,
+          recoveryClass: EffectRecoveryClass.idempotent,
+          concurrencyLimit: 1,
+          authorityLabels: ['network:http'],
+          diagnostics: {
+            endpointSource: 'config',
+            configuredEndpointUrl: 'https://safe.example/decide',
+            origins: ['https://allowed.example'],
+            methods: ['POST'],
+          },
+        };
+      },
+    };
+
+    const report = preflightCapabilities({
+      application: {
+        requiredActuators: [{ actuatorRef: 'http:json', descriptorFingerprint: 'descriptor:http-json' }],
+        requiredHostAuthorityLabels: ['network:http'],
+        requiredRuntimeLimits: {},
+      },
+      currentHead: { generation: 0 },
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.ok(report.blockers.includes('required-actuator-policy-blocked:http:json'));
+    assert.ok(report.blockers.includes('http-origin-denied:https://safe.example'));
+    assert.equal(report.everyRequiredActuatorCovered, false);
+  });
+
+  it('checks configured HTTP endpoint method coverage against explicit payload methods', () => {
+    const request = {
+      ...httpRequest('https://payload.example/not-target'),
+      requestBytes: fromUtf8(stableJson({ method: 'DELETE', body: { prompt: 'hi' } })),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.ok(report.blockers.includes('http-method-driver-denied:DELETE'));
+    assert.equal(report.fileNetworkAuthoritiesAllowed, false);
+  });
+
+  it('requires receiver HTTP origin allowlists for pending HTTP requests', () => {
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path')],
+      drivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'] }),
+    });
+
+    assert.ok(report.blockers.includes('http-origin-allowlist-required'));
+    assert.equal(report.fileNetworkAuthoritiesAllowed, false);
+  });
+
+  it('requires receiver HTTP method allowlists for pending HTTP requests', () => {
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path', 'GET')],
+      drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'], methods: ['GET'] })],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'], allowedHttpOrigins: ['https://allowed.example'] }),
+    });
+
+    assert.ok(report.blockers.includes('http-method-allowlist-required'));
+    assert.equal(report.fileNetworkAuthoritiesAllowed, false);
+  });
+
+  it('marks partial unresolved pending requests as uncovered', () => {
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path', 'GET')],
+      drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'], methods: ['GET'] })],
+      policy: createRunPolicy({
+        allowPartialEffectBatch: true,
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
+    assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('http-method-allowlist-required'));
+    assert.equal(report.everyPendingRequestCovered, false);
+    assert.equal(report.fileNetworkAuthoritiesAllowed, false);
+  });
+
+  it('leaves driver-oversized requests unresolved in partial preflight', () => {
+    const coveredRequest = {
+      ...fixtureRequest(),
+      hostRequestFingerprint: 'world:host-request:driver-size-covered',
+      requestBytes: fromUtf8('ok'),
+    };
+    const oversizedRequest = {
+      ...fixtureRequest(),
+      hostRequestFingerprint: 'world:host-request:driver-size-oversized',
+      requestBytes: fromUtf8('too large for selected driver'),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [coveredRequest, oversizedRequest],
+      drivers: [fixtureDriverWithAuthority(['test'], { maximumRequestBytes: 4 })],
+      policy: createRunPolicy({
+        allowPartialEffectBatch: true,
+        allowedAuthorityLabels: ['test'],
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.selectedPendingRequestRoutes.length, 1);
+    assert.equal(report.selectedPendingRequestRoutes[0].hostRequestFingerprint, 'world:host-request:driver-size-covered');
+    assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
+    assert.equal(report.unresolvedPendingRequestRoutes[0].hostRequestFingerprint, 'world:host-request:driver-size-oversized');
+    assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('ERR_HOST_REQUEST_TOO_LARGE'));
+    assert.equal(report.everyPendingRequestCovered, false);
+    assert.equal(report.valueSizeLimitsSupported, false);
+  });
+
+  it('leaves HTTP prompt-limited requests unresolved in partial preflight', () => {
+    const request = {
+      ...httpRequest('https://allowed.example/path', 'POST'),
+      requestBytes: fromUtf8(stableJson({
+        url: 'https://allowed.example/path',
+        method: 'POST',
+        body: { prompt: 'too large for receiver prompt policy' },
+      })),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'], methods: ['POST'] })],
+      policy: createRunPolicy({
+        allowPartialEffectBatch: true,
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+        maximumRequestBytes: 4096,
+        maximumPromptBytes: 4,
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
+    assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('prompt-limit-exceeds-policy'));
+    assert.equal(report.everyPendingRequestCovered, false);
+    assert.equal(report.valueSizeLimitsSupported, false);
+  });
+
+  it('leaves templated generic HTTP prompt-limited requests unresolved in partial preflight', () => {
+    const requestTemplate = { prompt: 'template exceeds receiver prompt policy' };
+    const driver = new GenericHttpJsonCapabilityDriver({
+      endpointUrl: 'https://allowed.example/decide',
+      requestTemplate,
+    });
+    const request = {
+      ...httpRequest('https://allowed.example/path', 'POST'),
+      requestBytes: fromUtf8(stableJson({
+        url: 'https://allowed.example/path',
+        method: 'POST',
+        body: { prompt: 'ok' },
+      })),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowPartialEffectBatch: true,
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+        maximumRequestBytes: 4096,
+        maximumPromptBytes: 4,
+      }),
+    });
+
+    assert.equal(
+      driver.manifest().diagnostics.requestRendering.requestTemplateBodyBytes,
+      fromUtf8(stableJson(requestTemplate)).byteLength,
+    );
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
+    assert.equal(report.unresolvedPendingRequestRoutes[0].driverId, 'generic-http-json');
+    assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('prompt-limit-exceeds-policy'));
+    assert.equal(report.everyPendingRequestCovered, false);
+    assert.equal(report.valueSizeLimitsSupported, false);
+  });
+
+  it('leaves rendered generic HTTP request-limited bodies unresolved in partial preflight', () => {
+    const requestTemplate = { prompt: 'template exceeds receiver request policy' };
+    const request = {
+      ...httpRequest('https://allowed.example/path', 'POST'),
+      requestBytes: fromUtf8(stableJson({})),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [new GenericHttpJsonCapabilityDriver({
+        endpointUrl: 'https://allowed.example/decide',
+        requestTemplate,
+      })],
+      policy: createRunPolicy({
+        allowPartialEffectBatch: true,
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+        maximumRequestBytes: 8,
+        maximumPromptBytes: 4096,
+      }),
+    });
+
+    assert.equal(request.requestBytes.byteLength <= 8, true);
+    assert.equal(fromUtf8(stableJson(requestTemplate)).byteLength > 8, true);
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
+    assert.equal(report.unresolvedPendingRequestRoutes[0].driverId, 'generic-http-json');
+    assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('request-limit-exceeds-policy'));
+    assert.equal(report.everyPendingRequestCovered, false);
+    assert.equal(report.valueSizeLimitsSupported, false);
+  });
+
+  it('charges generic HTTP fallback bodies during partial preflight', () => {
+    const request = {
+      ...httpRequest('https://allowed.example/path', 'POST'),
+      requestBytes: fromUtf8(stableJson({
+        url: 'https://allowed.example/path',
+        method: 'POST',
+        metadata: 'fallback body exceeds receiver prompt policy',
+      })),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
+      policy: createRunPolicy({
+        allowPartialEffectBatch: true,
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+        maximumRequestBytes: 4096,
+        maximumPromptBytes: 4,
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
+    assert.equal(report.unresolvedPendingRequestRoutes[0].driverId, 'generic-http-json');
+    assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('prompt-limit-exceeds-policy'));
+    assert.equal(report.everyPendingRequestCovered, false);
+    assert.equal(report.valueSizeLimitsSupported, false);
+  });
+
+  it('reports HTTP prompt limits as blockers in non-partial preflight', () => {
+    const request = {
+      ...httpRequest('https://allowed.example/path', 'POST'),
+      requestBytes: fromUtf8(stableJson({
+        url: 'https://allowed.example/path',
+        method: 'POST',
+        body: { prompt: 'too large for receiver prompt policy' },
+      })),
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'], methods: ['POST'] })],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+        maximumRequestBytes: 4096,
+        maximumPromptBytes: 4,
+      }),
+    });
+
+    assert.ok(report.blockers.includes('prompt-limit-exceeds-policy'));
+    assert.deepEqual(report.unresolvedPendingRequestRoutes, []);
+    assert.equal(report.everyPendingRequestCovered, true);
+    assert.equal(report.valueSizeLimitsSupported, false);
+  });
+
+  it('leaves approval-required HTTP requests unresolved in partial preflight', () => {
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path', 'POST')],
+      drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'], methods: ['POST'] })],
+      policy: createRunPolicy({
+        allowPartialEffectBatch: true,
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+        requireApprovalForNetworkEffects: true,
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
+    assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('ERR_CAPABILITY_APPROVAL_REQUIRED'));
+    assert.equal(report.everyPendingRequestCovered, false);
+  });
+
+  it('reports approval-required HTTP requests as non-partial preflight blockers', () => {
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path', 'POST')],
+      drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'], methods: ['POST'] })],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+        requireApprovalForNetworkEffects: true,
+      }),
+    });
+
+    assert.ok(report.blockers.includes('ERR_CAPABILITY_APPROVAL_REQUIRED'));
+    assert.equal(report.selectedPendingRequestRoutes.length, 0);
+    assert.deepEqual(report.unresolvedPendingRequestRoutes, []);
+  });
+
+  it('ranks policy-safe routes before approval-deferred candidates', () => {
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [fixtureRequest()],
+      drivers: [
+        fixtureDriverWithAuthority(['test'], {
+          driverId: 'approval-deferred-best-effort',
+          recoveryClass: EffectRecoveryClass.bestEffort,
+        }),
+        fixtureDriverWithAuthority(['test'], { driverId: 'policy-safe-pure' }),
+      ],
+      policy: createRunPolicy({
+        allowBestEffort: true,
+        allowedAuthorityLabels: ['test'],
+      }),
+      allowApprovalDeferredRoutes: true,
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.deepEqual(report.selectedPendingRequestRoutes, [{
+      actuatorRef: 'fixture:model',
+      descriptorFingerprint: 'descriptor:fixture-model',
+      driverId: 'policy-safe-pure',
+      driverIndex: 1,
+    }]);
+  });
+
+  it('widens to approval-only routes without relaxing other policy blockers', () => {
+    const policy = createRunPolicy({
+      allowBestEffort: true,
+      allowedAuthorityLabels: ['test'],
+    });
+    const fallbackReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [fixtureRequest()],
+      drivers: [fixtureDriverWithAuthority(['test'], {
+        driverId: 'approval-only-fallback',
+        recoveryClass: EffectRecoveryClass.bestEffort,
+      })],
+      policy,
+      allowApprovalDeferredRoutes: true,
+    });
+
+    assert.deepEqual(fallbackReport.blockers, []);
+    assert.equal(fallbackReport.selectedPendingRequestRoutes[0].driverId, 'approval-only-fallback');
+    assert.equal(fallbackReport.selectedPendingRequestRoutes[0].driverIndex, 0);
+
+    const blockedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [fixtureRequest()],
+      drivers: [fixtureDriverWithAuthority(['denied'], {
+        driverId: 'approval-plus-authority-blocked',
+        recoveryClass: EffectRecoveryClass.bestEffort,
+      })],
+      policy,
+      allowApprovalDeferredRoutes: true,
+    });
+
+    assert.equal(blockedReport.selectedPendingRequestRoutes.length, 0);
+    assert.ok(blockedReport.blockers.includes('authority-denied:denied'));
+    assert.ok(blockedReport.blockers.includes('ERR_CAPABILITY_APPROVAL_REQUIRED'));
+  });
+
+  it('leaves approval-required file and best-effort requests unresolved in partial preflight', () => {
+    const bestEffortRequest = {
+      ...fixtureRequest(),
+      hostRequestFingerprint: 'world:host-request:best-effort-approval',
+    };
+    const destructiveFileRequest = {
+      ...fileRequest('out.txt', { operation: 'write', content: 'needs approval' }),
+      hostRequestFingerprint: 'world:host-request:file-approval',
+    };
+    const malformedFileRequest = {
+      ...fileRequest('broken.txt'),
+      requestBytes: fromUtf8('not-json'),
+      hostRequestFingerprint: 'world:host-request:file-malformed-approval',
+    };
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [bestEffortRequest, destructiveFileRequest, malformedFileRequest],
+      drivers: [
+        fixtureDriverWithAuthority(['test'], { recoveryClass: EffectRecoveryClass.bestEffort }),
+        fixtureDriverWithAuthority(['file:sandbox'], {
+          actuatorRef: 'sandbox:file',
+          descriptorFingerprint: 'descriptor:sandbox-file',
+          actuationClasses: ['file'],
+          diagnostics: { root: FIXTURE_FILE_ROOT },
+        }),
+      ],
+      policy: createRunPolicy({
+        allowPartialEffectBatch: true,
+        allowBestEffort: true,
+        allowedAuthorityLabels: ['test', 'file:sandbox'],
+        allowedFileRoots: [FIXTURE_FILE_ROOT],
+      }),
+    });
+
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.unresolvedPendingRequestRoutes.length, 3);
+    assert.deepEqual(
+      report.unresolvedPendingRequestRoutes.map((route) => route.hostRequestFingerprint).sort(),
+      [
+        'world:host-request:best-effort-approval',
+        'world:host-request:file-approval',
+        'world:host-request:file-malformed-approval',
+      ],
+    );
+    assert.ok(report.unresolvedPendingRequestRoutes.every((route) =>
+      route.blockers.includes('ERR_CAPABILITY_APPROVAL_REQUIRED')));
+    assert.equal(report.everyPendingRequestCovered, false);
+  });
+
+  it('summarizes receiver HTTP method denials as authority failures', () => {
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path', 'DELETE')],
+      drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'], methods: ['DELETE'] })],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.ok(report.blockers.includes('http-method-denied:DELETE'));
+    assert.equal(report.blockers.includes('http-method-driver-denied:DELETE'), false);
     assert.equal(report.fileNetworkAuthoritiesAllowed, false);
   });
 
@@ -56,6 +1328,1119 @@ describe('capability preflight and reference drivers', () => {
       descriptorFingerprint: 'descriptor:fixture-model',
       driverId: 'fixture-model',
     }]);
+  });
+
+  it('preserves capability pack fingerprints during preflight policy checks', () => {
+    const packFingerprint = 'sha256:'.concat('f'.repeat(64));
+    const driver = new GenericHttpJsonCapabilityDriver({
+      endpointUrl: 'https://allowed.example/path',
+      packFingerprint,
+    });
+    const allowedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path', 'POST')],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        allowedCapabilityPacks: [packFingerprint],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.deepEqual(allowedReport.blockers, []);
+    assert.equal(allowedReport.everyPendingRequestCovered, true);
+
+    const stringAllowedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path', 'POST')],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: 'network:http',
+        allowedCapabilityPacks: packFingerprint,
+        allowedHttpOrigins: 'https://allowed.example',
+        allowedHttpMethods: 'POST',
+      }),
+    });
+
+    assert.deepEqual(stringAllowedReport.blockers, []);
+    assert.equal(stringAllowedReport.everyPendingRequestCovered, true);
+
+    const deniedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path', 'POST')],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        deniedCapabilityPacks: [packFingerprint],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.ok(deniedReport.blockers.includes('ERR_CAPABILITY_PACK_DENIED'));
+
+    const stringDeniedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path', 'POST')],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: 'network:http',
+        deniedCapabilityPacks: packFingerprint,
+        allowedHttpOrigins: 'https://allowed.example',
+        allowedHttpMethods: 'POST',
+      }),
+    });
+
+    assert.ok(stringDeniedReport.blockers.includes('ERR_CAPABILITY_PACK_DENIED'));
+
+    const wrappedDeniedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [httpRequest('https://allowed.example/path', 'POST')],
+      drivers: [defineActuatorDriver(driver)],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['network:http'],
+        deniedCapabilityPacks: [packFingerprint],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+      }),
+    });
+
+    assert.ok(wrappedDeniedReport.blockers.includes('ERR_CAPABILITY_PACK_DENIED'));
+  });
+
+  it('reports live model budget blockers during receiver preflight', () => {
+    const modelRequest = (key) => ({
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClass: 'model',
+      responseSchema: { status: 'ok' },
+      idempotencyKeyWorldFingerprint: `key:model-budget:${key}`,
+      requestBytes: fromUtf8(stableJson({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: `goal=budget:${key}` })),
+    });
+    const driver = fixtureDriverWithAuthority(['model:live'], {
+      driverId: 'live-model',
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClasses: ['model'],
+      recoveryClass: EffectRecoveryClass.idempotent,
+    });
+    const rerunnableDriver = fixtureDriverWithAuthority(['model:live'], {
+      driverId: 'live-model-rerunnable',
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClasses: ['model'],
+    });
+    const zeroBudgetReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [modelRequest('zero')],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 0 }),
+    });
+    const overBudgetReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [modelRequest('first'), modelRequest('second')],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
+    });
+    const wrappedModelRequest = (key) => ({
+      ...modelRequest(key),
+      actuatorRef: 'world:model-bridge',
+      descriptorFingerprint: 'descriptor:world-model-bridge',
+      actuationClass: 'world:actuation-class:1',
+    });
+    const wrappedDriver = fixtureDriverWithAuthority(['model:live'], {
+      driverId: 'wrapped-live-model',
+      actuatorRef: 'world:model-bridge',
+      descriptorFingerprint: 'descriptor:world-model-bridge',
+      actuationClasses: ['world:actuation-class:1'],
+    });
+    const wrappedOverBudgetReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [wrappedModelRequest('first'), wrappedModelRequest('second')],
+      drivers: [wrappedDriver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
+    });
+    const cachedModelRequest = {
+      ...modelRequest('cached'),
+      idempotencyKeyBytes: fromUtf8('model-budget-cached-key'),
+      hostRequestFingerprint: 'world:host-request:0000000000000c01',
+    };
+    const freshModelRequest = {
+      ...modelRequest('fresh'),
+      idempotencyKeyBytes: fromUtf8('model-budget-fresh-key'),
+      hostRequestFingerprint: 'world:host-request:0000000000000c02',
+    };
+    const cachedModelRequestChecksum = `sha256:${createHash('sha256').update(cachedModelRequest.requestBytes).digest('hex')}`;
+    const cachedModelResolutionInputBytes = encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xc01n,
+      status: 0,
+      responseValueImageBytes: fromUtf8('cached model response'),
+      hostClaimBytes: fromUtf8('host-claim:cached-model-response'),
+      attemptNumber: 1,
+      metadata: fromUtf8('cached-model-resolution'),
+    });
+    const cachedModelResolutionInputRef = blobRefForBytes(cachedModelResolutionInputBytes);
+    const cachedModelResolutionInputs = new Map([[blobRefKey(cachedModelResolutionInputRef), cachedModelResolutionInputBytes]]);
+    const cachedModelEffect = {
+      branchId: 'main',
+      idempotencyKeyWorldFingerprint: cachedModelRequest.idempotencyKeyWorldFingerprint,
+      hostRequestFingerprint: cachedModelRequest.hostRequestFingerprint,
+      idempotencyKey: {
+        format: 'world-idempotency-key-bytes.hex',
+        bytesHex: Buffer.from('model-budget-cached-key').toString('hex'),
+      },
+      requestBytesRef: blobRefForBytes(cachedModelRequest.requestBytes),
+      requestBytesChecksum: cachedModelRequestChecksum,
+      state: EffectState.resolved,
+      driverRecoveryClass: EffectRecoveryClass.idempotent,
+      resolutionInputRef: cachedModelResolutionInputRef,
+    };
+    const { requestBytesRef: _requestBytesRef, ...cachedModelEffectWithoutRequestBytes } = cachedModelEffect;
+    const mismatchedResolutionInputBytes = encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xbadn,
+      status: 0,
+      responseValueImageBytes: fromUtf8('cached model response'),
+      hostClaimBytes: fromUtf8('host-claim:cached-model-response'),
+      attemptNumber: 1,
+      metadata: fromUtf8('mismatched-resolution-target'),
+    });
+    const mismatchedResolutionInputRef = blobRefForBytes(mismatchedResolutionInputBytes);
+    const oversizedResolutionInputBytes = encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xc01n,
+      status: 0,
+      responseValueImageBytes: fromUtf8('oversized'),
+      hostClaimBytes: fromUtf8('host-claim:oversized'),
+      attemptNumber: 1,
+      metadata: new Uint8Array(),
+    });
+    const oversizedResolutionInputRef = blobRefForBytes(oversizedResolutionInputBytes);
+    const unsupportedStatusResolutionInputBytes = encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xc01n,
+      status: 2,
+      responseValueImageBytes: new Uint8Array(),
+      hostClaimBytes: fromUtf8('host-claim:unsupported-status'),
+      attemptNumber: 1,
+      metadata: fromUtf8('unsupported-status-resolution'),
+    });
+    const unsupportedStatusResolutionInputRef = blobRefForBytes(unsupportedStatusResolutionInputBytes);
+    const smallResponseDriver = fixtureDriverWithAuthority(['model:live'], {
+      driverId: 'live-model-small-response',
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClasses: ['model'],
+      maximumResponseBytes: 8,
+      recoveryClass: EffectRecoveryClass.idempotent,
+    });
+    const mismatchedResolutionReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 0 }),
+      effectRecords: [{ ...cachedModelEffect, resolutionInputRef: mismatchedResolutionInputRef }],
+      effectResolutionInputs: new Map([[blobRefKey(mismatchedResolutionInputRef), mismatchedResolutionInputBytes]]),
+    });
+    const mismatchedResolutionRerunReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [rerunnableDriver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
+      effectRecords: [{ ...cachedModelEffect, driverRecoveryClass: EffectRecoveryClass.pure, resolutionInputRef: mismatchedResolutionInputRef }],
+      effectResolutionInputs: new Map([[blobRefKey(mismatchedResolutionInputRef), mismatchedResolutionInputBytes]]),
+    });
+    const mismatchedRecoveryClassReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 0 }),
+      effectRecords: [{ ...cachedModelEffect, driverRecoveryClass: EffectRecoveryClass.pure }],
+      effectResolutionInputs: cachedModelResolutionInputs,
+    });
+    const mismatchedResolutionWithoutRequestBytesReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
+      effectRecords: [{ ...cachedModelEffectWithoutRequestBytes, resolutionInputRef: mismatchedResolutionInputRef }],
+      effectResolutionInputs: new Map([[blobRefKey(mismatchedResolutionInputRef), mismatchedResolutionInputBytes]]),
+    });
+    const mismatchedSubmittedResolutionReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
+      effectRecords: [{ ...cachedModelEffect, state: EffectState.submitted, resolutionInputRef: mismatchedResolutionInputRef }],
+      effectResolutionInputs: new Map([[blobRefKey(mismatchedResolutionInputRef), mismatchedResolutionInputBytes]]),
+    });
+    const mismatchedSameBranchOldParentSubmittedResolutionReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 1, turnClosureWorldFingerprint: 'turn:1' },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [rerunnableDriver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
+      effectRecords: [{
+        ...cachedModelEffect,
+        parentTurnClosureFingerprint: 'turn:0',
+        state: EffectState.submitted,
+        driverRecoveryClass: EffectRecoveryClass.pure,
+        resolutionInputRef: mismatchedResolutionInputRef,
+      }],
+      effectResolutionInputs: new Map([[blobRefKey(mismatchedResolutionInputRef), mismatchedResolutionInputBytes]]),
+    });
+    const mismatchedSameBranchOldParentCommittedResolutionReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 1, turnClosureWorldFingerprint: 'turn:1' },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [rerunnableDriver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
+      effectRecords: [{
+        ...cachedModelEffect,
+        parentTurnClosureFingerprint: 'turn:0',
+        state: EffectState.closureCommitted,
+        driverRecoveryClass: EffectRecoveryClass.pure,
+        resolutionInputRef: mismatchedResolutionInputRef,
+      }],
+      effectResolutionInputs: new Map([[blobRefKey(mismatchedResolutionInputRef), mismatchedResolutionInputBytes]]),
+    });
+    const oversizedSubmittedResolutionReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [smallResponseDriver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
+      effectRecords: [{ ...cachedModelEffect, state: EffectState.submitted, resolutionInputRef: oversizedResolutionInputRef }],
+      effectResolutionInputs: new Map([[blobRefKey(oversizedResolutionInputRef), oversizedResolutionInputBytes]]),
+    });
+    const unsupportedStatusSubmittedResolutionReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
+      effectRecords: [{ ...cachedModelEffect, state: EffectState.submitted, resolutionInputRef: unsupportedStatusResolutionInputRef }],
+      effectResolutionInputs: new Map([[blobRefKey(unsupportedStatusResolutionInputRef), unsupportedStatusResolutionInputBytes]]),
+    });
+    const mismatchedCrossBranchSubmittedResolutionReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [rerunnableDriver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
+      effectRecords: [{ ...cachedModelEffect, branchId: 'cached-branch', state: EffectState.submitted, driverRecoveryClass: EffectRecoveryClass.pure, resolutionInputRef: mismatchedResolutionInputRef }],
+      effectResolutionInputs: new Map([[blobRefKey(mismatchedResolutionInputRef), mismatchedResolutionInputBytes]]),
+    });
+    const shadowedCachedEffects = [
+      { ...cachedModelEffect, branchId: 'cached-branch' },
+      { ...cachedModelEffect, state: EffectState.observed, resolutionInputRef: undefined },
+    ];
+    const replayOnlyReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 0 }),
+      effectRecords: [cachedModelEffect],
+      effectResolutionInputs: cachedModelResolutionInputs,
+    });
+    const divergentFingerprintReplayReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 0 }),
+      effectRecords: [{
+        ...cachedModelEffect,
+        idempotencyKeyWorldFingerprint: `sha256:${createHash('sha256').update(cachedModelRequest.idempotencyKeyBytes).digest('hex')}`,
+      }],
+      effectResolutionInputs: cachedModelResolutionInputs,
+    });
+    const auditOnlyPendingReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], auditOnly: true, maximumLiveModelCalls: 1 }),
+    });
+    const oneNewWithCachedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest, freshModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
+      effectRecords: [cachedModelEffect],
+      effectResolutionInputs: cachedModelResolutionInputs,
+    });
+    const shadowedReplayReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 0 }),
+      effectRecords: shadowedCachedEffects,
+    });
+    const shadowedReplayWithResolutionReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 0 }),
+      effectRecords: shadowedCachedEffects,
+      effectResolutionInputs: cachedModelResolutionInputs,
+    });
+    const shadowedInvalidCurrentBranchSubmittedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 0 }),
+      effectRecords: [
+        { ...cachedModelEffect, branchId: 'cached-branch' },
+        { ...cachedModelEffect, state: EffectState.submitted, resolutionInputRef: mismatchedResolutionInputRef },
+      ],
+      effectResolutionInputs: new Map([
+        [blobRefKey(cachedModelResolutionInputRef), cachedModelResolutionInputBytes],
+        [blobRefKey(mismatchedResolutionInputRef), mismatchedResolutionInputBytes],
+      ]),
+    });
+    const shadowedMixedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest, freshModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 1 }),
+      effectRecords: shadowedCachedEffects,
+    });
+    const mismatchedCachedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 0 }),
+      effectRecords: [{ ...cachedModelEffect, hostRequestFingerprint: 'world:host-request:0000000000000bad' }],
+    });
+    const wrongFullKeyReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['model:live'], maximumLiveModelCalls: 0 }),
+      effectRecords: [{
+        ...cachedModelEffect,
+        idempotencyKey: {
+          format: 'world-idempotency-key-bytes.hex',
+          bytesHex: Buffer.from('different-model-budget-key').toString('hex'),
+        },
+      }],
+    });
+    const nonLiveDriver = fixtureDriverWithAuthority(['model:fixture'], {
+      driverId: 'fixture-model-budget',
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClasses: ['model'],
+      recoveryClass: EffectRecoveryClass.idempotent,
+      diagnostics: { deterministic: true },
+    });
+    const liveOnlyRequest = {
+      ...modelRequest('live-only'),
+      descriptorFingerprint: 'descriptor:agent-live-only',
+    };
+    const liveOnlyDriver = fixtureDriverWithAuthority(['model:live'], {
+      driverId: 'live-model-only',
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-live-only',
+      actuationClasses: ['model'],
+    });
+    const spoofedFixtureIdLiveDriver = fixtureDriverWithAuthority(['model:live'], {
+      driverId: 'fixture-agent-model',
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-live-only',
+      actuationClasses: ['model'],
+      diagnostics: { deterministic: true },
+    });
+    const fallbackWithInvalidReusableReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver, nonLiveDriver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:live', 'model:fixture'],
+        maximumLiveModelCalls: 0,
+      }),
+      effectRecords: [{ ...cachedModelEffect, resolutionInputRef: mismatchedResolutionInputRef }],
+      effectResolutionInputs: new Map([[blobRefKey(mismatchedResolutionInputRef), mismatchedResolutionInputBytes]]),
+    });
+    const fallbackWithSubmittedInvalidReusableReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [driver, nonLiveDriver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:live', 'model:fixture'],
+        maximumLiveModelCalls: 0,
+      }),
+      effectRecords: [{ ...cachedModelEffect, state: EffectState.submitted, resolutionInputRef: mismatchedResolutionInputRef }],
+      effectResolutionInputs: new Map([[blobRefKey(mismatchedResolutionInputRef), mismatchedResolutionInputBytes]]),
+    });
+    const routeSpecificLiveDriver = fixtureDriverWithAuthority(['model:live'], {
+      driverId: 'route-specific-live-model',
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClasses: ['model'],
+      recoveryClass: EffectRecoveryClass.idempotent,
+      diagnostics: {
+        endpointSource: 'request-or-config',
+        modelOutputValidation: { schema: 'strict-agent-action' },
+      },
+    });
+    const routeSpecificLiveIdentityBytes = journaledHostRequest(cachedModelRequest, routeSpecificLiveDriver.manifest()).effectIdentityBytes;
+    const fallbackWithRouteSpecificConflictReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      currentBranchId: 'main',
+      pendingRequests: [cachedModelRequest],
+      drivers: [routeSpecificLiveDriver, nonLiveDriver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:live', 'model:fixture'],
+        maximumLiveModelCalls: 0,
+      }),
+      effectRecords: [{
+        ...cachedModelEffect,
+        state: EffectState.submitted,
+        resolutionInputRef: mismatchedResolutionInputRef,
+        requestIdentityChecksum: `sha256:${createHash('sha256').update(routeSpecificLiveIdentityBytes).digest('hex')}`,
+      }],
+      effectResolutionInputs: new Map([[blobRefKey(mismatchedResolutionInputRef), mismatchedResolutionInputBytes]]),
+    });
+    const liveFirstWithFixtureFallbackReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [modelRequest('fixture-fallback')],
+      drivers: [driver, nonLiveDriver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:live', 'model:fixture'],
+        maximumLiveModelCalls: 0,
+      }),
+    });
+    const mixedBudgetWithFixtureFallbackReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [modelRequest('fixture-fallback'), liveOnlyRequest],
+      drivers: [driver, nonLiveDriver, liveOnlyDriver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:live', 'model:fixture'],
+        maximumLiveModelCalls: 1,
+      }),
+    });
+    const spoofedFixtureIdLiveReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [liveOnlyRequest],
+      drivers: [spoofedFixtureIdLiveDriver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:live'],
+        maximumLiveModelCalls: 0,
+      }),
+    });
+
+    assert.ok(zeroBudgetReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+    assert.ok(overBudgetReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+    assert.ok(wrappedOverBudgetReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+    assert.equal(replayOnlyReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'), false);
+    assert.deepEqual(divergentFingerprintReplayReport.blockers, []);
+    assert.deepEqual(auditOnlyPendingReport.blockers, ['ERR_CAPABILITY_AUDIT_ONLY_DENIED']);
+    assert.equal(oneNewWithCachedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'), false);
+    assert.ok(shadowedReplayReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+    assert.deepEqual(shadowedReplayWithResolutionReport.blockers, []);
+    assert.deepEqual(shadowedInvalidCurrentBranchSubmittedReport.blockers, [
+      'ERR_CAPABILITY_REUSABLE_EFFECT_TARGET_MISMATCH',
+      'ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED',
+    ]);
+    assert.ok(shadowedMixedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+    assert.ok(mismatchedCachedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+    assert.ok(wrongFullKeyReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+    assert.ok(mismatchedResolutionReport.blockers.includes('ERR_CAPABILITY_REUSABLE_EFFECT_TARGET_MISMATCH'));
+    assert.ok(mismatchedResolutionReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+    assert.deepEqual(mismatchedResolutionRerunReport.blockers, []);
+    assert.ok(mismatchedRecoveryClassReport.blockers.includes('ERR_EFFECT_RECOVERY_CLASS_MISMATCH'));
+    assert.ok(mismatchedRecoveryClassReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+    assert.deepEqual(mismatchedResolutionWithoutRequestBytesReport.blockers, ['ERR_CAPABILITY_REUSABLE_EFFECT_TARGET_MISMATCH']);
+    assert.deepEqual(mismatchedSubmittedResolutionReport.blockers, ['ERR_CAPABILITY_REUSABLE_EFFECT_TARGET_MISMATCH']);
+    assert.deepEqual(mismatchedSameBranchOldParentSubmittedResolutionReport.blockers, []);
+    assert.deepEqual(mismatchedSameBranchOldParentCommittedResolutionReport.blockers, []);
+    assert.deepEqual(oversizedSubmittedResolutionReport.blockers, ['ERR_CAPABILITY_REUSABLE_EFFECT_RESPONSE_TOO_LARGE']);
+    assert.equal(oversizedSubmittedResolutionReport.valueSizeLimitsSupported, false);
+    assert.deepEqual(unsupportedStatusSubmittedResolutionReport.blockers, ['ERR_CAPABILITY_REUSABLE_EFFECT_STATUS_MISMATCH']);
+    assert.equal(unsupportedStatusSubmittedResolutionReport.responseStatusesSupported, false);
+    assert.deepEqual(mismatchedCrossBranchSubmittedResolutionReport.blockers, []);
+    assert.deepEqual(fallbackWithInvalidReusableReport.blockers, []);
+    assert.deepEqual(fallbackWithInvalidReusableReport.coveredRequests, [{
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      driverId: 'fixture-model-budget',
+    }]);
+    assert.deepEqual(fallbackWithSubmittedInvalidReusableReport.blockers, ['ERR_CAPABILITY_REUSABLE_EFFECT_TARGET_MISMATCH']);
+    assert.deepEqual(fallbackWithSubmittedInvalidReusableReport.coveredRequests, [{
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      driverId: 'fixture-model-budget',
+    }]);
+    assert.deepEqual(fallbackWithRouteSpecificConflictReport.blockers, ['ERR_EFFECT_IDEMPOTENCY_CONFLICT']);
+    assert.deepEqual(fallbackWithRouteSpecificConflictReport.coveredRequests, [{
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      driverId: 'fixture-model-budget',
+    }]);
+    assert.deepEqual(liveFirstWithFixtureFallbackReport.blockers, []);
+    assert.deepEqual(liveFirstWithFixtureFallbackReport.coveredRequests, [{
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      driverId: 'fixture-model-budget',
+    }]);
+    assert.deepEqual(mixedBudgetWithFixtureFallbackReport.blockers, []);
+    assert.deepEqual(mixedBudgetWithFixtureFallbackReport.coveredRequests.map(({ driverId }) => driverId), [
+      'fixture-model-budget',
+      'live-model-only',
+    ]);
+    assert.ok(spoofedFixtureIdLiveReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+  });
+
+  it('requires human-effect opt-in during receiver preflight', () => {
+    const humanRequest = {
+      actuatorRef: 'human:approval',
+      descriptorFingerprint: 'descriptor:human-approval',
+      actuationClass: 'human',
+      responseSchema: { status: 'ok' },
+      idempotencyKeyWorldFingerprint: 'world:key:human-preflight',
+      requestBytes: fromUtf8(stableJson({ action: 'approve' })),
+    };
+    const driver = new HumanApprovalCapabilityDriver({ mode: 'noninteractive-allow' });
+    const deniedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [humanRequest],
+      drivers: [driver],
+      policy: createRunPolicy({ allowedAuthorityLabels: ['human:approval'] }),
+    });
+    const allowedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [humanRequest],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowHumanEffects: true,
+        allowedAuthorityLabels: ['human:approval'],
+      }),
+    });
+
+    assert.ok(deniedReport.blockers.includes('ERR_CAPABILITY_HUMAN_DENIED'));
+    assert.deepEqual(allowedReport.blockers, []);
+
+    const denyDriverForOkRequest = new HumanApprovalCapabilityDriver({ mode: 'noninteractive-deny' });
+    const denyDriverOkReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [humanRequest],
+      drivers: [denyDriverForOkRequest],
+      policy: createRunPolicy({
+        allowHumanEffects: true,
+        allowedAuthorityLabels: ['human:approval'],
+      }),
+    });
+    const allowDriverRejectedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [{ ...humanRequest, responseSchema: { status: 'rejected' } }],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowHumanEffects: true,
+        allowedAuthorityLabels: ['human:approval'],
+      }),
+    });
+    assert.ok(denyDriverOkReport.blockers.includes('ERR_RESPONSE_STATUS_NOT_SUPPORTED'));
+    assert.ok(allowDriverRejectedReport.blockers.includes('ERR_RESPONSE_STATUS_NOT_SUPPORTED'));
+  });
+
+  it('applies prompt byte limits to human approval prompts', async () => {
+    const humanRequest = {
+      actuatorRef: 'human:approval',
+      descriptorFingerprint: 'descriptor:human-approval',
+      actuationClass: 'human',
+      responseSchema: { status: 'ok' },
+      idempotencyKeyWorldFingerprint: 'world:key:human-prompt-limit',
+      requestBytes: fromUtf8(stableJson({ prompt: 'approve this larger request' })),
+      hostRequestFingerprint: 'world:host-request:0000000000000a01',
+    };
+    const policy = {
+      allowLiveEffects: true,
+      allowHumanEffects: true,
+      allowedAuthorityLabels: ['human:approval'],
+      maximumRequestBytes: 4096,
+      maximumPromptBytes: 4,
+    };
+    const context = { policy };
+    const driver = new HumanApprovalCapabilityDriver({ mode: 'noninteractive-allow' });
+    const report = driver.preflight(context, humanRequest);
+
+    assert.equal(report.accepted, false);
+    assert.ok(report.blockers.includes('ERR_CAPABILITY_PROMPT_TOO_LARGE'));
+    await assert.rejects(
+      () => driver.resolve(context, humanRequest),
+      { code: 'ERR_CAPABILITY_PROMPT_TOO_LARGE' },
+    );
+
+    const preflightReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [humanRequest],
+      drivers: [driver],
+      policy,
+    });
+    assert.ok(preflightReport.blockers.includes('prompt-limit-exceeds-policy'));
+    assert.equal(preflightReport.valueSizeLimitsSupported, false);
+  });
+
+  it('treats label-only model:http-json routes as network during receiver preflight', () => {
+    const request = {
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClass: 'model',
+      responseSchema: { status: 'ok' },
+      idempotencyKeyWorldFingerprint: 'world:key:label-only-model-network',
+      requestBytes: fromUtf8(stableJson({
+        schema: 'boundary.Agent.DecisionPrompt.v0',
+        observation: 'goal=label-only-model-network',
+      })),
+    };
+    const driver = fixtureDriverWithAuthority(['model:http-json'], {
+      driverId: 'label-only-http-model',
+      actuatorRef: request.actuatorRef,
+      descriptorFingerprint: request.descriptorFingerprint,
+      actuationClasses: ['model'],
+      recoveryClass: EffectRecoveryClass.idempotent,
+      diagnostics: {
+        endpointSource: 'config',
+        configuredEndpointUrl: 'https://allowed.example/decide',
+        defaultMethod: 'POST',
+        origins: ['https://allowed.example'],
+        methods: ['POST'],
+      },
+    });
+    const report = (policy) => preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [request],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:http-json'],
+        maximumLiveModelCalls: 1,
+        ...policy,
+      }),
+    });
+
+    const missingAllowlists = report({});
+    assert.ok(missingAllowlists.blockers.includes('http-origin-allowlist-required'));
+    assert.ok(missingAllowlists.blockers.includes('http-method-allowlist-required'));
+
+    const deniedTarget = report({
+      allowedHttpOrigins: ['https://denied.example'],
+      allowedHttpMethods: ['GET'],
+    });
+    assert.ok(deniedTarget.blockers.includes('http-origin-denied:https://allowed.example'));
+    assert.ok(deniedTarget.blockers.includes('http-method-denied:POST'));
+
+    const approvalRequired = report({
+      allowedHttpOrigins: ['https://allowed.example'],
+      allowedHttpMethods: ['POST'],
+      requireApprovalForNetworkEffects: true,
+    });
+    assert.ok(approvalRequired.blockers.includes('ERR_CAPABILITY_APPROVAL_REQUIRED'));
+
+    const accepted = report({
+      allowedHttpOrigins: ['https://allowed.example'],
+      allowedHttpMethods: ['POST'],
+    });
+    assert.deepEqual(accepted.blockers, []);
+    assert.equal(accepted.selectedPendingRequestRoutes[0].driverId, 'label-only-http-model');
+  });
+
+  it('enforces prompt byte limits during live model receiver preflight', () => {
+    const modelRequest = {
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClass: 'model',
+      responseSchema: { status: 'ok' },
+      idempotencyKeyWorldFingerprint: 'world:key:model-prompt-limit',
+      requestBytes: fromUtf8(stableJson({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: 'goal=too-large' })),
+      hostRequestFingerprint: 'world:host-request:0000000000000b01',
+    };
+    const driver = fixtureDriverWithAuthority(['model:live'], {
+      driverId: 'live-model-prompt-limit',
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClasses: ['model'],
+      recoveryClass: EffectRecoveryClass.idempotent,
+    });
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [modelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:live'],
+        maximumLiveModelCalls: 1,
+        maximumRequestBytes: 4096,
+        maximumPromptBytes: 4,
+      }),
+    });
+
+    assert.ok(report.blockers.includes('prompt-limit-exceeds-policy'));
+    assert.equal(report.valueSizeLimitsSupported, false);
+  });
+
+  it('charges rendered generic HTTP model request templates during receiver preflight', () => {
+    const modelRequest = {
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClass: 'model',
+      responseSchema: { status: 'ok' },
+      idempotencyKeyBytes: fromUtf8('model-template-prompt-limit-key'),
+      idempotencyKeyWorldFingerprint: 'world:key:model-template-prompt-limit',
+      requestBytes: fromUtf8(stableJson({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: 'small' })),
+      hostRequestFingerprint: 'world:host-request:0000000000000b02',
+    };
+    const driver = new GenericHttpJsonModelDriver({
+      endpointUrl: 'https://allowed.example/decide',
+      requestTemplate: { prompt: 'x'.repeat(128) },
+    });
+    const promptLimit = modelRequest.requestBytes.byteLength + 8;
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [modelRequest],
+      drivers: [driver],
+      policy: createRunPolicy({
+        allowPartialEffectBatch: true,
+        allowedAuthorityLabels: ['model:http-json', 'network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['POST'],
+        maximumLiveModelCalls: 1,
+        maximumRequestBytes: 4096,
+        maximumPromptBytes: promptLimit,
+      }),
+    });
+
+    assert.equal(modelRequest.requestBytes.byteLength <= promptLimit, true);
+    assert.equal(driver.manifest().diagnostics.requestRendering.requestTemplateBodyBytes > promptLimit, true);
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.selectedPendingRequestRoutes.length, 0);
+    assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
+    assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('prompt-limit-exceeds-policy'));
+    assert.equal(report.everyPendingRequestCovered, false);
+    assert.equal(report.valueSizeLimitsSupported, false);
+  });
+
+  it('rejects invalid human approval modes during driver preflight', async () => {
+    const humanRequest = {
+      actuatorRef: 'human:approval',
+      descriptorFingerprint: 'descriptor:human-approval',
+      actuationClass: 'human',
+      responseSchema: { status: 'ok' },
+      idempotencyKeyWorldFingerprint: 'world:key:human-preflight',
+      requestBytes: fromUtf8(stableJson({ action: 'approve' })),
+    };
+    const policy = createRunPolicy({
+      allowHumanEffects: true,
+      allowedAuthorityLabels: ['human:approval'],
+    });
+    const context = { policy };
+    const liveHumanContext = {
+      policy: {
+        allowLiveEffects: true,
+        allowHumanEffects: true,
+        allowedAuthorityLabels: ['human:approval'],
+      },
+    };
+    const missingPromptDriver = new HumanApprovalCapabilityDriver({ mode: 'interactive-terminal' });
+    const unsupportedModeDriver = new HumanApprovalCapabilityDriver({ mode: 'browser-popup', prompt: async () => true });
+    let interactivePromptCalled = false;
+    const fixedInteractiveDriver = new HumanApprovalCapabilityDriver({
+      mode: 'interactive-terminal',
+      prompt: async () => {
+        interactivePromptCalled = true;
+        return false;
+      },
+    });
+    const missingPromptReport = missingPromptDriver.preflight(context, humanRequest);
+    const unsupportedModeReport = unsupportedModeDriver.preflight(context, humanRequest);
+    const fixedInteractiveReport = fixedInteractiveDriver.preflight(liveHumanContext, humanRequest);
+
+    assert.equal(missingPromptReport.accepted, false);
+    assert.ok(missingPromptReport.blockers.includes('ERR_HUMAN_APPROVAL_PROMPT_REQUIRED'));
+    assert.equal(unsupportedModeReport.accepted, false);
+    assert.ok(unsupportedModeReport.blockers.includes('ERR_HUMAN_APPROVAL_MODE_UNSUPPORTED'));
+    assert.equal(fixedInteractiveReport.accepted, false);
+    assert.ok(fixedInteractiveReport.blockers.includes('ERR_HUMAN_APPROVAL_RESPONSE_SCHEMA_UNSUPPORTED'));
+    await assert.rejects(
+      () => missingPromptDriver.resolve(context, humanRequest),
+      { code: 'ERR_HUMAN_APPROVAL_PROMPT_REQUIRED' },
+    );
+    await assert.rejects(
+      () => fixedInteractiveDriver.resolve(liveHumanContext, humanRequest),
+      { code: 'ERR_HUMAN_APPROVAL_RESPONSE_SCHEMA_UNSUPPORTED' },
+    );
+    assert.equal(interactivePromptCalled, false);
+    assert.throws(
+      () => missingPromptDriver.shadow(context, humanRequest, { resolutionInputBytes: fromUtf8('recorded') }),
+      { code: 'ERR_HUMAN_APPROVAL_PROMPT_REQUIRED' },
+    );
+    assert.throws(
+      () => unsupportedModeDriver.shadow(context, humanRequest, { resolutionInputBytes: fromUtf8('recorded') }),
+      { code: 'ERR_HUMAN_APPROVAL_MODE_UNSUPPORTED' },
+    );
+    assert.throws(
+      () => new HumanApprovalCapabilityDriver({ mode: 'noninteractive-deny' }).shadow(
+        context,
+        { ...humanRequest, responseSchema: { status: 'ok' } },
+        { resolutionInputBytes: fromUtf8('recorded') },
+      ),
+      { code: 'ERR_HUMAN_APPROVAL_RESPONSE_SCHEMA_UNSUPPORTED' },
+    );
+  });
+
+  it('binds cached model replay budget exemptions to output validation policy', () => {
+    const modelRequest = {
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClass: 'model',
+      responseSchema: { status: 'ok' },
+      idempotencyKeyBytes: fromUtf8('model-output-policy-key'),
+      idempotencyKeyWorldFingerprint: 'world:key:model-output-policy',
+      requestBytes: fromUtf8(stableJson({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: 'goal=policy-cache' })),
+      hostRequestFingerprint: 'world:host-request:0000000000000c03',
+    };
+    const permissiveDriver = new GenericHttpJsonModelDriver({
+      endpointUrl: 'https://allowed.example/decide',
+      allowedToolIds: ['actuate', 'write_file'],
+    });
+    const strictDriver = new GenericHttpJsonModelDriver({
+      endpointUrl: 'https://allowed.example/decide',
+      allowedToolIds: ['actuate'],
+    });
+    const cachedIdentityBytes = journaledHostRequest(modelRequest, permissiveDriver.manifest()).effectIdentityBytes;
+    const cachedResolutionInputBytes = encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xc03n,
+      status: 0,
+      responseValueImageBytes: agentActionValueImage({ variant: 'tool', toolId: 'write_file', payload: 'cached policy response' }),
+      hostClaimBytes: fromUtf8('host-claim:cached-policy-response'),
+      attemptNumber: 1,
+      metadata: fromUtf8('cached-model-output-policy-resolution'),
+    });
+    const forgedResolutionInputBytes = encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xc03n,
+      status: 0,
+      responseValueImageBytes: fromUtf8('forged model response'),
+      hostClaimBytes: fromUtf8('host-claim:forged-model-response'),
+      attemptNumber: 1,
+      metadata: fromUtf8('forged-model-output-policy-resolution'),
+    });
+    const cachedResolutionInputRef = blobRefForBytes(cachedResolutionInputBytes);
+    const forgedResolutionInputRef = blobRefForBytes(forgedResolutionInputBytes);
+    const cachedResolutionInputs = new Map([
+      [blobRefKey(cachedResolutionInputRef), cachedResolutionInputBytes],
+      [blobRefKey(forgedResolutionInputRef), forgedResolutionInputBytes],
+    ]);
+    const cachedEffect = {
+      idempotencyKeyWorldFingerprint: modelRequest.idempotencyKeyWorldFingerprint,
+      hostRequestFingerprint: modelRequest.hostRequestFingerprint,
+      idempotencyKey: {
+        format: 'world-idempotency-key-bytes.hex',
+        bytesHex: Buffer.from('model-output-policy-key').toString('hex'),
+      },
+      requestBytesChecksum: `sha256:${createHash('sha256').update(modelRequest.requestBytes).digest('hex')}`,
+      requestIdentityChecksum: `sha256:${createHash('sha256').update(cachedIdentityBytes).digest('hex')}`,
+      state: EffectState.resolved,
+      resolutionInputRef: cachedResolutionInputRef,
+    };
+    const policy = createRunPolicy({
+      allowedAuthorityLabels: ['model:http-json', 'network:http'],
+      allowedHttpOrigins: ['https://allowed.example'],
+      allowedHttpMethods: ['POST'],
+      maximumLiveModelCalls: 0,
+    });
+
+    const permissiveReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [modelRequest],
+      drivers: [permissiveDriver],
+      policy,
+      effectRecords: [cachedEffect],
+      effectResolutionInputs: cachedResolutionInputs,
+    });
+    const strictReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [modelRequest],
+      drivers: [strictDriver],
+      policy,
+      effectRecords: [cachedEffect],
+      effectResolutionInputs: cachedResolutionInputs,
+    });
+    const forgedReport = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [modelRequest],
+      drivers: [permissiveDriver],
+      policy,
+      effectRecords: [{ ...cachedEffect, resolutionInputRef: forgedResolutionInputRef }],
+      effectResolutionInputs: cachedResolutionInputs,
+    });
+
+    assert.equal(permissiveReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'), false);
+    assert.ok(strictReport.blockers.includes('ERR_EFFECT_IDEMPOTENCY_CONFLICT'));
+    assert.ok(forgedReport.blockers.includes('ERR_CAPABILITY_REUSABLE_EFFECT_OUTPUT_INVALID'));
+    assert.ok(forgedReport.blockers.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+  });
+
+  it('invalidates cached model outputs that fail journal output validation before reuse', async () => {
+    const modelRequest = {
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClass: 'model',
+      responseSchema: { status: 'ok' },
+      idempotencyKeyBytes: fromUtf8('model-output-journal-cache-key'),
+      idempotencyKeyWorldFingerprint: 'world:key:model-output-journal-cache',
+      requestBytes: fromUtf8(stableJson({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: 'goal=journal-cache' })),
+      hostRequestFingerprint: 'world:host-request:0000000000000d04',
+    };
+    let liveInvocations = 0;
+    const strictDriver = {
+      manifest() {
+        return {
+          driverId: 'strict-model-output-cache',
+          supportedActuatorRefs: ['model:decision'],
+          supportedDescriptorFingerprints: ['descriptor:agent-decision-prompt'],
+          supportedActuationClasses: ['model'],
+          supportedResponseStatuses: ['ok'],
+          maximumRequestBytes: 4096,
+          maximumResponseBytes: 4096,
+          recoveryClass: EffectRecoveryClass.idempotent,
+          concurrencyLimit: 1,
+          authorityLabels: ['model:http-json'],
+          diagnostics: {
+            endpointSource: 'config',
+            configuredEndpointUrl: 'https://allowed.example/decide',
+            defaultMethod: 'POST',
+            modelOutputValidation: {
+              outputSchema: 'boundary.Agent.Action.v0',
+              allowedToolIds: ['actuate'],
+            },
+          },
+        };
+      },
+      async resolve() {
+        liveInvocations += 1;
+        return {
+          resolutionInputBytes: encodeResolutionInputBytes({
+            targetHostRequestFingerprint: 0xd04n,
+            status: 0,
+            responseValueImageBytes: agentActionValueImage({ variant: 'final', text: 'fresh model output' }),
+            hostClaimBytes: fromUtf8('host-claim:fresh-model-output'),
+            attemptNumber: liveInvocations,
+            metadata: fromUtf8('fresh-model-output-resolution'),
+          }),
+        };
+      },
+    };
+    const manifest = strictDriver.manifest();
+    const store = new MemoryStore();
+    const cachedResolutionInputBytes = encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xd04n,
+      status: 0,
+      responseValueImageBytes: agentActionValueImage({ variant: 'tool', toolId: 'write_file', payload: 'cached invalid tool' }),
+      hostClaimBytes: fromUtf8('host-claim:cached-invalid-model-output'),
+      attemptNumber: 1,
+      metadata: fromUtf8('cached-invalid-model-output-resolution'),
+    });
+    const requestBytesRef = await store.putBlob(modelRequest.requestBytes);
+    const cachedResolutionInputRef = await store.putBlob(cachedResolutionInputBytes);
+    const journaledRequest = journaledHostRequest(modelRequest, manifest);
+    const cachedEffect = {
+      runId: 'run:model-output-journal-cache',
+      branchId: 'branch:model-output-journal-cache',
+      parentTurnClosureFingerprint: 'world:closure:model-output-journal-cache-parent',
+      hostRequestFingerprint: modelRequest.hostRequestFingerprint,
+      idempotencyKey: {
+        format: 'world-idempotency-key-bytes.hex',
+        bytesHex: Buffer.from('model-output-journal-cache-key').toString('hex'),
+      },
+      idempotencyKeyWorldFingerprint: modelRequest.idempotencyKeyWorldFingerprint,
+      actuatorRef: modelRequest.actuatorRef,
+      descriptorFingerprint: modelRequest.descriptorFingerprint,
+      actuationClass: modelRequest.actuationClass,
+      responseSchema: modelRequest.responseSchema,
+      requestBytesRef,
+      requestBytesChecksum: `sha256:${createHash('sha256').update(modelRequest.requestBytes).digest('hex')}`,
+      requestIdentityChecksum: `sha256:${createHash('sha256').update(journaledRequest.effectIdentityBytes).digest('hex')}`,
+      state: EffectState.resolved,
+      attemptCount: 1,
+      driverRecoveryClass: EffectRecoveryClass.idempotent,
+      resolutionInputRef: cachedResolutionInputRef,
+      diagnostics: {},
+    };
+    await store.putEffectRecord(cachedEffect);
+    const journal = new EffectJournal({
+      store,
+      runId: cachedEffect.runId,
+      branchId: cachedEffect.branchId,
+      parentTurnClosureFingerprint: cachedEffect.parentTurnClosureFingerprint,
+      policy: {
+        allowedAuthorityLabels: ['model:http-json'],
+        maximumLiveModelCalls: 1,
+      },
+    });
+
+    const result = await journal.resolve({}, modelRequest, strictDriver);
+    const current = await store.getEffectRecord(cachedEffect.runId, cachedEffect.idempotencyKey, cachedEffect.branchId);
+
+    assert.equal(liveInvocations, 1);
+    assert.equal(result.reused, false);
+    assert.equal(decodeResolutionInputBytes(result.resolutionInputBytes).status, 0);
+    assert.notDeepEqual(current.resolutionInputRef, cachedResolutionInputRef);
+    assert.equal(current.diagnostics.invalidReusableResolution, 'ERR_EFFECT_MODEL_OUTPUT_INVALID');
   });
 
   it('requires descriptor coverage for application-level actuator requirements', () => {
@@ -122,6 +2507,56 @@ describe('capability preflight and reference drivers', () => {
     } finally {
       await rm(allowedRoot, { recursive: true, force: true });
       await rm(blockedRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('requires receiver file root allowlists for file authority routes', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-authority-file-root-'));
+    try {
+      const report = preflightCapabilities({
+        application: {
+          requiredActuators: [],
+          requiredRuntimeLimits: {},
+        },
+        currentHead: { generation: 0 },
+        pendingRequests: [fileRequest('out.txt')],
+        drivers: [new SandboxFileDriver({ root })],
+        policy: createRunPolicy({
+          allowBestEffort: true,
+          allowedAuthorityLabels: ['file:sandbox'],
+        }),
+      });
+
+      assert.ok(report.blockers.includes('file-root-allowlist-required'));
+      assert.equal(report.fileNetworkAuthoritiesAllowed, false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('requires receiver file root allowlists for required file actuators', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-required-file-root-'));
+    try {
+      const report = preflightCapabilities({
+        application: {
+          requiredActuators: [{
+            actuatorRef: 'sandbox:file',
+            descriptorFingerprint: 'descriptor:sandbox-file',
+          }],
+          requiredRuntimeLimits: {},
+        },
+        currentHead: { generation: 0 },
+        drivers: [new SandboxFileDriver({ root })],
+        policy: createRunPolicy({
+          allowBestEffort: true,
+          allowedAuthorityLabels: ['file:sandbox'],
+        }),
+      });
+
+      assert.ok(report.blockers.includes('required-actuator-policy-blocked:sandbox:file'));
+      assert.ok(report.blockers.includes('file-root-allowlist-required'));
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -210,9 +2645,13 @@ describe('capability preflight and reference drivers', () => {
           actuatorRef: 'sandbox:file',
           descriptorFingerprint: 'descriptor:sandbox-file',
           actuationClasses: ['file'],
+          diagnostics: { root: FIXTURE_FILE_ROOT },
         }),
       ],
-      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture', 'file:sandbox'] }),
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:fixture', 'file:sandbox'],
+        allowedFileRoots: [FIXTURE_FILE_ROOT],
+      }),
     });
 
     assert.deepEqual(report.blockers, []);
@@ -243,15 +2682,22 @@ describe('capability preflight and reference drivers', () => {
       currentHead: { generation: 0 },
       pendingRequests: [fileRequest('out.txt')],
       drivers: [
-        fixtureDriverWithAuthority(['model:fixture', 'file:sandbox'], { driverId: 'cross-labeled-model' }),
+        fixtureDriverWithAuthority(['model:fixture', 'file:sandbox'], {
+          driverId: 'cross-labeled-model',
+          diagnostics: { root: FIXTURE_FILE_ROOT },
+        }),
         fixtureDriverWithAuthority([], {
           driverId: 'unlabeled-file',
           actuatorRef: 'sandbox:file',
           descriptorFingerprint: 'descriptor:sandbox-file',
           actuationClasses: ['file'],
+          diagnostics: { root: FIXTURE_FILE_ROOT },
         }),
       ],
-      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture', 'file:sandbox'] }),
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:fixture', 'file:sandbox'],
+        allowedFileRoots: [FIXTURE_FILE_ROOT],
+      }),
     });
 
     assert.ok(report.blockers.includes('required-authority-unbound:file:sandbox'));
@@ -291,9 +2737,13 @@ describe('capability preflight and reference drivers', () => {
           actuatorRef: 'sandbox:file',
           descriptorFingerprint: 'descriptor:sandbox-file',
           actuationClasses: ['file'],
+          diagnostics: { root: FIXTURE_FILE_ROOT },
         }),
       ],
-      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture', 'file:sandbox'] }),
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:fixture', 'file:sandbox'],
+        allowedFileRoots: [FIXTURE_FILE_ROOT],
+      }),
     });
 
     assert.deepEqual(report.blockers, []);
@@ -368,9 +2818,13 @@ describe('capability preflight and reference drivers', () => {
           actuatorRef: 'sandbox:file',
           descriptorFingerprint: 'descriptor:sandbox-file',
           actuationClasses: ['file'],
+          diagnostics: { root: FIXTURE_FILE_ROOT },
         }),
       ],
-      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture', 'file:sandbox'] }),
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:fixture', 'file:sandbox'],
+        allowedFileRoots: [FIXTURE_FILE_ROOT],
+      }),
     });
 
     assert.deepEqual(report.blockers, []);
@@ -402,9 +2856,13 @@ describe('capability preflight and reference drivers', () => {
           actuatorRef: 'sandbox:file',
           descriptorFingerprint: 'descriptor:sandbox-file',
           actuationClasses: ['file'],
+          diagnostics: { root: FIXTURE_FILE_ROOT },
         }),
       ],
-      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture'] }),
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:fixture'],
+        allowedFileRoots: [FIXTURE_FILE_ROOT],
+      }),
     });
 
     assert.deepEqual(report.blockers, []);
@@ -444,9 +2902,13 @@ describe('capability preflight and reference drivers', () => {
           actuatorRef: 'sandbox:file',
           descriptorFingerprint: 'descriptor:sandbox-file',
           actuationClasses: ['file'],
+          diagnostics: { root: FIXTURE_FILE_ROOT },
         }),
       ],
-      policy: createRunPolicy({ allowedAuthorityLabels: ['model:fixture'] }),
+      policy: createRunPolicy({
+        allowedAuthorityLabels: ['model:fixture'],
+        allowedFileRoots: [FIXTURE_FILE_ROOT],
+      }),
     });
 
     assert.ok(report.blockers.includes('required-authority-unbound:model:fixture'));
@@ -533,6 +2995,25 @@ describe('capability preflight and reference drivers', () => {
       });
       assert.ok(fileReport.blockers.includes(`file-root-denied:${path.resolve(blockedRoot)}`));
       assert.equal(fileReport.fileNetworkAuthoritiesAllowed, false);
+
+      const mislabelledFileReport = preflightCapabilities({
+        application: { requiredActuators: [], requiredRuntimeLimits: {} },
+        currentHead: { generation: 0 },
+        pendingRequests: [fileRequest('out.txt', { operation: 'write', content: 'blocked' })],
+        drivers: [fixtureDriverWithAuthority([], {
+          driverId: 'mislabelled-file',
+          actuatorRef: 'sandbox:file',
+          descriptorFingerprint: 'descriptor:sandbox-file',
+          actuationClasses: ['file'],
+          diagnostics: { root: path.resolve(blockedRoot) },
+        })],
+        policy: createRunPolicy({
+          allowBestEffort: true,
+          allowedFileRoots: [allowedRoot],
+        }),
+      });
+      assert.ok(mislabelledFileReport.blockers.includes(`file-root-denied:${path.resolve(blockedRoot)}`));
+      assert.equal(mislabelledFileReport.fileNetworkAuthoritiesAllowed, false);
     } finally {
       await rm(allowedRoot, { recursive: true, force: true });
       await rm(blockedRoot, { recursive: true, force: true });
@@ -545,11 +3026,101 @@ describe('capability preflight and reference drivers', () => {
       currentHead: { generation: 0 },
       pendingRequests: [httpRequest('https://allowed.example/path', 'GET', { status: 'streaming' })],
       drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'] })],
-      policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'], allowedHttpOrigins: ['https://allowed.example'] }),
+      policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'], allowedHttpOrigins: ['https://allowed.example'], allowedHttpMethods: ['GET'] }),
     });
     assert.ok(report.blockers.includes('ERR_RESPONSE_STATUS_NOT_SUPPORTED'));
     assert.equal(report.everyPendingRequestCovered, true);
     assert.equal(report.responseStatusesSupported, false);
+  });
+
+  it('leaves unsupported response statuses unresolved in partial batches', () => {
+    const report = preflightCapabilities({
+      application: { requiredActuators: [], requiredRuntimeLimits: {} },
+      currentHead: { generation: 0 },
+      pendingRequests: [
+        httpRequest('https://allowed.example/path', 'GET'),
+        httpRequest('https://allowed.example/path', 'GET', { status: 'streaming' }),
+      ],
+      drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'] })],
+      policy: createRunPolicy({
+        allowPartialEffectBatch: true,
+        allowedAuthorityLabels: ['network:http'],
+        allowedHttpOrigins: ['https://allowed.example'],
+        allowedHttpMethods: ['GET'],
+      }),
+    });
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.selectedPendingRequestRoutes.length, 1);
+    assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
+    assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('ERR_RESPONSE_STATUS_NOT_SUPPORTED'));
+    assert.equal(report.everyPendingRequestCovered, false);
+    assert.equal(report.responseStatusesSupported, false);
+  });
+
+  it('applies driver-owned request admission before route selection and effect persistence', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-sandbox-admission-'));
+    try {
+      const driver = new SandboxFileDriver({ root });
+      const readNotFound = {
+        ...fileRequest('missing.txt'),
+        pendingRequestIndex: 0,
+        responseSchema: { status: 'not_found' },
+      };
+      const writeNotFound = {
+        ...fileRequest('out.txt', { operation: 'write', content: 'must-not-run' }),
+        pendingRequestIndex: 1,
+        responseSchema: { status: 'not_found' },
+      };
+      const report = preflightCapabilities({
+        application: { requiredActuators: [], requiredRuntimeLimits: {} },
+        currentHead: { generation: 0 },
+        pendingRequests: [readNotFound, writeNotFound],
+        drivers: [driver],
+        policy: createRunPolicy({
+          allowBestEffort: true,
+          allowPartialEffectBatch: true,
+          requireApprovalForBestEffort: false,
+          requireApprovalForDestructiveEffects: false,
+          allowedAuthorityLabels: ['file:sandbox'],
+          allowedFileRoots: [path.resolve(root)],
+        }),
+      });
+
+      assert.deepEqual(report.blockers, []);
+      assert.equal(report.selectedPendingRequestRoutes.length, 1);
+      assert.equal(report.selectedPendingRequestRoutes[0].pendingRequestIndex, 0);
+      assert.equal(report.unresolvedPendingRequestRoutes.length, 1);
+      assert.equal(report.unresolvedPendingRequestRoutes[0].pendingRequestIndex, 1);
+      assert.ok(report.unresolvedPendingRequestRoutes[0].blockers.includes('ERR_RESPONSE_STATUS_NOT_SUPPORTED'));
+
+      const wrapped = defineActuatorDriver(driver);
+      assert.equal(wrapped.assertRequestSupported(readNotFound), true);
+      assert.throws(
+        () => wrapped.assertRequestSupported(writeNotFound),
+        { code: 'ERR_RESPONSE_STATUS_NOT_SUPPORTED' },
+      );
+
+      const store = new MemoryStore();
+      const journal = new EffectJournal({
+        store,
+        runId: 'sandbox-admission-run',
+        branchId: 'main',
+        parentTurnClosureFingerprint: 'world:turn-closure:parent',
+        policy: { allowBestEffort: true },
+      });
+      await assert.rejects(
+        () => journal.resolve({}, {
+          ...writeNotFound,
+          hostRequestFingerprint: 'world:host-request:0000000000000ad1',
+          idempotencyKeyBytes: fromUtf8('sandbox-admission-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:sandbox-admission',
+        }, driver),
+        { code: 'ERR_RESPONSE_STATUS_NOT_SUPPORTED' },
+      );
+      assert.equal((await store.listEffectRecords('sandbox-admission-run')).length, 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('reports receiver byte-limit policy blockers for otherwise matching drivers', () => {
@@ -587,6 +3158,16 @@ describe('capability preflight and reference drivers', () => {
       () => createRunPolicy({ maximumRequestBytes: Number.NaN }),
       { code: 'ERR_RUN_POLICY_LIMIT_INVALID' },
     );
+    assert.throws(
+      () => createRunPolicy({ maximumPromptBytes: Number.NaN }),
+      { code: 'ERR_RUN_POLICY_LIMIT_INVALID' },
+    );
+    const promptLimited = createRunPolicy({ maximumRequestBytes: 4096, maximumPromptBytes: 8 });
+    assert.equal(promptLimited.maximumRequestBytes, 4096);
+    assert.equal(promptLimited.maximumPromptBytes, 8);
+    const promptOnlyLimited = createRunPolicy({ maximumPromptBytes: 8 });
+    assert.equal(promptOnlyLimited.maximumRequestBytes, 1024 * 1024);
+    assert.equal(promptOnlyLimited.maximumPromptBytes, 8);
   });
 
   it('keeps default HTTP driver response limits within the default policy', () => {
@@ -595,7 +3176,7 @@ describe('capability preflight and reference drivers', () => {
       currentHead: { generation: 0 },
       pendingRequests: [httpRequest('https://allowed.example/path')],
       drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'] })],
-      policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'], allowedHttpOrigins: ['https://allowed.example'] }),
+      policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'], allowedHttpOrigins: ['https://allowed.example'], allowedHttpMethods: ['GET'] }),
     });
 
     assert.equal(report.valueSizeLimitsSupported, true);
@@ -616,7 +3197,7 @@ describe('capability preflight and reference drivers', () => {
       currentHead: { generation: 0 },
       pendingRequests: [httpRequest('https://allowed.example/path', 'POST')],
       drivers: [new HttpJsonDriver({ origins: ['https://allowed.example'], methods: ['GET'] })],
-      policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'], allowedHttpOrigins: ['https://allowed.example'] }),
+      policy: createRunPolicy({ allowedAuthorityLabels: ['network:http'], allowedHttpOrigins: ['https://allowed.example'], allowedHttpMethods: ['POST'] }),
     });
 
     assert.ok(report.blockers.includes('http-method-driver-denied:POST'));
@@ -863,6 +3444,27 @@ describe('capability preflight and reference drivers', () => {
       const failedDecoded = decodeResolutionInputBytes(failed.resolutionInputBytes);
       assert.equal(failedDecoded.status, 1);
       assert.equal(failedDecoded.responseValueImageBytes.byteLength, 0);
+      globalThis.fetch = async () => new Response('{"ok":true}', { status: 200 });
+      await assert.rejects(
+        () => driver.resolve({}, httpRequest('https://allowed.example/fail-closed-ok', 'GET', { status: 'http_error' })),
+        { code: 'ERR_HTTP_OK_STATUS_UNSUPPORTED' },
+      );
+      globalThis.fetch = async () => new Response('server failed', { status: 500 });
+      await assert.rejects(
+        () => driver.resolve({}, httpRequest('https://allowed.example/fail-ok')),
+        { code: 'ERR_HTTP_ERROR_STATUS_UNSUPPORTED' },
+      );
+      let rejectedErrorBodyCancelled = false;
+      globalThis.fetch = async () => new Response(new ReadableStream({
+        cancel() {
+          rejectedErrorBodyCancelled = true;
+        },
+      }), { status: 500 });
+      await assert.rejects(
+        () => driver.resolve({}, httpRequest('https://allowed.example/fail-ok-drain')),
+        { code: 'ERR_HTTP_ERROR_STATUS_UNSUPPORTED' },
+      );
+      assert.equal(rejectedErrorBodyCancelled, true);
       const failedSmall = new HttpJsonDriver({ origins: ['https://allowed.example'], maximumResponseBytes: 4 });
       globalThis.fetch = async () => new Response('too-large-error-body', { status: 500 });
       const failedSmallResult = await failedSmall.resolve({}, httpRequest('https://allowed.example/fail-small', 'GET', { status: 'http_error' }));
@@ -873,6 +3475,54 @@ describe('capability preflight and reference drivers', () => {
         () => small.resolve({}, httpRequest('https://allowed.example/large')),
         { code: 'ERR_HTTP_RESPONSE_TOO_LARGE' },
       );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('uses raw HTTP driver configured default methods when request URLs omit methods during resolve', async () => {
+    const driver = new HttpJsonDriver({ origins: ['https://allowed.example'], methods: ['POST'] });
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    try {
+      globalThis.fetch = async (url, options) => {
+        fetchCount += 1;
+        assert.equal(url.href, 'https://allowed.example/path');
+        assert.equal(options.method, 'POST');
+        return new Response('{"ok":true}', { status: 200 });
+      };
+
+      await driver.resolve({}, {
+        ...httpRequest('https://allowed.example/path'),
+        requestBytes: fromUtf8(stableJson({ url: 'https://allowed.example/path', body: { prompt: 'hi' } })),
+      });
+
+      assert.equal(fetchCount, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('does not send raw HTTP request bodies with HEAD', async () => {
+    const driver = new HttpJsonDriver({ origins: ['https://allowed.example'], methods: ['HEAD'] });
+    const originalFetch = globalThis.fetch;
+    let observedBody = 'not-called';
+    try {
+      globalThis.fetch = async (_url, options) => {
+        observedBody = options.body;
+        return new Response('', { status: 204 });
+      };
+
+      await driver.resolve({}, {
+        ...httpRequest('https://allowed.example/path', 'HEAD'),
+        requestBytes: fromUtf8(stableJson({
+          url: 'https://allowed.example/path',
+          method: 'HEAD',
+          body: { prompt: 'must-not-send' },
+        })),
+      });
+
+      assert.equal(observedBody, undefined);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -908,15 +3558,23 @@ function fixtureDriverWithAuthority(authorityLabels, options = {}) {
         supportedDescriptorFingerprints: [options.descriptorFingerprint ?? 'descriptor:fixture-model'],
         supportedActuationClasses: options.actuationClasses ?? ['fixture'],
         supportedResponseStatuses: ['ok'],
-        maximumRequestBytes: 1024 * 1024,
-        maximumResponseBytes: 1024 * 1024,
-        recoveryClass: EffectRecoveryClass.pure,
+        maximumRequestBytes: options.maximumRequestBytes ?? 1024 * 1024,
+        maximumResponseBytes: options.maximumResponseBytes ?? 1024 * 1024,
+        recoveryClass: options.recoveryClass ?? EffectRecoveryClass.pure,
         concurrencyLimit: 1,
         authorityLabels,
-        diagnostics: {},
+        diagnostics: options.diagnostics ?? {},
       };
     },
   };
+}
+
+function blobRefForBytes(bytes) {
+  return makeBlobRef(createHash('sha256').update(bytes).digest('hex'), bytes.byteLength);
+}
+
+function blobRefKey(ref) {
+  return `${ref.algorithm}:${ref.checksum}:${ref.byteLength}`;
 }
 
 function fixtureRequest() {

@@ -53,7 +53,7 @@ async function runStore(name, makeStore) {
       applianceManifestRef: manifestRef,
       requiredActuators: [],
       requiredRuntimeLimits: { maxBytes: 1024 },
-      installationDiagnostics: { store: name },
+      installationDiagnostics: { store: name, manifestSource: 'host-generated-install-summary' },
     });
     await store.createApplication(app);
     assert.equal((await store.getApplication(app.applicationId)).applicationId, app.applicationId);

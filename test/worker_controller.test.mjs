@@ -7,12 +7,19 @@ import { createApplicationRecord } from '../src/core/application.mjs';
 import { createEffectRecord, EffectState } from '../src/core/effect_journal.mjs';
 import { createBranchRecord, createRunHead, createRunRecord } from '../src/core/run.mjs';
 import { RunController, WorldWorker, assertWarmWorkerBinding } from '../src/core/worker.mjs';
-import { fromUtf8 } from '../src/core/store.mjs';
+import { fromUtf8, stableJson } from '../src/core/store.mjs';
 import { encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
 import { wyhash64 } from '../src/protocol/world_loaded_value_codec.mjs';
 import { summarizeTurnClosureForRunHead } from '../src/protocol/world_universal_appliance_codec.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
 import { BunWorldWorker } from '../src/bun/bun_worker.mjs';
+import { HttpJsonDriver } from '../src/drivers/http_json_driver.mjs';
+import { GenericHttpJsonCapabilityDriver } from '../src/drivers/generic_http_json_capability_driver.mjs';
+import { GenericHttpJsonModelDriver } from '../src/drivers/model_capability_driver.mjs';
+import { agentActionValueImage } from '../src/drivers/fixture_agent_model_driver.mjs';
+import { HumanApprovalCapabilityDriver } from '../src/drivers/human_approval_capability_driver.mjs';
+
+const FIXTURE_FILE_ROOT = '/fixture/sandbox';
 
 describe('RunController and WorldWorker', () => {
   it('advances a branch only after persisting the next closure blob', async () => {
@@ -120,6 +127,103 @@ describe('RunController and WorldWorker', () => {
       { code: 'ERR_CAPABILITY_PREFLIGHT_BLOCKED' },
     );
     assert.equal(workerCreated, false);
+  });
+
+  it('preflights stored appliance supervision fingerprints before worker execution', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      manifestBytes: fixtureApplianceManifestBytes({ supervisionPolicyFingerprint: 0x901n }),
+    });
+    let workerCreated = false;
+    const controller = new RunController({
+      store,
+      effectPolicy: { acceptedSupervisionPolicies: [0x902n] },
+      workerFactory: async () => {
+        workerCreated = true;
+        return new ScriptedWorker();
+      },
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_CAPABILITY_PREFLIGHT_BLOCKED' },
+    );
+    assert.equal(workerCreated, false);
+  });
+
+  it('rejects undecodable operator-supplied appliance manifests before worker execution', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      manifestBytes: fromUtf8('not-an-appliance-manifest'),
+      applicationOverrides: {
+        installationDiagnostics: { manifestSource: 'operator-supplied' },
+      },
+    });
+    let workerCreated = false;
+    const controller = new RunController({
+      store,
+      workerFactory: async () => {
+        workerCreated = true;
+        return new ScriptedWorker();
+      },
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_APPLICATION_MANIFEST_INVALID' },
+    );
+    assert.equal(workerCreated, false);
+  });
+
+  it('rejects summary-shaped operator-supplied appliance manifests before worker execution', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      manifestBytes: fromUtf8(stableJson({
+        kind: 'world-host.install-summary',
+        source: 'host-generated-install-summary',
+        worldAuthoredEvidence: false,
+      })),
+      applicationOverrides: {
+        installationDiagnostics: { manifestSource: 'operator-supplied' },
+      },
+    });
+    let workerCreated = false;
+    const controller = new RunController({
+      store,
+      workerFactory: async () => {
+        workerCreated = true;
+        return new ScriptedWorker();
+      },
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_APPLICATION_MANIFEST_INVALID' },
+    );
+    assert.equal(workerCreated, false);
+  });
+
+  it('checks generated-install worker appliance manifests before turn submission', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      manifestBytes: fromUtf8('world-host install summary'),
+      applicationOverrides: {
+        installationDiagnostics: { manifestSource: 'host-generated-install-summary' },
+      },
+    });
+    const worker = new ManifestCheckingWorker(fixtureTurnClosureBytes(), 0x211n, { supervisionPolicyFingerprint: 0x901n });
+    let submitted = false;
+    worker.submitTurn = async () => {
+      submitted = true;
+      return { status: 'completed', turnClosureBytes: fixtureTurnClosureBytes() };
+    };
+    const controller = new RunController({
+      store,
+      effectPolicy: { acceptedSupervisionPolicies: [0x902n] },
+      workerFactory: async () => worker,
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_CAPABILITY_PREFLIGHT_BLOCKED' },
+    );
+    assert.equal(submitted, false);
   });
 
   it('rejects terminal branch heads before creating a worker', async () => {
@@ -230,6 +334,27 @@ describe('RunController and WorldWorker', () => {
       manifestBytes: fromUtf8('world-host install summary'),
       applicationOverrides: {
         installationDiagnostics: { manifestSource: 'host-generated-install-summary' },
+      },
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ManifestCheckingWorker(fixtureTurnClosureBytes(), 0x211n),
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+  });
+
+  it('allows legacy host-generated install summaries without manifest source diagnostics', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      manifestBytes: fromUtf8(stableJson({
+        kind: 'world-host.install-summary',
+        source: 'host-generated-install-summary',
+        worldAuthoredEvidence: false,
+      })),
+      applicationOverrides: {
+        installationDiagnostics: {},
       },
     });
     const controller = new RunController({
@@ -430,6 +555,51 @@ describe('RunController and WorldWorker', () => {
     assert.equal(effects[0].state, EffectState.resolved);
   });
 
+  it('honors selected driver preflight before resolving controller effects', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(),
+    });
+    const driver = preflightBlockedControllerDriver();
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [driver],
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      (error) => {
+        assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+        assert.ok(error.details?.blockers?.includes('controller-preflight-blocker'));
+        return true;
+      },
+    );
+    assert.equal(driver.resolveCalled, false);
+    assert.equal((await store.listEffectRecords(runId)).length, 0);
+  });
+
+  it('wraps controller capability drivers before resolving effects', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(),
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [forbiddenEvidenceCapabilityDriver()],
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+    );
+    const effects = await store.listEffectRecords(runId);
+    assert.equal(effects.length, 1);
+    assert.equal(effects[0].state, EffectState.running);
+    assert.equal(effects[0].diagnostics.turnClosureBytes, undefined);
+  });
+
   it('batches host requests with bounded concurrency and canonical resolution order', async () => {
     const requests = [
       fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'idempotency-key:1', idempotencyKeyFingerprint: 0xa09n }),
@@ -584,8 +754,104 @@ describe('RunController and WorldWorker', () => {
 
     await assert.rejects(
       () => controller.advance(runId, branchId),
-      { code: 'ERR_EFFECT_RESOLUTION_TARGET_MISMATCH' },
+      (error) => {
+        assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+        assert.ok(error.details?.blockers?.includes('ERR_CAPABILITY_REUSABLE_EFFECT_TARGET_MISMATCH'));
+        return true;
+      },
     );
+  });
+
+  it('does not load unrelated historical ResolutionInput blobs during pending preflight', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'idempotency-key:1', idempotencyKeyFingerprint: 0xa09n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const missingResolutionInputRef = {
+      algorithm: 'sha256',
+      checksum: 'f'.repeat(64),
+      byteLength: 123,
+    };
+    await store.putEffectRecord(createEffectRecord({
+      runId,
+      branchId,
+      parentTurnClosureFingerprint: 'world:closure:0',
+      hostRequestFingerprint: 'world:host-request:0000000000000a02',
+      idempotencyKey: {
+        format: 'world-idempotency-key-bytes.hex',
+        bytesHex: Buffer.from('idempotency-key:unrelated').toString('hex'),
+      },
+      idempotencyKeyWorldFingerprint: 'world:idempotency-key:0000000000000a19',
+      actuatorRef: 'world:actuator-ref:0000000000000a05',
+      descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+      actuationClass: 'world:actuation-class:1',
+      responseSchema: { status: 'responded' },
+      requestBytesChecksum: `sha256:${sha256Hex(fromUtf8('unrelated'))}`,
+      state: EffectState.resolved,
+      driverRecoveryClass: EffectRecoveryClass.pure,
+      resolutionInputRef: missingResolutionInputRef,
+    }));
+    const driver = fixtureEffectDriver();
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [driver],
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(driver.invocationCount, 1);
+  });
+
+  it('does not load non-terminal historical ResolutionInput blobs during pending preflight', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'idempotency-key:1', idempotencyKeyFingerprint: 0xa09n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const missingResolutionInputRef = {
+      algorithm: 'sha256',
+      checksum: 'e'.repeat(64),
+      byteLength: 321,
+    };
+    const requestBytesRef = await store.putBlob(requests[0]);
+    await store.putEffectRecord(createEffectRecord({
+      runId,
+      branchId,
+      parentTurnClosureFingerprint: 'world:closure:0',
+      hostRequestFingerprint: 'world:host-request:0000000000000a01',
+      idempotencyKey: {
+        format: 'world-idempotency-key-bytes.hex',
+        bytesHex: Buffer.from('idempotency-key:1').toString('hex'),
+      },
+      idempotencyKeyWorldFingerprint: 'world:idempotency-key:0000000000000a09',
+      actuatorRef: 'world:actuator-ref:0000000000000a05',
+      descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+      actuationClass: 'world:actuation-class:1',
+      responseSchema: { status: 'responded' },
+      requestBytesChecksum: `sha256:${sha256Hex(requests[0])}`,
+      requestBytesRef,
+      state: EffectState.observed,
+      driverRecoveryClass: EffectRecoveryClass.pure,
+      resolutionInputRef: missingResolutionInputRef,
+    }));
+    const driver = fixtureEffectDriver();
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new ClosureOnlyWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [driver],
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(driver.invocationCount, 1);
   });
 
   it('surfaces parked best-effort effects before decoding resolutions', async () => {
@@ -715,6 +981,31 @@ describe('RunController and WorldWorker', () => {
     assert.equal((await store.listEffectRecords(runId)).length, 0);
   });
 
+  it('applies driver-owned request admission before worker selection', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const driver = fixtureEffectDriver();
+    driver.assertRequestSupported = () => {
+      const error = new Error('request shape rejected by driver owner');
+      error.code = 'ERR_RESPONSE_STATUS_NOT_SUPPORTED';
+      throw error;
+    };
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [driver],
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_HOST_REQUEST_DRIVER_UNAVAILABLE' },
+    );
+    assert.equal(driver.invocationCount, 0);
+    assert.equal((await store.listEffectRecords(runId)).length, 0);
+  });
+
   it('rejects receiver-policy-denied drivers before resolving effects', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
@@ -728,6 +1019,7 @@ describe('RunController and WorldWorker', () => {
       effectPolicy: {
         allowedAuthorityLabels: new Set(['network:http']),
         allowedHttpOrigins: new Set(['https://receiver.example']),
+        allowedHttpMethods: new Set(['GET']),
       },
       hostRequestMapper: () => ({
         actuatorRef: 'http:json',
@@ -839,6 +1131,7 @@ describe('RunController and WorldWorker', () => {
     const wrongLabel = fixtureEffectDriver({
       driverId: 'wrong-label-fixture',
       authorityLabels: ['file:sandbox'],
+      diagnostics: { root: FIXTURE_FILE_ROOT },
     });
     const modelAuthority = fixtureEffectDriver({
       driverId: 'model-authority-fixture',
@@ -848,6 +1141,7 @@ describe('RunController and WorldWorker', () => {
       driverId: 'file-authority-fixture',
       actuatorRef: 'world:actuator-ref:0000000000000bad',
       authorityLabels: ['file:sandbox'],
+      diagnostics: { root: FIXTURE_FILE_ROOT },
     });
     const controller = new RunController({
       store,
@@ -855,6 +1149,7 @@ describe('RunController and WorldWorker', () => {
       effectDrivers: [wrongLabel, modelAuthority, fileAuthority],
       effectPolicy: {
         allowedAuthorityLabels: ['model:fixture', 'file:sandbox'],
+        allowedFileRoots: [FIXTURE_FILE_ROOT],
       },
     });
 
@@ -864,6 +1159,70 @@ describe('RunController and WorldWorker', () => {
     assert.equal(wrongLabel.invocationCount, 0);
     assert.equal(modelAuthority.invocationCount, 1);
     assert.equal(fileAuthority.invocationCount, 0);
+  });
+
+  it('ignores pack-denied required actuator routes while preferring authority labels', async () => {
+    const deniedPackFingerprint = 'sha256:'.concat('6'.repeat(64));
+    const allowedPackFingerprint = 'sha256:'.concat('7'.repeat(64));
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+      applicationOverrides: {
+        requiredActuators: [
+          {
+            actuatorRef: 'world:actuator-ref:0000000000000a05',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+          },
+          {
+            actuatorRef: 'world:actuator-ref:0000000000000bad',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+          },
+        ],
+        requiredHostAuthorityLabels: ['model:fixture', 'file:sandbox'],
+      },
+    });
+    const wrongLabel = fixtureEffectDriver({
+      driverId: 'wrong-label-pack-allowed',
+      authorityLabels: ['file:sandbox'],
+      packFingerprint: allowedPackFingerprint,
+      diagnostics: { root: FIXTURE_FILE_ROOT },
+    });
+    const modelAuthority = fixtureEffectDriver({
+      driverId: 'model-authority-pack-allowed',
+      authorityLabels: ['model:fixture'],
+      packFingerprint: allowedPackFingerprint,
+    });
+    const fileAuthority = fixtureEffectDriver({
+      driverId: 'file-authority-pack-allowed',
+      actuatorRef: 'world:actuator-ref:0000000000000bad',
+      authorityLabels: ['file:sandbox'],
+      packFingerprint: allowedPackFingerprint,
+      diagnostics: { root: FIXTURE_FILE_ROOT },
+    });
+    const deniedModelAuthority = fixtureEffectDriver({
+      driverId: 'model-authority-pack-denied',
+      actuatorRef: 'world:actuator-ref:0000000000000bad',
+      authorityLabels: ['model:fixture'],
+      packFingerprint: deniedPackFingerprint,
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [wrongLabel, modelAuthority, fileAuthority, deniedModelAuthority],
+      effectPolicy: {
+        allowedAuthorityLabels: ['model:fixture', 'file:sandbox'],
+        deniedCapabilityPacks: [deniedPackFingerprint],
+        allowedFileRoots: [FIXTURE_FILE_ROOT],
+      },
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(wrongLabel.invocationCount, 0);
+    assert.equal(modelAuthority.invocationCount, 1);
+    assert.equal(fileAuthority.invocationCount, 0);
+    assert.equal(deniedModelAuthority.invocationCount, 0);
   });
 
   it('rejects unlabeled active needs_host drivers despite cross-labeled inactive actuators', async () => {
@@ -890,6 +1249,7 @@ describe('RunController and WorldWorker', () => {
     const crossLabeledModel = fixtureEffectDriver({
       driverId: 'cross-labeled-model',
       authorityLabels: ['model:fixture', 'file:sandbox'],
+      diagnostics: { root: FIXTURE_FILE_ROOT },
     });
     const unlabeledFile = fixtureEffectDriver({
       driverId: 'unlabeled-file',
@@ -902,6 +1262,7 @@ describe('RunController and WorldWorker', () => {
       effectDrivers: [crossLabeledModel, unlabeledFile],
       effectPolicy: {
         allowedAuthorityLabels: ['model:fixture', 'file:sandbox'],
+        allowedFileRoots: [FIXTURE_FILE_ROOT],
       },
     });
 
@@ -931,6 +1292,7 @@ describe('RunController and WorldWorker', () => {
       effectPolicy: {
         allowedAuthorityLabels: new Set(['network:http']),
         allowedHttpOrigins: new Set(['https://blocked.example']),
+        allowedHttpMethods: new Set(['GET']),
       },
       hostRequestMapper: () => ({
         actuatorRef: 'http:json',
@@ -988,6 +1350,7 @@ describe('RunController and WorldWorker', () => {
       effectPolicy: {
         allowedAuthorityLabels: new Set(['network:http']),
         allowedHttpOrigins: new Set(['https://allowed.example']),
+        allowedHttpMethods: new Set(['POST']),
       },
       hostRequestMapper: () => ({
         actuatorRef: 'http:json',
@@ -1008,6 +1371,2628 @@ describe('RunController and WorldWorker', () => {
     assert.equal(postCapable.invocationCount, 1);
   });
 
+  it('rejects controller HTTP methods outside receiver allowlists', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCalled = false;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          methods: ['DELETE'],
+        })],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('http-method-denied-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-method-denied',
+          requestBytes: fromUtf8(JSON.stringify({ method: 'DELETE', body: { prompt: 'denied' } })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      await assert.rejects(
+        () => controller.advance(runId, branchId),
+        { code: 'ERR_HOST_REQUEST_DRIVER_UNAVAILABLE' },
+      );
+      assert.equal(fetchCalled, false);
+      assert.equal((await store.listEffectRecords(runId)).length, 0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('uses configured HTTP driver defaults when request URLs omit methods', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    try {
+      globalThis.fetch = async (url, options) => {
+        fetchCount += 1;
+        assert.equal(url, 'https://allowed.example/path');
+        assert.equal(options.method, 'POST');
+        return new Response('{"status":"ok"}', {
+          status: 200,
+          headers: { 'x-request-id': 'controller-http-default-method' },
+        });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://fallback.example/decide',
+          allowEndpointFromRequest: true,
+          origins: ['https://allowed.example', 'https://fallback.example'],
+          methods: ['POST'],
+        })],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('http-default-method-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-default-method',
+          requestBytes: fromUtf8(JSON.stringify({ url: 'https://allowed.example/path', body: { prompt: 'hi' } })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fetchCount, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('derives configured HTTP endpoint origins and singleton methods before policy guard', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    let invocationCount = 0;
+    const configuredPutDriver = {
+      manifest() {
+        return {
+          driverId: 'configured-url-only-put',
+          supportedActuatorRefs: ['http:json'],
+          supportedDescriptorFingerprints: ['descriptor:http-json'],
+          supportedActuationClasses: ['http'],
+          supportedResponseStatuses: ['ok'],
+          maximumRequestBytes: 4096,
+          maximumResponseBytes: 4096,
+          recoveryClass: EffectRecoveryClass.idempotent,
+          concurrencyLimit: 1,
+          authorityLabels: ['network:http'],
+          diagnostics: {
+            endpointSource: 'config',
+            configuredEndpointUrl: 'https://allowed.example/put',
+            methods: ['PUT'],
+          },
+        };
+      },
+      async resolve() {
+        invocationCount += 1;
+        return {
+          resolutionInputBytes: encodeResolutionInputBytes({
+            targetHostRequestFingerprint: 0xa01n,
+            status: 0,
+            responseValueImageBytes: fixtureResponseValueBytes('response', 0xa01n),
+            hostClaimBytes: fromUtf8('claim'),
+            attemptNumber: 1,
+            metadata: fromUtf8('metadata'),
+          }),
+        };
+      },
+    };
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [configuredPutDriver],
+      effectPolicy: {
+        allowedAuthorityLabels: new Set(['network:http']),
+        allowedHttpOrigins: new Set(['https://allowed.example']),
+        allowedHttpMethods: new Set(['PUT']),
+      },
+      hostRequestMapper: () => ({
+        actuatorRef: 'http:json',
+        descriptorFingerprint: 'descriptor:http-json',
+        actuationClass: 'http',
+        responseSchema: { status: 'ok' },
+        idempotencyKeyBytes: fromUtf8('configured-url-only-put-key'),
+        idempotencyKeyWorldFingerprint: 'world:key:configured-url-only-put',
+        requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'hi' } })),
+        hostRequestFingerprint: 'world:host-request:0000000000000a01',
+      }),
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(invocationCount, 1);
+  });
+
+  it('preserves raw HTTP driver default methods before policy guard', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    try {
+      globalThis.fetch = async (url, options) => {
+        fetchCount += 1;
+        assert.equal(String(url), 'https://allowed.example/path');
+        assert.equal(options.method, 'GET');
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const rawDefaultDriver = new HttpJsonDriver({
+        origins: ['https://allowed.example'],
+        methods: ['GET', 'POST'],
+      });
+      const driverWithoutDiagnosticDefault = {
+        manifest() {
+          const manifest = rawDefaultDriver.manifest();
+          const { defaultMethod, ...diagnostics } = manifest.diagnostics;
+          return {
+            ...manifest,
+            driverId: 'http-json-without-diagnostic-default',
+            diagnostics,
+          };
+        },
+        resolve(context, hostRequest) {
+          return rawDefaultDriver.resolve(context, hostRequest);
+        },
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [driverWithoutDiagnosticDefault],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['GET']),
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('raw-http-default-method-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:raw-http-default-method',
+          requestBytes: fromUtf8(JSON.stringify({ url: 'https://allowed.example/path' })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fetchCount, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('preserves singleton raw HTTP methods before policy guard', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    let invocationCount = 0;
+    const singletonPostDriver = {
+      manifest() {
+        return {
+          driverId: 'http-json-singleton-post',
+          supportedActuatorRefs: ['http:json'],
+          supportedDescriptorFingerprints: ['descriptor:http-json'],
+          supportedActuationClasses: ['http'],
+          supportedResponseStatuses: ['ok'],
+          maximumRequestBytes: 4096,
+          maximumResponseBytes: 4096,
+          recoveryClass: EffectRecoveryClass.idempotent,
+          concurrencyLimit: 1,
+          authorityLabels: ['network:http'],
+          diagnostics: { origins: ['https://allowed.example'], methods: ['POST'] },
+        };
+      },
+      async resolve(context, hostRequest) {
+        invocationCount += 1;
+        const request = JSON.parse(new TextDecoder().decode(hostRequest.requestBytes));
+        assert.equal(request.method ?? 'POST', 'POST');
+        return {
+          resolutionInputBytes: encodeResolutionInputBytes({
+            targetHostRequestFingerprint: 0xa01n,
+            status: 0,
+            responseValueImageBytes: fixtureResponseValueBytes('response', 0xa01n),
+            hostClaimBytes: fromUtf8('claim'),
+            attemptNumber: 1,
+            metadata: fromUtf8('metadata'),
+          }),
+        };
+      },
+    };
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [singletonPostDriver],
+      effectPolicy: {
+        allowedAuthorityLabels: new Set(['network:http']),
+        allowedHttpOrigins: new Set(['https://allowed.example']),
+        allowedHttpMethods: new Set(['POST']),
+      },
+      hostRequestMapper: () => ({
+        actuatorRef: 'http:json',
+        descriptorFingerprint: 'descriptor:http-json',
+        actuationClass: 'http',
+        responseSchema: { status: 'ok' },
+        idempotencyKeyBytes: fromUtf8('raw-http-singleton-post-key'),
+        idempotencyKeyWorldFingerprint: 'world:key:raw-http-singleton-post',
+        requestBytes: fromUtf8(JSON.stringify({ url: 'https://allowed.example/path' })),
+        hostRequestFingerprint: 'world:host-request:0000000000000a01',
+      }),
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(invocationCount, 1);
+  });
+
+  it('leaves configured HTTP requests with unsupported explicit methods unresolved in partial batches', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'http-partial-key:1', idempotencyKeyFingerprint: 0xa09n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'http-partial-key:2', idempotencyKeyFingerprint: 0xa19n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    try {
+      globalThis.fetch = async (url, options) => {
+        fetchCount += 1;
+        assert.equal(url, 'https://allowed.example/decide');
+        assert.equal(options.method, 'POST');
+        return new Response('{"status":"ok"}', {
+          status: 200,
+          headers: { 'x-request-id': 'controller-http-partial-method' },
+        });
+      };
+      const worker = new CaptureTurnInputWorker(fixtureTurnClosureBytes());
+      const controller = new RunController({
+        store,
+        workerFactory: async () => worker,
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          allowEndpointFromRequest: true,
+          origins: ['https://allowed.example'],
+          methods: ['POST'],
+        })],
+        effectPolicy: {
+          allowPartialEffectBatch: true,
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+        },
+        hostRequestMapper: (worldHostRequest) => {
+          const blocked = worldHostRequest.requestFingerprint === 0xa02n;
+          return {
+            actuatorRef: 'http:json',
+            descriptorFingerprint: 'descriptor:http-json',
+            actuationClass: 'http',
+            responseSchema: { status: 'ok' },
+            idempotencyKeyBytes: fromUtf8(blocked ? 'http-partial-method-key:2' : 'http-partial-method-key:1'),
+            idempotencyKeyWorldFingerprint: blocked ? 'world:key:http-partial-method:2' : 'world:key:http-partial-method:1',
+            requestBytes: fromUtf8(JSON.stringify(blocked
+              ? { method: 'DELETE', body: { prompt: 'blocked' } }
+              : { body: { prompt: 'covered' } })),
+            hostRequestFingerprint: blocked
+              ? 'world:host-request:0000000000000a02'
+              : 'world:host-request:0000000000000a01',
+          };
+        },
+      });
+
+      const result = await controller.advance(runId, branchId);
+      const effects = await store.listEffectRecords(runId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fetchCount, 1);
+      assert.equal(result.effects.length, 0);
+      assert.equal(effects.length, 1);
+      assert.equal(effects[0].state, EffectState.resolved);
+      assert.equal(result.unresolvedHostRequests.length, 1);
+      assert.equal(result.unresolvedHostRequests[0].hostRequestFingerprint, 'world:host-request:0000000000000a02');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('leaves driver-preflight-blocked HTTP requests unresolved in partial batches', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'partial-driver-preflight-key:1', idempotencyKeyFingerprint: 0xa09n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'partial-driver-preflight-key:2', idempotencyKeyFingerprint: 0xa19n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const originalFetch = globalThis.fetch;
+    const coveredDriver = fixtureEffectDriver();
+    let fetchCount = 0;
+    try {
+      globalThis.fetch = async () => {
+        fetchCount += 1;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [
+          coveredDriver,
+          new GenericHttpJsonCapabilityDriver({
+            endpointUrl: 'https://allowed.example/decide',
+            origins: ['https://allowed.example'],
+            methods: ['POST'],
+            maximumRequestBytes: 32,
+            requestTemplate: { prompt: 'x'.repeat(256) },
+          }),
+        ],
+        effectPolicy: {
+          allowPartialEffectBatch: true,
+          allowedAuthorityLabels: new Set(['test', 'network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+        },
+        hostRequestMapper: (worldHostRequest) => {
+          if (worldHostRequest.requestFingerprint === 0xa02n) {
+            return {
+              actuatorRef: 'http:json',
+              descriptorFingerprint: 'descriptor:http-json',
+              actuationClass: 'http',
+              responseSchema: { status: 'ok' },
+              idempotencyKeyBytes: fromUtf8('partial-driver-preflight-http-key'),
+              idempotencyKeyWorldFingerprint: 'world:key:partial-driver-preflight-http',
+              requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'small' } })),
+              hostRequestFingerprint: 'world:host-request:0000000000000a02',
+            };
+          }
+          return {
+            actuatorRef: 'world:actuator-ref:0000000000000a05',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+            actuationClass: 'world:actuation-class:1',
+            responseSchema: { status: 'responded' },
+            idempotencyKeyBytes: fromUtf8('partial-driver-preflight-covered-key'),
+            idempotencyKeyWorldFingerprint: 'world:key:partial-driver-preflight-covered',
+            requestBytes: fromUtf8('covered'),
+            hostRequestFingerprint: 'world:host-request:0000000000000a01',
+          };
+        },
+      });
+
+      const result = await controller.advance(runId, branchId);
+      const effects = await store.listEffectRecords(runId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(coveredDriver.invocationCount, 1);
+      assert.equal(fetchCount, 0);
+      assert.equal(effects.length, 1);
+      assert.equal(result.unresolvedHostRequests.length, 1);
+      assert.equal(result.unresolvedHostRequests[0].hostRequestFingerprint, 'world:host-request:0000000000000a02');
+      assert.deepEqual(result.unresolvedHostRequests[0].blockers, ['ERR_HTTP_REQUEST_TOO_LARGE']);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('leaves HTTP requests without method allowlists unresolved in partial batches', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'partial-allowlisted-key:1', idempotencyKeyFingerprint: 0xa09n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'partial-allowlisted-key:2', idempotencyKeyFingerprint: 0xa19n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    try {
+      globalThis.fetch = async () => {
+        fetchCount += 1;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [
+          fixtureEffectDriver(),
+          new GenericHttpJsonCapabilityDriver({
+            endpointUrl: 'https://allowed.example/decide',
+            allowEndpointFromRequest: true,
+            origins: ['https://allowed.example'],
+            methods: ['POST'],
+          }),
+        ],
+        effectPolicy: {
+          allowPartialEffectBatch: true,
+          allowedAuthorityLabels: new Set(['test', 'network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+        },
+        hostRequestMapper: (worldHostRequest) => {
+          if (worldHostRequest.requestFingerprint === 0xa02n) {
+            return {
+              actuatorRef: 'http:json',
+              descriptorFingerprint: 'descriptor:http-json',
+              actuationClass: 'http',
+              responseSchema: { status: 'ok' },
+              idempotencyKeyBytes: fromUtf8('partial-http-missing-method-policy-key'),
+              idempotencyKeyWorldFingerprint: 'world:key:partial-http-missing-method-policy',
+              requestBytes: fromUtf8(JSON.stringify({
+                url: 'https://allowed.example/decide',
+                method: 'POST',
+                body: { prompt: 'unresolved' },
+              })),
+              hostRequestFingerprint: 'world:host-request:0000000000000a02',
+            };
+          }
+          return {
+            actuatorRef: 'world:actuator-ref:0000000000000a05',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+            actuationClass: 'world:actuation-class:1',
+            responseSchema: { status: 'responded' },
+            idempotencyKeyBytes: fromUtf8('partial-covered-key'),
+            idempotencyKeyWorldFingerprint: 'world:key:partial-covered',
+            requestBytes: fromUtf8('covered'),
+            hostRequestFingerprint: 'world:host-request:0000000000000a01',
+          };
+        },
+      });
+
+      const result = await controller.advance(runId, branchId);
+      const effects = await store.listEffectRecords(runId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fetchCount, 0);
+      assert.equal(effects.length, 1);
+      assert.equal(result.unresolvedHostRequests.length, 1);
+      assert.equal(result.unresolvedHostRequests[0].hostRequestFingerprint, 'world:host-request:0000000000000a02');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('leaves credentialed HTTP URLs unresolved in partial batches', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'partial-credential-url-key:1', idempotencyKeyFingerprint: 0xa09n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'partial-credential-url-key:2', idempotencyKeyFingerprint: 0xa19n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const originalFetch = globalThis.fetch;
+    const coveredDriver = fixtureEffectDriver();
+    let fetchCount = 0;
+    try {
+      globalThis.fetch = async () => {
+        fetchCount += 1;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [
+          coveredDriver,
+          new GenericHttpJsonCapabilityDriver({
+            endpointUrl: 'https://allowed.example/decide',
+            allowEndpointFromRequest: true,
+            origins: ['https://allowed.example'],
+            methods: ['POST'],
+          }),
+        ],
+        effectPolicy: {
+          allowPartialEffectBatch: true,
+          allowedAuthorityLabels: new Set(['test', 'network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+        },
+        hostRequestMapper: (worldHostRequest) => {
+          if (worldHostRequest.requestFingerprint === 0xa02n) {
+            return {
+              actuatorRef: 'http:json',
+              descriptorFingerprint: 'descriptor:http-json',
+              actuationClass: 'http',
+              responseSchema: { status: 'ok' },
+              idempotencyKeyBytes: fromUtf8('partial-http-credential-url-key'),
+              idempotencyKeyWorldFingerprint: 'world:key:partial-http-credential-url',
+              requestBytes: fromUtf8(JSON.stringify({
+                url: 'https://user:pass@allowed.example/decide',
+                method: 'POST',
+                body: { prompt: 'unresolved' },
+              })),
+              hostRequestFingerprint: 'world:host-request:0000000000000a02',
+            };
+          }
+          return {
+            actuatorRef: 'world:actuator-ref:0000000000000a05',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+            actuationClass: 'world:actuation-class:1',
+            responseSchema: { status: 'responded' },
+            idempotencyKeyBytes: fromUtf8('partial-credential-url-covered-key'),
+            idempotencyKeyWorldFingerprint: 'world:key:partial-credential-url-covered',
+            requestBytes: fromUtf8('covered'),
+            hostRequestFingerprint: 'world:host-request:0000000000000a01',
+          };
+        },
+      });
+
+      const result = await controller.advance(runId, branchId);
+      const effects = await store.listEffectRecords(runId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(coveredDriver.invocationCount, 1);
+      assert.equal(fetchCount, 0);
+      assert.equal(effects.length, 1);
+      assert.equal(result.unresolvedHostRequests.length, 1);
+      assert.equal(result.unresolvedHostRequests[0].hostRequestFingerprint, 'world:host-request:0000000000000a02');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('leaves file requests without root allowlists unresolved in partial batches', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'partial-file-root-key:1', idempotencyKeyFingerprint: 0xa09n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'partial-file-root-key:2', idempotencyKeyFingerprint: 0xa19n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const coveredDriver = fixtureEffectDriver();
+    const fileDriver = fixtureEffectDriver({
+      driverId: 'file.effect.driver',
+      actuatorRef: 'file:read',
+      descriptorFingerprint: 'descriptor:file-read',
+      actuationClasses: ['file'],
+      responseStatuses: ['ok'],
+      authorityLabels: ['file:sandbox'],
+      diagnostics: { root: FIXTURE_FILE_ROOT },
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [coveredDriver, fileDriver],
+      effectPolicy: {
+        allowPartialEffectBatch: true,
+        allowedAuthorityLabels: new Set(['test', 'file:sandbox']),
+      },
+      hostRequestMapper: (worldHostRequest) => {
+        if (worldHostRequest.requestFingerprint === 0xa02n) {
+          return {
+            actuatorRef: 'file:read',
+            descriptorFingerprint: 'descriptor:file-read',
+            actuationClass: 'file',
+            responseSchema: { status: 'ok' },
+            idempotencyKeyBytes: fromUtf8('partial-file-missing-root-policy-key'),
+            idempotencyKeyWorldFingerprint: 'world:key:partial-file-missing-root-policy',
+            requestBytes: fromUtf8('file read'),
+            hostRequestFingerprint: 'world:host-request:0000000000000a02',
+          };
+        }
+        return {
+          actuatorRef: 'world:actuator-ref:0000000000000a05',
+          descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+          actuationClass: 'world:actuation-class:1',
+          responseSchema: { status: 'responded' },
+          idempotencyKeyBytes: fromUtf8('partial-file-covered-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:partial-file-covered',
+          requestBytes: fromUtf8('covered'),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        };
+      },
+    });
+
+    const result = await controller.advance(runId, branchId);
+    const effects = await store.listEffectRecords(runId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(coveredDriver.invocationCount, 1);
+    assert.equal(fileDriver.invocationCount, 0);
+    assert.equal(effects.length, 1);
+    assert.equal(result.unresolvedHostRequests.length, 1);
+    assert.equal(result.unresolvedHostRequests[0].hostRequestFingerprint, 'world:host-request:0000000000000a02');
+  });
+
+  it('includes configured HTTP endpoints in controller effect identity', async () => {
+    const pendingClosure = fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]);
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: pendingClosure,
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    try {
+      globalThis.fetch = async (url, options) => {
+        fetchCount += 1;
+        assert.equal(url, 'https://allowed.example/decide');
+        assert.equal(options.method, 'POST');
+        return new Response('{"status":"ok"}', {
+          status: 200,
+          headers: { 'x-request-id': 'controller-http-identity' },
+        });
+      };
+      const firstController = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('http-configured-identity-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-configured-identity',
+          requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'hi' } })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const first = await firstController.advance(runId, branchId);
+      assert.equal(first.status, 'advanced');
+      await resetHeadToNeedsHost(store, runId, branchId, pendingClosure);
+      globalThis.fetch = async () => {
+        throw new Error('configured endpoint identity conflict should block before fetch');
+      };
+      const secondController = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://other.example/decide' })],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://other.example']),
+          allowedHttpMethods: new Set(['POST']),
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('http-configured-identity-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-configured-identity',
+          requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'hi' } })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      await assert.rejects(
+        () => secondController.advance(runId, branchId),
+        (error) => {
+          assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+          assert.deepEqual(error.details?.blockers, ['ERR_EFFECT_IDEMPOTENCY_CONFLICT']);
+          return true;
+        },
+      );
+      assert.equal(fetchCount, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('passes receiver policy into controller-driven configured HTTP capabilities', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    try {
+      globalThis.fetch = async (url, options) => {
+        fetchCount += 1;
+        assert.equal(url, 'https://allowed.example/decide');
+        assert.equal(options.method, 'POST');
+        return new Response('{"status":"ok"}', {
+          status: 200,
+          headers: { 'x-request-id': 'controller-http' },
+        });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('http-idempotency-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:http',
+          requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'hi' } })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fetchCount, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('requires receiver HTTP origins before configured HTTP capabilities resolve', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCalled = false;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpMethods: new Set(['POST']),
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('http-origin-required-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-origin-required',
+          requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'hi' } })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      await assert.rejects(
+        () => controller.advance(runId, branchId),
+        (error) => {
+          assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+          assert.ok(error.details?.blockers?.includes('http-origin-allowlist-required'));
+          return true;
+        },
+      );
+      assert.equal(fetchCalled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('preserves controller audit-only and approval requirements before resolving effects', async () => {
+    for (const [policy, expectedCode, key] of [
+      [{ auditOnly: true }, 'ERR_CAPABILITY_AUDIT_ONLY_DENIED', 'audit-only'],
+      [{ requireApprovalForNetworkEffects: true }, 'ERR_CAPABILITY_APPROVAL_REQUIRED', 'approval-required'],
+    ]) {
+      const { store, runId, branchId } = await fixtureStore({
+        headStatus: 'needs_host',
+        closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+      });
+      let fetchCalled = false;
+      const originalFetch = globalThis.fetch;
+      try {
+        globalThis.fetch = async () => {
+          fetchCalled = true;
+          return new Response('{"status":"ok"}', { status: 200 });
+        };
+        const controller = new RunController({
+          store,
+          workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+          effectDrivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
+          effectPolicy: {
+            ...policy,
+            allowedAuthorityLabels: new Set(['network:http']),
+            allowedHttpOrigins: new Set(['https://allowed.example']),
+            allowedHttpMethods: new Set(['POST']),
+          },
+          hostRequestMapper: () => ({
+            actuatorRef: 'http:json',
+            descriptorFingerprint: 'descriptor:http-json',
+            actuationClass: 'http',
+            responseSchema: { status: 'ok' },
+            idempotencyKeyBytes: fromUtf8(`http-${key}-key`),
+            idempotencyKeyWorldFingerprint: `world:key:http-${key}`,
+            requestBytes: fromUtf8(JSON.stringify({ body: { prompt: key } })),
+            hostRequestFingerprint: 'world:host-request:0000000000000a01',
+          }),
+        });
+
+        await assert.rejects(
+          () => controller.advance(runId, branchId),
+          (error) => {
+            if (expectedCode === 'ERR_CAPABILITY_APPROVAL_REQUIRED') {
+              assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+              assert.ok(error.details?.blockers?.includes('ERR_CAPABILITY_APPROVAL_REQUIRED'));
+              return true;
+            }
+            assert.equal(error.code, expectedCode);
+            return true;
+          },
+        );
+        assert.equal(fetchCalled, false);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    }
+  });
+
+  it('enforces controller policy before custom capability contexts', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    let fetchCalled = false;
+    let contextFactoryCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
+        effectPolicy: {
+          auditOnly: true,
+          allowedAuthorityLabels: new Set(['network:http']),
+            allowedHttpOrigins: new Set(['https://allowed.example']),
+            allowedHttpMethods: new Set(['POST']),
+          },
+        effectContextFactory: async (context) => {
+          contextFactoryCalled = true;
+          return {
+            ...context,
+            policy: {
+              allowLiveEffects: true,
+              allowNetworkEffects: true,
+              allowedOrigins: ['https://allowed.example'],
+              allowedMethods: ['POST'],
+            },
+          };
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('http-context-policy-drop-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-context-policy-drop',
+          requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'policy-drop' } })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      await assert.rejects(
+        () => controller.advance(runId, branchId),
+        { code: 'ERR_CAPABILITY_AUDIT_ONLY_DENIED' },
+      );
+      assert.equal(fetchCalled, false);
+      assert.equal(contextFactoryCalled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('requires explicit controller opt-in before resolving human effects', async () => {
+    const humanRequest = () => ({
+      actuatorRef: 'human:approval',
+      descriptorFingerprint: 'descriptor:human-approval',
+      actuationClass: 'human',
+      responseSchema: { status: 'ok' },
+      idempotencyKeyBytes: fromUtf8('human-approval-key'),
+      idempotencyKeyWorldFingerprint: 'world:key:human-approval',
+      requestBytes: fromUtf8(JSON.stringify({ prompt: 'approve?' })),
+      hostRequestFingerprint: 'world:host-request:0000000000000a01',
+    });
+
+    {
+      const { store, runId, branchId } = await fixtureStore({
+        headStatus: 'needs_host',
+        closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+      });
+      let approveCalled = false;
+      const driver = new HumanApprovalCapabilityDriver({ mode: 'noninteractive-allow' });
+      driver.approve = async () => {
+        approveCalled = true;
+        return { approved: true, record: { kind: 'test-human-approval' } };
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [driver],
+        hostRequestMapper: humanRequest,
+      });
+
+      await assert.rejects(
+        () => controller.advance(runId, branchId),
+        (error) => {
+          assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+          assert.ok(error.details?.blockers?.includes('ERR_CAPABILITY_HUMAN_DENIED'));
+          return true;
+        },
+      );
+      assert.equal(approveCalled, false);
+    }
+
+    {
+      const { store, runId, branchId } = await fixtureStore({
+        headStatus: 'needs_host',
+        closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+      });
+      let approveCalled = false;
+      const driver = new HumanApprovalCapabilityDriver({ mode: 'noninteractive-allow' });
+      driver.approve = async () => {
+        approveCalled = true;
+        return { approved: true, record: { kind: 'test-human-approval' } };
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [driver],
+        effectPolicy: {
+          allowHumanEffects: true,
+          allowedAuthorityLabels: new Set(['human:approval']),
+        },
+        hostRequestMapper: humanRequest,
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(approveCalled, true);
+    }
+  });
+
+  it('enforces controller audit-only and approval requirements before raw effect drivers', async () => {
+    for (const [policy, expectedCode, key] of [
+      [{ auditOnly: true }, 'ERR_CAPABILITY_AUDIT_ONLY_DENIED', 'raw-audit-only'],
+      [{ requireApprovalForNetworkEffects: true }, 'ERR_CAPABILITY_APPROVAL_REQUIRED', 'raw-approval-required'],
+    ]) {
+      const { store, runId, branchId } = await fixtureStore({
+        headStatus: 'needs_host',
+        closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+      });
+      let fetchCalled = false;
+      const originalFetch = globalThis.fetch;
+      try {
+        globalThis.fetch = async () => {
+          fetchCalled = true;
+          return new Response('{"status":"ok"}', { status: 200 });
+        };
+        const controller = new RunController({
+          store,
+          workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+          effectDrivers: [new HttpJsonDriver({
+            origins: ['https://allowed.example'],
+            methods: ['POST'],
+          })],
+          effectPolicy: {
+            ...policy,
+            allowedAuthorityLabels: new Set(['network:http']),
+            allowedHttpOrigins: new Set(['https://allowed.example']),
+            allowedHttpMethods: new Set(['POST']),
+          },
+          hostRequestMapper: () => ({
+            actuatorRef: 'http:json',
+            descriptorFingerprint: 'descriptor:http-json',
+            actuationClass: 'http',
+            responseSchema: { status: 'ok' },
+            idempotencyKeyBytes: fromUtf8(`http-${key}-key`),
+            idempotencyKeyWorldFingerprint: `world:key:http-${key}`,
+            requestBytes: fromUtf8(JSON.stringify({
+              url: 'https://allowed.example/decide',
+              method: 'POST',
+              body: { prompt: key },
+            })),
+            hostRequestFingerprint: 'world:host-request:0000000000000a01',
+          }),
+        });
+
+        await assert.rejects(
+          () => controller.advance(runId, branchId),
+          (error) => {
+            if (expectedCode === 'ERR_CAPABILITY_APPROVAL_REQUIRED') {
+              assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+              assert.ok(error.details?.blockers?.includes('ERR_CAPABILITY_APPROVAL_REQUIRED'));
+              return true;
+            }
+            assert.equal(error.code, expectedCode);
+            return true;
+          },
+        );
+        assert.equal(fetchCalled, false);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    }
+  });
+
+  it('passes approved context actions through raw effect policy guards', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    try {
+      globalThis.fetch = async () => {
+        fetchCount += 1;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new HttpJsonDriver({
+          origins: ['https://allowed.example'],
+          methods: ['POST'],
+        })],
+        effectPolicy: {
+          requireApprovalForNetworkEffects: true,
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+        },
+        effectContextFactory: async (context) => ({
+          ...context,
+          action: { approved: true },
+          policy: {
+            ...context.policy,
+            allowLiveEffects: true,
+            allowNetworkEffects: true,
+          },
+        }),
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('http-raw-approved-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-raw-approved',
+          requestBytes: fromUtf8(JSON.stringify({
+            url: 'https://allowed.example/decide',
+            method: 'POST',
+            body: { prompt: 'approved' },
+          })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fetchCount, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('normalizes custom capability contexts before invoking generic effect drivers', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    try {
+      globalThis.fetch = async () => {
+        fetchCount += 1;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
+        effectPolicy: {
+          requireApprovalForNetworkEffects: true,
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+        },
+        effectContextFactory: async (context) => ({
+          ...context,
+          action: { approved: true },
+        }),
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('generic-http-custom-context-policy-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:generic-http-custom-context-policy',
+          requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'approved' } })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fetchCount, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('binds partial approved raw effect routes with the approval-aware policy', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    try {
+      globalThis.fetch = async () => {
+        fetchCount += 1;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new HttpJsonDriver({
+          origins: ['https://allowed.example'],
+          methods: ['POST'],
+        })],
+        effectPolicy: {
+          allowPartialEffectBatch: true,
+          requireApprovalForNetworkEffects: true,
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+        },
+        effectContextFactory: async (context) => ({
+          ...context,
+          action: { approved: true },
+        }),
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('partial-http-raw-approved-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:partial-http-raw-approved',
+          requestBytes: fromUtf8(JSON.stringify({
+            url: 'https://allowed.example/decide',
+            method: 'POST',
+            body: { prompt: 'partial-approved' },
+          })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fetchCount, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('binds policy-safe drivers ahead of approval-deferred candidates', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const approvalDeferred = fixtureEffectDriver({
+      driverId: 'approval-deferred-best-effort',
+      recoveryClass: EffectRecoveryClass.bestEffort,
+    });
+    const policySafe = fixtureEffectDriver({ driverId: 'policy-safe-pure' });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [approvalDeferred, policySafe],
+      effectPolicy: {
+        allowBestEffort: true,
+        allowedAuthorityLabels: new Set(['test']),
+      },
+      effectContextFactory: async (context) => context,
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(approvalDeferred.invocationCount, 0);
+    assert.equal(policySafe.invocationCount, 1);
+  });
+
+  it('leaves approval-denied partial routes unresolved before invoking effects', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'partial-approval-key:1', idempotencyKeyFingerprint: 0xa09n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'partial-approval-key:2', idempotencyKeyFingerprint: 0xa19n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    const contextFingerprints = [];
+    try {
+      globalThis.fetch = async () => {
+        fetchCount += 1;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          allowEndpointFromRequest: true,
+          origins: ['https://allowed.example'],
+          methods: ['POST'],
+        })],
+        effectPolicy: {
+          allowPartialEffectBatch: true,
+          requireApprovalForNetworkEffects: true,
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+        },
+        effectContextFactory: async (context) => {
+          contextFingerprints.push(context.hostRequest.hostRequestFingerprint);
+          return {
+            ...context,
+            action: context.hostRequest.hostRequestFingerprint.endsWith('0a01') ? { approved: true } : null,
+            policy: {
+              allowLiveEffects: true,
+              allowNetworkEffects: true,
+              allowedOrigins: ['https://allowed.example'],
+              allowedMethods: ['POST'],
+            },
+          };
+        },
+        hostRequestMapper: (worldHostRequest) => {
+          const second = worldHostRequest.requestFingerprint === 0xa02n;
+          return {
+            actuatorRef: 'http:json',
+            descriptorFingerprint: 'descriptor:http-json',
+            actuationClass: 'http',
+            responseSchema: { status: 'ok' },
+            idempotencyKeyBytes: fromUtf8(second ? 'partial-approval-key:2' : 'partial-approval-key:1'),
+            idempotencyKeyWorldFingerprint: second ? 'world:key:partial-approval:2' : 'world:key:partial-approval:1',
+            requestBytes: fromUtf8(JSON.stringify({
+              url: 'https://allowed.example/decide',
+              method: 'POST',
+              body: { prompt: second ? 'denied' : 'approved' },
+            })),
+            hostRequestFingerprint: second
+              ? 'world:host-request:0000000000000a02'
+              : 'world:host-request:0000000000000a01',
+          };
+        },
+      });
+
+      const result = await controller.advance(runId, branchId);
+      const effects = await store.listEffectRecords(runId);
+
+      assert.equal(result.status, 'advanced');
+      assert.deepEqual(contextFingerprints, [
+        'world:host-request:0000000000000a01',
+        'world:host-request:0000000000000a02',
+      ]);
+      assert.equal(fetchCount, 1);
+      assert.equal(effects.length, 1);
+      assert.equal(effects[0].hostRequestFingerprint, 'world:host-request:0000000000000a01');
+      assert.equal(result.unresolvedHostRequests.length, 1);
+      assert.equal(result.unresolvedHostRequests[0].hostRequestFingerprint, 'world:host-request:0000000000000a02');
+      assert.deepEqual(result.unresolvedHostRequests[0].blockers, ['ERR_CAPABILITY_APPROVAL_REQUIRED']);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('overwrites custom mapper world fingerprints and reply binding diagnostics', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([
+        fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'mapper-binding-key', idempotencyKeyFingerprint: 0xa09n }),
+      ]),
+    });
+    const driver = delayedBatchDriver({ coordinateFirstPair: false });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [driver],
+      hostRequestMapper: () => ({
+        actuatorRef: 'world:actuator-ref:0000000000000a05',
+        descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+        actuationClass: 'world:actuation-class:1',
+        responseSchema: { status: 'responded' },
+        idempotencyKeyBytes: fromUtf8('mapper-binding-key'),
+        idempotencyKeyWorldFingerprint: 'world:idempotency-key:0000000000000a09',
+        requestBytes: fromUtf8('mapped request bytes'),
+        hostRequestFingerprint: 'world:host-request:0000000000000bad',
+        diagnostics: {
+          mapper: 'custom',
+          worldHostReplyBinding: {
+            requestFingerprint: '0000000000000bad',
+            intentFingerprint: '0000000000000bad',
+            envelopeFingerprint: '0000000000000bad',
+            idempotencyKeyFingerprint: '0000000000000bad',
+          },
+        },
+      }),
+    });
+
+    const result = await controller.advance(runId, branchId);
+    const effects = await store.listEffectRecords(runId);
+
+    assert.equal(result.status, 'advanced');
+    assert.deepEqual(driver.completions, ['world:host-request:0000000000000a01']);
+    assert.equal(effects.length, 1);
+    assert.equal(effects[0].hostRequestFingerprint, 'world:host-request:0000000000000a01');
+    assert.equal(effects[0].diagnostics.mapper, 'custom');
+    assert.equal(effects[0].diagnostics.driverId, 'test.effect.driver');
+    assert.deepEqual(effects[0].diagnostics.worldHostReplyBinding, {
+      requestFingerprint: '0000000000000a01',
+      intentFingerprint: '0000000000000a06',
+      envelopeFingerprint: '0000000000000a07',
+      idempotencyKeyFingerprint: '0000000000000a09',
+    });
+  });
+
+  it('preserves controller live model budgets before resolving effects', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    let fetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"action":{"variant":"final","text":"denied"}}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonModelDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          packFingerprint: 'sha256:'.concat('a'.repeat(64)),
+        })],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['model:http-json', 'network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          maximumLiveModelCalls: 0,
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'model:decision',
+          descriptorFingerprint: 'descriptor:agent-decision-prompt',
+          actuationClass: 'model',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('model-budget-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:model-budget',
+          requestBytes: fromUtf8(JSON.stringify({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: 'goal=budget' })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      await assert.rejects(
+        () => controller.advance(runId, branchId),
+        (error) => {
+          assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+          assert.ok(error.details?.blockers?.includes('ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED'));
+          return true;
+        },
+      );
+      assert.equal(fetchCalled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('requires network approval for label-only model:http-json controller drivers', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const driver = fixtureEffectDriver({
+      driverId: 'label-only-http-model',
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClasses: ['model'],
+      responseStatuses: ['ok'],
+      recoveryClass: EffectRecoveryClass.idempotent,
+      authorityLabels: ['model:http-json'],
+      diagnostics: {
+        endpointSource: 'config',
+        configuredEndpointUrl: 'https://allowed.example/decide',
+        defaultMethod: 'POST',
+        origins: ['https://allowed.example'],
+        methods: ['POST'],
+      },
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [driver],
+      effectContextFactory: async () => ({}),
+      effectPolicy: {
+        allowedAuthorityLabels: new Set(['model:http-json']),
+        allowedHttpOrigins: new Set(['https://allowed.example']),
+        allowedHttpMethods: new Set(['POST']),
+        maximumLiveModelCalls: 1,
+        requireApprovalForNetworkEffects: true,
+      },
+      hostRequestMapper: () => ({
+        actuatorRef: 'model:decision',
+        descriptorFingerprint: 'descriptor:agent-decision-prompt',
+        actuationClass: 'model',
+        responseSchema: { status: 'ok' },
+        idempotencyKeyBytes: fromUtf8('label-only-model-network-key'),
+        idempotencyKeyWorldFingerprint: 'world:key:label-only-model-network',
+        requestBytes: fromUtf8(stableJson({
+          schema: 'boundary.Agent.DecisionPrompt.v0',
+          observation: 'goal=label-only-model-network',
+        })),
+        hostRequestFingerprint: 'world:host-request:0000000000000a01',
+      }),
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_CAPABILITY_APPROVAL_REQUIRED' },
+    );
+    assert.equal(driver.invocationCount, 0);
+    assert.equal((await store.listEffectRecords(runId)).length, 0);
+  });
+
+  it('applies prompt byte limits to model request bytes before resolving effects', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    let fetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"action":{"variant":"final","text":"too-late"}}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonModelDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          packFingerprint: 'sha256:'.concat('f'.repeat(64)),
+        })],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['model:http-json', 'network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          maximumLiveModelCalls: 1,
+          maximumRequestBytes: 4096,
+          maximumPromptBytes: 4,
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'model:decision',
+          descriptorFingerprint: 'descriptor:agent-decision-prompt',
+          actuationClass: 'model',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('model-prompt-limit-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:model-prompt-limit',
+          requestBytes: fromUtf8(JSON.stringify({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: 'goal=prompt-limit' })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      await assert.rejects(
+        () => controller.advance(runId, branchId),
+        (error) => {
+          assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+          assert.ok(error.details?.blockers?.includes('prompt-limit-exceeds-policy'));
+          return true;
+        },
+      );
+      assert.equal(fetchCalled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('leaves human-denied and prompt-limited requests unresolved in partial batches', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'partial-policy-covered-key', idempotencyKeyFingerprint: 0xa09n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'partial-policy-human-key', idempotencyKeyFingerprint: 0xa19n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa03n, requestOrdinal: 2, idempotencyKey: 'partial-policy-model-key', idempotencyKeyFingerprint: 0xa29n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const coveredDriver = fixtureEffectDriver();
+    let approveCalled = false;
+    const humanDriver = new HumanApprovalCapabilityDriver({ mode: 'noninteractive-allow' });
+    humanDriver.approve = async () => {
+      approveCalled = true;
+      return { approved: true, record: { kind: 'partial-human-denied' } };
+    };
+    let modelFetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        modelFetchCalled = true;
+        return new Response('{"action":{"variant":"final","text":"too-late"}}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [
+          coveredDriver,
+          humanDriver,
+          new GenericHttpJsonModelDriver({ endpointUrl: 'https://allowed.example/decide' }),
+        ],
+        effectPolicy: {
+          allowPartialEffectBatch: true,
+          allowedAuthorityLabels: new Set(['test', 'human:approval', 'model:http-json', 'network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          maximumLiveModelCalls: 1,
+          maximumRequestBytes: 4096,
+          maximumPromptBytes: 4,
+        },
+        hostRequestMapper: (worldHostRequest) => {
+          if (worldHostRequest.requestFingerprint === 0xa02n) {
+            return {
+              actuatorRef: 'human:approval',
+              descriptorFingerprint: 'descriptor:human-approval',
+              actuationClass: 'human',
+              responseSchema: { status: 'ok' },
+              idempotencyKeyBytes: fromUtf8('partial-policy-human-key'),
+              idempotencyKeyWorldFingerprint: 'world:key:partial-policy-human',
+              requestBytes: fromUtf8(JSON.stringify({ prompt: 'approve this prompt' })),
+              hostRequestFingerprint: 'world:host-request:0000000000000a02',
+            };
+          }
+          if (worldHostRequest.requestFingerprint === 0xa03n) {
+            return {
+              actuatorRef: 'model:decision',
+              descriptorFingerprint: 'descriptor:agent-decision-prompt',
+              actuationClass: 'model',
+              responseSchema: { status: 'ok' },
+              idempotencyKeyBytes: fromUtf8('partial-policy-model-key'),
+              idempotencyKeyWorldFingerprint: 'world:key:partial-policy-model',
+              requestBytes: fromUtf8(JSON.stringify({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: 'goal=prompt-limit' })),
+              hostRequestFingerprint: 'world:host-request:0000000000000a03',
+            };
+          }
+          return {
+            actuatorRef: 'world:actuator-ref:0000000000000a05',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+            actuationClass: 'world:actuation-class:1',
+            responseSchema: { status: 'responded' },
+            idempotencyKeyBytes: fromUtf8('partial-policy-covered-key'),
+            idempotencyKeyWorldFingerprint: 'world:key:partial-policy-covered',
+            requestBytes: fromUtf8('covered'),
+            hostRequestFingerprint: 'world:host-request:0000000000000a01',
+          };
+        },
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(coveredDriver.invocationCount, 1);
+      assert.equal(approveCalled, false);
+      assert.equal(modelFetchCalled, false);
+      assert.deepEqual(
+        result.unresolvedHostRequests.map((item) => item.hostRequestFingerprint).sort(),
+        ['world:host-request:0000000000000a02', 'world:host-request:0000000000000a03'],
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('leaves HTTP prompt-limited requests unresolved in partial batches', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'partial-http-covered-key', idempotencyKeyFingerprint: 0xa09n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'partial-http-prompt-key', idempotencyKeyFingerprint: 0xa19n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const coveredDriver = fixtureEffectDriver();
+    let fetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [
+          coveredDriver,
+          new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }),
+        ],
+        effectPolicy: {
+          allowPartialEffectBatch: true,
+          allowedAuthorityLabels: new Set(['test', 'network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          maximumRequestBytes: 4096,
+          maximumPromptBytes: 4,
+        },
+        hostRequestMapper: (worldHostRequest) => {
+          if (worldHostRequest.requestFingerprint === 0xa02n) {
+            return {
+              actuatorRef: 'http:json',
+              descriptorFingerprint: 'descriptor:http-json',
+              actuationClass: 'http',
+              responseSchema: { status: 'ok' },
+              idempotencyKeyBytes: fromUtf8('partial-http-prompt-key'),
+              idempotencyKeyWorldFingerprint: 'world:key:partial-http-prompt',
+              requestBytes: fromUtf8(stableJson({
+                url: 'https://allowed.example/decide',
+                method: 'POST',
+                body: { prompt: 'too large for receiver prompt policy' },
+              })),
+              hostRequestFingerprint: 'world:host-request:0000000000000a02',
+            };
+          }
+          return {
+            actuatorRef: 'world:actuator-ref:0000000000000a05',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+            actuationClass: 'world:actuation-class:1',
+            responseSchema: { status: 'responded' },
+            idempotencyKeyBytes: fromUtf8('partial-http-covered-key'),
+            idempotencyKeyWorldFingerprint: 'world:key:partial-http-covered',
+            requestBytes: fromUtf8('covered'),
+            hostRequestFingerprint: 'world:host-request:0000000000000a01',
+          };
+        },
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(coveredDriver.invocationCount, 1);
+      assert.equal(fetchCalled, false);
+      assert.deepEqual(
+        result.unresolvedHostRequests.map((item) => item.hostRequestFingerprint),
+        ['world:host-request:0000000000000a02'],
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('leaves templated generic HTTP prompt-limited requests unresolved in partial batches', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'partial-template-http-covered-key', idempotencyKeyFingerprint: 0xa29n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'partial-template-http-prompt-key', idempotencyKeyFingerprint: 0xa39n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const coveredDriver = fixtureEffectDriver();
+    let fetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [
+          coveredDriver,
+          new GenericHttpJsonCapabilityDriver({
+            endpointUrl: 'https://allowed.example/decide',
+            requestTemplate: { prompt: 'template exceeds receiver prompt policy' },
+          }),
+        ],
+        effectPolicy: {
+          allowPartialEffectBatch: true,
+          allowedAuthorityLabels: new Set(['test', 'network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          maximumRequestBytes: 4096,
+          maximumPromptBytes: 4,
+        },
+        hostRequestMapper: (worldHostRequest) => {
+          if (worldHostRequest.requestFingerprint === 0xa02n) {
+            return {
+              actuatorRef: 'http:json',
+              descriptorFingerprint: 'descriptor:http-json',
+              actuationClass: 'http',
+              responseSchema: { status: 'ok' },
+              idempotencyKeyBytes: fromUtf8('partial-template-http-prompt-key'),
+              idempotencyKeyWorldFingerprint: 'world:key:partial-template-http-prompt',
+              requestBytes: fromUtf8(stableJson({
+                url: 'https://allowed.example/decide',
+                method: 'POST',
+                body: { prompt: 'ok' },
+              })),
+              hostRequestFingerprint: 'world:host-request:0000000000000a02',
+            };
+          }
+          return {
+            actuatorRef: 'world:actuator-ref:0000000000000a05',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+            actuationClass: 'world:actuation-class:1',
+            responseSchema: { status: 'responded' },
+            idempotencyKeyBytes: fromUtf8('partial-template-http-covered-key'),
+            idempotencyKeyWorldFingerprint: 'world:key:partial-template-http-covered',
+            requestBytes: fromUtf8('covered'),
+            hostRequestFingerprint: 'world:host-request:0000000000000a01',
+          };
+        },
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(coveredDriver.invocationCount, 1);
+      assert.equal(fetchCalled, false);
+      assert.deepEqual(
+        result.unresolvedHostRequests.map((item) => item.hostRequestFingerprint),
+        ['world:host-request:0000000000000a02'],
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('leaves generic HTTP fallback-body prompt-limited requests unresolved in partial batches', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'partial-fallback-http-covered-key', idempotencyKeyFingerprint: 0xa49n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'partial-fallback-http-prompt-key', idempotencyKeyFingerprint: 0xa59n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const coveredDriver = fixtureEffectDriver();
+    let fetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [
+          coveredDriver,
+          new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }),
+        ],
+        effectPolicy: {
+          allowPartialEffectBatch: true,
+          allowedAuthorityLabels: new Set(['test', 'network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          maximumRequestBytes: 4096,
+          maximumPromptBytes: 4,
+        },
+        hostRequestMapper: (worldHostRequest) => {
+          if (worldHostRequest.requestFingerprint === 0xa02n) {
+            return {
+              actuatorRef: 'http:json',
+              descriptorFingerprint: 'descriptor:http-json',
+              actuationClass: 'http',
+              responseSchema: { status: 'ok' },
+              idempotencyKeyBytes: fromUtf8('partial-fallback-http-prompt-key'),
+              idempotencyKeyWorldFingerprint: 'world:key:partial-fallback-http-prompt',
+              requestBytes: fromUtf8(stableJson({
+                url: 'https://allowed.example/decide',
+                method: 'POST',
+                metadata: 'fallback body exceeds receiver prompt policy',
+              })),
+              hostRequestFingerprint: 'world:host-request:0000000000000a02',
+            };
+          }
+          return {
+            actuatorRef: 'world:actuator-ref:0000000000000a05',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+            actuationClass: 'world:actuation-class:1',
+            responseSchema: { status: 'responded' },
+            idempotencyKeyBytes: fromUtf8('partial-fallback-http-covered-key'),
+            idempotencyKeyWorldFingerprint: 'world:key:partial-fallback-http-covered',
+            requestBytes: fromUtf8('covered'),
+            hostRequestFingerprint: 'world:host-request:0000000000000a01',
+          };
+        },
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(coveredDriver.invocationCount, 1);
+      assert.equal(fetchCalled, false);
+      assert.deepEqual(
+        result.unresolvedHostRequests.map((item) => item.hostRequestFingerprint),
+        ['world:host-request:0000000000000a02'],
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('rejects non-partial HTTP prompt-limited batches before resolving effects', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'non-partial-http-covered-key', idempotencyKeyFingerprint: 0xa09n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'non-partial-http-prompt-key', idempotencyKeyFingerprint: 0xa19n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const coveredDriver = fixtureEffectDriver();
+    let fetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [
+          coveredDriver,
+          new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }),
+        ],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['test', 'network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          maximumRequestBytes: 4096,
+          maximumPromptBytes: 4,
+        },
+        hostRequestMapper: (worldHostRequest) => {
+          if (worldHostRequest.requestFingerprint === 0xa02n) {
+            return {
+              actuatorRef: 'http:json',
+              descriptorFingerprint: 'descriptor:http-json',
+              actuationClass: 'http',
+              responseSchema: { status: 'ok' },
+              idempotencyKeyBytes: fromUtf8('non-partial-http-prompt-key'),
+              idempotencyKeyWorldFingerprint: 'world:key:non-partial-http-prompt',
+              requestBytes: fromUtf8(stableJson({
+                url: 'https://allowed.example/decide',
+                method: 'POST',
+                body: { prompt: 'too large for receiver prompt policy' },
+              })),
+              hostRequestFingerprint: 'world:host-request:0000000000000a02',
+            };
+          }
+          return {
+            actuatorRef: 'world:actuator-ref:0000000000000a05',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+            actuationClass: 'world:actuation-class:1',
+            responseSchema: { status: 'responded' },
+            idempotencyKeyBytes: fromUtf8('non-partial-http-covered-key'),
+            idempotencyKeyWorldFingerprint: 'world:key:non-partial-http-covered',
+            requestBytes: fromUtf8('covered'),
+            hostRequestFingerprint: 'world:host-request:0000000000000a01',
+          };
+        },
+      });
+
+      await assert.rejects(
+        () => controller.advance(runId, branchId),
+        (error) => {
+          assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+          assert.ok(error.details?.blockers?.includes('prompt-limit-exceeds-policy'));
+          return true;
+        },
+      );
+      assert.equal(coveredDriver.invocationCount, 0);
+      assert.equal(fetchCalled, false);
+      assert.equal((await store.listEffectRecords(runId)).length, 0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('leaves approval-required network requests unresolved in partial batches', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'partial-network-covered-key', idempotencyKeyFingerprint: 0xa09n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'partial-network-approval-key', idempotencyKeyFingerprint: 0xa19n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const coveredDriver = fixtureEffectDriver();
+    let fetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [
+          coveredDriver,
+          new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' }),
+        ],
+        effectPolicy: {
+          allowPartialEffectBatch: true,
+          allowedAuthorityLabels: new Set(['test', 'network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          requireApprovalForNetworkEffects: true,
+        },
+        hostRequestMapper: (worldHostRequest) => {
+          if (worldHostRequest.requestFingerprint === 0xa02n) {
+            return {
+              actuatorRef: 'http:json',
+              descriptorFingerprint: 'descriptor:http-json',
+              actuationClass: 'http',
+              responseSchema: { status: 'ok' },
+              idempotencyKeyBytes: fromUtf8('partial-network-approval-key'),
+              idempotencyKeyWorldFingerprint: 'world:key:partial-network-approval',
+              requestBytes: fromUtf8(stableJson({
+                url: 'https://allowed.example/decide',
+                method: 'POST',
+                body: { prompt: 'requires approval' },
+              })),
+              hostRequestFingerprint: 'world:host-request:0000000000000a02',
+            };
+          }
+          return {
+            actuatorRef: 'world:actuator-ref:0000000000000a05',
+            descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+            actuationClass: 'world:actuation-class:1',
+            responseSchema: { status: 'responded' },
+            idempotencyKeyBytes: fromUtf8('partial-network-covered-key'),
+            idempotencyKeyWorldFingerprint: 'world:key:partial-network-covered',
+            requestBytes: fromUtf8('covered'),
+            hostRequestFingerprint: 'world:host-request:0000000000000a01',
+          };
+        },
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(coveredDriver.invocationCount, 1);
+      assert.equal(fetchCalled, false);
+      assert.deepEqual(
+        result.unresolvedHostRequests.map((item) => item.hostRequestFingerprint),
+        ['world:host-request:0000000000000a02'],
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('leaves approval-required file and best-effort requests unresolved in partial batches', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'partial-approval-covered-key', idempotencyKeyFingerprint: 0xa09n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'partial-approval-file-key', idempotencyKeyFingerprint: 0xa19n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa03n, requestOrdinal: 2, idempotencyKey: 'partial-approval-best-effort-key', idempotencyKeyFingerprint: 0xa29n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa04n, requestOrdinal: 3, idempotencyKey: 'partial-approval-malformed-file-key', idempotencyKeyFingerprint: 0xa39n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    const coveredDriver = fixtureEffectDriver();
+    const fileDriver = fixtureEffectDriver({
+      driverId: 'file.approval.driver',
+      actuatorRef: 'file:write',
+      descriptorFingerprint: 'descriptor:file-write',
+      actuationClasses: ['file'],
+      responseStatuses: ['ok'],
+      authorityLabels: ['file:sandbox'],
+      diagnostics: { root: FIXTURE_FILE_ROOT },
+    });
+    const bestEffortDriver = fixtureEffectDriver({
+      driverId: 'best.effort.approval.driver',
+      actuatorRef: 'best:effort',
+      descriptorFingerprint: 'descriptor:best-effort',
+      actuationClasses: ['best-effort'],
+      responseStatuses: ['ok'],
+      authorityLabels: ['test'],
+      recoveryClass: EffectRecoveryClass.bestEffort,
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [coveredDriver, fileDriver, bestEffortDriver],
+      effectPolicy: {
+        allowPartialEffectBatch: true,
+        allowBestEffort: true,
+        allowedAuthorityLabels: new Set(['test', 'file:sandbox']),
+        allowedFileRoots: new Set([FIXTURE_FILE_ROOT]),
+      },
+      hostRequestMapper: (worldHostRequest) => {
+        if (worldHostRequest.requestFingerprint === 0xa02n) {
+          return {
+            actuatorRef: 'file:write',
+            descriptorFingerprint: 'descriptor:file-write',
+            actuationClass: 'file',
+            responseSchema: { status: 'ok' },
+            idempotencyKeyBytes: fromUtf8('partial-approval-file-key'),
+            idempotencyKeyWorldFingerprint: 'world:key:partial-approval-file',
+            requestBytes: fromUtf8(stableJson({ path: 'out.txt', operation: 'write', content: 'needs approval' })),
+            hostRequestFingerprint: 'world:host-request:0000000000000a02',
+          };
+        }
+        if (worldHostRequest.requestFingerprint === 0xa03n) {
+          return {
+            actuatorRef: 'best:effort',
+            descriptorFingerprint: 'descriptor:best-effort',
+            actuationClass: 'best-effort',
+            responseSchema: { status: 'ok' },
+            idempotencyKeyBytes: fromUtf8('partial-approval-best-effort-key'),
+            idempotencyKeyWorldFingerprint: 'world:key:partial-approval-best-effort',
+            requestBytes: fromUtf8('best effort'),
+            hostRequestFingerprint: 'world:host-request:0000000000000a03',
+          };
+        }
+        if (worldHostRequest.requestFingerprint === 0xa04n) {
+          return {
+            actuatorRef: 'file:write',
+            descriptorFingerprint: 'descriptor:file-write',
+            actuationClass: 'file',
+            responseSchema: { status: 'ok' },
+            idempotencyKeyBytes: fromUtf8('partial-approval-malformed-file-key'),
+            idempotencyKeyWorldFingerprint: 'world:key:partial-approval-malformed-file',
+            requestBytes: fromUtf8('not-json'),
+            hostRequestFingerprint: 'world:host-request:0000000000000a04',
+          };
+        }
+        return {
+          actuatorRef: 'world:actuator-ref:0000000000000a05',
+          descriptorFingerprint: 'world:descriptor:0000000000000a0b',
+          actuationClass: 'world:actuation-class:1',
+          responseSchema: { status: 'responded' },
+          idempotencyKeyBytes: fromUtf8('partial-approval-covered-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:partial-approval-covered',
+          requestBytes: fromUtf8('covered'),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        };
+      },
+    });
+
+    const result = await controller.advance(runId, branchId);
+
+    assert.equal(result.status, 'advanced');
+    assert.equal(coveredDriver.invocationCount, 1);
+    assert.equal(fileDriver.invocationCount, 0);
+    assert.equal(bestEffortDriver.invocationCount, 0);
+    assert.deepEqual(
+      result.unresolvedHostRequests.map((item) => item.hostRequestFingerprint).sort(),
+      [
+        'world:host-request:0000000000000a02',
+        'world:host-request:0000000000000a03',
+        'world:host-request:0000000000000a04',
+      ],
+    );
+  });
+
+  it('leaves over-budget live-model requests unresolved in partial batches', async () => {
+    const requests = [
+      fixtureHostRequestBytes({ requestFingerprint: 0xa01n, requestOrdinal: 0, idempotencyKey: 'partial-model-budget-key-1', idempotencyKeyFingerprint: 0xa09n }),
+      fixtureHostRequestBytes({ requestFingerprint: 0xa02n, requestOrdinal: 1, idempotencyKey: 'partial-model-budget-key-2', idempotencyKeyFingerprint: 0xa19n }),
+    ];
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes(requests),
+    });
+    let fetchCount = 0;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCount += 1;
+        return new Response('{"action":{"variant":"final","text":"covered"}}', {
+          status: 200,
+          headers: { 'x-request-id': 'partial-model-budget' },
+        });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonModelDriver({ endpointUrl: 'https://allowed.example/decide' })],
+        effectPolicy: {
+          allowPartialEffectBatch: true,
+          allowedAuthorityLabels: new Set(['model:http-json', 'network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          maximumLiveModelCalls: 1,
+        },
+        hostRequestMapper: (worldHostRequest) => ({
+          actuatorRef: 'model:decision',
+          descriptorFingerprint: 'descriptor:agent-decision-prompt',
+          actuationClass: 'model',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8(`partial-model-budget-key-${worldHostRequest.requestFingerprint === 0xa01n ? '1' : '2'}`),
+          idempotencyKeyWorldFingerprint: `world:key:partial-model-budget-${worldHostRequest.requestFingerprint === 0xa01n ? '1' : '2'}`,
+          pendingRequestIndex: 0,
+          requestBytes: fromUtf8(JSON.stringify({
+            schema: 'boundary.Agent.DecisionPrompt.v0',
+            observation: `goal=partial-model-${worldHostRequest.requestFingerprint.toString(16)}`,
+          })),
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fetchCount, 1);
+      assert.equal(result.unresolvedHostRequests.length, 1);
+      assert.equal(result.unresolvedHostRequests[0].hostRequestFingerprint, 'world:host-request:0000000000000a02');
+      assert.deepEqual(result.unresolvedHostRequests[0].blockers, ['ERR_CAPABILITY_LIVE_MODEL_BUDGET_EXCEEDED']);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('resolves through the preflight-selected non-live model route', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const fixtureModelDriver = fixtureEffectDriver({
+      driverId: 'generic-http-json-model',
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClasses: ['model'],
+      responseStatuses: ['ok'],
+      authorityLabels: ['model:fixture'],
+      diagnostics: { deterministic: true },
+    });
+    let fetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"action":{"variant":"final","text":"should-not-call-live-model"}}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [
+          new GenericHttpJsonModelDriver({
+            endpointUrl: 'https://allowed.example/decide',
+            packFingerprint: 'sha256:'.concat('c'.repeat(64)),
+          }),
+          fixtureModelDriver,
+        ],
+        effectPolicy: {
+          allowPartialEffectBatch: true,
+          allowedAuthorityLabels: new Set(['model:http-json', 'network:http', 'model:fixture']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          maximumLiveModelCalls: 0,
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'model:decision',
+          descriptorFingerprint: 'descriptor:agent-decision-prompt',
+          actuationClass: 'model',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('model-fixture-budget-route-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:model-fixture-budget-route',
+          requestBytes: fromUtf8(JSON.stringify({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: 'goal=fixture-budget-route' })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fixtureModelDriver.invocationCount, 1);
+      assert.equal(fetchCalled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('does not charge cached model replays against controller live model budgets', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const idempotencyKeyBytes = fromUtf8('cached-model-budget-key');
+    const idempotencyKeyWorldFingerprint = 'world:key:cached-model-budget';
+    const requestBytes = fromUtf8(JSON.stringify({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: 'goal=cached-budget' }));
+    const effectIdentityBytes = fromUtf8(stableJson({
+      request: JSON.parse(new TextDecoder().decode(requestBytes)),
+      configuredEndpoint: { url: 'https://allowed.example/decide', method: 'POST' },
+      requestRendering: {
+        requestTemplateFingerprint: null,
+        secretHeadersFingerprint: `sha256:${sha256Hex(fromUtf8(stableJson({})))}`,
+        idempotencyHeaderName: 'Idempotency-Key',
+        responseExtractionPathFingerprint: `sha256:${sha256Hex(fromUtf8(stableJson('action')))}`,
+      },
+      modelOutputValidation: {
+        outputSchema: 'boundary.Agent.Action.v0',
+        allowedToolIds: ['actuate', 'read_file', 'write_file'],
+      },
+    }));
+    const resolutionInputRef = await store.putBlob(encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xa01n,
+      status: 0,
+      responseValueImageBytes: agentActionValueImage({ variant: 'final', text: 'cached-model' }),
+      hostClaimBytes: fromUtf8('claim'),
+      attemptNumber: 1,
+      metadata: fromUtf8('metadata'),
+    }));
+    await store.putEffectRecord(createEffectRecord({
+      runId,
+      branchId,
+      parentTurnClosureFingerprint: 'world:closure:cached-model-parent',
+      hostRequestFingerprint: 'world:host-request:0000000000000a01',
+      idempotencyKey: {
+        format: 'world-idempotency-key-bytes.hex',
+        bytesHex: Buffer.from(idempotencyKeyBytes).toString('hex'),
+      },
+      idempotencyKeyWorldFingerprint,
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClass: 'model',
+      responseSchema: { status: 'ok' },
+      requestBytesChecksum: `sha256:${sha256Hex(requestBytes)}`,
+      requestIdentityChecksum: `sha256:${sha256Hex(effectIdentityBytes)}`,
+      state: EffectState.resolved,
+      driverRecoveryClass: EffectRecoveryClass.idempotent,
+      resolutionInputRef,
+    }));
+    let fetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"action":{"variant":"final","text":"should-not-fetch"}}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonModelDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          packFingerprint: 'sha256:'.concat('b'.repeat(64)),
+        })],
+        effectPolicy: {
+          allowPartialEffectBatch: true,
+          allowedAuthorityLabels: new Set(['model:http-json', 'network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          maximumLiveModelCalls: 0,
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'model:decision',
+          descriptorFingerprint: 'descriptor:agent-decision-prompt',
+          actuationClass: 'model',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes,
+          requestBytes,
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fetchCalled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('does not let branch-local placeholders or invalid earlier outcomes shadow cached model replays', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const requestBytes = fromUtf8(JSON.stringify({ schema: 'boundary.Agent.DecisionPrompt.v0', observation: 'goal=shadowed-cache' }));
+    const effectIdentityBytes = fromUtf8(stableJson({
+      request: JSON.parse(new TextDecoder().decode(requestBytes)),
+      configuredEndpoint: { url: 'https://allowed.example/decide', method: 'POST' },
+      requestRendering: {
+        requestTemplateFingerprint: null,
+        secretHeadersFingerprint: `sha256:${sha256Hex(fromUtf8(stableJson({})))}`,
+        idempotencyHeaderName: 'Idempotency-Key',
+        responseExtractionPathFingerprint: `sha256:${sha256Hex(fromUtf8(stableJson('action')))}`,
+      },
+      modelOutputValidation: {
+        outputSchema: 'boundary.Agent.Action.v0',
+        allowedToolIds: ['actuate', 'read_file', 'write_file'],
+      },
+    }));
+    const requestBytesRef = await store.putBlob(requestBytes);
+    const baseRecord = {
+      runId,
+      parentTurnClosureFingerprint: 'world:closure:cached-model-parent',
+      hostRequestFingerprint: 'world:host-request:0000000000000a01',
+      idempotencyKey: {
+        format: 'world-idempotency-key-bytes.hex',
+        bytesHex: Buffer.from('shadowed-model-budget-key').toString('hex'),
+      },
+      idempotencyKeyWorldFingerprint: 'world:key:shadowed-model-budget',
+      actuatorRef: 'model:decision',
+      descriptorFingerprint: 'descriptor:agent-decision-prompt',
+      actuationClass: 'model',
+      responseSchema: { status: 'ok' },
+      requestBytesChecksum: `sha256:${sha256Hex(requestBytes)}`,
+      requestIdentityChecksum: `sha256:${sha256Hex(effectIdentityBytes)}`,
+      requestBytesRef,
+      driverRecoveryClass: EffectRecoveryClass.idempotent,
+    };
+    const invalidResolutionInputRef = await store.putBlob(encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xbadn,
+      status: 0,
+      responseValueImageBytes: agentActionValueImage({ variant: 'final', text: 'invalid-cached-model' }),
+      hostClaimBytes: fromUtf8('invalid-claim'),
+      attemptNumber: 1,
+      metadata: fromUtf8('invalid-metadata'),
+    }));
+    const resolutionInputRef = await store.putBlob(encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xa01n,
+      status: 0,
+      responseValueImageBytes: agentActionValueImage({ variant: 'final', text: 'cached-model' }),
+      hostClaimBytes: fromUtf8('claim'),
+      attemptNumber: 1,
+      metadata: fromUtf8('metadata'),
+    }));
+    await store.putEffectRecord(createEffectRecord({
+      ...baseRecord,
+      branchId: 'invalid-cached-branch',
+      state: EffectState.resolved,
+      resolutionInputRef: invalidResolutionInputRef,
+    }));
+    await store.putEffectRecord(createEffectRecord({
+      ...baseRecord,
+      branchId: 'cached-branch',
+      state: EffectState.resolved,
+      resolutionInputRef,
+    }));
+    await store.putEffectRecord(createEffectRecord({
+      ...baseRecord,
+      branchId,
+      state: EffectState.observed,
+    }));
+    let fetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"action":{"variant":"final","text":"should-not-fetch"}}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonModelDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          packFingerprint: 'sha256:'.concat('b'.repeat(64)),
+        })],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['model:http-json', 'network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          maximumLiveModelCalls: 0,
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'model:decision',
+          descriptorFingerprint: 'descriptor:agent-decision-prompt',
+          actuationClass: 'model',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('shadowed-model-budget-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:shadowed-model-budget',
+          requestBytes,
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+      const current = await store.getEffectRecord(runId, baseRecord.idempotencyKey, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fetchCalled, false);
+      assert.equal(current.diagnostics.branchLocalReuse, 'cached-branch');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('preserves controller capability pack pins before resolving effects', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const packFingerprint = 'sha256:'.concat('c'.repeat(64));
+    let fetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://allowed.example/decide',
+          packFingerprint,
+        })],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          deniedCapabilityPacks: new Set([packFingerprint]),
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('http-pack-denied-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-pack-denied',
+          requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'pack denied' } })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      await assert.rejects(
+        () => controller.advance(runId, branchId),
+        { code: 'ERR_HOST_REQUEST_DRIVER_UNAVAILABLE' },
+      );
+      assert.equal(fetchCalled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('applies controller capability pack pins before selecting an effect driver', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const deniedPackFingerprint = 'sha256:'.concat('d'.repeat(64));
+    const allowedPackFingerprint = 'sha256:'.concat('e'.repeat(64));
+    const originalFetch = globalThis.fetch;
+    let observedUrl = null;
+    try {
+      globalThis.fetch = async (url) => {
+        observedUrl = url;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [
+          new GenericHttpJsonCapabilityDriver({
+            endpointUrl: 'https://denied.example/decide',
+            packFingerprint: deniedPackFingerprint,
+          }),
+          new GenericHttpJsonCapabilityDriver({
+            endpointUrl: 'https://allowed.example/decide',
+            packFingerprint: allowedPackFingerprint,
+          }),
+        ],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://denied.example', 'https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+          deniedCapabilityPacks: new Set([deniedPackFingerprint]),
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('http-pack-selected-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-pack-selected',
+          requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'pack selected' } })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(observedUrl, 'https://allowed.example/decide');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('routes fixed configured HTTP endpoints even when payloads contain url fields', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    try {
+      globalThis.fetch = async (url, options) => {
+        fetchCount += 1;
+        assert.equal(url, 'https://allowed.example/decide');
+        assert.equal(options.method, 'POST');
+        return new Response('{"status":"ok"}', {
+          status: 200,
+          headers: { 'x-request-id': 'controller-http-fixed-endpoint' },
+        });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({ endpointUrl: 'https://allowed.example/decide' })],
+        effectPolicy: {
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('http-fixed-endpoint-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-fixed-endpoint',
+          requestBytes: fromUtf8(JSON.stringify({ url: 'https://payload.example/not-target', body: { prompt: 'hi' } })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fetchCount, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('rejects drivers that exceed receiver byte limits before resolving effects', async () => {
     const { store, runId, branchId } = await fixtureStore({
       headStatus: 'needs_host',
@@ -1022,6 +4007,255 @@ describe('RunController and WorldWorker', () => {
         maximumRequestBytes: 4096,
         maximumResponseBytes: 1,
       },
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      { code: 'ERR_HOST_REQUEST_DRIVER_UNAVAILABLE' },
+    );
+    assert.equal(driver.invocationCount, 0);
+    assert.equal((await store.listEffectRecords(runId)).length, 0);
+  });
+
+  it('preflights selected effect prompt byte limits before resolving effects', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const driver = fixtureEffectDriver({
+      driverId: 'prompt-limited-http-driver',
+      actuatorRef: 'http:json',
+      descriptorFingerprint: 'descriptor:http-json',
+      actuationClasses: ['http'],
+      responseStatuses: ['ok'],
+      authorityLabels: ['network:http'],
+      diagnostics: {
+        endpointSource: 'config',
+        configuredEndpointUrl: 'https://allowed.example/decide',
+        origins: ['https://allowed.example'],
+        methods: ['POST'],
+      },
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [driver],
+      effectPolicy: {
+        maximumRequestBytes: 4096,
+        maximumPromptBytes: 4,
+        maximumResponseBytes: 4096,
+        allowedAuthorityLabels: new Set(['network:http']),
+        allowedHttpOrigins: new Set(['https://allowed.example']),
+        allowedHttpMethods: new Set(['POST']),
+      },
+      hostRequestMapper: () => ({
+        actuatorRef: 'http:json',
+        descriptorFingerprint: 'descriptor:http-json',
+        actuationClass: 'http',
+        responseSchema: { status: 'ok' },
+        idempotencyKeyBytes: fromUtf8('prompt-limit-key'),
+        idempotencyKeyWorldFingerprint: 'world:key:prompt-limit',
+        requestBytes: fromUtf8(JSON.stringify({ body: { prompt: 'larger-prompt' } })),
+        hostRequestFingerprint: 'world:host-request:0000000000000a01',
+      }),
+    });
+
+    await assert.rejects(
+      () => controller.advance(runId, branchId),
+      (error) => {
+        assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+        assert.ok(error.details?.blockers?.includes('prompt-limit-exceeds-policy'));
+        return true;
+      },
+    );
+    assert.equal(driver.invocationCount, 0);
+    assert.equal((await store.listEffectRecords(runId)).length, 0);
+  });
+
+  it('charges request-routed HTTP prompt limits to rendered bodies after policy rewrites', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    let fetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [new GenericHttpJsonCapabilityDriver({
+          endpointUrl: 'https://fallback.example/decide',
+          allowEndpointFromRequest: true,
+          origins: ['https://allowed.example', 'https://fallback.example'],
+          methods: ['POST'],
+        })],
+        effectPolicy: {
+          maximumRequestBytes: 4096,
+          maximumPromptBytes: 32,
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('http-rendered-body-prompt-limit-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:http-rendered-body-prompt-limit',
+          requestBytes: fromUtf8(stableJson({
+            url: `https://allowed.example/${'x'.repeat(256)}`,
+            method: 'POST',
+            metadata: 'x'.repeat(256),
+            body: { prompt: 'ok' },
+          })),
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      const result = await controller.advance(runId, branchId);
+
+      assert.equal(result.status, 'advanced');
+      assert.equal(fetchCalled, true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('preflights request-routed HTTP prompt byte limits on cached effect replay', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const requestBytes = fromUtf8(JSON.stringify({
+      url: 'https://allowed.example/decide',
+      method: 'POST',
+      body: { prompt: 'larger-prompt' },
+    }));
+    const requestBytesRef = await store.putBlob(requestBytes);
+    const resolutionInputRef = await store.putBlob(encodeResolutionInputBytes({
+      targetHostRequestFingerprint: 0xa01n,
+      status: 0,
+      responseValueImageBytes: fixtureResponseValueBytes('cached-http-response', 0xa01n),
+      hostClaimBytes: fromUtf8('claim'),
+      attemptNumber: 1,
+      metadata: fromUtf8('metadata'),
+    }));
+    await store.putEffectRecord(createEffectRecord({
+      runId,
+      branchId,
+      parentTurnClosureFingerprint: 'world:closure:cached-http-parent',
+      hostRequestFingerprint: 'world:host-request:0000000000000a01',
+      idempotencyKey: {
+        format: 'world-idempotency-key-bytes.hex',
+        bytesHex: Buffer.from('request-routed-http-prompt-key').toString('hex'),
+      },
+      idempotencyKeyWorldFingerprint: 'world:key:request-routed-http-prompt',
+      actuatorRef: 'http:json',
+      descriptorFingerprint: 'descriptor:http-json',
+      actuationClass: 'http',
+      responseSchema: { status: 'ok' },
+      requestBytesChecksum: `sha256:${sha256Hex(requestBytes)}`,
+      requestIdentityChecksum: `sha256:${sha256Hex(requestBytes)}`,
+      requestBytesRef,
+      state: EffectState.resolved,
+      driverRecoveryClass: EffectRecoveryClass.pure,
+      resolutionInputRef,
+    }));
+    const driver = fixtureEffectDriver({
+      driverId: 'request-routed-http-prompt-driver',
+      actuatorRef: 'http:json',
+      descriptorFingerprint: 'descriptor:http-json',
+      actuationClasses: ['http'],
+      responseStatuses: ['ok'],
+      authorityLabels: ['network:http'],
+      diagnostics: {
+        endpointSource: 'request-or-config',
+        origins: ['https://allowed.example'],
+        methods: ['POST'],
+      },
+    });
+    let fetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true;
+        return new Response('{"status":"ok"}', { status: 200 });
+      };
+      const controller = new RunController({
+        store,
+        workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+        effectDrivers: [driver],
+        effectPolicy: {
+          maximumRequestBytes: 4096,
+          maximumPromptBytes: 4,
+          maximumResponseBytes: 4096,
+          allowedAuthorityLabels: new Set(['network:http']),
+          allowedHttpOrigins: new Set(['https://allowed.example']),
+          allowedHttpMethods: new Set(['POST']),
+        },
+        hostRequestMapper: () => ({
+          actuatorRef: 'http:json',
+          descriptorFingerprint: 'descriptor:http-json',
+          actuationClass: 'http',
+          responseSchema: { status: 'ok' },
+          idempotencyKeyBytes: fromUtf8('request-routed-http-prompt-key'),
+          idempotencyKeyWorldFingerprint: 'world:key:request-routed-http-prompt',
+          requestBytes,
+          hostRequestFingerprint: 'world:host-request:0000000000000a01',
+        }),
+      });
+
+      await assert.rejects(
+        () => controller.advance(runId, branchId),
+        (error) => {
+          assert.equal(error.code, 'ERR_CAPABILITY_PREFLIGHT_BLOCKED');
+          assert.ok(error.details?.blockers?.includes('prompt-limit-exceeds-policy'));
+          return true;
+        },
+      );
+      assert.equal(fetchCalled, false);
+      assert.equal(driver.invocationCount, 0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('rejects file-capable drivers outside receiver root policy before resolving effects', async () => {
+    const { store, runId, branchId } = await fixtureStore({
+      headStatus: 'needs_host',
+      closureBytes: fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes({ requestFingerprint: 0xa01n })]),
+    });
+    const driver = fixtureEffectDriver({
+      driverId: 'mislabelled.file.driver',
+      actuatorRef: 'sandbox:file',
+      descriptorFingerprint: 'descriptor:sandbox-file',
+      actuationClasses: ['file'],
+      responseStatuses: ['ok'],
+      authorityLabels: [],
+      diagnostics: { root: '/blocked' },
+    });
+    const controller = new RunController({
+      store,
+      workerFactory: async () => new CaptureTurnInputWorker(fixtureTurnClosureBytes()),
+      effectDrivers: [driver],
+      effectPolicy: {
+        allowedFileRoots: new Set(['/allowed']),
+      },
+      hostRequestMapper: () => ({
+        actuatorRef: 'sandbox:file',
+        descriptorFingerprint: 'descriptor:sandbox-file',
+        actuationClass: 'file',
+        responseSchema: { status: 'ok' },
+        idempotencyKeyBytes: fromUtf8('file-idempotency-key'),
+        idempotencyKeyWorldFingerprint: 'world:key:file',
+        requestBytes: fromUtf8(JSON.stringify({ path: 'out.txt', operation: 'write', content: 'blocked' })),
+        hostRequestFingerprint: 'world:host-request:0000000000000a01',
+      }),
     });
 
     await assert.rejects(
@@ -1411,6 +4645,25 @@ async function fixtureStore(options = {}) {
   return { store, runId: run.runId, branchId: branch.branchId, head };
 }
 
+async function resetHeadToNeedsHost(store, runId, branchId, closureBytes) {
+  const current = await store.readHead(runId, branchId);
+  const closureRef = await store.putBlob(closureBytes);
+  const closureSummary = summarizeTurnClosureForRunHead(closureBytes);
+  const nextHead = createRunHead({
+    generation: closureSummary.inspectionDiagnostics.turnSequenceNumber + 1,
+    turnClosureRef: closureRef,
+    turnClosureWorldFingerprint: closureSummary.turnClosureWorldFingerprint,
+    resultingStateFingerprint: closureSummary.resultingStateFingerprint,
+    chronicleCursor: closureSummary.chronicleCursor,
+    archiveMomentFingerprint: closureSummary.archiveMomentFingerprint ?? current.archiveMomentFingerprint,
+    archiveSealFingerprint: closureSummary.archiveSealFingerprint ?? current.archiveSealFingerprint,
+    status: 'needs_host',
+  });
+  const cas = await store.compareAndSwapHead(runId, branchId, current.generation, nextHead);
+  assert.equal(cas.ok, true);
+  return cas.current;
+}
+
 function hasBlobRef(refs, expected) {
   return (refs ?? []).some((ref) => ref.checksum === expected.checksum && ref.byteLength === expected.byteLength);
 }
@@ -1432,15 +4685,17 @@ function fixtureEffectDriver(options = {}) {
     manifest() {
       return {
         driverId: options.driverId ?? 'test.effect.driver',
+        ...(options.packFingerprint ? { packFingerprint: options.packFingerprint } : {}),
         supportedActuatorRefs: [options.actuatorRef ?? 'world:actuator-ref:0000000000000a05'],
-        supportedDescriptorFingerprints: ['world:descriptor:0000000000000a0b'],
-        supportedActuationClasses: ['world:actuation-class:1'],
-        supportedResponseStatuses: ['responded'],
+        supportedDescriptorFingerprints: [options.descriptorFingerprint ?? 'world:descriptor:0000000000000a0b'],
+        supportedActuationClasses: options.actuationClasses ?? ['world:actuation-class:1'],
+        supportedResponseStatuses: options.responseStatuses ?? ['responded'],
         maximumRequestBytes: 4096,
         maximumResponseBytes: 4096,
-        recoveryClass: EffectRecoveryClass.pure,
+        recoveryClass: options.recoveryClass ?? EffectRecoveryClass.pure,
         concurrencyLimit: 1,
         authorityLabels: options.authorityLabels ?? ['test'],
+        diagnostics: options.diagnostics ?? {},
       };
     },
     async resolve() {
@@ -1454,6 +4709,48 @@ function fixtureEffectDriver(options = {}) {
           attemptNumber: this.invocationCount,
           metadata: fromUtf8('metadata'),
         }),
+      };
+    },
+  };
+}
+
+function preflightBlockedControllerDriver() {
+  const inner = fixtureEffectDriver({ driverId: 'preflight-blocked-controller-driver' });
+  return {
+    get resolveCalled() {
+      return inner.invocationCount > 0;
+    },
+    manifest() {
+      return inner.manifest();
+    },
+    preflight() {
+      return { accepted: false, blockers: ['controller-preflight-blocker'] };
+    },
+    async resolve(context, hostRequest) {
+      return await inner.resolve(context, hostRequest);
+    },
+  };
+}
+
+function forbiddenEvidenceCapabilityDriver() {
+  const inner = fixtureEffectDriver({ driverId: 'forbidden-evidence-capability-driver' });
+  return {
+    manifest() {
+      return inner.manifest();
+    },
+    preflight() {
+      return { accepted: true };
+    },
+    dryRun() {
+      return { wouldInvoke: true, proposedAction: { driver: 'forbidden-evidence-capability-driver' } };
+    },
+    shadow() {
+      return { liveInvoked: false, schemaAccepted: false };
+    },
+    async resolve(context, hostRequest) {
+      return {
+        ...await inner.resolve(context, hostRequest),
+        diagnostics: { turnClosureBytes: fixtureTurnClosureBytes() },
       };
     },
   };
@@ -1712,15 +5009,17 @@ class ClosureOnlyWorker extends WorldWorker {
 }
 
 class ManifestCheckingWorker extends ClosureOnlyWorker {
-  constructor(closureBytes, manifestFingerprint) {
+  constructor(closureBytes, manifestFingerprint, manifestOverrides = {}) {
     super(closureBytes);
     this.manifestFingerprint = manifestFingerprint;
+    this.manifestOverrides = manifestOverrides;
   }
 
   readApplianceManifest() {
     return {
       decoded: {
         manifestFingerprint: this.manifestFingerprint,
+        ...this.manifestOverrides,
       },
     };
   }
@@ -1846,7 +5145,7 @@ function fixtureApplianceManifestBytes(options = {}) {
     u64Slice([]),
     u8Slice([]),
     u8Slice([]),
-    u64(0n),
+    u64(options.supervisionPolicyFingerprint ?? 0n),
     u64Slice([]),
     u64(0n),
     u64(0n),

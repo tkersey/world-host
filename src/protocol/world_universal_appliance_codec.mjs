@@ -135,7 +135,7 @@ function assertRootResultMatchesClosure(receiptValue, closureValue, rootResultBy
   }
   const reader = new BinaryReader(rootResultBytes);
   const labelLength = reader.u32();
-  reader.require(labelLength);
+  reader.requireBytes(labelLength);
   const label = textDecoder.decode(rootResultBytes.slice(reader.offset, reader.offset + labelLength));
   reader.offset += labelLength;
   const value = reader.u64();

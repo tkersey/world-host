@@ -1,14 +1,17 @@
 import {
   EffectRecoveryClass,
   ResponseStatusCode,
-  assertDriverCanResolve,
+  assertDriverRequestSupported,
   assertDurableRecoveryAllowed,
   assertRecoveryClass,
   defineActuatorDriver,
 } from './actuator.mjs';
-import { createRunPolicy } from './capabilities.mjs';
+import { assertCapabilityResolutionBoundary, assertNoWorldEvidenceKeys } from './capability_driver.mjs';
+import { redactCapabilityDiagnostics } from './capability_policy.mjs';
+import { createRunPolicy, hostRequestPolicyPromptByteLength, hostRequestPolicyRequestByteLength } from './capabilities.mjs';
 import { assertBlobRef, assertBytes, fail, fromUtf8, stableJson, toHex } from './store.mjs';
 import { decodeResolutionInputBytes } from '../protocol/world_appliance_wire_codec.mjs';
+import { decodeCanonicalValueImage } from '../protocol/world_loaded_value_codec.mjs';
 
 export const EffectState = Object.freeze({
   observed: 'observed',
@@ -28,6 +31,29 @@ const TERMINAL_WITH_OUTCOME = new Set([
 ]);
 
 const EFFECT_STATES = new Set(Object.values(EffectState));
+const EFFECT_RECORD_DURABLE_FIELDS = Object.freeze([
+  'runId',
+  'branchId',
+  'parentTurnClosureFingerprint',
+  'hostRequestFingerprint',
+  'idempotencyKey',
+  'idempotencyKeyWorldFingerprint',
+  'actuatorRef',
+  'descriptorFingerprint',
+  'actuationClass',
+  'responseSchema',
+  'requestBytesChecksum',
+  'requestIdentityChecksum',
+  'state',
+  'attemptCount',
+  'driverRecoveryClass',
+  'requestBytesRef',
+  'effectIdentityBytesRef',
+  'resolutionInputRef',
+  'hostClaimRef',
+  'driverTransactionRef',
+  'diagnostics',
+]);
 const RECOVER_AFTER_RESOLVE_FAILURE = new Set([
   EffectRecoveryClass.pure,
   EffectRecoveryClass.idempotent,
@@ -61,17 +87,40 @@ export class EffectJournal {
   }
 
   async observe(hostRequest, options = {}) {
-    const prepared = await prepareHostRequest(hostRequest);
+    const manifest = options.manifest ? normalizeManifest(options.manifest) : null;
+    const journalHostRequest = manifest ? journaledHostRequest(hostRequest, manifest) : hostRequest;
+    const prepared = await prepareHostRequest(journalHostRequest);
     return await withEffectKeyLock(this.store, effectLockKey(this.runId, prepared.idempotencyKey), async () => {
-      return await this.#observePrepared(hostRequest, prepared, options);
+      return await this.#observePrepared(journalHostRequest, prepared, options);
     });
   }
 
   async #observePrepared(hostRequest, prepared, options = {}) {
     const existing = await this.store.getEffectRecord(this.runId, prepared.idempotencyKey, this.branchId);
-    if (existing) return await this.#reuseOrConflict(existing, prepared);
+    if (existing) {
+      const current = await this.#reuseOrConflict(existing, prepared);
+      if (options.createIfMissing === false && reusablePlaceholderCanYieldToOutcome(current)) {
+        const reusable = await this.#branchLocalReusableRecord(prepared, {
+          outcomesOnly: true,
+          acceptOutcome: options.acceptBranchLocalOutcome,
+          beforeReuse: options.beforeBranchLocalReuse,
+        });
+        if (reusable) return reusable;
+      }
+      return current;
+    }
+    if (options.createIfMissing === false) {
+      return await this.#branchLocalReusableRecord(prepared, {
+        outcomesOnly: true,
+        acceptOutcome: options.acceptBranchLocalOutcome,
+        beforeReuse: options.beforeBranchLocalReuse,
+      });
+    }
 
-    const reusable = await this.#branchLocalReusableRecord(prepared);
+    const reusable = await this.#branchLocalReusableRecord(prepared, {
+      acceptOutcome: options.acceptBranchLocalOutcome,
+      beforeReuse: options.beforeBranchLocalReuse,
+    });
     if (reusable) return reusable;
 
     const manifest = options.manifest ? normalizeManifest(options.manifest) : null;
@@ -80,6 +129,9 @@ export class EffectJournal {
     assertDurableRecoveryAllowed(recoveryClass, this.policy);
     assertPreparedRequestWithinLimits(prepared, manifest, this.policy);
     const requestBytesRef = await this.store.putBlob(prepared.requestBytes);
+    const effectIdentityBytesRef = prepared.effectIdentityBytes === undefined
+      ? undefined
+      : await this.store.putBlob(prepared.effectIdentityBytes);
 
     const record = createEffectRecord({
       runId: this.runId,
@@ -93,7 +145,9 @@ export class EffectJournal {
       actuationClass: hostRequest.actuationClass,
       responseSchema: hostRequest.responseSchema,
       requestBytesRef,
+      effectIdentityBytesRef,
       requestBytesChecksum: prepared.requestBytesChecksum,
+      requestIdentityChecksum: prepared.requestIdentityChecksum,
       state: EffectState.observed,
       attemptCount: 0,
       driverRecoveryClass: recoveryClass,
@@ -102,29 +156,47 @@ export class EffectJournal {
     return await this.store.putEffectRecord(record);
   }
 
-  async resolve(context, hostRequest, driverLike) {
+  async resolve(context, hostRequest, driverLike, options = {}) {
     const driver = defineActuatorDriver(driverLike);
     const manifest = driver.manifest();
-    assertDriverCanResolve(manifest, hostRequest);
+    assertDriverRequestSupported(driver, manifest, hostRequest);
     assertDriverRecoveryHookSufficient(manifest, driver);
-    const prepared = await prepareHostRequest(hostRequest);
-    const normalizedHostRequest = normalizePreparedHostRequest(hostRequest, prepared);
+    const journalHostRequest = journaledHostRequest(hostRequest, manifest);
+    const prepared = await prepareHostRequest(journalHostRequest);
+    const normalizedHostRequest = normalizePreparedHostRequest(journalHostRequest, prepared);
     assertPreparedRequestWithinLimits(prepared, manifest, this.policy);
     assertDurableRecoveryAllowed(manifest.recoveryClass, this.policy);
     return await withEffectKeyLock(this.store, effectLockKey(this.runId, prepared.idempotencyKey), async () => {
-      const observed = await this.#observePrepared(hostRequest, prepared, { manifest });
-      assertDurableRecoveryAllowed(observed.driverRecoveryClass, this.policy);
-      if (observed.state === EffectState.operatorInterventionRequired) {
-        return { record: observed, resolutionInputBytes: null, reused: false, operatorInterventionRequired: true };
+      const assertRequestWithinCurrentPolicy = () => assertHostRequestPolicyWithinLimits(normalizedHostRequest, manifest, this.policy);
+      const acceptBranchLocalOutcome = async (record) => await this.#reusableOutcomeAccepted(record, normalizedHostRequest, manifest);
+      let observed = await this.#observePrepared(journalHostRequest, prepared, {
+        manifest,
+        createIfMissing: false,
+        acceptBranchLocalOutcome,
+        beforeBranchLocalReuse: assertRequestWithinCurrentPolicy,
+      });
+      const existingOutcome = observed ? await this.#nonInvokingResolution(observed, normalizedHostRequest, manifest) : null;
+      if (existingOutcome?.retryRequired) {
+        observed = existingOutcome.record;
+      } else if (existingOutcome) {
+        assertRequestWithinCurrentPolicy();
+        return existingOutcome;
       }
-      if (observed.state === EffectState.failed) {
-        fail('ERR_EFFECT_FAILED_REQUIRES_OPERATOR', 'failed effects require explicit operator recovery before retry');
+      if (typeof options.beforeInvoke === 'function') await options.beforeInvoke(context, normalizedHostRequest);
+      assertRequestWithinCurrentPolicy();
+      if (!observed) {
+        observed = await this.#observePrepared(journalHostRequest, prepared, {
+          manifest,
+          acceptBranchLocalOutcome,
+          beforeBranchLocalReuse: assertRequestWithinCurrentPolicy,
+        });
       }
-      assertEffectRecoveryClassMatchesManifest(manifest, observed);
-      const reused = await this.#resolutionFromRecord(observed);
-      if (reused) {
-        assertResolutionAccepted(reused.resolutionInputBytes, normalizedHostRequest, manifest, this.policy);
-        return reused;
+      const observedOutcome = await this.#nonInvokingResolution(observed, normalizedHostRequest, manifest);
+      if (observedOutcome?.retryRequired) {
+        observed = observedOutcome.record;
+      } else if (observedOutcome) {
+        assertRequestWithinCurrentPolicy();
+        return observedOutcome;
       }
       if (observed.state === EffectState.running) return await this.#recoverLocked(context, observed, driver);
       assertManifestResponseWithinPolicy(manifest, this.policy);
@@ -133,6 +205,9 @@ export class EffectJournal {
         ...observed,
         state: EffectState.running,
         attemptCount: observed.attemptCount + 1,
+        resolutionInputRef: undefined,
+        hostClaimRef: undefined,
+        driverTransactionRef: undefined,
         diagnostics: { ...observed.diagnostics, driverId: manifest.driverId },
       });
 
@@ -216,48 +291,101 @@ export class EffectJournal {
     const record = this.#assertRecordInScope(effectRecord);
     const manifest = driver.manifest();
     assertDriverCanRecover(manifest, record);
-    const reused = await this.#resolutionFromRecord(record);
+    let recordWithRequestBytes = await this.#recordWithRequestBytes(record);
+    await assertRecoveredRequestWithinLimits(recordWithRequestBytes, manifest, this.policy);
+    recordWithRequestBytes = await this.#recordWithRecoveredEffectIdentity(recordWithRequestBytes, manifest);
+    const reused = await this.#resolutionFromRecord(recordWithRequestBytes);
     if (reused) {
-      assertResolutionAccepted(reused.resolutionInputBytes, record, manifest, this.policy);
+      assertResolutionAccepted(reused.resolutionInputBytes, recordWithRequestBytes, manifest, this.policy);
       return reused;
     }
 
-    if (record.driverRecoveryClass === EffectRecoveryClass.bestEffort) {
+    if (recordWithRequestBytes.driverRecoveryClass === EffectRecoveryClass.bestEffort) {
       const intervention = await this.#put({
-        ...record,
+        ...recordWithRequestBytes,
         state: EffectState.operatorInterventionRequired,
-        diagnostics: { ...record.diagnostics, recoveryRequired: 'best_effort_unresolved' },
+        diagnostics: { ...recordWithRequestBytes.diagnostics, recoveryRequired: 'best_effort_unresolved' },
       });
       return { record: intervention, resolutionInputBytes: null, reused: false, operatorInterventionRequired: true };
     }
 
-    const recordWithRequestBytes = await this.#recordWithRequestBytes(record);
-    await assertRecoveredRequestWithinLimits(recordWithRequestBytes, manifest, this.policy);
     assertManifestResponseWithinPolicy(manifest, this.policy);
-    if (typeof driver.recover === 'function' || canSafelyReResolve(record.driverRecoveryClass)) {
-      const recovered = normalizeDriverResolution(typeof driver.recover === 'function'
+    if (typeof driver.recover === 'function' || canSafelyReResolve(recordWithRequestBytes.driverRecoveryClass)) {
+      const recoveryResult = typeof driver.recover === 'function'
         ? await driver.recover(context, recordWithRequestBytes)
-        : await driver.resolve(context, recordWithRequestBytes));
+        : await driver.resolve(context, recordWithRequestBytes);
+      if (recoveryResult?.operatorInterventionRequired === true) {
+        assertNoWorldEvidenceKeys(recoveryResult);
+        const intervention = await this.#put({
+          ...recordWithRequestBytes,
+          state: EffectState.operatorInterventionRequired,
+          diagnostics: {
+            ...recordWithRequestBytes.diagnostics,
+            ...recoveryResult.diagnostics,
+            recoveryRequired: recoveryResult.recoveryRequired ?? 'operator_required',
+          },
+        });
+        return { record: intervention, resolutionInputBytes: null, reused: false, operatorInterventionRequired: true };
+      }
+      const recovered = normalizeDriverResolution(recoveryResult);
       try {
-        assertResolutionAccepted(recovered.resolutionInputBytes, record, manifest, this.policy);
+        assertResolutionAccepted(recovered.resolutionInputBytes, recordWithRequestBytes, manifest, this.policy);
         assertDriverCarriedBytesAccepted(recovered, manifest, this.policy);
       } catch (error) {
-        const failureState = invalidResolutionFailureState(record.driverRecoveryClass);
+        const failureState = invalidResolutionFailureState(recordWithRequestBytes.driverRecoveryClass);
         await this.#put({
-          ...record,
+          ...recordWithRequestBytes,
           state: failureState,
           diagnostics: {
-            ...record.diagnostics,
+            ...recordWithRequestBytes.diagnostics,
             error: error.message,
             ...resolutionFailureDiagnostics(failureState),
           },
         });
         throw error;
       }
-      return await this.#recordRecoveredResolution(record, recovered);
+      return await this.#recordRecoveredResolution(recordWithRequestBytes, recovered);
     }
 
     fail('ERR_EFFECT_RECOVERY_UNAVAILABLE', 'driver does not expose recovery for unresolved effect');
+  }
+
+  async #nonInvokingResolution(observed, normalizedHostRequest, manifest) {
+    assertDurableRecoveryAllowed(observed.driverRecoveryClass, this.policy);
+    if (observed.state === EffectState.operatorInterventionRequired) {
+      return { record: observed, resolutionInputBytes: null, reused: false, operatorInterventionRequired: true };
+    }
+    if (observed.state === EffectState.failed) {
+      fail('ERR_EFFECT_FAILED_REQUIRES_OPERATOR', 'failed effects require explicit operator recovery before retry');
+    }
+    assertEffectRecoveryClassMatchesManifest(manifest, observed);
+    const reused = await this.#resolutionFromRecord(observed);
+    if (!reused) return null;
+    try {
+      assertResolutionAccepted(reused.resolutionInputBytes, normalizedHostRequest, manifest, this.policy);
+    } catch (error) {
+      if (
+        observed.state !== EffectState.resolved ||
+        !observed.requestBytesRef ||
+        !canSafelyReResolve(observed.driverRecoveryClass) ||
+        !retryableReusableResolutionError(error, manifest, this.policy)
+      ) {
+        throw error;
+      }
+      const retryRecord = await this.#put({
+        ...observed,
+        state: EffectState.observed,
+        resolutionInputRef: undefined,
+        hostClaimRef: undefined,
+        driverTransactionRef: undefined,
+        diagnostics: {
+          ...observed.diagnostics,
+          invalidReusableResolution: error.code ?? 'ERR_EFFECT_RESOLUTION_INVALID',
+        },
+      });
+      return { record: retryRecord, resolutionInputBytes: null, reused: false, retryRequired: true };
+    }
+    return reused;
   }
 
   async markSubmitted(record) {
@@ -277,8 +405,8 @@ export class EffectJournal {
       ? head.updateDiagnostics.committedEffectIds
       : []);
     const committed = [];
-    for (const record of await this.list()) {
-      assertEffectRecord(record);
+    for (const listedRecord of await this.list()) {
+      const record = assertEffectRecord(listedRecord);
       if (
         record.branchId === this.branchId &&
         record.parentTurnClosureFingerprint === committedParent &&
@@ -300,72 +428,120 @@ export class EffectJournal {
   }
 
   async #reuseOrConflict(existing, prepared) {
-    assertEffectRecord(existing);
-    if (existing.requestBytesChecksum !== prepared.requestBytesChecksum) {
-      fail('ERR_EFFECT_IDEMPOTENCY_CONFLICT', 'same full idempotency key used with different request bytes', {
-        runId: this.runId,
-        idempotencyKeyWorldFingerprint: existing.idempotencyKeyWorldFingerprint,
-      });
+    let current = assertEffectRecord(existing);
+    const currentIdentityChecksum = effectIdentityChecksum(current);
+    if (currentIdentityChecksum !== prepared.requestIdentityChecksum) {
+      if (rawRequestIdentityCanUpgrade(current, prepared)) {
+        current = await this.#put({
+          ...current,
+          requestIdentityChecksum: prepared.requestIdentityChecksum,
+          diagnostics: { ...current.diagnostics, requestIdentityCanonicalizedFrom: currentIdentityChecksum },
+        });
+      } else {
+        fail('ERR_EFFECT_IDEMPOTENCY_CONFLICT', 'same full idempotency key used with different request bytes', {
+          runId: this.runId,
+          idempotencyKeyWorldFingerprint: current.idempotencyKeyWorldFingerprint,
+        });
+      }
     }
-    if (existing.hostRequestFingerprint !== prepared.hostRequestFingerprint) {
+    if (current.hostRequestFingerprint !== prepared.hostRequestFingerprint) {
       fail('ERR_EFFECT_IDEMPOTENCY_CONFLICT', 'same full idempotency key used with different host request identity', {
         runId: this.runId,
-        idempotencyKeyWorldFingerprint: existing.idempotencyKeyWorldFingerprint,
+        idempotencyKeyWorldFingerprint: current.idempotencyKeyWorldFingerprint,
       });
     }
     if (
-      existing.parentTurnClosureFingerprint !== this.parentTurnClosureFingerprint &&
+      current.parentTurnClosureFingerprint !== this.parentTurnClosureFingerprint &&
       (
-        existing.state === EffectState.observed ||
-        existing.state === EffectState.running ||
-        (TERMINAL_WITH_OUTCOME.has(existing.state) && existing.resolutionInputRef)
+        current.state === EffectState.observed ||
+        current.state === EffectState.running ||
+        (TERMINAL_WITH_OUTCOME.has(current.state) && current.resolutionInputRef)
       )
     ) {
       return await this.#put({
-        ...existing,
+        ...current,
         parentTurnClosureFingerprint: this.parentTurnClosureFingerprint,
-        state: existing.state === EffectState.observed || existing.state === EffectState.running ? existing.state : EffectState.resolved,
-        diagnostics: { ...existing.diagnostics, parentReboundFrom: existing.parentTurnClosureFingerprint },
+        state: current.state === EffectState.observed || current.state === EffectState.running ? current.state : EffectState.resolved,
+        diagnostics: { ...current.diagnostics, parentReboundFrom: current.parentTurnClosureFingerprint },
       });
     }
-    return existing;
+    return current;
   }
 
-  async #branchLocalReusableRecord(prepared) {
+  async #branchLocalReusableRecord(prepared, options = {}) {
     const idempotencyKeyJson = stableJson(prepared.idempotencyKey);
     let reusable = null;
-    for (const record of await this.list()) {
-      assertEffectRecord(record);
+    let acceptedOutcome = null;
+    let currentBranchOutcome = null;
+    for (const listedRecord of await this.list()) {
+      const record = assertEffectRecord(listedRecord);
       if (stableJson(record.idempotencyKey) !== idempotencyKeyJson) continue;
-      if (record.requestBytesChecksum !== prepared.requestBytesChecksum) {
-        fail('ERR_EFFECT_IDEMPOTENCY_CONFLICT', 'same full idempotency key used with different request bytes', {
-          runId: this.runId,
-          idempotencyKeyWorldFingerprint: record.idempotencyKeyWorldFingerprint,
-        });
+      let candidate = record;
+      if (effectIdentityChecksum(record) !== prepared.requestIdentityChecksum) {
+        if (rawRequestIdentityCanUpgrade(record, prepared)) {
+          candidate = {
+            ...record,
+            requestIdentityChecksum: prepared.requestIdentityChecksum,
+            diagnostics: { ...record.diagnostics, requestIdentityCanonicalizedFrom: effectIdentityChecksum(record) },
+          };
+        } else {
+          fail('ERR_EFFECT_IDEMPOTENCY_CONFLICT', 'same full idempotency key used with different request bytes', {
+            runId: this.runId,
+            idempotencyKeyWorldFingerprint: record.idempotencyKeyWorldFingerprint,
+          });
+        }
       }
-      if (record.hostRequestFingerprint !== prepared.hostRequestFingerprint) {
+      if (candidate.hostRequestFingerprint !== prepared.hostRequestFingerprint) {
         fail('ERR_EFFECT_IDEMPOTENCY_CONFLICT', 'same full idempotency key used with different host request identity', {
           runId: this.runId,
-          idempotencyKeyWorldFingerprint: record.idempotencyKeyWorldFingerprint,
+          idempotencyKeyWorldFingerprint: candidate.idempotencyKeyWorldFingerprint,
         });
       }
-      const hasOutcome = TERMINAL_WITH_OUTCOME.has(record.state) && record.resolutionInputRef;
+      const hasOutcome = TERMINAL_WITH_OUTCOME.has(candidate.state) && candidate.resolutionInputRef;
       if (hasOutcome && (reusable === null || reusable.state === EffectState.running)) {
-        reusable = record;
-      } else if (reusable === null && record.state === EffectState.running) {
-        reusable = record;
+        reusable = candidate;
+      } else if (!options.outcomesOnly && reusable === null && candidate.state === EffectState.running) {
+        reusable = candidate;
+      }
+      if (hasOutcome && candidate.branchId === this.branchId && currentBranchOutcome === null) {
+        currentBranchOutcome = candidate;
+      }
+      if (
+        hasOutcome &&
+        acceptedOutcome === null &&
+        typeof options.acceptOutcome === 'function' &&
+        await options.acceptOutcome(candidate)
+      ) {
+        acceptedOutcome = candidate;
       }
     }
-    if (reusable) {
+    const selected = currentBranchOutcome ?? acceptedOutcome ?? reusable;
+    if (selected) {
+      if (typeof options.beforeReuse === 'function') options.beforeReuse();
       return await this.#put({
-        ...reusable,
+        ...selected,
         branchId: this.branchId,
         parentTurnClosureFingerprint: this.parentTurnClosureFingerprint,
-        state: reusable.state === EffectState.running ? EffectState.running : EffectState.resolved,
-        diagnostics: { ...reusable.diagnostics, branchLocalReuse: reusable.branchId },
+        state: selected.state === EffectState.running ? EffectState.running : EffectState.resolved,
+        diagnostics: { ...selected.diagnostics, branchLocalReuse: selected.branchId },
       });
     }
     return null;
+  }
+
+  async #reusableOutcomeAccepted(record, normalizedHostRequest, manifest) {
+    try {
+      assertEffectRecoveryClassMatchesManifest(manifest, record);
+    } catch {
+      return false;
+    }
+    const resolutionInputBytes = await this.store.getBlob(record.resolutionInputRef);
+    try {
+      assertResolutionAccepted(resolutionInputBytes, normalizedHostRequest, manifest, this.policy);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async #resolutionFromRecord(record) {
@@ -394,7 +570,7 @@ export class EffectJournal {
   }
 
   async #put(record) {
-    return await this.store.putEffectRecord(this.#assertRecordInScope(record));
+    return await this.store.putEffectRecord(createEffectRecord(this.#assertRecordInScope(record)));
   }
 
   #assertRecordInScope(record) {
@@ -411,8 +587,40 @@ export class EffectJournal {
   }
 
   async #recordWithRequestBytes(record) {
-    if (!record.requestBytesRef) return record;
-    return { ...record, requestBytes: await this.store.getBlob(record.requestBytesRef) };
+    const withRequestBytes = record.requestBytesRef
+      ? { ...record, requestBytes: await this.store.getBlob(record.requestBytesRef) }
+      : record;
+    return record.effectIdentityBytesRef
+      ? { ...withRequestBytes, effectIdentityBytes: await this.store.getBlob(record.effectIdentityBytesRef) }
+      : withRequestBytes;
+  }
+
+  async #recordWithRecoveredEffectIdentity(record, manifest) {
+    const recoveredHostRequest = record.effectIdentityBytes === undefined
+      ? journaledHostRequest(record, manifest)
+      : record;
+    const effectIdentityBytes = recoveredHostRequest.effectIdentityBytes === undefined
+      ? record.requestBytes
+      : assertBytes(recoveredHostRequest.effectIdentityBytes, 'effectIdentityBytes');
+    const requestIdentityChecksum = `sha256:${await sha256Hex(effectIdentityBytes)}`;
+    const currentIdentityChecksum = effectIdentityChecksum(record);
+    if (requestIdentityChecksum === currentIdentityChecksum) return record;
+    if (rawRequestIdentityCanUpgrade(record, {
+      hostRequestFingerprint: record.hostRequestFingerprint,
+      requestBytesChecksum: record.requestBytesChecksum,
+      requestIdentityChecksum,
+      rawRequestIdentityUpgradeAllowed: recoveredHostRequest.effectIdentityCompatibility === 'raw-http-route',
+    })) {
+      const upgraded = await this.#put(createEffectRecord({
+        ...record,
+        requestIdentityChecksum,
+        diagnostics: { ...record.diagnostics, requestIdentityCanonicalizedFrom: currentIdentityChecksum },
+      }));
+      return { ...upgraded, requestBytes: record.requestBytes, effectIdentityBytes: record.effectIdentityBytes };
+    }
+    fail('ERR_EFFECT_IDEMPOTENCY_CONFLICT', 'recovery driver rendered a different effect identity', {
+      idempotencyKeyWorldFingerprint: record.idempotencyKeyWorldFingerprint,
+    });
   }
 
   async #recordRecoveredResolution(record, recovered) {
@@ -428,6 +636,120 @@ export class EffectJournal {
     });
     return { record: next, resolutionInputBytes: await this.store.getBlob(resolutionInputRef), reused: false };
   }
+}
+
+export function journaledHostRequest(hostRequest, manifest) {
+  if (hostRequest?.effectIdentityBytes !== undefined && hostRequest?.effectIdentitySource !== 'manifest') return hostRequest;
+  const endpointSource = manifest?.diagnostics?.endpointSource;
+  if (endpointSource !== 'config' && endpointSource !== 'request-or-config') {
+    return canonicalHttpEffectIdentityHostRequest(hostRequest, manifest);
+  }
+  const requestRendering = manifest?.diagnostics?.requestRendering ?? null;
+  let parsed = {};
+  try {
+    const requestBytes = hostRequest?.requestBytes ?? fromUtf8(stableJson(hostRequest?.request ?? {}));
+    parsed = JSON.parse(new TextDecoder().decode(requestBytes));
+  } catch {
+    return hostRequest;
+  }
+  const identityRequest = canonicalHttpIdentityRequest(
+    manifest?.diagnostics,
+    parsed,
+    shouldCanonicalizeDefaultHttpMethod(manifest, hostRequest),
+  );
+  if (endpointSource === 'request-or-config' && identityRequest?.url !== undefined && identityRequest.method !== undefined) {
+    return requestRendering === null && !hasModelOutputValidation(manifest?.diagnostics) && httpIdentityRequestEquivalent(parsed, identityRequest) ? hostRequest : {
+      ...hostRequest,
+      effectIdentityBytes: fromUtf8(stableJson(effectIdentityPayload(manifest?.diagnostics, identityRequest, null, requestRendering))),
+      effectIdentitySource: 'manifest',
+    };
+  }
+  const configuredEndpoint = configuredEffectIdentityTarget(manifest, identityRequest);
+  if (!configuredEndpoint && requestRendering === null && !hasModelOutputValidation(manifest?.diagnostics)) return hostRequest;
+  return {
+    ...hostRequest,
+    effectIdentityBytes: fromUtf8(stableJson(effectIdentityPayload(manifest?.diagnostics, identityRequest, configuredEndpoint, requestRendering))),
+    effectIdentitySource: 'manifest',
+  };
+}
+
+function canonicalHttpEffectIdentityHostRequest(hostRequest, manifest) {
+  if (!shouldCanonicalizeDefaultHttpMethod(manifest, hostRequest)) return hostRequest;
+  let parsed = {};
+  try {
+    const requestBytes = hostRequest?.requestBytes ?? fromUtf8(stableJson(hostRequest?.request ?? {}));
+    parsed = JSON.parse(new TextDecoder().decode(requestBytes));
+  } catch {
+    return hostRequest;
+  }
+  const identityRequest = canonicalHttpIdentityRequest(manifest?.diagnostics, parsed, true);
+  if (!httpIdentityRequestHasMethod(identityRequest)) return hostRequest;
+  return {
+    ...hostRequest,
+    effectIdentityBytes: fromUtf8(stableJson(effectIdentityPayload(manifest?.diagnostics, identityRequest, null, null))),
+    effectIdentitySource: 'manifest',
+    effectIdentityCompatibility: 'raw-http-route',
+  };
+}
+
+function httpIdentityRequestHasMethod(request) {
+  return request?.method !== undefined && request.method !== null;
+}
+
+function httpIdentityRequestEquivalent(left, right) {
+  return stableJson(left) === stableJson(right);
+}
+
+function configuredEffectIdentityTarget(manifest, parsed = {}) {
+  const origins = Array.isArray(manifest?.diagnostics?.origins) ? manifest.diagnostics.origins : [];
+  const methods = Array.isArray(manifest?.diagnostics?.methods) ? manifest.diagnostics.methods : [];
+  const endpointSource = manifest?.diagnostics?.endpointSource;
+  const requestUrl = endpointSource === 'request-or-config' && parsed?.url !== undefined ? parsed.url : null;
+  const url = requestUrl ?? manifest?.diagnostics?.configuredEndpointUrl ?? manifest?.diagnostics?.configuredOrigin ?? (origins.length === 1 ? origins[0] : null);
+  const method = normalizedHttpMethod(parsed.method ?? manifest?.diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : null));
+  if (!url || !method) return null;
+  return { url, method };
+}
+
+function effectIdentityPayload(diagnostics, request, configuredEndpoint, requestRendering) {
+  const payload = { request, configuredEndpoint, requestRendering };
+  if (hasModelOutputValidation(diagnostics)) payload.modelOutputValidation = diagnostics.modelOutputValidation;
+  return payload;
+}
+
+function hasModelOutputValidation(diagnostics) {
+  return diagnostics != null && Object.prototype.hasOwnProperty.call(diagnostics, 'modelOutputValidation');
+}
+
+function shouldCanonicalizeDefaultHttpMethod(manifest, hostRequest) {
+  return hostRequest?.actuationClass === 'http' || (manifest?.supportedActuationClasses ?? []).includes('http');
+}
+
+function canonicalHttpIdentityRequest(diagnostics, request, defaultMethodAllowed) {
+  if (!plainHttpIdentityObject(request)) return request;
+  if (request?.method !== undefined) return normalizedHttpMethodRequest(request);
+  if (!defaultMethodAllowed) return normalizedHttpMethodRequest(request);
+  const method = defaultHttpMethodForDiagnostics(diagnostics);
+  return method == null ? normalizedHttpMethodRequest(request) : { ...request, method };
+}
+
+function defaultHttpMethodForDiagnostics(diagnostics) {
+  const methods = Array.isArray(diagnostics?.methods) ? diagnostics.methods : [];
+  return normalizedHttpMethod(diagnostics?.defaultMethod ?? (methods.length === 1 ? methods[0] : null));
+}
+
+function normalizedHttpMethodRequest(request) {
+  if (!plainHttpIdentityObject(request)) return request;
+  if (request?.method === undefined) return request;
+  return { ...request, method: normalizedHttpMethod(request.method) };
+}
+
+function plainHttpIdentityObject(request) {
+  return request !== null && typeof request === 'object' && !Array.isArray(request);
+}
+
+function normalizedHttpMethod(method) {
+  return method == null ? null : String(method).toUpperCase();
 }
 
 function driverFailureState(recoveryClass) {
@@ -466,6 +788,26 @@ function canSafelyReResolve(recoveryClass) {
   return recoveryClass === EffectRecoveryClass.pure || recoveryClass === EffectRecoveryClass.idempotent;
 }
 
+function retryableReusableResolutionError(error, manifest, policy) {
+  if (!error?.code) return true;
+  if (error.code === 'ERR_EFFECT_RESPONSE_TOO_LARGE') {
+    return policy.maximumResponseBytes === undefined || manifest.maximumResponseBytes <= policy.maximumResponseBytes;
+  }
+  return new Set([
+    'ERR_EFFECT_RESOLUTION_TARGET_MISMATCH',
+    'ERR_RESPONSE_STATUS_NOT_SUPPORTED',
+    'ERR_EFFECT_RESPONSE_STATUS_MISMATCH',
+    'ERR_EFFECT_RESPONSE_REQUIRED',
+    'ERR_EFFECT_RESPONSE_FORBIDDEN',
+    'ERR_EFFECT_MODEL_OUTPUT_INVALID',
+    'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN',
+  ]).has(error.code);
+}
+
+function reusablePlaceholderCanYieldToOutcome(record) {
+  return record?.state === EffectState.observed || record?.state === EffectState.running;
+}
+
 function assertDriverRecoveryHookSufficient(manifest, driver) {
   if (
     (manifest.recoveryClass === EffectRecoveryClass.externallyRecoverable ||
@@ -502,10 +844,12 @@ export function createEffectRecord(record) {
     actuationClass: record.actuationClass,
     responseSchema: record.responseSchema,
     requestBytesChecksum: record.requestBytesChecksum,
+    requestIdentityChecksum: record.requestIdentityChecksum,
     state: record.state ?? EffectState.observed,
     attemptCount: record.attemptCount ?? 0,
     driverRecoveryClass: record.driverRecoveryClass,
     requestBytesRef: record.requestBytesRef,
+    effectIdentityBytesRef: record.effectIdentityBytesRef,
     resolutionInputRef: record.resolutionInputRef,
     hostClaimRef: record.hostClaimRef,
     driverTransactionRef: record.driverTransactionRef,
@@ -515,6 +859,7 @@ export function createEffectRecord(record) {
 
 export function assertEffectRecord(record) {
   if (!record || typeof record !== 'object') fail('ERR_INVALID_EFFECT_RECORD');
+  record = admitEffectRecordDurableMetadata(record);
   for (const field of [
     'runId',
     'branchId',
@@ -532,10 +877,14 @@ export function assertEffectRecord(record) {
     fail('ERR_INVALID_EFFECT_RECORD', 'complete idempotency key bytes are required');
   }
   if (typeof record.actuationClass !== 'string' || record.actuationClass.length === 0) fail('ERR_INVALID_EFFECT_RECORD', 'actuationClass is required');
+  if (record.requestIdentityChecksum !== undefined && (typeof record.requestIdentityChecksum !== 'string' || record.requestIdentityChecksum.length === 0)) {
+    fail('ERR_INVALID_EFFECT_RECORD', 'requestIdentityChecksum must be string');
+  }
   if (!EFFECT_STATES.has(record.state)) fail('ERR_INVALID_EFFECT_STATE');
   if (!Number.isSafeInteger(record.attemptCount) || record.attemptCount < 0) fail('ERR_INVALID_EFFECT_RECORD', 'attemptCount must be non-negative');
   assertRecoveryClass(record.driverRecoveryClass);
   assertOptionalBlobRef(record.requestBytesRef, 'requestBytesRef');
+  assertOptionalBlobRef(record.effectIdentityBytesRef, 'effectIdentityBytesRef');
   assertOptionalBlobRef(record.resolutionInputRef, 'resolutionInputRef');
   assertOptionalBlobRef(record.hostClaimRef, 'hostClaimRef');
   if (record.state === EffectState.running && !record.requestBytesRef) {
@@ -545,6 +894,160 @@ export function assertEffectRecord(record) {
     fail('ERR_INVALID_EFFECT_RECORD', 'outcome effects require a persisted ResolutionInput');
   }
   return record;
+}
+
+function admitEffectRecordDurableMetadata(record) {
+  const selected = selectOwnEnumerableDataFields(record, EFFECT_RECORD_DURABLE_FIELDS);
+  const admitted = {};
+  for (const [field, value] of Object.entries(selected)) {
+    if (field === 'driverTransactionRef' || field === 'diagnostics' || field === 'responseSchema') continue;
+    const stripped = stripDurableSerializationHooks(value);
+    if (stripped !== undefined) admitted[field] = stripped;
+  }
+  admitted.idempotencyKey = selectDurableObjectFields(admitted.idempotencyKey, ['format', 'bytesHex']);
+  for (const field of ['requestBytesRef', 'effectIdentityBytesRef', 'resolutionInputRef', 'hostClaimRef']) {
+    admitted[field] = selectDurableObjectFields(admitted[field], ['algorithm', 'checksum', 'byteLength']);
+  }
+  admitted.responseSchema = assertEffectResponseSchemaDurable(selected.responseSchema);
+  admitted.driverTransactionRef = assertDriverTransactionRefDurable(selected.driverTransactionRef);
+  admitted.diagnostics = durableJsonImage(
+    redactCapabilityDiagnostics(stripDurableSerializationHooks(selected.diagnostics ?? {})),
+    'diagnostics',
+  );
+  return durableJsonImage(admitted, 'EffectRecord');
+}
+
+function selectOwnEnumerableDataFields(value, fields) {
+  const selected = {};
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  for (const field of fields) {
+    const descriptor = descriptors[field];
+    if (
+      descriptor?.enumerable !== true ||
+      !Object.prototype.hasOwnProperty.call(descriptor, 'value')
+    ) continue;
+    selected[field] = descriptor.value;
+  }
+  return selected;
+}
+
+function selectDurableObjectFields(value, fields) {
+  if (value === undefined || value === null || typeof value !== 'object') return value;
+  return selectOwnEnumerableDataFields(value, fields);
+}
+
+function assertEffectResponseSchemaDurable(value) {
+  if (value === undefined || value === null) return value;
+  const stripped = stripDurableSerializationHooks(value, new WeakMap(), {
+    label: 'responseSchema',
+    plainJsonOnly: true,
+  });
+  const durable = durableJsonImage(stripped, 'responseSchema');
+  const redacted = durableJsonImage(redactCapabilityDiagnostics(stripped), 'responseSchema');
+  if (stableJson(durable) !== stableJson(redacted)) {
+    fail('ERR_SECRET_PERSISTED', 'responseSchema contains secret-shaped data');
+  }
+  return selectDurableObjectFields(durable, ['status']);
+}
+
+function assertDriverTransactionRefDurable(value) {
+  if (value === undefined || value === null) return value;
+  const stripped = stripDurableSerializationHooks(value, new WeakMap(), {
+    label: 'driverTransactionRef',
+    plainJsonOnly: true,
+  });
+  const durable = durableJsonImage(stripped, 'driverTransactionRef');
+  const redacted = durableJsonImage(redactCapabilityDiagnostics(stripped), 'driverTransactionRef');
+  if (stableJson(durable) !== stableJson(redacted)) {
+    fail('ERR_SECRET_PERSISTED', 'driverTransactionRef contains secret-shaped data');
+  }
+  assertNoWorldEvidenceKeys(durable);
+  return durable;
+}
+
+function stripDurableSerializationHooks(value, seen = new WeakMap(), options = {}) {
+  const { label = 'value', plainJsonOnly = false } = options;
+  if (value === null || typeof value !== 'object') {
+    if (plainJsonOnly && (
+      value === undefined ||
+      typeof value === 'function' ||
+      typeof value === 'symbol' ||
+      typeof value === 'bigint' ||
+      (typeof value === 'number' && !Number.isFinite(value))
+    )) {
+      fail('ERR_INVALID_EFFECT_RECORD', `${label} must contain only plain durable JSON values`);
+    }
+    if (typeof value === 'function' || typeof value === 'symbol') return undefined;
+    return value;
+  }
+  if (plainJsonOnly) {
+    const prototype = Object.getPrototypeOf(value);
+    if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) {
+      fail('ERR_INVALID_EFFECT_RECORD', `${label} must contain only plain durable JSON values`);
+    }
+  }
+  if (value instanceof ArrayBuffer) return ArrayBuffer.prototype.slice.call(value, 0);
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(
+      ArrayBuffer.prototype.slice.call(value.buffer, value.byteOffset, value.byteOffset + value.byteLength),
+    );
+  }
+  if (seen.has(value)) return seen.get(value);
+  if (Array.isArray(value)) {
+    const stripped = [];
+    seen.set(value, stripped);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+        if (plainJsonOnly) fail('ERR_INVALID_EFFECT_RECORD', `${label} must contain only plain durable JSON values`);
+        stripped[index] = undefined;
+        continue;
+      }
+      stripped[index] = stripDurableSerializationHooks(descriptor.value, seen, options);
+    }
+    return stripped;
+  }
+  if (value instanceof Map) {
+    const stripped = new Map();
+    seen.set(value, stripped);
+    for (const [key, child] of Map.prototype.entries.call(value)) {
+      stripped.set(
+        stripDurableSerializationHooks(key, seen, options),
+        stripDurableSerializationHooks(child, seen, options),
+      );
+    }
+    return stripped;
+  }
+  const stripped = {};
+  seen.set(value, stripped);
+  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
+    if (key === 'toJSON' && typeof descriptor.value === 'function') continue;
+    if (descriptor.enumerable !== true) continue;
+    if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+      if (plainJsonOnly) fail('ERR_INVALID_EFFECT_RECORD', `${label} must contain only plain durable JSON values`);
+      continue;
+    }
+    const child = stripDurableSerializationHooks(descriptor.value, seen, options);
+    if (child === undefined) continue;
+    Object.defineProperty(stripped, key, {
+      value: child,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return stripped;
+}
+
+function durableJsonImage(value, label) {
+  try {
+    const encoded = JSON.stringify(value);
+    if (encoded === undefined) fail('ERR_INVALID_EFFECT_RECORD', `${label} must be durable JSON`);
+    return JSON.parse(encoded);
+  } catch {
+    fail('ERR_INVALID_EFFECT_RECORD', `${label} must be durable JSON`);
+  }
 }
 
 function assertOptionalBlobRef(ref, field) {
@@ -560,14 +1063,20 @@ export async function prepareHostRequest(hostRequest) {
   if (!hostRequest || typeof hostRequest !== 'object') fail('ERR_INVALID_HOST_REQUEST');
   const idempotencyKeyBytes = assertBytes(hostRequest.idempotencyKeyBytes, 'idempotencyKeyBytes');
   const requestBytes = assertBytes(hostRequest.requestBytes ?? fromUtf8(stableJson(hostRequest.request ?? {})), 'requestBytes');
+  const effectIdentityBytes = hostRequest.effectIdentityBytes === undefined
+    ? requestBytes
+    : assertBytes(hostRequest.effectIdentityBytes, 'effectIdentityBytes');
+  const explicitEffectIdentityBytes = hostRequest.effectIdentityBytes !== undefined && hostRequest.effectIdentitySource !== 'manifest';
   if (hostRequest.shortIdempotencyKeyHash) fail('ERR_SHORT_IDEMPOTENCY_KEY_FORBIDDEN');
   const requestBytesChecksum = `sha256:${await sha256Hex(requestBytes)}`;
+  const requestIdentityChecksum = `sha256:${await sha256Hex(effectIdentityBytes)}`;
+  const rawRequestIdentityUpgradeAllowed = hostRequest.effectIdentityCompatibility === 'raw-http-route';
   const generatedHostRequestHash = await sha256Hex(fromUtf8(stableJson({
     actuatorRef: hostRequest.actuatorRef,
     descriptorFingerprint: hostRequest.descriptorFingerprint,
     actuationClass: hostRequest.actuationClass,
     responseSchema: hostRequest.responseSchema ?? null,
-    requestBytesChecksum,
+    requestBytesChecksum: requestIdentityChecksum,
   })));
   const hostRequestFingerprint = hostRequest.hostRequestFingerprint ?? `world:host-request:${generatedHostRequestHash.slice(0, 16)}`;
   hostRequestTargetFingerprint({ hostRequestFingerprint });
@@ -578,9 +1087,26 @@ export async function prepareHostRequest(hostRequest) {
     },
     idempotencyKeyWorldFingerprint: hostRequest.idempotencyKeyWorldFingerprint ?? `sha256:${await sha256Hex(idempotencyKeyBytes)}`,
     requestBytes,
+    effectIdentityBytes: explicitEffectIdentityBytes ? effectIdentityBytes : undefined,
     requestBytesChecksum,
+    requestIdentityChecksum,
+    rawRequestIdentityUpgradeAllowed,
     hostRequestFingerprint,
   };
+}
+
+function effectIdentityChecksum(record) {
+  return record.requestIdentityChecksum ?? record.requestBytesChecksum;
+}
+
+function rawRequestIdentityCanUpgrade(existing, prepared) {
+  const existingWasRawRequestIdentity = existing.requestIdentityChecksum == null ||
+    existing.requestIdentityChecksum === existing.requestBytesChecksum;
+  return existingWasRawRequestIdentity &&
+    prepared.rawRequestIdentityUpgradeAllowed === true &&
+    existing.hostRequestFingerprint === prepared.hostRequestFingerprint &&
+    existing.requestBytesChecksum === prepared.requestBytesChecksum &&
+    prepared.requestIdentityChecksum !== prepared.requestBytesChecksum;
 }
 
 function normalizePreparedHostRequest(hostRequest, prepared) {
@@ -598,7 +1124,7 @@ function normalizeDriverResolution(value) {
   return {
     resolutionInputBytes,
     hostClaimBytes: value?.hostClaimBytes === undefined ? undefined : assertBytes(value.hostClaimBytes, 'hostClaimBytes'),
-    driverTransactionRef: value?.driverTransactionRef,
+    driverTransactionRef: assertDriverTransactionRefDurable(value?.driverTransactionRef),
     diagnostics: value?.diagnostics ?? {},
   };
 }
@@ -608,12 +1134,24 @@ function assertPreparedRequestWithinLimits(prepared, manifest, policy) {
   if (policy.maximumRequestBytes !== undefined && prepared.requestBytes.byteLength > policy.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
 }
 
+function assertHostRequestPolicyWithinLimits(hostRequest, manifest, policy) {
+  const requestByteLength = hostRequestPolicyRequestByteLength(manifest, hostRequest);
+  if (policy.maximumRequestBytes !== undefined && requestByteLength !== undefined && requestByteLength > policy.maximumRequestBytes) {
+    fail('ERR_CAPABILITY_PROMPT_TOO_LARGE');
+  }
+  const promptByteLength = hostRequestPolicyPromptByteLength(manifest, hostRequest);
+  if (policy.maximumPromptBytes !== undefined && promptByteLength !== undefined && promptByteLength > policy.maximumPromptBytes) {
+    fail('ERR_CAPABILITY_PROMPT_TOO_LARGE');
+  }
+}
+
 async function assertRecoveredRequestWithinLimits(record, manifest, policy) {
   if (!record.requestBytes) fail('ERR_EFFECT_REQUEST_BYTES_REQUIRED', 'effect recovery requires persisted request bytes');
   const checksum = `sha256:${await sha256Hex(record.requestBytes)}`;
   if (checksum !== record.requestBytesChecksum) fail('ERR_EFFECT_REQUEST_BYTES_CHECKSUM_MISMATCH');
   if (record.requestBytes.byteLength > manifest.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
   if (policy.maximumRequestBytes !== undefined && record.requestBytes.byteLength > policy.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
+  assertHostRequestPolicyWithinLimits(record, manifest, policy);
 }
 
 function assertManifestResponseWithinPolicy(manifest, policy) {
@@ -622,7 +1160,8 @@ function assertManifestResponseWithinPolicy(manifest, policy) {
   }
 }
 
-function assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, policy) {
+export function assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, policy) {
+  assertCapabilityResolutionBoundary({ resolutionInputBytes });
   const resolution = decodeResolutionInputBytes(resolutionInputBytes);
   const expectedTarget = hostRequestTargetFingerprint(hostRequest);
   if (resolution.targetHostRequestFingerprint !== expectedTarget) {
@@ -638,23 +1177,79 @@ function assertResolutionAccepted(resolutionInputBytes, hostRequest, manifest, p
   const maximumResponseBytes = policy.maximumResponseBytes === undefined
     ? manifest.maximumResponseBytes
     : Math.min(manifest.maximumResponseBytes, policy.maximumResponseBytes);
-  if (maximumResponseBytes === Number.MAX_SAFE_INTEGER) return;
-  if (resolutionInputBytes.byteLength > maximumResponseBytes) {
-    fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver ResolutionInput exceeds byte limit');
+  if (maximumResponseBytes !== Number.MAX_SAFE_INTEGER) {
+    if (resolutionInputBytes.byteLength > maximumResponseBytes) {
+      fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver ResolutionInput exceeds byte limit');
+    }
+    if (resolution.responseValueImageBytes.byteLength > maximumResponseBytes) {
+      fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver ResolutionInput response exceeds byte limit');
+    }
+    if (resolution.hostClaimBytes.byteLength > maximumResponseBytes) {
+      fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver ResolutionInput host claim exceeds byte limit');
+    }
+    if (resolution.metadata.byteLength > maximumResponseBytes) {
+      fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver ResolutionInput metadata exceeds byte limit');
+    }
   }
-  if (resolution.responseValueImageBytes.byteLength > maximumResponseBytes) {
-    fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver ResolutionInput response exceeds byte limit');
-  }
-  if (resolution.hostClaimBytes.byteLength > maximumResponseBytes) {
-    fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver ResolutionInput host claim exceeds byte limit');
-  }
-  if (resolution.metadata.byteLength > maximumResponseBytes) {
-    fail('ERR_EFFECT_RESPONSE_TOO_LARGE', 'driver ResolutionInput metadata exceeds byte limit');
+  assertModelOutputAccepted(resolution, manifest);
+}
+
+function assertModelOutputAccepted(resolution, manifest) {
+  const validation = manifest?.diagnostics?.modelOutputValidation;
+  if (validation == null || resolution.status !== 0) return;
+  assertModelOutputValidationSupported(validation);
+  try {
+    validateAgentActionValueImage(resolution.responseValueImageBytes, validation);
+  } catch (error) {
+    fail('ERR_EFFECT_MODEL_OUTPUT_INVALID', 'model ResolutionInput output does not satisfy driver validation', {
+      error: error?.code ?? String(error?.message ?? error),
+    });
   }
 }
 
+function assertModelOutputValidationSupported(validation) {
+  if (validation?.outputSchema !== 'boundary.Agent.Action.v0') {
+    fail('ERR_EFFECT_MODEL_OUTPUT_VALIDATION_UNSUPPORTED');
+  }
+}
+
+function validateAgentActionValueImage(responseValueImageBytes, validation) {
+  let payload;
+  try {
+    const payloadBytes = decodeCanonicalValueImage(responseValueImageBytes).payload;
+    payload = JSON.parse(new TextDecoder().decode(payloadBytes));
+  } catch {
+    fail('ERR_AGENT_ACTION_MALFORMED');
+  }
+  const action = payload?.schema === 'boundary.Agent.Action.v0' ? payload.action : payload?.body;
+  validateAgentAction(action, validation);
+}
+
+function validateAgentAction(action, validation) {
+  const allowedToolIds = new Set(validation.allowedToolIds ?? []);
+  if (!action || typeof action !== 'object' || typeof action.variant !== 'string') {
+    fail('ERR_AGENT_ACTION_MALFORMED');
+  }
+  if (action.variant === 'final') {
+    if (typeof action.text !== 'string') fail('ERR_AGENT_ACTION_MALFORMED');
+    return;
+  }
+  if (action.variant === 'tool') {
+    if (typeof action.toolId !== 'string' || typeof action.payload !== 'string') fail('ERR_AGENT_ACTION_MALFORMED');
+    if (!allowedToolIds.has(action.toolId)) fail('ERR_AGENT_ACTION_TOOL_UNKNOWN');
+    return;
+  }
+  if (action.variant === 'defer') {
+    if (typeof action.reason !== 'string') fail('ERR_AGENT_ACTION_MALFORMED');
+    return;
+  }
+  fail('ERR_AGENT_ACTION_MALFORMED');
+}
+
 function assertDriverCarriedBytesAccepted(resolved, manifest, policy) {
+  assertNoWorldEvidenceKeys(resolved.diagnostics);
   if (!resolved.hostClaimBytes) return;
+  assertNoWorldEvidenceKeys(resolved.hostClaimBytes);
   const maximumResponseBytes = policy.maximumResponseBytes === undefined
     ? manifest.maximumResponseBytes
     : Math.min(manifest.maximumResponseBytes, policy.maximumResponseBytes);
@@ -675,7 +1270,7 @@ function assertResolutionStatusAccepted(status, hostRequest, manifest) {
   if (status !== expectedWireStatus) fail('ERR_EFFECT_RESPONSE_STATUS_MISMATCH', 'driver ResolutionInput status does not match the HostRequest response schema');
 }
 
-function hostRequestTargetFingerprint(hostRequest) {
+export function hostRequestTargetFingerprint(hostRequest) {
   const value = hostRequest.hostRequestFingerprint;
   if (typeof value === 'bigint' || typeof value === 'number') return assertU64Fingerprint(BigInt(value));
   const match = String(value ?? '').match(/^(?:world:host-request:|0x)([0-9a-f]+)$/i);

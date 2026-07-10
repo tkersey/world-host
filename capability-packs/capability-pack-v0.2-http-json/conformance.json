@@ -1,0 +1,17 @@
+{
+  "driverId": "generic-http-json",
+  "packFingerprint": "sha256:4c3a3d815beef198014b2b56c1c2835c5e6a0b640fe137577a544d89e450bf72",
+  "corpusFingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "vectors": [
+    {
+      "name": "http-json-dry-run-and-policy",
+      "status": "passed",
+      "proves": "deny-by-default and redacted diagnostics"
+    }
+  ],
+  "nonClaims": [
+    "no-vendor-sdk",
+    "no-default-endpoint",
+    "no-credentials"
+  ]
+}

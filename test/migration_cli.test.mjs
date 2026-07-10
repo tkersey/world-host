@@ -2,7 +2,7 @@ import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -14,14 +14,17 @@ import { fromUtf8, stableJson } from '../src/core/store.mjs';
 import { RunController, WorldWorker } from '../src/core/worker.mjs';
 import { BunStoreLock } from '../src/bun/bun_lock.mjs';
 import { agentWorldHostRequestToEffectRequest, agentWorldRequestDriver, redact, runBunCli } from '../src/bun/bun_cli.mjs';
-import { decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
+import { decodeApplianceManifest, decodeResolutionInputBytes, encodeResolutionInputBytes } from '../src/protocol/world_appliance_wire_codec.mjs';
 import { encodeCanonicalValueImage, wyhash64 } from '../src/protocol/world_loaded_value_codec.mjs';
-import { summarizeTurnClosureForRunHead } from '../src/protocol/world_universal_appliance_codec.mjs';
+import { inspectTurnOutput, summarizeTurnClosureForRunHead } from '../src/protocol/world_universal_appliance_codec.mjs';
 import { DirectoryStore } from '../src/stores/directory_store.mjs';
 import { MemoryStore } from '../src/stores/memory_store.mjs';
 import { FixtureAgentModelDriver } from '../src/drivers/fixture_agent_model_driver.mjs';
 import { SandboxFileDriver } from '../src/drivers/sandbox_file_driver.mjs';
 import { refreshAgentRuntimePackChecksums } from '../scripts/agent_runtime_pack_lib.mjs';
+import { capabilityConformanceReceiptFingerprint, capabilityPackFingerprint } from '../src/core/capability_pack.mjs';
+
+const DEFAULT_SIDECAR_TRANSPORTABLE_BYTES = Math.floor(((1024 * 1024) - 4096) / 6);
 
 describe('migration, branching, and CLI diagnostics', () => {
   it('forks a branch without mutating the source branch head', async () => {
@@ -276,7 +279,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       const store = new DirectoryStore(root);
       const imageRef = await store.putBlob(fromUtf8('image'));
       const wasmRef = await store.putBlob(fromUtf8('wasm'));
-      const manifestRef = await store.putBlob(fromUtf8('manifest'));
+      const manifestRef = await store.putBlob(fixtureApplianceManifestBytes({ manifestFingerprint: 0x211n }));
       const genesisRef = await store.putBlob(fromUtf8('genesis'));
       const app = createApplicationRecord({
         applicationId: 'sequence-zero-app',
@@ -289,6 +292,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         applianceManifestRef: manifestRef,
         requiredActuators: [],
         requiredRuntimeLimits: {},
+        installationDiagnostics: { manifestSource: 'host-generated-install-summary' },
       });
       await store.createApplication(app);
       const genesisHead = createRunHead({
@@ -731,6 +735,453 @@ describe('migration, branching, and CLI diagnostics', () => {
     await assertImportsReject(duplicateEffect, 'ERR_IMPORT_EFFECT_DUPLICATE');
   });
 
+  it('applies receiver supervision policy during CLI import preflight', async () => {
+    const manifestBytes = fixtureApplianceManifestBytes({ supervisionPolicyFingerprint: 0x901n });
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-supervision-import-'));
+    const sourceRoot = path.join(root, 'source');
+    const receiverRoot = path.join(root, 'receiver');
+    const packagePath = path.join(root, 'carrier-export.json');
+    try {
+      const { run } = await fixtureDirectoryStore(sourceRoot, { closureOptions: { status: 1 } });
+      const sourceStore = new DirectoryStore(sourceRoot);
+      const carrierExport = await exportCarrierRun(sourceStore, run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
+      const manifestBlob = blobEntryForBytes(manifestBytes);
+      carrierExport.bundle.application.applianceManifestRef = {
+        algorithm: 'sha256',
+        checksum: manifestBlob.checksum,
+        byteLength: manifestBlob.byteLength,
+      };
+      carrierExport.bundle.application.installationDiagnostics = { manifestSource: 'operator-supplied' };
+      carrierExport.bundle.blobs.push({
+        algorithm: 'sha256',
+        checksum: manifestBlob.checksum,
+        byteLength: manifestBlob.byteLength,
+      }, manifestBlob);
+      await writeFile(packagePath, `${JSON.stringify(carrierExport, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli([
+          'import',
+          '--store', receiverRoot,
+          '--package', packagePath,
+          '--run', 'receiver-run',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        (error) => {
+          assert.equal(error.code, 'ERR_IMPORT_PREFLIGHT_BLOCKED');
+          assert.deepEqual(error.details?.blockers, ['supervision-policy-rejected']);
+          return true;
+        },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves partial CLI import mapper failures as unresolved requests', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-partial-import-mapper-'));
+    const sourceRoot = path.join(root, 'source');
+    const receiverRoot = path.join(root, 'receiver');
+    const packagePath = path.join(root, 'carrier-export.json');
+    try {
+      const { run } = await fixtureDirectoryStore(sourceRoot, { closureOptions: { status: 1 } });
+      const sourceStore = new DirectoryStore(sourceRoot);
+      const carrierExport = await exportCarrierRun(sourceStore, run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
+      const pendingExport = carrierExportWithPendingHead(
+        carrierExport,
+        fixtureNeedsHostTurnClosureBytes([fixtureHostRequestBytes(), agentModelHostRequestBytes()]),
+      );
+      await writeFile(packagePath, `${JSON.stringify(pendingExport, null, 2)}\n`);
+
+      let mapperCalls = 0;
+      let output = '';
+      const code = await runBunCli([
+        'import',
+        '--store', receiverRoot,
+        '--package', packagePath,
+        '--run', 'partial-import-run',
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      }, {
+        effectDrivers: [
+          agentWorldRequestDriver(new FixtureAgentModelDriver({
+            actuatorRef: 'world:actuator-ref:4f0c7160f25c4c62',
+            descriptorFingerprint: 'world:descriptor:be73177924a6b377',
+          }), 'world:actuation-class:2'),
+        ],
+        effectPolicy: { allowPartialEffectBatch: true },
+        hostRequestMapper(request) {
+          mapperCalls += 1;
+          if (mapperCalls === 1) {
+            const error = new Error('mapper rejected request');
+            error.code = 'ERR_WORLD_HOST_REQUEST_RESPONSE_STATUS_NOT_ALLOWED';
+            throw error;
+          }
+          return { ...agentWorldHostRequestToEffectRequest(request), pendingRequestIndex: 0 };
+        },
+      });
+      assert.equal(code, 0);
+      assert.equal(mapperCalls, 2);
+      assert.equal(JSON.parse(output).runId, 'partial-import-run');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects partial CLI imports with no selected effects', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-partial-import-empty-'));
+    const sourceRoot = path.join(root, 'source');
+    const receiverRoot = path.join(root, 'receiver');
+    const packagePath = path.join(root, 'carrier-export.json');
+    try {
+      const { run } = await fixtureDirectoryStore(sourceRoot, { closureOptions: { status: 1 } });
+      const sourceStore = new DirectoryStore(sourceRoot);
+      const carrierExport = await exportCarrierRun(sourceStore, run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
+      const pendingExport = carrierExportWithPendingHead(
+        carrierExport,
+        fixtureNeedsHostTurnClosureBytes([agentModelHostRequestBytes()]),
+      );
+      await writeFile(packagePath, `${JSON.stringify(pendingExport, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli([
+          'import',
+          '--store', receiverRoot,
+          '--package', packagePath,
+          '--run', 'empty-partial-import-run',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }, {
+          effectPolicy: { allowPartialEffectBatch: true },
+          hostRequestMapper() {
+            const error = new Error('mapper rejected request');
+            error.code = 'ERR_WORLD_HOST_REQUEST_RESPONSE_STATUS_NOT_ALLOWED';
+            throw error;
+          },
+        }),
+        { code: 'ERR_PARTIAL_EFFECT_BATCH_EMPTY' },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not trust imported host-generated diagnostics to skip manifest preflight', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-untrusted-import-diagnostics-'));
+    const sourceRoot = path.join(root, 'source');
+    const receiverRoot = path.join(root, 'receiver');
+    const packagePath = path.join(root, 'carrier-export.json');
+    try {
+      const { run } = await fixtureDirectoryStore(sourceRoot, { closureOptions: { status: 1 } });
+      const sourceStore = new DirectoryStore(sourceRoot);
+      const carrierExport = await exportCarrierRun(sourceStore, run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
+      const manifestBlob = blobEntryForBytes(fromUtf8('not an ApplianceManifest'));
+      carrierExport.bundle.application.applianceManifestRef = {
+        algorithm: 'sha256',
+        checksum: manifestBlob.checksum,
+        byteLength: manifestBlob.byteLength,
+      };
+      carrierExport.bundle.application.installationDiagnostics = { manifestSource: 'host-generated-install-summary' };
+      carrierExport.bundle.blobs.push(manifestBlob);
+      await writeFile(packagePath, `${JSON.stringify(carrierExport, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli([
+          'import',
+          '--store', receiverRoot,
+          '--package', packagePath,
+          '--run', 'receiver-run',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_IMPORT_PREFLIGHT_APPLIANCE_MANIFEST_INVALID' },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports imported appliance manifest blob mismatches as manifest preflight errors', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-manifest-mismatch-import-'));
+    const sourceRoot = path.join(root, 'source');
+    const receiverRoot = path.join(root, 'receiver');
+    const packagePath = path.join(root, 'carrier-export.json');
+    try {
+      const { run } = await fixtureDirectoryStore(sourceRoot, { closureOptions: { status: 1 } });
+      const sourceStore = new DirectoryStore(sourceRoot);
+      const carrierExport = await exportCarrierRun(sourceStore, run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
+      const manifestRef = carrierExport.bundle.application.applianceManifestRef;
+      const manifestBlob = carrierExport.bundle.blobs.find((blob) =>
+        blob.checksum === manifestRef.checksum && blob.byteLength === manifestRef.byteLength);
+      assert.ok(Array.isArray(manifestBlob?.bytes));
+      manifestBlob.bytes = manifestBlob.bytes.map((byte, index) => index === 0 ? byte ^ 0xff : byte);
+      await writeFile(packagePath, `${JSON.stringify(carrierExport, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli([
+          'import',
+          '--store', receiverRoot,
+          '--package', packagePath,
+          '--run', 'receiver-run',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_IMPORT_PREFLIGHT_APPLIANCE_MANIFEST_MISMATCH' },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('binds imported appliance manifest preflight to the selected closure manifest', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-manifest-fingerprint-import-'));
+    const sourceRoot = path.join(root, 'source');
+    const receiverRoot = path.join(root, 'receiver');
+    const packagePath = path.join(root, 'carrier-export.json');
+    try {
+      const { run } = await fixtureDirectoryStore(sourceRoot, { closureOptions: { status: 1 } });
+      const sourceStore = new DirectoryStore(sourceRoot);
+      const carrierExport = await exportCarrierRun(sourceStore, run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
+      const manifestBlob = blobEntryForBytes(fixtureApplianceManifestBytes({ manifestFingerprint: 0x999n }));
+      carrierExport.bundle.application.applianceManifestRef = {
+        algorithm: 'sha256',
+        checksum: manifestBlob.checksum,
+        byteLength: manifestBlob.byteLength,
+      };
+      carrierExport.bundle.application.installationDiagnostics = { manifestSource: 'operator-supplied' };
+      carrierExport.bundle.blobs.push(manifestBlob);
+      await writeFile(packagePath, `${JSON.stringify(carrierExport, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli([
+          'import',
+          '--store', receiverRoot,
+          '--package', packagePath,
+          '--run', 'receiver-run',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_IMPORT_PREFLIGHT_APPLIANCE_MANIFEST_MISMATCH' },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('checks declared appliance manifests on terminal imports before bypassing app requirements', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-terminal-manifest-import-'));
+    const sourceRoot = path.join(root, 'source');
+    const receiverRoot = path.join(root, 'receiver');
+    const packagePath = path.join(root, 'carrier-export.json');
+    try {
+      const { run } = await fixtureDirectoryStore(sourceRoot);
+      const sourceStore = new DirectoryStore(sourceRoot);
+      const carrierExport = await exportCarrierRun(sourceStore, run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
+      const manifestBlob = blobEntryForBytes(fixtureApplianceManifestBytes({ supervisionPolicyFingerprint: 0x901n }));
+      carrierExport.bundle.application.applianceManifestRef = {
+        algorithm: 'sha256',
+        checksum: manifestBlob.checksum,
+        byteLength: manifestBlob.byteLength,
+      };
+      carrierExport.bundle.application.installationDiagnostics = { manifestSource: 'operator-supplied' };
+      carrierExport.bundle.blobs.push(manifestBlob);
+      await writeFile(packagePath, `${JSON.stringify(carrierExport, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli([
+          'import',
+          '--store', receiverRoot,
+          '--package', packagePath,
+          '--run', 'receiver-terminal-run',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        (error) => {
+          assert.equal(error.code, 'ERR_IMPORT_PREFLIGHT_BLOCKED');
+          assert.deepEqual(error.details?.blockers, ['supervision-policy-rejected']);
+          return true;
+        },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('requires operator-supplied terminal manifest refs to resolve to ApplianceManifest bytes', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-terminal-operator-manifest-import-'));
+    const sourceRoot = path.join(root, 'source');
+    const receiverRoot = path.join(root, 'receiver');
+    const missingPackagePath = path.join(root, 'missing-manifest-export.json');
+    const summaryPackagePath = path.join(root, 'summary-manifest-export.json');
+    try {
+      const { run } = await fixtureDirectoryStore(sourceRoot);
+      const sourceStore = new DirectoryStore(sourceRoot);
+      const carrierExport = await exportCarrierRun(sourceStore, run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
+      const missingManifestBlob = blobEntryForBytes(fixtureApplianceManifestBytes({ manifestFingerprint: 0x912n }));
+      const missingManifestExport = JSON.parse(JSON.stringify(carrierExport));
+      missingManifestExport.bundle.application.applianceManifestRef = {
+        algorithm: 'sha256',
+        checksum: missingManifestBlob.checksum,
+        byteLength: missingManifestBlob.byteLength,
+      };
+      missingManifestExport.bundle.application.installationDiagnostics = { manifestSource: 'operator-supplied' };
+      await writeFile(missingPackagePath, `${JSON.stringify(missingManifestExport, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli([
+          'import',
+          '--store', receiverRoot,
+          '--package', missingPackagePath,
+          '--run', 'receiver-terminal-missing-manifest-run',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_IMPORT_PREFLIGHT_APPLIANCE_MANIFEST_MISSING' },
+      );
+
+      const summaryBlob = blobEntryForBytes(fromUtf8(stableJson({
+        kind: 'world-host.install-summary',
+        source: 'host-generated-install-summary',
+        worldAuthoredEvidence: false,
+      })));
+      const summaryManifestExport = JSON.parse(JSON.stringify(carrierExport));
+      summaryManifestExport.bundle.application.applianceManifestRef = {
+        algorithm: 'sha256',
+        checksum: summaryBlob.checksum,
+        byteLength: summaryBlob.byteLength,
+      };
+      summaryManifestExport.bundle.application.installationDiagnostics = { manifestSource: 'operator-supplied' };
+      summaryManifestExport.bundle.blobs.push(summaryBlob);
+      await writeFile(summaryPackagePath, `${JSON.stringify(summaryManifestExport, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli([
+          'import',
+          '--store', receiverRoot,
+          '--package', summaryPackagePath,
+          '--run', 'receiver-terminal-summary-manifest-run',
+        ], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_IMPORT_PREFLIGHT_APPLIANCE_MANIFEST_INVALID' },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('imports terminal host-generated install summaries without requiring appliance manifest bytes', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-terminal-summary-import-'));
+    const sourceRoot = path.join(root, 'source');
+    const receiverRoot = path.join(root, 'receiver');
+    const packagePath = path.join(root, 'carrier-export.json');
+    try {
+      const { run } = await fixtureDirectoryStore(sourceRoot);
+      const sourceStore = new DirectoryStore(sourceRoot);
+      const carrierExport = await exportCarrierRun(sourceStore, run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
+      const summaryBlob = blobEntryForBytes(fromUtf8(stableJson({
+        kind: 'world-host.install-summary',
+        source: 'host-generated-install-summary',
+        worldAuthoredEvidence: false,
+      })));
+      carrierExport.bundle.application.applianceManifestRef = {
+        algorithm: 'sha256',
+        checksum: summaryBlob.checksum,
+        byteLength: summaryBlob.byteLength,
+      };
+      carrierExport.bundle.application.installationDiagnostics = { manifestSource: 'host-generated-install-summary' };
+      carrierExport.bundle.blobs.push(summaryBlob);
+      await writeFile(packagePath, `${JSON.stringify(carrierExport, null, 2)}\n`);
+
+      let output = '';
+      const importCode = await runBunCli([
+        'import',
+        '--json',
+        '--store', receiverRoot,
+        '--package', packagePath,
+        '--run', 'receiver-terminal-summary-run',
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      });
+      const imported = JSON.parse(output);
+      assert.equal(importCode, 0);
+      assert.equal(imported.runId, 'receiver-terminal-summary-run');
+      assert.equal(imported.receiverPolicyApplied, true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('imports terminal ref-only reusable effect and manifest blobs already present in the receiver store', async () => {
+    const sourceRoot = await mkdtemp(path.join(tmpdir(), 'world-host-ref-only-import-source-'));
+    const receiverRoot = await mkdtemp(path.join(tmpdir(), 'world-host-ref-only-import-receiver-'));
+    const packagePath = path.join(sourceRoot, 'ref-only-export.json');
+    try {
+      const { run } = await fixtureDirectoryStore(sourceRoot);
+      const sourceStore = new DirectoryStore(sourceRoot);
+      const carrierExport = await exportCarrierRun(sourceStore, run.runId, 'main', { exportedAt: '2026-06-25T00:00:00Z' });
+      const resolutionEffect = carrierExport.bundle.effects.find((effect) => effect.resolutionInputRef);
+      const resolutionRef = resolutionEffect?.resolutionInputRef;
+      const resolutionBlob = carrierExport.bundle.blobs.find((blob) =>
+        blob.checksum === resolutionRef?.checksum && blob.byteLength === resolutionRef?.byteLength);
+      const manifestRef = carrierExport.bundle.application.applianceManifestRef;
+      const manifestBlob = carrierExport.bundle.blobs.find((blob) =>
+        blob.checksum === manifestRef.checksum && blob.byteLength === manifestRef.byteLength);
+      assert.ok(Array.isArray(resolutionBlob?.bytes));
+      assert.ok(Array.isArray(manifestBlob?.bytes));
+
+      const receiverStore = new DirectoryStore(receiverRoot);
+      await receiverStore.acquireLock();
+      try {
+        await receiverStore.putBlob(Uint8Array.from(resolutionBlob.bytes));
+        await receiverStore.putBlob(Uint8Array.from(manifestBlob.bytes));
+      } finally {
+        await receiverStore.releaseLock();
+      }
+
+      const refOnlyExport = JSON.parse(JSON.stringify(carrierExport));
+      const refOnlyResolutionBlob = refOnlyExport.bundle.blobs.find((blob) =>
+        blob.checksum === resolutionRef.checksum && blob.byteLength === resolutionRef.byteLength);
+      const refOnlyManifestBlob = refOnlyExport.bundle.blobs.find((blob) =>
+        blob.checksum === manifestRef.checksum && blob.byteLength === manifestRef.byteLength);
+      refOnlyResolutionBlob.algorithm = 'sha256';
+      refOnlyManifestBlob.algorithm = 'sha256';
+      delete refOnlyResolutionBlob.bytes;
+      delete refOnlyManifestBlob.bytes;
+      await writeFile(packagePath, JSON.stringify(refOnlyExport));
+
+      let output = '';
+      const importCode = await runBunCli([
+        'import',
+        '--json',
+        '--store', receiverRoot,
+        '--package', packagePath,
+        '--run', 'receiver-ref-only-run',
+      ], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      });
+      const imported = JSON.parse(output);
+      assert.equal(importCode, 0);
+      assert.equal(imported.runId, 'receiver-ref-only-run');
+      assert.equal(imported.receiverPolicyApplied, true);
+    } finally {
+      await rm(sourceRoot, { recursive: true, force: true });
+      await rm(receiverRoot, { recursive: true, force: true });
+    }
+  });
+
   it('redacts credentials from CLI-shaped diagnostics', async () => {
     assert.equal(redact({ nested: { bearerToken: 'secret' } }).nested.bearerToken, '[redacted]');
     assert.equal(redact({ diagnostics: { apiKey: 'secret' } }).diagnostics.apiKey, '[redacted]');
@@ -753,6 +1204,1144 @@ describe('migration, branching, and CLI diagnostics', () => {
       () => runBunCli(['effects', '--json', '--store', '.world-carrier'], { stdout: { write() {} }, stderr: { write() {} } }),
       /missing required option: --run/,
     );
+  });
+
+  it('rejects symlinked capability pack artifacts during CLI check-pack', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-symlink-'));
+    const pack = path.join(root, 'capability-pack-v0.2-fixture');
+    try {
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      const outsideReadme = path.join(root, 'outside-README.md');
+      await writeFile(outsideReadme, 'outside the verified pack root');
+      await rm(path.join(pack, 'README.md'));
+      await symlink(outsideReadme, path.join(pack, 'README.md'));
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ARTIFACT_UNSAFE' },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects symlinked capability pack roots during CLI check-pack', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-root-symlink-'));
+    const pack = path.join(root, 'capability-pack-v0.2-fixture');
+    const link = path.join(root, 'linked-pack');
+    try {
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await symlink(pack, link);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', link, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ROOT_UNSAFE' },
+      );
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', `${link}${path.sep}`, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ROOT_UNSAFE' },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects symlinked capability pack conformance receipts during proof script', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-proof-symlink-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      const outsideReceipt = path.join(root, 'outside-conformance.json');
+      await writeFile(outsideReceipt, await readFile(path.join(pack, 'conformance.json')));
+      await rm(path.join(pack, 'conformance.json'));
+      await symlink(outsideReceipt, path.join(pack, 'conformance.json'));
+
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs')], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ARTIFACT_UNSAFE:conformance\.json/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects symlinked capability pack roots during proof script', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-proof-root-symlink-'));
+    const packs = path.join(root, 'capability-packs');
+    const realPack = path.join(root, 'real-pack');
+    const linkedPack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), realPack, { recursive: true });
+      await symlink(realPack, linkedPack);
+
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ROOT_UNSAFE:/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a symlinked capability-packs container during proof script', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-packs-container-symlink-'));
+    const realPacks = path.join(root, 'real-capability-packs');
+    const linkedPacks = path.join(root, 'capability-packs');
+    try {
+      await mkdir(realPacks, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), path.join(realPacks, 'capability-pack-v0.2-fixture'), { recursive: true });
+      await symlink(realPacks, linkedPacks);
+
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ROOT_UNSAFE:/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects stale capability conformance receipts during CLI check-pack', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-conformance-'));
+    const pack = path.join(root, 'capability-pack-v0.2-fixture');
+    try {
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      const receipt = JSON.parse(await readFile(path.join(pack, 'conformance.json'), 'utf8'));
+      receipt.driverId = 'stale-driver';
+      const receiptBytes = fromUtf8(`${JSON.stringify(receipt, null, 2)}\n`);
+      await writeFile(path.join(pack, 'conformance.json'), receiptBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.checksums = manifest.checksums.map((item) => item.path === 'conformance.json'
+        ? { ...item, checksum: `sha256:${createHash('sha256').update(receiptBytes).digest('hex')}` }
+        : item);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH' },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects tampered capability conformance receipt contents during CLI check-pack', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-conformance-tamper-'));
+    const pack = path.join(root, 'capability-pack-v0.2-fixture');
+    try {
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      const receipt = JSON.parse(await readFile(path.join(pack, 'conformance.json'), 'utf8'));
+      receipt.vectors = [{ name: 'different-vector', status: 'passed' }];
+      const receiptBytes = fromUtf8(`${JSON.stringify(receipt, null, 2)}\n`);
+      await writeFile(path.join(pack, 'conformance.json'), receiptBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.checksums = manifest.checksums.map((item) => item.path === 'conformance.json'
+        ? { ...item, checksum: `sha256:${createHash('sha256').update(receiptBytes).digest('hex')}` }
+        : item);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH' },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('validates capability conformance receipts before receiver-driver selection', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-conformance-first-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.driverId = 'unregistered-receiver-driver';
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_CONFORMANCE_RECEIPT_MISMATCH' },
+      );
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_CONFORMANCE_PACK_FINGERPRINT/);
+      assert.doesNotMatch(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_RECEIVER_DRIVER_UNKNOWN/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('allows receipt-less capability packs during CLI check-pack', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-receiptless-'));
+    const pack = path.join(root, 'capability-pack-v0.2-fixture');
+    try {
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
+      manifest.checksums = manifest.checksums.filter((item) => item.path !== 'conformance.json');
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      let output = '';
+      const code = await runBunCli(['capability', 'check-pack', '--pack', pack], {
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write() {} },
+      });
+      assert.equal(code, 0);
+      assert.equal(JSON.parse(output).packFingerprint, manifest.packFingerprint);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('derives trusted receiver probes from nonempty pack HTTP policy bounds', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-bounded-probe-'));
+    const pack = path.join(root, 'capability-pack-v0.2-http-json');
+    try {
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-http-json'), pack, { recursive: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
+      manifest.checksums = manifest.checksums.filter((item) => item.path !== 'conformance.json');
+      manifest.policyRequirements = {
+        ...manifest.policyRequirements,
+        allowedOrigins: ['https://probe.allowed.example'],
+        allowedMethods: ['PUT'],
+      };
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      const quiet = { stdout: { write() {} }, stderr: { write() {} } };
+      assert.equal(await runBunCli(['capability', 'check-pack', '--pack', pack], quiet), 0);
+      assert.equal(await runBunCli([
+        'capability',
+        'check-pack',
+        '--pack',
+        pack,
+        '--trusted-execute-adapters',
+      ], quiet), 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('never executes checksum-covered pack modules for receiver adapters', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-no-exec-'));
+    const pack = path.join(root, 'capability-pack-v0.2-fixture');
+    try {
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      const sideEffectPath = path.join(root, 'pack-module-executed.txt');
+      const moduleBytes = fromUtf8(`await Bun.write(${JSON.stringify(sideEffectPath)}, 'executed');\n`);
+      await writeFile(path.join(pack, 'dormant-pack-module.mjs'), moduleBytes);
+      await rm(path.join(pack, 'conformance.json'));
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
+      manifest.checksums = manifest.checksums
+        .filter((item) => item.path !== 'conformance.json')
+        .concat({
+          path: 'dormant-pack-module.mjs',
+          checksum: `sha256:${createHash('sha256').update(moduleBytes).digest('hex')}`,
+        });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      const quiet = { stdout: { write() {} }, stderr: { write() {} } };
+      assert.equal(await runBunCli(['capability', 'check-pack', '--pack', pack], quiet), 0);
+      assert.equal(await runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], quiet), 0);
+      await assert.rejects(() => readFile(sideEffectPath), { code: 'ENOENT' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects unknown receiver drivers during default and trusted checks', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-unknown-receiver-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.driverId = 'unregistered-receiver-driver';
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
+      manifest.checksums = manifest.checksums.filter((item) => item.path !== 'conformance.json');
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      const quiet = { stdout: { write() {} }, stderr: { write() {} } };
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack], quiet),
+        { code: 'ERR_CAPABILITY_PACK_RECEIVER_DRIVER_UNKNOWN' },
+      );
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], quiet),
+        { code: 'ERR_CAPABILITY_PACK_RECEIVER_DRIVER_UNKNOWN' },
+      );
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs')], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_RECEIVER_DRIVER_UNKNOWN/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects receiver driver manifest mismatches during proof and trusted checks', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-receiver-abi-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.supportedResponseStatuses = ['ok'];
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
+      manifest.checksums = manifest.checksums.filter((item) => item.path !== 'conformance.json');
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      const quiet = { stdout: { write() {} }, stderr: { write() {} } };
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack], quiet),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH' },
+      );
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], quiet),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH' },
+      );
+      let result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs')], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH/);
+      result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('executes sidecar adapters during trusted CLI check-pack', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-cli-sidecar-'));
+    const pack = path.join(root, 'capability-pack-v0.2-fixture');
+    try {
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      const sidecarBytes = fromUtf8("throw new Error('sidecar startup failed');\n");
+      await writeFile(path.join(pack, 'sidecar.mjs'), sidecarBytes);
+      await rm(path.join(pack, 'adapter.mjs'), { force: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
+      manifest.checksums = manifest.checksums
+        .filter((item) => item.path !== 'adapter.mjs' && item.path !== 'conformance.json')
+        .concat({ path: 'sidecar.mjs', checksum: `sha256:${createHash('sha256').update(sidecarBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_SIDECAR_EXIT' },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects manifest-only sidecars during trusted capability pack checks', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-sidecar-abi-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'adapter.mjs'), { force: true });
+      await rm(path.join(pack, 'conformance.json'));
+
+      async function writeSidecarPack(sidecarBytes, manifestOverrides = {}) {
+        const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+        Object.assign(manifest, { supportedResponseStatuses: ['ok'] }, manifestOverrides);
+        manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
+        manifest.maximumRequestBytes = Math.min(manifest.maximumRequestBytes, DEFAULT_SIDECAR_TRANSPORTABLE_BYTES);
+        manifest.maximumResponseBytes = Math.min(manifest.maximumResponseBytes, DEFAULT_SIDECAR_TRANSPORTABLE_BYTES);
+        manifest.conformanceCorpusFingerprint = null;
+        manifest.conformanceReceiptFingerprint = null;
+        await writeFile(path.join(pack, 'sidecar.mjs'), sidecarBytes);
+        manifest.checksums = manifest.checksums
+          .filter((item) => !['adapter.mjs', 'conformance.json', 'sidecar.mjs'].includes(item.path))
+          .concat({ path: 'sidecar.mjs', checksum: `sha256:${createHash('sha256').update(sidecarBytes).digest('hex')}` });
+        manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+        await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+      }
+
+      const invalidResolveSidecarBytes = fromUtf8(`
+        const input = await new Response(Bun.stdin.stream()).text();
+        const frame = JSON.parse(input);
+        const driverManifest = {
+          driverId: 'fixture-agent-model',
+          supportedActuatorRefs: ['fixture:agent-model'],
+          supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+          supportedActuationClasses: ['model'],
+          supportedResponseStatuses: ['ok'],
+          maximumRequestBytes: 1048576,
+          maximumResponseBytes: 1048576,
+          recoveryClass: 'pure',
+          concurrencyLimit: 1,
+          authorityLabels: ['model:fixture-agent'],
+          packFingerprint: frame.payload?.packFingerprint
+        };
+        const responses = {
+          manifest: driverManifest,
+          preflight: { accepted: true, blockers: [] },
+          'dry-run': { wouldInvoke: false },
+          shadow: { liveInvoked: false, schemaAccepted: false },
+          resolve: {},
+          recover: { operatorInterventionRequired: true }
+        };
+        process.stdout.write(JSON.stringify({ command: frame.command, payload: responses[frame.command] ?? driverManifest }) + '\\n');
+      `);
+      await writeSidecarPack(invalidResolveSidecarBytes);
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_EXPECTED_BYTES' },
+      );
+      let result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_EXPECTED_BYTES|resolutionInputBytes must be Uint8Array/);
+
+      const wrongTargetResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xdefn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('wrong-target-sidecar'),
+      })).toString('base64');
+      const wrongTargetSidecarBytes = fromUtf8(`
+        const input = await new Response(Bun.stdin.stream()).text();
+        const frame = JSON.parse(input);
+        const driverManifest = {
+          driverId: 'fixture-agent-model',
+          supportedActuatorRefs: ['fixture:agent-model'],
+          supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+          supportedActuationClasses: ['model'],
+          supportedResponseStatuses: ['ok'],
+          maximumRequestBytes: 1048576,
+          maximumResponseBytes: 1048576,
+          recoveryClass: 'pure',
+          concurrencyLimit: 1,
+          authorityLabels: ['model:fixture-agent'],
+          packFingerprint: frame.payload?.packFingerprint
+        };
+        const resolution = {
+          resolutionInputBytes: {
+            __world_host_sidecar_type: 'bytes',
+            base64: '${wrongTargetResolutionBase64}'
+          }
+        };
+        const responses = {
+          manifest: driverManifest,
+          preflight: { accepted: true, blockers: [] },
+          'dry-run': { wouldInvoke: false },
+          shadow: { liveInvoked: false, schemaAccepted: false },
+          resolve: resolution,
+          recover: { operatorInterventionRequired: true }
+        };
+        process.stdout.write(JSON.stringify({ command: frame.command, payload: responses[frame.command] ?? driverManifest }) + '\\n');
+      `);
+      await writeSidecarPack(wrongTargetSidecarBytes);
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_EFFECT_RESOLUTION_TARGET_MISMATCH' },
+      );
+      result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_EFFECT_RESOLUTION_TARGET_MISMATCH/);
+
+      const noResolveSidecarBytes = fromUtf8(`
+        const input = await new Response(Bun.stdin.stream()).text();
+        const frame = JSON.parse(input);
+        const driverManifest = {
+          driverId: 'fixture-agent-model',
+          supportedActuatorRefs: ['fixture:agent-model'],
+          supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+          supportedActuationClasses: ['model'],
+          supportedResponseStatuses: ['ok'],
+          maximumRequestBytes: 1048576,
+          maximumResponseBytes: 1048576,
+          recoveryClass: 'pure',
+          concurrencyLimit: 1,
+          authorityLabels: ['model:fixture-agent'],
+          packFingerprint: frame.payload?.packFingerprint
+        };
+        const responses = {
+          manifest: driverManifest,
+          preflight: { accepted: true, blockers: [] },
+          'dry-run': { wouldInvoke: false },
+          shadow: { liveInvoked: false, schemaAccepted: false },
+          recover: { operatorInterventionRequired: true }
+        };
+        const payload = responses[frame.command] ?? driverManifest;
+        const command = Object.hasOwn(responses, frame.command) ? frame.command : 'manifest';
+        process.stdout.write(JSON.stringify({ command, payload }) + '\\n');
+      `);
+      await writeSidecarPack(noResolveSidecarBytes);
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_SIDECAR_RESPONSE_COMMAND' },
+      );
+      result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_SIDECAR_RESPONSE_COMMAND/);
+
+      const manifestOnlySidecarBytes = fromUtf8(`
+        const input = await new Response(Bun.stdin.stream()).text();
+        const frame = JSON.parse(input);
+        process.stdout.write(JSON.stringify({
+          command: 'manifest',
+          payload: {
+            driverId: 'fixture-agent-model',
+            supportedActuatorRefs: ['fixture:agent-model'],
+            supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+            supportedActuationClasses: ['model'],
+            supportedResponseStatuses: ['ok'],
+            maximumRequestBytes: 1048576,
+            maximumResponseBytes: 1048576,
+            recoveryClass: 'pure',
+            concurrencyLimit: 1,
+            authorityLabels: ['model:fixture-agent'],
+            packFingerprint: frame.payload?.packFingerprint
+          }
+        }) + '\\n');
+      `);
+      await writeSidecarPack(manifestOnlySidecarBytes);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_SIDECAR_RESPONSE_COMMAND' },
+      );
+      result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_SIDECAR_RESPONSE_COMMAND/);
+
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it('rejects network sidecar probes during trusted capability pack checks', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-network-sidecar-probe-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'adapter.mjs'), { force: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const sidecarBytes = fromUtf8(`
+        throw new Error('network sidecar command should not run');
+        const frame = {};
+        const driverManifest = {
+          driverId: 'generic-http-json',
+          supportedActuatorRefs: ['fixture:agent-model', 'http:json'],
+          supportedDescriptorFingerprints: ['descriptor:fixture-agent-model', 'descriptor:http-json'],
+          supportedActuationClasses: ['model', 'http'],
+          supportedResponseStatuses: ['ok'],
+          maximumRequestBytes: 1048576,
+          maximumResponseBytes: 1048576,
+          recoveryClass: 'idempotent',
+          concurrencyLimit: 1,
+          authorityLabels: ['network:http'],
+          packFingerprint: frame.payload?.packFingerprint,
+          diagnostics: {
+            origins: ['https://example.invalid'],
+            methods: ['POST'],
+            configuredEndpointUrl: 'https://example.invalid/decide',
+            configuredOrigin: 'https://example.invalid',
+            defaultMethod: 'POST'
+          }
+        };
+        const responses = {
+          manifest: driverManifest,
+          preflight: { accepted: true, blockers: [] },
+          'dry-run': { wouldInvoke: true },
+          shadow: { liveInvoked: false, schemaAccepted: false },
+          resolve: {},
+          recover: {}
+        };
+        process.stdout.write(JSON.stringify({ command: frame.command, payload: responses[frame.command] ?? driverManifest }) + '\\n');
+      `);
+      await writeFile(path.join(pack, 'sidecar.mjs'), sidecarBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      Object.assign(manifest, {
+        driverId: 'generic-http-json',
+        supportedActuatorRefs: ['fixture:agent-model', 'http:json'],
+        supportedDescriptorFingerprints: ['descriptor:fixture-agent-model', 'descriptor:http-json'],
+        supportedActuationClasses: ['model', 'http'],
+        supportedResponseStatuses: ['ok'],
+        recoveryClass: 'idempotent',
+        authorityLabels: ['network:http'],
+        policyRequirements: { allowLiveEffects: true, allowNetworkEffects: true },
+      });
+      manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
+      manifest.checksums = manifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json', 'sidecar.mjs'].includes(item.path))
+        .concat({ path: 'sidecar.mjs', checksum: `sha256:${createHash('sha256').update(sidecarBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED' },
+      );
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED/);
+      assert.doesNotMatch(`${result.stdout}${result.stderr}`, /network sidecar command should not run/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('executes trusted sidecars from private snapshots of verified artifacts', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-sidecar-snapshot-'));
+    const pack = path.join(root, 'capability-pack-v0.2-fixture');
+    const importDirs = await capabilityAdapterImportDirNames();
+    try {
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('private-sidecar-snapshot'),
+      })).toString('base64');
+      const sidecarBytes = fromUtf8(`
+        if (import.meta.url.includes(${JSON.stringify(path.resolve(pack))})) {
+          throw new Error('trusted sidecar ran from the receiver pack root');
+        }
+        const input = await new Response(Bun.stdin.stream()).text();
+        const frame = JSON.parse(input);
+        const driverManifest = {
+          driverId: 'fixture-agent-model',
+          supportedActuatorRefs: ['fixture:agent-model'],
+          supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+          supportedActuationClasses: ['model'],
+          supportedResponseStatuses: ['ok'],
+          maximumRequestBytes: ${DEFAULT_SIDECAR_TRANSPORTABLE_BYTES},
+          maximumResponseBytes: ${DEFAULT_SIDECAR_TRANSPORTABLE_BYTES},
+          recoveryClass: 'pure',
+          concurrencyLimit: 1,
+          authorityLabels: ['model:fixture-agent'],
+          packFingerprint: frame.payload?.packFingerprint
+        };
+        const resolution = {
+          resolutionInputBytes: {
+            __world_host_sidecar_type: 'bytes',
+            base64: '${validResolutionBase64}'
+          }
+        };
+        const responses = {
+          manifest: driverManifest,
+          preflight: { accepted: true, blockers: [] },
+          'dry-run': { wouldInvoke: false },
+          shadow: { liveInvoked: false, schemaAccepted: false },
+          resolve: resolution,
+          recover: { operatorInterventionRequired: true }
+        };
+        process.stdout.write(JSON.stringify({ command: frame.command, payload: responses[frame.command] ?? driverManifest }) + '\\n');
+      `);
+      await writeTrustedCapabilityProbePack(pack, {
+        artifactPath: 'sidecar.mjs',
+        artifactBytes: sidecarBytes,
+        adapter: { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] },
+        manifestOverrides: { supportedResponseStatuses: ['ok'] },
+      });
+
+      const quiet = { stdout: { write() {} }, stderr: { write() {} } };
+      assert.equal(await runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], quiet), 0);
+      assert.equal(await runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], quiet, {
+        isolateTrustedCapabilityPackAdapters: false,
+      }), 0);
+      await assertNoNewCapabilityAdapterImportDirs(importDirs);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects file sidecars before invoking their commands', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-file-sidecar-probe-'));
+    const pack = path.join(root, 'capability-pack-v0.2-fixture');
+    try {
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      const sidecarBytes = fromUtf8("throw new Error('file sidecar command should not run');\n");
+      await writeTrustedCapabilityProbePack(pack, {
+        artifactPath: 'sidecar.mjs',
+        artifactBytes: sidecarBytes,
+        adapter: { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] },
+        manifestOverrides: {
+          driverId: 'sandbox-file',
+          supportedActuatorRefs: ['sandbox:file'],
+          supportedDescriptorFingerprints: ['descriptor:sandbox-file'],
+          supportedActuationClasses: ['file'],
+          supportedResponseStatuses: ['ok'],
+          recoveryClass: 'best_effort',
+          authorityLabels: ['file:sandbox'],
+          policyRequirements: { allowLiveEffects: true, allowFileEffects: true },
+        },
+      });
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        (error) => {
+          assert.equal(error.code, 'ERR_CAPABILITY_PACK_ADAPTER_EXTERNAL_PROBE_UNSUPPORTED');
+          assert.doesNotMatch(error.message, /file sidecar command should not run/);
+          return true;
+        },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects sidecar preflight and intervention payload failures during trusted checks', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-sidecar-abi-boundary-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'adapter.mjs'), { force: true });
+      await rm(path.join(pack, 'conformance.json'));
+
+      async function writeSidecarPack(sidecarBytes) {
+        const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+        manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
+        manifest.maximumRequestBytes = Math.min(manifest.maximumRequestBytes, DEFAULT_SIDECAR_TRANSPORTABLE_BYTES);
+        manifest.maximumResponseBytes = Math.min(manifest.maximumResponseBytes, DEFAULT_SIDECAR_TRANSPORTABLE_BYTES);
+        manifest.conformanceCorpusFingerprint = null;
+        manifest.conformanceReceiptFingerprint = null;
+        await writeFile(path.join(pack, 'sidecar.mjs'), sidecarBytes);
+        manifest.checksums = manifest.checksums
+          .filter((item) => !['adapter.mjs', 'conformance.json', 'sidecar.mjs'].includes(item.path))
+          .concat({ path: 'sidecar.mjs', checksum: `sha256:${createHash('sha256').update(sidecarBytes).digest('hex')}` });
+        manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+        await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+      }
+
+      const preflightDeniedSidecarBytes = fromUtf8(`
+        const input = await new Response(Bun.stdin.stream()).text();
+        const frame = JSON.parse(input);
+        const driverManifest = {
+          driverId: 'fixture-agent-model',
+          supportedActuatorRefs: ['fixture:agent-model'],
+          supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+          supportedActuationClasses: ['model'],
+          supportedResponseStatuses: ['ok', 'final'],
+          maximumRequestBytes: 1048576,
+          maximumResponseBytes: 1048576,
+          recoveryClass: 'pure',
+          concurrencyLimit: 1,
+          authorityLabels: ['model:fixture-agent'],
+          packFingerprint: frame.payload?.packFingerprint
+        };
+        const responses = {
+          manifest: driverManifest,
+          preflight: { accepted: false, blockers: ['probe-denied'] },
+          'dry-run': { wouldInvoke: false },
+          shadow: { liveInvoked: false, schemaAccepted: false },
+          resolve: {},
+          recover: { operatorInterventionRequired: true }
+        };
+        process.stdout.write(JSON.stringify({ command: frame.command, payload: responses[frame.command] ?? driverManifest }) + '\\n');
+      `);
+      await writeSidecarPack(preflightDeniedSidecarBytes);
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_PREFLIGHT' },
+      );
+      let result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_PREFLIGHT/);
+
+      const acceptedWithBlockersSidecarBytes = fromUtf8((await bytesToUtf8(preflightDeniedSidecarBytes)).replace(
+        "preflight: { accepted: false, blockers: ['probe-denied'] }",
+        "preflight: { accepted: true, blockers: ['probe-denied'] }",
+      ));
+      await writeSidecarPack(acceptedWithBlockersSidecarBytes);
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_PREFLIGHT' },
+      );
+      result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_PREFLIGHT/);
+
+      const validResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('valid-sidecar-probe'),
+      })).toString('base64');
+      const forbiddenRecoverInterventionSidecarBytes = fromUtf8(`
+        const input = await new Response(Bun.stdin.stream()).text();
+        const frame = JSON.parse(input);
+        const driverManifest = {
+          driverId: 'fixture-agent-model',
+          supportedActuatorRefs: ['fixture:agent-model'],
+          supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+          supportedActuationClasses: ['model'],
+          supportedResponseStatuses: ['ok', 'final'],
+          maximumRequestBytes: 1048576,
+          maximumResponseBytes: 1048576,
+          recoveryClass: 'pure',
+          concurrencyLimit: 1,
+          authorityLabels: ['model:fixture-agent'],
+          packFingerprint: frame.payload?.packFingerprint
+        };
+        const resolution = {
+          resolutionInputBytes: {
+            __world_host_sidecar_type: 'bytes',
+            base64: '${validResolutionBase64}'
+          }
+        };
+        const responses = {
+          manifest: driverManifest,
+          preflight: { accepted: true, blockers: [] },
+          'dry-run': { wouldInvoke: false },
+          shadow: { liveInvoked: false, schemaAccepted: false },
+          resolve: resolution,
+          recover: { operatorInterventionRequired: true, turnClosureBytes: 'forbidden-world-evidence' }
+        };
+        process.stdout.write(JSON.stringify({ command: frame.command, payload: responses[frame.command] ?? driverManifest }) + '\\n');
+      `);
+      await writeSidecarPack(forbiddenRecoverInterventionSidecarBytes);
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN' },
+      );
+      result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_WORLD_EVIDENCE_FORBIDDEN/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it('rejects sidecar early-exit and Bun watch flags during pack validation', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-bun-sidecar-flags-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'adapter.mjs'), { force: true });
+      await rm(path.join(pack, 'conformance.json'));
+
+      const sidecarBytes = fromUtf8('process.stdout.write("{}\\n");\n');
+      await writeFile(path.join(pack, 'sidecar.mjs'), sidecarBytes);
+
+      async function writeSidecarCommand(command) {
+        const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+        manifest.adapter = { kind: 'sidecar', command };
+        manifest.conformanceCorpusFingerprint = null;
+        manifest.conformanceReceiptFingerprint = null;
+        manifest.checksums = manifest.checksums
+          .filter((item) => !['adapter.mjs', 'conformance.json', 'sidecar.mjs'].includes(item.path))
+          .concat({ path: 'sidecar.mjs', checksum: `sha256:${createHash('sha256').update(sidecarBytes).digest('hex')}` });
+        manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+        await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+      }
+
+      for (const command of [
+        ['bun', '--version', 'sidecar.mjs'],
+        ['bun', '--revision', 'sidecar.mjs'],
+        ['bun', '--help', 'sidecar.mjs'],
+        ['python3', '-VV', 'sidecar.mjs'],
+        ['pypy3', '-VV', 'sidecar.mjs'],
+        ['bun', '--watch', 'sidecar.mjs', 'extra.mjs'],
+        ['bun', '--hot', 'sidecar.mjs', 'extra.mjs'],
+      ]) {
+        await writeSidecarCommand(command);
+        await assert.rejects(
+          () => runBunCli(['capability', 'check-pack', '--pack', pack], {
+            stdout: { write() {} },
+            stderr: { write() {} },
+          }),
+          { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+        );
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects sidecar manifest mismatches before trusted probes run', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-sidecar-manifest-order-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'adapter.mjs'), { force: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const sidecarBytes = fromUtf8(`
+        const input = await new Response(Bun.stdin.stream()).text();
+        const frame = JSON.parse(input);
+        if (frame.command !== 'manifest') {
+          process.stderr.write('probe command should not run before manifest match\\n');
+          process.stdout.write(JSON.stringify({ command: frame.command, payload: { accepted: true, blockers: [] } }) + '\\n');
+        } else {
+          process.stdout.write(JSON.stringify({
+            command: 'manifest',
+            payload: {
+              driverId: 'fixture-agent-model-mismatch',
+              supportedActuatorRefs: ['fixture:agent-model'],
+              supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+              supportedActuationClasses: ['model'],
+              supportedResponseStatuses: ['ok'],
+              maximumRequestBytes: 1048576,
+              maximumResponseBytes: 1048576,
+              recoveryClass: 'pure',
+              concurrencyLimit: 1,
+              authorityLabels: ['model:fixture-agent'],
+              packFingerprint: frame.payload?.packFingerprint
+            }
+          }) + '\\n');
+        }
+      `);
+      await writeFile(path.join(pack, 'sidecar.mjs'), sidecarBytes);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
+      manifest.checksums = manifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json', 'sidecar.mjs'].includes(item.path))
+        .concat({ path: 'sidecar.mjs', checksum: `sha256:${createHash('sha256').update(sidecarBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      await assert.rejects(
+        () => runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+          stdout: { write() {} },
+          stderr: { write() {} },
+        }),
+        { code: 'ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH' },
+      );
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ERR_CAPABILITY_PACK_ADAPTER_MANIFEST_MISMATCH/);
+      assert.doesNotMatch(`${result.stdout}${result.stderr}`, /probe command should not run/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts sidecar ok probe resolutions when non-success statuses are listed first', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-capability-pack-sidecar-status-order-'));
+    const packs = path.join(root, 'capability-packs');
+    const pack = path.join(packs, 'capability-pack-v0.2-fixture');
+    try {
+      await mkdir(packs, { recursive: true });
+      await cp(path.resolve('capability-packs/capability-pack-v0.2-fixture'), pack, { recursive: true });
+      await rm(path.join(pack, 'adapter.mjs'), { force: true });
+      await rm(path.join(pack, 'conformance.json'));
+      const failedResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabcn,
+        status: 2,
+        responseValueImageBytes: new Uint8Array(),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('status-order-sidecar-failed'),
+      })).toString('base64');
+      const okResolutionBase64 = Buffer.from(encodeResolutionInputBytes({
+        targetHostRequestFingerprint: 0xabdn,
+        status: 0,
+        responseValueImageBytes: fromUtf8('probe-response'),
+        hostClaimBytes: new Uint8Array(),
+        attemptNumber: 1,
+        metadata: fromUtf8('status-order-sidecar-ok'),
+      })).toString('base64');
+      const sidecarBytes = fromUtf8(`
+        const input = await new Response(Bun.stdin.stream()).text();
+        const frame = JSON.parse(input);
+        const driverManifest = {
+          driverId: 'fixture-agent-model',
+          supportedActuatorRefs: ['fixture:agent-model'],
+          supportedDescriptorFingerprints: ['descriptor:fixture-agent-model'],
+          supportedActuationClasses: ['model'],
+          supportedResponseStatuses: ['failed', 'ok'],
+          maximumRequestBytes: 1048576,
+          maximumResponseBytes: 1048576,
+          recoveryClass: 'pure',
+          concurrencyLimit: 1,
+          authorityLabels: ['model:fixture-agent'],
+          packFingerprint: frame.payload?.packFingerprint
+        };
+        const failedResolution = {
+          resolutionInputBytes: {
+            __world_host_sidecar_type: 'bytes',
+            base64: '${failedResolutionBase64}'
+          }
+        };
+        const okResolution = {
+          resolutionInputBytes: {
+            __world_host_sidecar_type: 'bytes',
+            base64: '${okResolutionBase64}'
+          }
+        };
+        const resolution = frame.payload?.hostRequest?.responseSchema?.status === 'failed' ? failedResolution : okResolution;
+        const responses = {
+          manifest: driverManifest,
+          preflight: { accepted: true, blockers: [] },
+          'dry-run': { wouldInvoke: false },
+          shadow: { liveInvoked: false, schemaAccepted: false },
+          resolve: resolution,
+          recover: { operatorInterventionRequired: true }
+        };
+        process.stdout.write(JSON.stringify({ command: frame.command, payload: responses[frame.command] ?? driverManifest }) + '\\n');
+      `);
+      const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+      manifest.adapter = { kind: 'sidecar', command: ['bun', 'sidecar.mjs'] };
+      manifest.maximumRequestBytes = Math.min(manifest.maximumRequestBytes, DEFAULT_SIDECAR_TRANSPORTABLE_BYTES);
+      manifest.maximumResponseBytes = Math.min(manifest.maximumResponseBytes, DEFAULT_SIDECAR_TRANSPORTABLE_BYTES);
+      manifest.conformanceCorpusFingerprint = null;
+      manifest.conformanceReceiptFingerprint = null;
+      manifest.supportedResponseStatuses = ['failed', 'ok'];
+      await writeFile(path.join(pack, 'sidecar.mjs'), sidecarBytes);
+      manifest.checksums = manifest.checksums
+        .filter((item) => !['adapter.mjs', 'conformance.json', 'sidecar.mjs'].includes(item.path))
+        .concat({ path: 'sidecar.mjs', checksum: `sha256:${createHash('sha256').update(sidecarBytes).digest('hex')}` });
+      manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+      await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+      assert.equal(await runBunCli(['capability', 'check-pack', '--pack', pack, '--trusted-execute-adapters'], {
+        stdout: { write() {} },
+        stderr: { write() {} },
+      }), 0);
+      const result = spawnSync('bun', [path.resolve('scripts/check-capability-packs.mjs'), '--trusted-execute-adapters'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('installs DirectoryStore application records from immutable CLI bytes', async () => {
@@ -1488,6 +3077,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(exportCode, 0);
 
       const packageJson = JSON.parse(await readFile(packagePath, 'utf8'));
+      const packageManifestFingerprint = carrierBundleApplianceManifest(packageJson.bundle).manifestFingerprint;
       let noPendingOutput = '';
       const noPendingImportCode = await runBunCli([
         'agent',
@@ -1519,11 +3109,15 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(genericNoPendingImported.runId, 'generic-agent-import-no-pending');
       assert.equal(genericNoPendingImported.receiverPolicyApplied, true);
 
-      const completedBytes = fixtureTurnClosureBytes({ status: 2, turnSequenceNumber: 9n, closureFingerprint: 0x919n });
+      const completedBytes = fixtureTurnClosureBytes({
+        status: 2,
+        turnSequenceNumber: 9n,
+        closureFingerprint: 0x919n,
+        manifestFingerprint: packageManifestFingerprint,
+      });
       const completedSummary = summarizeTurnClosureForRunHead(completedBytes);
       const completedBlob = blobEntryForBytes(completedBytes);
-      const highLimitCompletedPackagePath = path.join(receiverRoot, 'agent-completed-high-limits-export.json');
-      await writeFile(highLimitCompletedPackagePath, JSON.stringify({
+      const highLimitCompletedPackage = {
         ...packageJson,
         bundle: {
           ...packageJson.bundle,
@@ -1552,7 +3146,9 @@ describe('migration, branching, and CLI diagnostics', () => {
           },
           blobs: [...packageJson.bundle.blobs, completedBlob],
         },
-      }));
+      };
+      const highLimitCompletedPackagePath = path.join(receiverRoot, 'agent-completed-high-limits-export.json');
+      await writeFile(highLimitCompletedPackagePath, JSON.stringify(highLimitCompletedPackage));
       let highLimitCompletedOutput = '';
       const highLimitCompletedImportCode = await runBunCli([
         'agent',
@@ -1568,7 +3164,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(highLimitCompletedImportCode, 0);
       assert.equal(highLimitCompletedImported.runId, 'receiver-agent-import-high-limit-completed');
 
-      const pendingClosureBytes = fixtureNeedsHostTurnClosureBytes([agentModelHostRequestBytes()]);
+      const pendingClosureBytes = fixtureNeedsHostTurnClosureBytes([agentModelHostRequestBytes()], 0, { manifestFingerprint: packageManifestFingerprint });
       const pendingClosureSummary = summarizeTurnClosureForRunHead(pendingClosureBytes);
       const pendingClosureBlob = blobEntryForBytes(pendingClosureBytes);
       const pendingPackagePath = path.join(receiverRoot, 'agent-pending-export.json');
@@ -1609,7 +3205,7 @@ describe('migration, branching, and CLI diagnostics', () => {
       );
 
       const sandboxRoot = path.join(receiverRoot, 'sandbox');
-      const requestlessNeedsHostBytes = fixtureNeedsHostTurnClosureBytes([]);
+      const requestlessNeedsHostBytes = fixtureNeedsHostTurnClosureBytes([], 0, { manifestFingerprint: packageManifestFingerprint });
       const requestlessNeedsHostSummary = summarizeTurnClosureForRunHead(requestlessNeedsHostBytes);
       const requestlessNeedsHostBlob = blobEntryForBytes(requestlessNeedsHostBytes);
       const requestlessNeedsHostPackagePath = path.join(receiverRoot, 'agent-requestless-needs-host-export.json');
@@ -1650,7 +3246,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         { code: 'ERR_IMPORT_PREFLIGHT_NEEDS_HOST_REQUESTS_EMPTY' },
       );
 
-      const yieldedBudgetBytes = fixtureNeedsHostTurnClosureBytes([], 1);
+      const yieldedBudgetBytes = fixtureNeedsHostTurnClosureBytes([], 1, { manifestFingerprint: packageManifestFingerprint });
       const yieldedBudgetSummary = summarizeTurnClosureForRunHead(yieldedBudgetBytes);
       const yieldedBudgetBlob = blobEntryForBytes(yieldedBudgetBytes);
       const yieldedBudgetPackagePath = path.join(receiverRoot, 'agent-yielded-budget-export.json');
@@ -1708,6 +3304,72 @@ describe('migration, branching, and CLI diagnostics', () => {
       assert.equal(imported.runId, 'receiver-agent-import');
       assert.equal(imported.receiverPolicyApplied, true);
       assert.equal(imported.diagnostics.workerExecuted, false);
+
+      const malformedResolutionBytes = fromUtf8('not a ResolutionInput');
+      const malformedResolutionBlob = blobEntryForBytes(malformedResolutionBytes);
+      const pendingRequest = agentWorldHostRequestToEffectRequest(inspectTurnOutput(pendingClosureBytes).hostRequests[0], { scenario: 'skeleton', sandboxRoot });
+      const pendingRequestBytesBlob = blobEntryForBytes(pendingRequest.requestBytes);
+      const malformedResolutionPackagePath = path.join(receiverRoot, 'agent-malformed-resolution-export.json');
+      const pendingPackageJson = JSON.parse(await readFile(pendingPackagePath, 'utf8'));
+      const malformedResolutionPackage = {
+        ...pendingPackageJson,
+        bundle: {
+          ...pendingPackageJson.bundle,
+        },
+      };
+      malformedResolutionPackage.bundle.effects = [{
+        runId: malformedResolutionPackage.bundle.run.runId,
+        branchId: 'main',
+        parentTurnClosureFingerprint: 'world:closure:parent',
+        hostRequestFingerprint: pendingRequest.hostRequestFingerprint,
+        idempotencyKey: {
+          format: 'world-idempotency-key-bytes.hex',
+          bytesHex: Buffer.from(pendingRequest.idempotencyKeyBytes).toString('hex'),
+        },
+        idempotencyKeyWorldFingerprint: pendingRequest.idempotencyKeyWorldFingerprint,
+        actuatorRef: pendingRequest.actuatorRef,
+        descriptorFingerprint: pendingRequest.descriptorFingerprint,
+        actuationClass: pendingRequest.actuationClass,
+        responseSchema: pendingRequest.responseSchema,
+        requestBytesChecksum: `sha256:${pendingRequestBytesBlob.checksum}`,
+        requestBytesRef: {
+          algorithm: 'sha256',
+          checksum: pendingRequestBytesBlob.checksum,
+          byteLength: pendingRequestBytesBlob.byteLength,
+        },
+        state: 'resolved',
+        attemptCount: 1,
+        driverRecoveryClass: 'pure',
+        resolutionInputRef: {
+          algorithm: 'sha256',
+          checksum: malformedResolutionBlob.checksum,
+          byteLength: malformedResolutionBlob.byteLength,
+        },
+        diagnostics: {},
+      }];
+      malformedResolutionPackage.bundle.blobs = [
+        ...malformedResolutionPackage.bundle.blobs.filter((blob) =>
+          blob.checksum !== malformedResolutionBlob.checksum && blob.checksum !== pendingRequestBytesBlob.checksum),
+        pendingRequestBytesBlob,
+        malformedResolutionBlob,
+      ];
+      await writeFile(malformedResolutionPackagePath, JSON.stringify(malformedResolutionPackage));
+      let malformedResolutionOutput = '';
+      const malformedResolutionImportCode = await runBunCli([
+        'agent',
+        'import',
+        '--store', receiverRoot,
+        '--package', malformedResolutionPackagePath,
+        '--run', 'receiver-agent-import-malformed-resolution',
+        '--sandbox-root', sandboxRoot,
+      ], {
+        stdout: { write: (text) => { malformedResolutionOutput += text; } },
+        stderr: { write() {} },
+      });
+      const malformedResolutionImported = JSON.parse(malformedResolutionOutput);
+      assert.equal(malformedResolutionImportCode, 0);
+      assert.equal(malformedResolutionImported.runId, 'receiver-agent-import-malformed-resolution');
+      assert.equal(malformedResolutionImported.receiverPolicyApplied, true);
 
       const receiverStore = new DirectoryStore(receiverRoot);
       await receiverStore.acquireLock();
@@ -1921,8 +3583,10 @@ describe('migration, branching, and CLI diagnostics', () => {
     try {
       const wasmPath = path.join(root, 'world_universal_appliance.wasm');
       const imagePath = path.join(root, 'file-agent.world-executable');
+      const manifestPath = path.join(root, 'appliance-manifest.bin');
       await writeFile(wasmPath, fromUtf8('wasm:cli-run'));
       await writeFile(imagePath, fromUtf8('image:cli-run'));
+      await writeFile(manifestPath, fixtureApplianceManifestBytes({ manifestFingerprint: 0x211n }));
       await runBunCli([
         'install',
         '--json',
@@ -1931,6 +3595,7 @@ describe('migration, branching, and CLI diagnostics', () => {
         '--wasm', wasmPath,
         '--image', imagePath,
         '--image-fingerprint', 'world:image:run-app',
+        '--manifest', manifestPath,
       ], {
         stdout: { write() {} },
         stderr: { write() {} },
@@ -2406,6 +4071,54 @@ describe('migration, branching, and CLI diagnostics', () => {
     } finally {
       await rm(sourceRoot, { recursive: true, force: true });
       await rm(receiverRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects effect proxies whose admitted scope differs from raw property reads without persisting anything', async () => {
+    const source = await fixtureStore();
+    const bundle = await source.store.exportRun(source.run.runId, 'main');
+    const admittedRunId = 'proxy-admitted-run';
+    const admittedBranchId = 'proxy-admitted-branch';
+    const proxiedEffect = new Proxy(fixtureImportEffect(bundle, {
+      runId: admittedRunId,
+      branchId: admittedBranchId,
+    }), {
+      get(target, property, receiver) {
+        if (property === 'runId') return bundle.run.runId;
+        if (property === 'branchId') return bundle.branchId;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const proxiedBundle = { ...bundle, effects: [proxiedEffect] };
+
+    assert.equal(proxiedEffect.runId, bundle.run.runId);
+    assert.equal(proxiedEffect.branchId, bundle.branchId);
+
+    const memory = new MemoryStore();
+    await assert.rejects(
+      () => memory.importRun(proxiedBundle),
+      { code: 'ERR_IMPORT_EFFECT_SCOPE_MISMATCH' },
+    );
+    assert.equal(memory.blobs.size, 0);
+    assert.equal(memory.applications.size, 0);
+    assert.equal(memory.runs.size, 0);
+    assert.equal(memory.heads.size, 0);
+    assert.equal(memory.effects.size, 0);
+
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-proxy-effect-import-'));
+    try {
+      const directory = new DirectoryStore(root);
+      await assert.rejects(
+        () => directory.importRun(proxiedBundle),
+        { code: 'ERR_IMPORT_EFFECT_SCOPE_MISMATCH' },
+      );
+      assert.deepEqual(await directory.listBlobRefs(), []);
+      assert.deepEqual(await directory.allApplications(), []);
+      assert.deepEqual(await directory.allRuns(), []);
+      assert.deepEqual(await directory.allHeads(), []);
+      assert.deepEqual(await directory.allEffectRecords(), []);
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -3062,13 +4775,14 @@ async function bytesToUtf8(bytes) {
 
 function fixtureTurnClosureBytes(options = {}) {
   const closureStatus = options.status ?? 2;
+  const manifestFingerprint = options.manifestFingerprint ?? 0x211n;
   const rootResultBytes = rootResultValueBytes(options.rootResultValueFingerprint ?? 0xb01n);
   const rootResultRef = rootResultObjectRef(rootResultBytes);
   const turnReceiptBytes = concat([
     u32(1),
     u32(1),
     u64(0x701n),
-    u64(0x211n),
+    u64(manifestFingerprint),
     u64(options.turnSequenceNumber ?? 1n),
     u64(0x301n),
     optionalU64(null),
@@ -3091,7 +4805,7 @@ function fixtureTurnClosureBytes(options = {}) {
     u32(1),
     u64(options.closureFingerprint ?? 0x111n),
     u64(0x112n),
-    u64(0x211n),
+    u64(manifestFingerprint),
     optionalU64(null),
     u64(options.turnSequenceNumber ?? 1n),
     u64(0x301n),
@@ -3139,12 +4853,13 @@ function receiptStatusForClosureStatus(status) {
   return status;
 }
 
-function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()], status = 0) {
+function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()], status = 0, options = {}) {
+  const manifestFingerprint = options.manifestFingerprint ?? 0x211n;
   const turnReceiptBytes = concat([
     u32(1),
     u32(1),
     u64(0x701n),
-    u64(0x211n),
+    u64(manifestFingerprint),
     u64(0n),
     u64(0x301n),
     optionalU64(null),
@@ -3168,7 +4883,7 @@ function fixtureNeedsHostTurnClosureBytes(requests = [fixtureHostRequestBytes()]
     u32(1),
     u64(0x111n),
     u64(0x112n),
-    u64(0x211n),
+    u64(manifestFingerprint),
     optionalU64(null),
     u64(0n),
     u64(0x301n),
@@ -3316,6 +5031,41 @@ function blobEntryForBytes(value) {
   };
 }
 
+function carrierExportWithPendingHead(carrierExport, closureBytes) {
+  const summary = summarizeTurnClosureForRunHead(closureBytes);
+  const blob = blobEntryForBytes(closureBytes);
+  return {
+    ...carrierExport,
+    bundle: {
+      ...carrierExport.bundle,
+      head: {
+        ...carrierExport.bundle.head,
+        generation: summary.inspectionDiagnostics.turnSequenceNumber + 1,
+        status: summary.status,
+        turnClosureRef: {
+          algorithm: 'sha256',
+          checksum: blob.checksum,
+          byteLength: blob.byteLength,
+        },
+        turnClosureWorldFingerprint: summary.turnClosureWorldFingerprint,
+        resultingStateFingerprint: summary.resultingStateFingerprint,
+        chronicleCursor: summary.chronicleCursor,
+        archiveMomentFingerprint: summary.archiveMomentFingerprint,
+        archiveSealFingerprint: summary.archiveSealFingerprint,
+      },
+      blobs: [...carrierExport.bundle.blobs, blob],
+    },
+  };
+}
+
+function carrierBundleApplianceManifest(bundle) {
+  const manifestRef = bundle.application.applianceManifestRef;
+  const manifestBlob = bundle.blobs.find((blob) =>
+    blob.checksum === manifestRef.checksum && blob.byteLength === manifestRef.byteLength);
+  assert.ok(Array.isArray(manifestBlob?.bytes));
+  return decodeApplianceManifest(Uint8Array.from(manifestBlob.bytes));
+}
+
 function u8(value) {
   return Uint8Array.of(value);
 }
@@ -3323,6 +5073,12 @@ function u8(value) {
 function u32(value) {
   const out = new Uint8Array(4);
   new DataView(out.buffer).setUint32(0, value, true);
+  return out;
+}
+
+function u16(value) {
+  const out = new Uint8Array(2);
+  new DataView(out.buffer).setUint16(0, value, true);
   return out;
 }
 
@@ -3342,6 +5098,46 @@ function bytes(value) {
 
 function u64Slice(values) {
   return concat([u64(values.length), ...values.map(u64)]);
+}
+
+function u8Slice(values) {
+  return concat([u64(values.length), Uint8Array.from(values)]);
+}
+
+function fixtureApplianceManifestBytes(options = {}) {
+  return concat([
+    u32(3),
+    u32(3),
+    u64(options.manifestFingerprint ?? 0x211n),
+    u32(4),
+    u64(0x102n),
+    u64(0x103n),
+    u64(0x104n),
+    u64(0n),
+    u64(0n),
+    u64(0n),
+    u64Slice([]),
+    u64Slice([]),
+    u64(0n),
+    u64Slice([]),
+    u64Slice([]),
+    u64Slice([]),
+    u64Slice([]),
+    u64Slice([]),
+    u64Slice([]),
+    u8Slice([]),
+    u8Slice([]),
+    u64(options.supervisionPolicyFingerprint ?? 0n),
+    u64Slice([]),
+    u64(0n),
+    u64(0n),
+    u8(0),
+    u16(0),
+    u64(0x105n),
+    u64(0x106n),
+    u8(0),
+    bytes(new Uint8Array()),
+  ]);
 }
 
 function fixtureHostReplyFingerprint(binding, resolutionInputBytes) {
@@ -3463,6 +5259,7 @@ async function fixtureStore() {
     applianceManifestRef: manifestRef,
     requiredActuators: [],
     requiredRuntimeLimits: {},
+    installationDiagnostics: { manifestSource: 'host-generated-install-summary' },
   });
   await store.createApplication(app);
   const head = createRunHead({
@@ -3486,7 +5283,7 @@ async function fixtureDirectoryStore(root, options = {}) {
   try {
     const imageRef = await store.putBlob(fromUtf8('image'));
     const wasmRef = await store.putBlob(fromUtf8('wasm'));
-    const manifestRef = await store.putBlob(fromUtf8('manifest'));
+    const manifestRef = await store.putBlob(options.manifestBytes ?? fixtureApplianceManifestBytes({ manifestFingerprint: 0x211n }));
     const closureBytes = fixtureTurnClosureBytes(options.closureOptions);
     const closureSummary = summarizeTurnClosureForRunHead(closureBytes);
     const closureRef = await store.putBlob(closureBytes);
@@ -3501,7 +5298,7 @@ async function fixtureDirectoryStore(root, options = {}) {
       applianceManifestRef: manifestRef,
       requiredActuators: [],
       requiredRuntimeLimits: {},
-      installationDiagnostics: {},
+      installationDiagnostics: { manifestSource: 'host-generated-install-summary' },
     });
     await store.createApplication(app);
     const head = createRunHead({
@@ -3616,6 +5413,40 @@ function decodeValueImageResponseRefs(bytes) {
 
 function fingerprintHex(value) {
   return value == null ? null : `0x${value.toString(16).padStart(16, '0')}`;
+}
+
+async function capabilityAdapterImportDirNames() {
+  const entries = await readdir(tmpdir(), { withFileTypes: true }).catch(() => []);
+  return new Set(entries
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith('world-host-capability-adapter-imports-'))
+    .map((entry) => entry.name));
+}
+
+async function assertNoNewCapabilityAdapterImportDirs(before) {
+  const after = await capabilityAdapterImportDirNames();
+  const added = [...after].filter((name) => !before.has(name)).sort();
+  assert.deepEqual(added, []);
+}
+
+async function writeTrustedCapabilityProbePack(pack, { artifactPath, artifactBytes, adapter, manifestOverrides = {} }) {
+  const manifest = JSON.parse(await readFile(path.join(pack, 'manifest.json'), 'utf8'));
+  Object.assign(manifest, manifestOverrides);
+  manifest.adapter = adapter;
+  manifest.conformanceCorpusFingerprint = null;
+  manifest.conformanceReceiptFingerprint = null;
+  if (adapter.kind === 'sidecar') {
+    manifest.maximumRequestBytes = Math.min(manifest.maximumRequestBytes, DEFAULT_SIDECAR_TRANSPORTABLE_BYTES);
+    manifest.maximumResponseBytes = Math.min(manifest.maximumResponseBytes, DEFAULT_SIDECAR_TRANSPORTABLE_BYTES);
+  }
+  await rm(path.join(pack, 'conformance.json'), { force: true });
+  if (artifactPath !== 'adapter.mjs') await rm(path.join(pack, 'adapter.mjs'), { force: true });
+  await writeFile(path.join(pack, artifactPath), artifactBytes);
+  manifest.checksums = manifest.checksums
+    .filter((item) => !['adapter.mjs', 'sidecar.mjs', 'conformance.json', artifactPath].includes(item.path))
+    .concat({ path: artifactPath, checksum: `sha256:${createHash('sha256').update(artifactBytes).digest('hex')}` });
+  manifest.packFingerprint = await capabilityPackFingerprint(manifest);
+  await writeFile(path.join(pack, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  return manifest;
 }
 
 function fixtureDriver() {

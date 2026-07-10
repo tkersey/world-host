@@ -82,9 +82,10 @@ export class MemoryStore extends ClosureStore {
   }
 
   async putEffectRecord(record) {
-    const key = effectKey(record.runId, record.branchId, record.idempotencyKey);
-    this.effects.set(key, clone(record));
-    return clone(record);
+    const admitted = assertEffectRecord(record);
+    const key = effectKey(admitted.runId, admitted.branchId, admitted.idempotencyKey);
+    this.effects.set(key, clone(admitted));
+    return clone(admitted);
   }
 
   async getEffectRecord(runId, idempotencyKey, branchId = null) {
@@ -129,10 +130,10 @@ export class MemoryStore extends ClosureStore {
     const application = assertBundleApplicationMatchesRun(bundle);
     const runRecord = createImportRunRecord(bundle.run);
     const headRecord = createRunHead(bundle.head);
-    const normalizedBundle = { ...bundle, application, run: runRecord, head: headRecord };
+    const effectRecords = (bundle.effects ?? []).map((effect) => assertEffectRecord(effect));
+    const normalizedBundle = { ...bundle, application, run: runRecord, head: headRecord, effects: effectRecords };
     assertBundleEffectsScoped(normalizedBundle);
     assertBundleSelectedHeadMatchesRun(normalizedBundle);
-    const effectRecords = (bundle.effects ?? []).map((effect) => assertEffectRecord(effect));
     assertUniqueEffectRecords(effectRecords);
     const requiredBlobRefs = collectBlobRefs(runRecord, application, headRecord, effectRecords);
     const requiredBlobChecksums = new Set(requiredBlobRefs.map((ref) => ref.checksum));
@@ -218,6 +219,7 @@ function collectBlobRefs(...values) {
     add(value.applianceManifestRef);
     add(value.turnClosureRef);
     add(value.requestBytesRef);
+    add(value.effectIdentityBytesRef);
     add(value.resolutionInputRef);
     add(value.hostClaimRef);
     add(value.receiverPolicyRef);

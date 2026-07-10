@@ -1,0 +1,64 @@
+{
+  "formatVersion": 1,
+  "packFingerprint": "sha256:9e86d87c09c77b1ed1030d82cbd4857b82151ba8ad97e3548d910cb1a5f8d32c",
+  "packageName": "world-capability-human-approval",
+  "packageVersion": "0.2.0",
+  "driverId": "human-approval",
+  "driverAbiVersion": 1,
+  "supportedWorldProtocolVersion": "v0.1.0",
+  "supportedApplianceAbiVersion": "v4",
+  "supportedTurnClosureVersion": "v1",
+  "supportedActuatorRefs": [
+    "human:approval"
+  ],
+  "supportedDescriptorFingerprints": [
+    "descriptor:human-approval"
+  ],
+  "supportedActuationClasses": [
+    "human"
+  ],
+  "supportedResponseStatuses": [
+    "rejected"
+  ],
+  "recoveryClass": "transactional",
+  "canDryRun": true,
+  "canShadow": true,
+  "canReplay": false,
+  "canRecover": true,
+  "propagatesWorldIdempotencyKey": true,
+  "requiresApproval": true,
+  "requiredSecrets": [],
+  "authorityLabels": [
+    "human:approval"
+  ],
+  "policyRequirements": {
+    "allowLiveEffects": true,
+    "allowHumanEffects": true
+  },
+  "maximumRequestBytes": 65536,
+  "maximumResponseBytes": 65536,
+  "conformanceCorpusFingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "metadataBytes": "",
+  "adapter": {
+    "kind": "receiver"
+  },
+  "checksums": [
+    {
+      "path": "README.md",
+      "checksum": "sha256:5bae8a8813d57a95732e202d51f0fbe4de829f5259d1d96d041a1fd375e111b7"
+    },
+    {
+      "path": "non-claims.md",
+      "checksum": "sha256:664cac74c32fcfe79a4197ea67cef17c5f7e07771adf42429dd86a54b84870dd"
+    },
+    {
+      "path": "conformance.json",
+      "checksum": "sha256:3418ab53eccda42681184ca3a2c4695f565c7351b11dd36b11ce319dd1cd7fed"
+    }
+  ],
+  "docs": [
+    "README.md",
+    "non-claims.md"
+  ],
+  "conformanceReceiptFingerprint": "sha256:fa58a65d03a6bba882af21936843a64f354e54c75b5be26d7348fe1459041972"
+}

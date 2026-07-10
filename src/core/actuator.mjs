@@ -11,10 +11,16 @@ export const EffectRecoveryClass = Object.freeze({
 export const ActuationClass = Object.freeze({
   model: 'model',
   file: 'file',
+  human: 'human',
   http: 'http',
   fixture: 'fixture',
   host: 'host',
 });
+
+export function authorityLabelDeclaresNetwork(label) {
+  return typeof label === 'string' &&
+    (label === 'model:http-json' || label.startsWith('network:'));
+}
 
 const RECOVERY_CLASSES = new Set(Object.values(EffectRecoveryClass));
 export const ResponseStatusCode = Object.freeze({
@@ -50,9 +56,16 @@ export function defineActuatorDriver(driver) {
   if (typeof driver.resolve !== 'function') fail('ERR_ACTUATOR_DRIVER_RESOLVE_REQUIRED');
   return Object.freeze({
     manifest() {
-      return assertDriverManifest(driver.manifest());
+      const raw = driver.manifest();
+      const manifest = assertDriverManifest(raw);
+      if (raw.packFingerprint == null) return manifest;
+      if (typeof raw.packFingerprint !== 'string') fail('ERR_INVALID_DRIVER_MANIFEST', 'packFingerprint must be a string');
+      return Object.freeze({ ...manifest, packFingerprint: raw.packFingerprint });
     },
     resolve: driver.resolve.bind(driver),
+    assertRequestSupported: typeof driver.assertRequestSupported === 'function'
+      ? driver.assertRequestSupported.bind(driver)
+      : undefined,
     recover: typeof driver.recover === 'function' ? driver.recover.bind(driver) : undefined,
     query: typeof driver.query === 'function' ? driver.query.bind(driver) : undefined,
     cancel: typeof driver.cancel === 'function' ? driver.cancel.bind(driver) : undefined,
@@ -98,6 +111,19 @@ export function assertDriverCanResolve(manifest, hostRequest) {
     fail('ERR_RESPONSE_STATUS_NOT_SUPPORTED');
   }
   if (hostRequest.requestBytes?.byteLength > manifest.maximumRequestBytes) fail('ERR_HOST_REQUEST_TOO_LARGE');
+  return true;
+}
+
+export function assertDriverRequestSupported(driver, manifest, hostRequest) {
+  assertDriverCanResolve(manifest, hostRequest);
+  if (typeof driver?.assertRequestSupported !== 'function') return true;
+  const result = driver.assertRequestSupported(hostRequest);
+  if (result && typeof result.then === 'function') {
+    fail('ERR_ACTUATOR_DRIVER_REQUEST_ADMISSION_ASYNC', 'driver request admission must be synchronous');
+  }
+  if (result !== true) {
+    fail('ERR_ACTUATOR_DRIVER_REQUEST_ADMISSION_INVALID', 'driver request admission must return true or throw');
+  }
   return true;
 }
 

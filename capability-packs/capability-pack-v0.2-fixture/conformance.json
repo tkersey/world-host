@@ -1,0 +1,17 @@
+{
+  "driverId": "fixture-agent-model",
+  "packFingerprint": "sha256:62dff020369ba7f5eb22cfe57ff47be34d775eebd7d2c3d18c1e867b01898d9c",
+  "corpusFingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "vectors": [
+    {
+      "name": "fixture-model-goal-invoke",
+      "status": "passed",
+      "proves": "deterministic ResolutionInput only"
+    }
+  ],
+  "nonClaims": [
+    "no-world-evidence-authored",
+    "no-credentials",
+    "no-network"
+  ]
+}
