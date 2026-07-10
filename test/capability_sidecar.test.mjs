@@ -507,6 +507,8 @@ exit 97
         );
         for (const env of [
           { PATH: root },
+          { LD_PRELOAD: './preload.so' },
+          { DYLD_INSERT_LIBRARIES: './preload.dylib' },
           { RUBYOPT: '-r./preload.rb' },
           { PERL5OPT: '-MPreload' },
           { PYTHONPATH: './preload-dir' },
@@ -528,6 +530,25 @@ exit 97
               env,
             }),
             { code: 'ERR_CAPABILITY_SIDECAR_ENV_INVALID' },
+          );
+        }
+        for (const command of [
+          ['env', `PATH=${root}`, 'python3', './adapter.py'],
+          ['env', '-P', root, 'python3', './adapter.py'],
+          ['env', `-P${root}`, 'python3', './adapter.py'],
+          ['env', '-u', 'PATH', 'python3', './adapter.py'],
+          ['env', '-uPATH', 'python3', './adapter.py'],
+          ['env', '--unset', 'PATH', 'python3', './adapter.py'],
+          ['env', '--unset=PATH', 'python3', './adapter.py'],
+          ['env', '-', 'python3', './adapter.py'],
+          ['env', '-i', 'python3', './adapter.py'],
+          ['env', '--ignore-environment', 'python3', './adapter.py'],
+          ['env', 'LD_PRELOAD=./preload.so', 'python3', './adapter.py'],
+          ['env', 'DYLD_INSERT_LIBRARIES=./preload.dylib', 'python3', './adapter.py'],
+        ]) {
+          assert.throws(
+            () => new CapabilitySidecar({ command, timeoutMs: 1000 }),
+            { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
           );
         }
       } finally {
@@ -925,11 +946,23 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
           ['python3', '-m', 'http.server'],
           ['python3', '--version', './adapter.py'],
           ['python3', '--help', './adapter.py'],
+          ['python3', '--help-all', './adapter.py'],
+          ['python3', '--help-env', './adapter.py'],
+          ['python3', '--help-xoptions', './adapter.py'],
+          ['python3', '-?', './adapter.py'],
+          ['python3', '-hfoo', './adapter.py'],
+          ['python3', '-help', './adapter.py'],
           ['python3', '-V', './adapter.py'],
           ['python3', '-VV', './adapter.py'],
           ['python3', '-h', './adapter.py'],
           ['python3', '-', './adapter.py'],
           ['pypy3', '-VV', './adapter.py'],
+          ['pypy3', '--help-all', './adapter.py'],
+          ['pypy3', '--help-env', './adapter.py'],
+          ['pypy3', '--help-xoptions', './adapter.py'],
+          ['pypy3', '-?', './adapter.py'],
+          ['pypy3', '-hfoo', './adapter.py'],
+          ['pypy3', '-help', './adapter.py'],
           ['pypy3', '-', './adapter.py'],
           ['python3', '-W', 'ignore', '-c', 'print(1)'],
           ['env', 'python3', '-c', 'print(1)'],

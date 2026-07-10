@@ -592,14 +592,18 @@ function envWrapperCommandArguments(argv, cwd = undefined, searchPath = undefine
     if (value === '--') continue;
     const assignment = envAssignment(value);
     if (assignment) {
+      if (assignment.name.toUpperCase() === 'PATH') {
+        fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar env wrapper assignments must not override PATH');
+      }
       if (unsupportedSidecarPreloadEnvKey(assignment.name)) {
         fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar env wrapper assignments must not set runtime preload options');
       }
-      if (assignment.name === 'PATH') effectiveSearchPath = assignment.value;
       continue;
     }
-    if (value === '-i' || value === '--ignore-environment' || value === '-0' || value === '--null' ||
-      value === '-v' || value === '--debug' || value === '--list-signal-handling') continue;
+    if (value === '-i' || value === '--ignore-environment') {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar env wrappers must not clear the host environment');
+    }
+    if (value === '-0' || value === '--null' || value === '-v' || value === '--debug' || value === '--list-signal-handling') continue;
     if (value === '-S' || value === '--split-string') {
       index += 1;
       return wrapperCommandArguments(['env', ...splitEnvString(argv[index] ?? ''), ...argv.slice(index + 1)], effectiveCwd, effectiveSearchPath);
@@ -611,24 +615,29 @@ function envWrapperCommandArguments(argv, cwd = undefined, searchPath = undefine
       return wrapperCommandArguments(['env', ...splitEnvString(value.slice('--split-string='.length)), ...argv.slice(index + 1)], effectiveCwd, effectiveSearchPath);
     }
     if (value === '-u' || value === '--unset') {
+      if (String(argv[index + 1] ?? '').toUpperCase() === 'PATH') {
+        fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar env wrappers must not unset PATH');
+      }
       index += 1;
       continue;
     }
     if (value === '-P') {
-      effectiveSearchPath = argv[index + 1] ?? effectiveSearchPath;
-      index += 1;
-      continue;
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar env wrappers must not override the command search path');
     }
     if (value.startsWith('-P') && value !== '-P') {
-      effectiveSearchPath = value.slice(2);
-      continue;
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar env wrappers must not override the command search path');
     }
     if (value === '-C' || value === '--chdir') {
       effectiveCwd = envChdirCwd(argv[index + 1], effectiveCwd);
       index += 1;
       continue;
     }
-    if (value.startsWith('--unset=')) continue;
+    if (value.startsWith('--unset=')) {
+      if (value.slice('--unset='.length).toUpperCase() === 'PATH') {
+        fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar env wrappers must not unset PATH');
+      }
+      continue;
+    }
     if (value === '--argv0') {
       index += 1;
       continue;
@@ -1057,7 +1066,8 @@ function unsupportedNonJavaScriptRuntimeOption(runtime, value) {
   runtime = nonJavaScriptRuntimeName(runtime);
   if (/^python(?:\d+(?:\.\d+)*)?$/.test(runtime) || /^pypy(?:\d+)?$/.test(runtime)) {
     return value === '-' || value === '-c' || value.startsWith('-c') || value === '-m' || value.startsWith('-m') ||
-      value === '-h' || value === '--help' || /^-V+$/.test(value) || value === '--version';
+      value === '-?' || value.startsWith('-h') || value.startsWith('--help') ||
+      /^-V+$/.test(value) || value === '--version';
   }
   if (runtime === 'php') {
     return value === '-r' || value.startsWith('-r') ||
@@ -1298,7 +1308,9 @@ function sidecarUserEnv(value) {
 
 function unsupportedSidecarPreloadEnvKey(key) {
   const normalized = key.toUpperCase();
-  return normalized === 'NODE_OPTIONS' ||
+  return normalized === 'LD_PRELOAD' ||
+    normalized === 'DYLD_INSERT_LIBRARIES' ||
+    normalized === 'NODE_OPTIONS' ||
     normalized === 'RUBYOPT' ||
     normalized === 'PERL5OPT' ||
     normalized === 'PYTHONPATH' ||
