@@ -976,6 +976,10 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
           ['perl', '-c', './adapter.pl'],
           ['perl', '-d:Some::Mod', './adapter.pl'],
           ['perl', '-n', './adapter.pl'],
+          ['perl', '-an', './adapter.pl'],
+          ['perl', '-ap', './adapter.pl'],
+          ['perl', '-lan', './adapter.pl'],
+          ['perl', '-lap', './adapter.pl'],
           ['perl', '-np', './adapter.pl'],
           ['perl', '-p', './adapter.pl'],
           ['perl', '-pn', './adapter.pl'],
@@ -989,6 +993,10 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
           ['ruby', '-r./preload.rb', './adapter.rb'],
           ['ruby', '-c', './adapter.rb'],
           ['ruby', '-n', './adapter.rb'],
+          ['ruby', '-an', './adapter.rb'],
+          ['ruby', '-ap', './adapter.rb'],
+          ['ruby', '-ln', './adapter.rb'],
+          ['ruby', '-lp', './adapter.rb'],
           ['ruby', '-np', './adapter.rb'],
           ['ruby', '-p', './adapter.rb'],
           ['ruby', '-pn', './adapter.rb'],
@@ -1030,6 +1038,12 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
             () => new CapabilitySidecar({ command, timeoutMs: 1000 }).manifest(),
             { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
           );
+        }
+        for (const command of [
+          ['perl', '-Ivendor', './adapter.pl'],
+          ['ruby', '-Ivendor', './adapter.rb'],
+        ]) {
+          assert.doesNotThrow(() => new CapabilitySidecar({ command, timeoutMs: 1000 }));
         }
         assert.throws(
           () => new CapabilitySidecar({ command: ['/tmp/bun', dotenvPath], timeoutMs: 1000 }),
