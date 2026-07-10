@@ -7,6 +7,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { CapabilitySidecar, CapabilitySidecarCommand, CapabilitySidecarConformance, decodeSidecarFrame, encodeSidecarFrame } from '../src/sidecars/capability_sidecar.mjs';
+import { MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES } from '../src/core/capability_pack.mjs';
 import { defineCapabilityDriver } from '../src/core/capability_driver.mjs';
 import { markDefaultEffectContext } from '../src/core/effect_context.mjs';
 import { fromUtf8 } from '../src/core/store.mjs';
@@ -1292,4 +1293,183 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
       await rm(root, { recursive: true, force: true });
     }
   }, 15000);
+
+  it('rejects Ruby and Perl pre-entry execution through direct, wrapped, and shebang argv', async () => {
+    const rejected = [
+      ['ruby', '-Wn', './adapter.rb'],
+      ['ruby', '-0n', './adapter.rb'],
+      ['ruby', '-0777p', './adapter.rb'],
+      ['ruby', '-W0p', './adapter.rb'],
+      ['ruby', '-Knp', './adapter.rb'],
+      ['ruby', '-T0p', './adapter.rb'],
+      ['ruby', '-weCODE', './adapter.rb'],
+      ['ruby', '-wrLIB', './adapter.rb'],
+      ['ruby', '-wc', './adapter.rb'],
+      ['ruby', '-wS', './adapter.rb'],
+      ['ruby', '-y', './adapter.rb'],
+      ['ruby', '-S', './adapter.rb'],
+      ['ruby', '-Cdir', './adapter.rb'],
+      ['ruby', '-I', './lib', '-p', './adapter.rb'],
+      ['ruby3.2', '-Wn', './adapter.rb'],
+      ['ruby3.2', '-y', './adapter.rb'],
+      ['perl', '-Un', './adapter.pl'],
+      ['perl', '-Fn', './adapter.pl'],
+      ['perl', '-0p', './adapter.pl'],
+      ['perl', '-0777p', './adapter.pl'],
+      ['perl', '-0x41p', './adapter.pl'],
+      ['perl', '-l0p', './adapter.pl'],
+      ['perl', '-a', './adapter.pl'],
+      ['perl', '-Ffields', './adapter.pl'],
+      ['perl', '-E', 'say 1'],
+      ['perl', '-we', 'print 1'],
+      ['perl', '-wMstrict', './adapter.pl'],
+      ['perl', '-wc', './adapter.pl'],
+      ['perl', '-wS', './adapter.pl'],
+      ['perl', '-u', './adapter.pl'],
+      ['perl', '-q', './adapter.pl'],
+      ['perl', '-I', './lib', '-p', './adapter.pl'],
+      ['perl5.36', '-Un', './adapter.pl'],
+      ['perl5.36', '-u', './adapter.pl'],
+      ['perl5.36', '-q', './adapter.pl'],
+      ['perl5.36', '-0x41p', './adapter.pl'],
+      ['env', 'ruby', '-Wn', './adapter.rb'],
+      ['env', 'ruby', '-y', './adapter.rb'],
+      ['timeout', '1', 'perl', '-Un', './adapter.pl'],
+      ['timeout', '1', 'perl', '-u', './adapter.pl'],
+      ['env', 'perl', '-q', './adapter.pl'],
+      ['env', 'perl', '-0x41p', './adapter.pl'],
+      ['env', 'timeout', '1', 'ruby', '-0n', './adapter.rb'],
+      ['ruby', '-I'],
+      ['perl', '-I'],
+      ['ruby', 'adapter.rb'],
+      ['perl', '--', 'adapter.pl'],
+    ];
+    for (const command of rejected) {
+      assert.throws(
+        () => new CapabilitySidecar({ command, timeoutMs: 1000 }),
+        { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        JSON.stringify(command),
+      );
+    }
+
+    const admitted = [
+      ['ruby', '-Ivendorp', './adapter.rb'],
+      ['ruby', '-Fnp', './adapter.rb'],
+      ['ruby', '-Kp', './adapter.rb'],
+      ['ruby', '-W:performance', './adapter.rb'],
+      ['ruby', '-I', './lib', './adapter.rb'],
+      ['ruby', './adapter.rb', '-p'],
+      ['perl', '-Ip', './adapter.pl'],
+      ['perl', '-ip', './adapter.pl'],
+      ['perl', '-0x41', './adapter.pl'],
+      ['perl', '-0x41f', './adapter.pl'],
+      ['perl', '-I', './lib', './adapter.pl'],
+      ['perl', './adapter.pl', '-p'],
+    ];
+    for (const command of admitted) {
+      assert.doesNotThrow(
+        () => new CapabilitySidecar({ command, timeoutMs: 1000 }),
+        JSON.stringify(command),
+      );
+    }
+
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-ruby-perl-admission-'));
+    try {
+      const unsafeRuby = path.join(root, 'unsafe-ruby');
+      const unsafePerl = path.join(root, 'unsafe-perl');
+      const unsafeRubyEnv = path.join(root, 'unsafe-ruby-env');
+      const unsafePerlEnv = path.join(root, 'unsafe-perl-env');
+      const unsafeRubyTrace = path.join(root, 'unsafe-ruby-trace');
+      const unsafePerlCore = path.join(root, 'unsafe-perl-core');
+      const unsafePerlHexFallback = path.join(root, 'unsafe-perl-hex-fallback');
+      const unsafeRubyAlias = path.join(root, 'unsafe-ruby-alias');
+      const unsafePerlAlias = path.join(root, 'unsafe-perl-alias');
+      const foreignPerlShebang = path.join(root, 'foreign-perl-shebang');
+      const unsafePerlUnknownOption = path.join(root, 'unsafe-perl-unknown-option');
+      const longUnsafeRuby = path.join(root, 'long-unsafe-ruby');
+      const longUnsafePerl = path.join(root, 'long-unsafe-perl');
+      const overlongRuby = path.join(root, 'overlong-ruby');
+      const longSafeRuby = path.join(root, 'long-safe-ruby');
+      const safeRuby = path.join(root, 'safe-ruby');
+      await writeFile(unsafeRuby, '#!/usr/bin/env -S ruby -Wn\nputs "sidecar"\n');
+      await writeFile(unsafePerl, '#!/usr/bin/env -S perl -Un\nprint "sidecar";\n');
+      await writeFile(unsafeRubyEnv, '#!/usr/bin/env -S RUBYOPT=-r./preload.rb ruby\nputs "sidecar"\n');
+      await writeFile(unsafePerlEnv, '#!/usr/bin/env -S PERL5OPT=-MPreload perl\nprint "sidecar";\n');
+      await writeFile(unsafeRubyTrace, '#!/usr/bin/env -S ruby -y\nputs "sidecar"\n');
+      await writeFile(unsafePerlCore, '#!/usr/bin/env -S perl -u\nprint "sidecar";\n');
+      await writeFile(unsafePerlHexFallback, '#!/usr/bin/env -S perl -0x41p\nprint "sidecar";\n');
+      await writeFile(unsafeRubyAlias, '#!/usr/bin/env -S notruby -n\nputs "sidecar"\n');
+      await writeFile(unsafePerlAlias, '#!/usr/bin/env -S notperl -n\nprint "sidecar";\n');
+      await writeFile(foreignPerlShebang, '#!/bin/echo -n\nprint "sidecar";\n');
+      await writeFile(unsafePerlUnknownOption, '#!/usr/bin/env -S perl -q\nprint "sidecar";\n');
+      await writeFile(longUnsafeRuby, `#!/usr/bin/env -S ruby ${'-w '.repeat(100)}-y\nputs "sidecar"\n`);
+      await writeFile(longUnsafePerl, `#!/usr/bin/perl${' '.repeat(300)}-u\nprint "sidecar";\n`);
+      await writeFile(overlongRuby, `#!/usr/bin/env -S ruby ${'-w '.repeat(MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES)}-y\nputs "sidecar"\n`);
+      await writeFile(longSafeRuby, `#!/usr/bin/env -S ruby ${'-w '.repeat(100)}-W:performance\nputs "sidecar"\n`);
+      await writeFile(safeRuby, '#!/usr/bin/env -S ruby -W:performance\nputs "sidecar"\n');
+      for (const command of [
+        [unsafeRuby],
+        ['ruby', unsafeRuby],
+        ['env', unsafeRuby],
+        [unsafePerl],
+        ['perl', unsafePerl],
+        ['timeout', '1', unsafePerl],
+        [unsafeRubyEnv],
+        ['ruby', unsafeRubyEnv],
+        [unsafePerlEnv],
+        ['perl', unsafePerlEnv],
+        [unsafeRubyTrace],
+        ['ruby', unsafeRubyTrace],
+        [unsafePerlCore],
+        ['perl', unsafePerlCore],
+        [unsafePerlHexFallback],
+        ['perl', unsafePerlHexFallback],
+        ['ruby', unsafeRubyAlias],
+        ['ruby3.2', unsafeRubyAlias],
+        ['env', 'ruby', unsafeRubyAlias],
+        ['perl', unsafePerlAlias],
+        ['perl5.36', unsafePerlAlias],
+        ['env', 'perl', unsafePerlAlias],
+        ['perl', foreignPerlShebang],
+        ['timeout', '1', 'perl', foreignPerlShebang],
+        [unsafePerlUnknownOption],
+        ['perl', unsafePerlUnknownOption],
+        ['perl5.36', unsafePerlUnknownOption],
+        ['env', unsafePerlUnknownOption],
+        [longUnsafeRuby],
+        ['ruby', longUnsafeRuby],
+        ['ruby3.2', longUnsafeRuby],
+        ['env', longUnsafeRuby],
+        [longUnsafePerl],
+        ['perl', longUnsafePerl],
+        ['perl5.36', longUnsafePerl],
+        ['timeout', '1', 'perl', longUnsafePerl],
+        [overlongRuby],
+        ['ruby', overlongRuby],
+      ]) {
+        assert.throws(
+          () => new CapabilitySidecar({ command, timeoutMs: 1000 }),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+          JSON.stringify(command),
+        );
+      }
+      const originalPath = process.env.PATH;
+      try {
+        process.env.PATH = `${root}${path.delimiter}${originalPath ?? ''}`;
+        assert.throws(
+          () => new CapabilitySidecar({ command: [path.basename(longUnsafeRuby)], timeoutMs: 1000 }),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+      } finally {
+        if (originalPath === undefined) delete process.env.PATH;
+        else process.env.PATH = originalPath;
+      }
+      assert.doesNotThrow(() => new CapabilitySidecar({ command: [longSafeRuby], timeoutMs: 1000 }));
+      assert.doesNotThrow(() => new CapabilitySidecar({ command: ['ruby', longSafeRuby], timeoutMs: 1000 }));
+      assert.doesNotThrow(() => new CapabilitySidecar({ command: [safeRuby], timeoutMs: 1000 }));
+      assert.doesNotThrow(() => new CapabilitySidecar({ command: ['ruby', safeRuby], timeoutMs: 1000 }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { receiverLocalEffectContext } from '../core/effect_context.mjs';
+import { MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES, inspectRubyPerlSidecarArgv } from '../core/capability_pack.mjs';
 import { assertBytes, fail, fromUtf8, stableJson } from '../core/store.mjs';
 
 const TRUSTED_BUN_EXECUTABLE = process.execPath;
@@ -179,7 +180,6 @@ export class CapabilitySidecar {
     if (pathQualifiedSidecarRuntime(command[0])) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar runtime commands must not be path-qualified');
     }
-    assertSupportedNonJavaScriptRuntimeCommand(command);
     sidecarSpawnArgv(command, cwd ?? undefined, childEnv);
     this.command = Object.freeze([...command]);
     this.cwd = cwd == null ? undefined : path.resolve(cwd);
@@ -515,7 +515,8 @@ function sidecarSpawnArgv(argv, cwd = undefined, env = undefined) {
     if (shebangRuntime === 'node' || shebangRuntime === 'deno') {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar Node and Deno shebang entrypoints must use explicit runtime commands');
     }
-    const nonJavaScriptShebangArgv = nonJavaScriptShebangRuntimeArgv(inspectionPath);
+    const nonJavaScriptShebangArgv = nonJavaScriptShebangRuntimeArgv(inspectionPath) ??
+      pathResolvedNonJavaScriptRuntimeShebangArgv(argv[0], env?.PATH ?? sidecarPath(), cwd);
     if (nonJavaScriptShebangArgv) assertSupportedNonJavaScriptShebangRuntimeCommand(nonJavaScriptShebangArgv);
     assertSupportedDirectRuntimeCommand(argv);
     if (wrappedJavaScriptRuntimeCommand(argv, cwd, env?.PATH)) {
@@ -525,8 +526,8 @@ function sidecarSpawnArgv(argv, cwd = undefined, env = undefined) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Bun sidecars must not run through command wrappers');
     }
     assertNoPackageManagerCommand(argv, cwd, env?.PATH);
-    assertSupportedNonJavaScriptRuntimeCommand(argv);
-    assertSupportedWrappedNonJavaScriptRuntimeCommands(argv, cwd, env?.PATH);
+    assertSupportedNonJavaScriptRuntimeCommand(argv, cwd);
+    assertSupportedWrappedNonJavaScriptRuntimeCommands(argv, cwd, env?.PATH ?? sidecarPath());
     const bunShebangArgs = bunShebangRuntimeArgs(inspectionPath);
     if (bunShebangArgs) {
       const shebangArgv = ['bun', ...bunShebangArgs, ...argv];
@@ -986,7 +987,15 @@ function assertSupportedDenoRuntimeCommand(argv) {
   fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'Deno sidecars require a local entrypoint');
 }
 
-function assertSupportedNonJavaScriptRuntimeCommand(argv) {
+function assertSupportedNonJavaScriptRuntimeCommand(argv, cwd = undefined) {
+  const rubyPerlAdmission = inspectRubyPerlSidecarArgv(argv);
+  if (rubyPerlAdmission) {
+    assertSupportedRubyPerlAdmission(rubyPerlAdmission, 'sidecar runtime commands must use path-qualified adapter entrypoints');
+    const entrypoint = argv[rubyPerlAdmission.entrypointIndex];
+    const shebangArgv = rubyPerlProgramShebangRuntimeArgv(commandInspectionPath(entrypoint, cwd), rubyPerlAdmission.runtime);
+    if (shebangArgv) assertSupportedNonJavaScriptShebangRuntimeCommand(shebangArgv);
+    return;
+  }
   const runtime = nonJavaScriptRuntimeName(commandBaseName(argv[0]));
   if (!nonJavaScriptRuntimeSupportsInlineEval(runtime)) return;
   for (let index = 1; index < argv.length; index += 1) {
@@ -995,7 +1004,7 @@ function assertSupportedNonJavaScriptRuntimeCommand(argv) {
       if (index + 1 < argv.length && !argv[index + 1].startsWith('-')) return;
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar runtime commands must use path-qualified adapter entrypoints');
     }
-    if (unsupportedNonJavaScriptRuntimeOption(runtime, value)) {
+    if (unsupportedOtherNonJavaScriptRuntimeOption(runtime, value)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar runtime commands must use path-qualified adapter entrypoints');
     }
     if (nonJavaScriptRuntimeOptionConsumesNext(runtime, value)) {
@@ -1008,12 +1017,17 @@ function assertSupportedNonJavaScriptRuntimeCommand(argv) {
 }
 
 function assertSupportedNonJavaScriptShebangRuntimeCommand(argv) {
+  const rubyPerlAdmission = inspectRubyPerlSidecarArgv(argv, { implicitEntrypoint: true });
+  if (rubyPerlAdmission) {
+    assertSupportedRubyPerlAdmission(rubyPerlAdmission, 'sidecar shebang runtime commands must not evaluate code before the entrypoint');
+    return;
+  }
   const runtime = nonJavaScriptRuntimeName(commandBaseName(argv[0]));
   if (!nonJavaScriptRuntimeSupportsInlineEval(runtime)) return;
   for (let index = 1; index < argv.length; index += 1) {
     const value = argv[index];
     if (value === '--') return;
-    if (unsupportedNonJavaScriptRuntimeOption(runtime, value)) {
+    if (unsupportedOtherNonJavaScriptRuntimeOption(runtime, value)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar shebang runtime commands must not evaluate code before the entrypoint');
     }
     if (nonJavaScriptRuntimeOptionConsumesNext(runtime, value)) {
@@ -1030,8 +1044,16 @@ function assertSupportedWrappedNonJavaScriptRuntimeCommands(argv, cwd = undefine
   const command = commandBaseName(argv[0]);
   if (!BUN_ARGV_WRAPPER_COMMANDS.has(command)) return;
   for (const candidate of wrapperCommandArguments(argv, cwd, searchPath)) {
-    assertSupportedNonJavaScriptRuntimeCommand(candidate.argv ?? [candidate.value]);
+    const candidateArgv = candidate.argv ?? [candidate.value];
+    const shebangArgv = nonJavaScriptShebangRuntimeArgv(commandInspectionPath(candidate.value, candidate.cwd)) ??
+      pathResolvedNonJavaScriptRuntimeShebangArgv(candidate.value, candidate.searchPath, candidate.cwd);
+    if (shebangArgv) assertSupportedNonJavaScriptShebangRuntimeCommand(shebangArgv);
+    assertSupportedNonJavaScriptRuntimeCommand(candidateArgv, candidate.cwd);
   }
+}
+
+function assertSupportedRubyPerlAdmission(admission, message) {
+  if (admission.violation) fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', message);
 }
 
 function assertNoPackageManagerCommand(argv, cwd = undefined, searchPath = undefined) {
@@ -1062,7 +1084,7 @@ function nonJavaScriptRuntimeName(runtime) {
   return runtime;
 }
 
-function unsupportedNonJavaScriptRuntimeOption(runtime, value) {
+function unsupportedOtherNonJavaScriptRuntimeOption(runtime, value) {
   runtime = nonJavaScriptRuntimeName(runtime);
   if (/^python(?:\d+(?:\.\d+)*)?$/.test(runtime) || /^pypy(?:\d+)?$/.test(runtime)) {
     return value === '-' || value === '-c' || value.startsWith('-c') || value === '-m' || value.startsWith('-m') ||
@@ -1092,22 +1114,10 @@ function unsupportedNonJavaScriptRuntimeOption(runtime, value) {
     return value === '-e' || value.startsWith('-e') || value === '-l' || value.startsWith('-l') ||
       value === '-v' || value === '--version' || value === '-h' || value === '--help' || value === '-';
   }
-  if (runtime === 'ruby' || runtime === 'rscript') {
+  if (runtime === 'rscript') {
     return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=') ||
       value === '-r' || value.startsWith('-r') ||
-      (runtime === 'ruby' && (value === '-' || value === '-c' || value.startsWith('-c') ||
-        value === '-n' || value.startsWith('-n') || value === '-p' || value.startsWith('-p') ||
-        /^-[acdlpsSvw]*[np]/.test(value) ||
-        value === '-v' || value === '--version' || value === '-h' || value === '--help')) ||
-      (runtime === 'rscript' && (value === '--version' || value === '--help' || value === '-'));
-  }
-  if (runtime === 'perl') {
-    return value === '-' || value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=') ||
-      value === '-m' || value.startsWith('-m') || value === '-M' || value.startsWith('-M') ||
-      value === '-c' || value.startsWith('-c') || value === '-d' || value.startsWith('-d') ||
-      value === '-n' || value.startsWith('-n') || value === '-p' || value.startsWith('-p') ||
-      /^-[aflnpsStTuvWwX]*[np]/.test(value) ||
-      value === '-v' || value.startsWith('-V') || value === '-h' || value === '--help';
+      value === '--version' || value === '--help' || value === '-';
   }
   return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=');
 }
@@ -1228,21 +1238,68 @@ function nonJavaScriptShebangRuntimeArgv(value) {
   if (!firstLine) return null;
   const tokens = shebangRuntimeTokens(firstLine);
   const runtimeIndex = tokens.findIndex((token) => nonJavaScriptRuntimeSupportsInlineEval(commandBaseName(token)));
-  return runtimeIndex < 0 ? null : tokens.slice(runtimeIndex);
+  if (runtimeIndex < 0) return null;
+  assertSafeNonJavaScriptShebangRuntimePrefix(tokens, runtimeIndex);
+  return tokens.slice(runtimeIndex);
+}
+
+function rubyPerlProgramShebangRuntimeArgv(value, runtime) {
+  const firstLine = shebangFirstLine(value);
+  if (!firstLine) return null;
+  const tokens = shebangRuntimeTokens(firstLine);
+  const runtimeIndex = tokens.findIndex((token) => String(token).toLowerCase().includes(runtime));
+  if (runtimeIndex < 0) {
+    fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', `explicit ${runtime} sidecars must not delegate to another shebang runtime`);
+  }
+  assertSafeNonJavaScriptShebangRuntimePrefix(tokens, runtimeIndex);
+  return [runtime, ...tokens.slice(runtimeIndex + 1)];
+}
+
+function assertSafeNonJavaScriptShebangRuntimePrefix(tokens, runtimeIndex) {
+  const prefix = tokens.slice(0, runtimeIndex);
+  if (!prefix.length) return;
+  const envWrapper = commandBaseName(prefix[0]) === 'env';
+  if (envWrapper && (prefix.length === 1 || (prefix.length === 2 && prefix[1] === '-S'))) return;
+  fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar shebang runtime wrappers must not set environment or options before the runtime');
 }
 
 function shebangFirstLine(value) {
   let fd;
+  let bytes;
+  let bytesRead = 0;
   try {
-    const bytes = Buffer.alloc(256);
+    bytes = Buffer.alloc(MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES + 1);
     fd = openSync(value, 'r');
-    const bytesRead = readSync(fd, bytes, 0, bytes.byteLength, 0);
-    const firstLine = bytes.subarray(0, bytesRead).toString('utf8').split(/\r?\n/, 1)[0];
-    return firstLine.startsWith('#!') ? firstLine : null;
+    while (bytesRead < bytes.byteLength) {
+      const count = readSync(fd, bytes, bytesRead, bytes.byteLength - bytesRead, bytesRead);
+      if (count === 0) break;
+      bytesRead += count;
+      if (bytes.subarray(0, bytesRead).includes(0x0a) || bytes.subarray(0, bytesRead).includes(0x0d)) break;
+    }
   } catch {
     return null;
   } finally {
     if (fd !== undefined) closeSync(fd);
+  }
+  if (bytesRead < 2 || bytes[0] !== 0x23 || bytes[1] !== 0x21) return null;
+  const carriageReturn = bytes.subarray(0, bytesRead).indexOf(0x0d);
+  const lineFeed = bytes.subarray(0, bytesRead).indexOf(0x0a);
+  const lineEnd = carriageReturn < 0
+    ? lineFeed
+    : lineFeed < 0
+      ? carriageReturn
+      : Math.min(carriageReturn, lineFeed);
+  if (lineEnd < 0 && bytesRead > MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES) {
+    fail(
+      'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID',
+      `sidecar shebang first lines must not exceed ${MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES} bytes`,
+    );
+  }
+  const firstLineBytes = lineEnd < 0 ? bytes.subarray(0, bytesRead) : bytes.subarray(0, lineEnd);
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(firstLineBytes);
+  } catch {
+    fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar shebang first lines must be valid UTF-8');
   }
 }
 
@@ -1272,6 +1329,12 @@ function pathResolvedJavaScriptRuntimeShebang(value, searchPath, cwd = undefined
   if (value.includes('/') || value.includes('\\')) return false;
   const resolved = resolvePathCommand(value, searchPath, cwd);
   return resolved ? javascriptRuntimeShebangRuntime(resolved) : null;
+}
+
+function pathResolvedNonJavaScriptRuntimeShebangArgv(value, searchPath, cwd = undefined) {
+  if (value.includes('/') || value.includes('\\')) return null;
+  const resolved = resolvePathCommand(value, searchPath, cwd);
+  return resolved ? nonJavaScriptShebangRuntimeArgv(resolved) : null;
 }
 
 function resolvePathCommand(value, searchPath, cwd = undefined) {

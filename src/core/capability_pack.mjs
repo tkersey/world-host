@@ -4,6 +4,7 @@ import { carrierManifest } from '../protocol/world_manifest.mjs';
 
 export const world_host_capability_pack_format_version = 1;
 export const world_host_capability_driver_abi_version = 1;
+export const MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES = 512;
 
 const RECOVERY_CLASSES = new Set(Object.values(EffectRecoveryClass));
 const RESPONSE_STATUSES = new Set(Object.keys(ResponseStatusCode));
@@ -227,6 +228,160 @@ const NODE_CONFIG_MODULE_OPTIONS = new Set([
   'test-reporter',
   'testReporter',
 ]);
+
+export function inspectRubyPerlSidecarArgv(argv, { implicitEntrypoint = false } = {}) {
+  if (!Array.isArray(argv) || argv.length === 0) return null;
+  const runtime = rubyPerlRuntimeName(commandBaseName(argv[0]).toLowerCase());
+  if (!runtime) return null;
+  const consumedValueIndices = [];
+  if (argv.some((value) => typeof value !== 'string' || value.length === 0)) {
+    return rubyPerlAdmission(runtime, null, consumedValueIndices, 'invalid-argv', 0, argv[0], null);
+  }
+  for (let index = 1; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value === '--') {
+      if (implicitEntrypoint) {
+        if (index + 1 < argv.length) {
+          return rubyPerlAdmission(runtime, null, consumedValueIndices, 'unexpected-entrypoint', index + 1, argv[index + 1], null);
+        }
+        return rubyPerlAdmission(runtime, null, consumedValueIndices);
+      }
+      const entrypointIndex = index + 1;
+      if (entrypointIndex >= argv.length) {
+        return rubyPerlAdmission(runtime, null, consumedValueIndices, 'missing-entrypoint', index, value, null);
+      }
+      if (argv[entrypointIndex] === '-') {
+        return rubyPerlAdmission(runtime, null, consumedValueIndices, 'stdin-entrypoint', entrypointIndex, '-', '-');
+      }
+      return rubyPerlEntrypointAdmission(runtime, argv, entrypointIndex, consumedValueIndices);
+    }
+    if (value === '-') {
+      return rubyPerlAdmission(runtime, null, consumedValueIndices, 'stdin-entrypoint', index, value, '-');
+    }
+    if (!value.startsWith('-')) {
+      if (implicitEntrypoint) {
+        return rubyPerlAdmission(runtime, null, consumedValueIndices, 'unexpected-entrypoint', index, value, null);
+      }
+      return rubyPerlEntrypointAdmission(runtime, argv, index, consumedValueIndices);
+    }
+    const option = runtime === 'ruby'
+      ? inspectRubySidecarOption(value)
+      : inspectPerlSidecarOption(value);
+    if (option.violation) {
+      return rubyPerlAdmission(runtime, null, consumedValueIndices, option.violation, index, value, option.option);
+    }
+    if (option.consumesNext) {
+      if (index + 1 >= argv.length) {
+        return rubyPerlAdmission(runtime, null, consumedValueIndices, 'missing-option-value', index, value, option.option);
+      }
+      consumedValueIndices.push(index + 1);
+      index += 1;
+    }
+  }
+  if (implicitEntrypoint) return rubyPerlAdmission(runtime, null, consumedValueIndices);
+  return rubyPerlAdmission(runtime, null, consumedValueIndices, 'missing-entrypoint', argv.length - 1, argv.at(-1), null);
+}
+
+function rubyPerlEntrypointAdmission(runtime, argv, entrypointIndex, consumedValueIndices) {
+  const entrypoint = argv[entrypointIndex];
+  if (!entrypoint.includes('/') && !entrypoint.includes('\\')) {
+    return rubyPerlAdmission(runtime, null, consumedValueIndices, 'unqualified-entrypoint', entrypointIndex, entrypoint, null);
+  }
+  return rubyPerlAdmission(runtime, entrypointIndex, consumedValueIndices);
+}
+
+function rubyPerlAdmission(runtime, entrypointIndex, consumedValueIndices, kind = null, index = null, token = null, option = null) {
+  return {
+    runtime,
+    entrypointIndex,
+    consumedValueIndices: [...consumedValueIndices],
+    violation: kind == null ? null : { kind, index, token, option },
+  };
+}
+
+function rubyPerlRuntimeName(runtime) {
+  if (/^ruby(?:\d+(?:\.\d+)*)?$/.test(runtime)) return 'ruby';
+  if (/^perl(?:\d+(?:\.\d+)*)?$/.test(runtime)) return 'perl';
+  return null;
+}
+
+function inspectRubySidecarOption(value) {
+  if (value.startsWith('--')) {
+    if (value === '--copyright' || value === '--help' || value === '--version' || value === '--verbose' || value.startsWith('--dump')) {
+      return { violation: 'unsafe-option', option: value.split('=', 1)[0] };
+    }
+    if (/^--(?:disable|enable)(?:=|-[A-Za-z0-9_-])/.test(value) ||
+      /^--(?:encoding|external-encoding|internal-encoding)=.+/.test(value) ||
+      value === '--debug') return { violation: null, consumesNext: false };
+    return { violation: 'unsupported-option', option: value.split('=', 1)[0] };
+  }
+  for (let cursor = 1; cursor < value.length;) {
+    const option = value[cursor];
+    if ('nperchvSCXxy'.includes(option)) return { violation: 'unsafe-option', option: `-${option}` };
+    if (option === 'I' || option === 'E') {
+      return { violation: null, consumesNext: cursor + 1 === value.length };
+    }
+    if (option === 'F' || option === 'i') return { violation: null, consumesNext: false };
+    if (option === '0') {
+      cursor += 1;
+      for (let count = 0; count < 4 && cursor < value.length && /[0-7]/.test(value[cursor]); count += 1) cursor += 1;
+      continue;
+    }
+    if (option === 'W') {
+      cursor += 1;
+      if (value[cursor] === ':') return { violation: null, consumesNext: false };
+      if (cursor < value.length && /[0-7]/.test(value[cursor])) cursor += 1;
+      continue;
+    }
+    if (option === 'K') {
+      cursor += 1;
+      if (cursor < value.length) cursor += 1;
+      continue;
+    }
+    if (option === 'T') {
+      cursor += 1;
+      for (let count = 0; count < 2 && cursor < value.length && /[0-7]/.test(value[cursor]); count += 1) cursor += 1;
+      continue;
+    }
+    if ('adlsUw'.includes(option)) {
+      cursor += 1;
+      continue;
+    }
+    return { violation: 'unsupported-option', option: `-${option}` };
+  }
+  return { violation: null, consumesNext: false };
+}
+
+function inspectPerlSidecarOption(value) {
+  if (value.startsWith('--')) {
+    return { violation: 'unsafe-option', option: value.split('=', 1)[0] };
+  }
+  for (let cursor = 1; cursor < value.length;) {
+    const option = value[cursor];
+    if ('npaFeEmMcdDhHvVSPxu'.includes(option)) return { violation: 'unsafe-option', option: `-${option}` };
+    if (option === 'I') return { violation: null, consumesNext: cursor + 1 === value.length };
+    if (option === 'i' || option === 'C') return { violation: null, consumesNext: false };
+    if (option === 'l') {
+      cursor += 1;
+      for (let count = 0; count < 4 && cursor < value.length && /[0-7]/.test(value[cursor]); count += 1) cursor += 1;
+      continue;
+    }
+    if (option === '0') {
+      cursor += 1;
+      if (value[cursor] === 'x' && /^[0-9A-Fa-f]+$/.test(value.slice(cursor + 1))) {
+        return { violation: null, consumesNext: false };
+      }
+      for (let count = 0; count < 4 && cursor < value.length && /[0-7]/.test(value[cursor]); count += 1) cursor += 1;
+      continue;
+    }
+    if ('fgstTUwWX'.includes(option)) {
+      cursor += 1;
+      continue;
+    }
+    return { violation: 'unsupported-option', option: `-${option}` };
+  }
+  return { violation: null, consumesNext: false };
+}
 
 export class CapabilityManifest {
   constructor(fields) {
@@ -2075,10 +2230,16 @@ function assertReferencedArtifactsCovered(manifest, artifacts) {
 function sidecarCommandArtifacts(command, packArtifacts = null) {
   const artifacts = [];
   let entrypointSeen = false;
+  const rubyPerlAdmission = inspectRubyPerlSidecarArgv(command);
+  if (rubyPerlAdmission?.violation) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `Ruby and Perl sidecars do not support this runtime argv before the entrypoint: ${rubyPerlAdmission.violation.token}`);
+  }
+  const rubyPerlConsumedValues = new Set(rubyPerlAdmission?.consumedValueIndices ?? []);
   assertDenoConfigIsolated(command);
   for (let index = 0; index < command.length; index += 1) {
     const value = command[index];
     assertSafeSidecarCommandToken(command, index);
+    if (rubyPerlConsumedValues.has(index)) continue;
     const genericOptionArtifact = sidecarGenericOptionArtifact(value);
     if (genericOptionArtifact && !sidecarRuntimeOptionPosition(command, index)) {
       artifacts.push(genericOptionArtifact);
@@ -2128,7 +2289,11 @@ function sidecarCommandArtifacts(command, packArtifacts = null) {
     }
     if (sidecarCommandArtifact(value)) {
       artifacts.push(value);
-      if (!sidecarRuntimeCommandPosition(command, index) && !sidecarRuntimeOptionValuePosition(command, index)) entrypointSeen = true;
+      if (rubyPerlAdmission) {
+        if (index === rubyPerlAdmission.entrypointIndex) entrypointSeen = true;
+      } else if (!sidecarRuntimeCommandPosition(command, index) && !sidecarRuntimeOptionValuePosition(command, index)) {
+        entrypointSeen = true;
+      }
     }
   }
   if (!entrypointSeen) {
@@ -2165,6 +2330,14 @@ function sidecarScannedJavaScriptArtifacts(command, packArtifacts) {
 function assertSidecarEntrypointScannable(command, packArtifacts) {
   const entrypoint = sidecarSelectedEntrypointArtifact(command);
   if (!entrypoint) return;
+  const rubyPerlAdmission = inspectRubyPerlSidecarArgv(command);
+  if (rubyPerlAdmission) {
+    if (rubyPerlAdmission.violation) {
+      fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Ruby and Perl sidecars must name one checksum-covered adapter entrypoint');
+    }
+    return;
+  }
+  if (artifactHasRubyPerlRuntimeShebang(entrypoint, packArtifacts)) return;
   if (!sidecarRuntimeCommandPosition(command, 0) && sidecarCommandEntrypointArtifact(command) !== entrypoint) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'sidecar adapter entrypoints must be invoked directly or by a JavaScript runtime');
   }
@@ -2192,6 +2365,13 @@ function artifactHasJavaScriptRuntimeShebang(artifactPath, packArtifacts) {
   return artifactJavaScriptRuntimeShebang(artifactPath, packArtifacts) != null;
 }
 
+function artifactHasRubyPerlRuntimeShebang(artifactPath, packArtifacts) {
+  const firstLine = artifactShebangFirstLine(artifactPath, packArtifacts);
+  if (!firstLine) return false;
+  return sidecarShebangTokens(firstLine)
+    .some((token) => rubyPerlRuntimeName(commandBaseName(token).toLowerCase()) != null);
+}
+
 function artifactJavaScriptRuntimeShebang(artifactPath, packArtifacts) {
   const firstLine = artifactShebangFirstLine(artifactPath, packArtifacts);
   if (!firstLine) return null;
@@ -2216,12 +2396,31 @@ function artifactHasBunShebang(artifactPath, packArtifacts) {
 
 function sidecarShebangRuntimeCommand(command, packArtifacts) {
   if (sidecarRuntimeCommandPosition(command, 0)) return null;
-  const entrypoint = sidecarCommandEntrypointArtifact(command);
+  const explicitRubyPerl = inspectRubyPerlSidecarArgv(command);
+  const entrypoint = sidecarSelectedEntrypointArtifact(command);
   if (!entrypoint) return null;
   const firstLine = artifactShebangFirstLine(entrypoint, packArtifacts);
   if (!firstLine) return null;
   const tokens = sidecarShebangTokens(firstLine);
-  const runtimeIndex = tokens.findIndex((token) => SIDECAR_JS_RUNTIMES.has(commandBaseName(token).toLowerCase()));
+  if (explicitRubyPerl) {
+    const runtimeIndex = tokens.findIndex((token) => String(token).toLowerCase().includes(explicitRubyPerl.runtime));
+    if (runtimeIndex < 0) {
+      fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `explicit ${explicitRubyPerl.runtime} sidecars must not delegate to another shebang runtime`);
+    }
+    assertSafeShebangRuntimePrefix(tokens, runtimeIndex);
+    const admission = inspectRubyPerlSidecarArgv(
+      [explicitRubyPerl.runtime, ...tokens.slice(runtimeIndex + 1)],
+      { implicitEntrypoint: true },
+    );
+    if (admission?.violation) {
+      fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `Ruby and Perl shebangs do not support this runtime argv before the entrypoint: ${admission.violation.token}`);
+    }
+    return null;
+  }
+  const runtimeIndex = tokens.findIndex((token) => {
+    const runtime = commandBaseName(token).toLowerCase();
+    return SIDECAR_JS_RUNTIMES.has(runtime) || rubyPerlRuntimeName(runtime) != null;
+  });
   if (runtimeIndex < 0) {
     assertSafePackageManagerShebang(tokens, entrypoint, command.slice(1));
     return null;
@@ -2231,6 +2430,13 @@ function sidecarShebangRuntimeCommand(command, packArtifacts) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'sidecar Node and Deno shebang entrypoints must use explicit runtime commands');
   }
   assertSafeShebangRuntimePrefix(tokens, runtimeIndex);
+  if (rubyPerlRuntimeName(runtime)) {
+    const admission = inspectRubyPerlSidecarArgv(tokens.slice(runtimeIndex), { implicitEntrypoint: true });
+    if (admission?.violation) {
+      fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `Ruby and Perl shebangs do not support this runtime argv before the entrypoint: ${admission.violation.token}`);
+    }
+    return null;
+  }
   return [tokens[runtimeIndex], ...tokens.slice(runtimeIndex + 1), entrypoint, ...command.slice(1)];
 }
 
@@ -2293,15 +2499,28 @@ function splitEnvString(value) {
 function artifactShebangFirstLine(artifactPath, packArtifacts) {
   const bytes = packArtifacts[artifactPath];
   if (!(bytes instanceof Uint8Array)) return false;
+  if (bytes.byteLength < 2 || bytes[0] !== 0x23 || bytes[1] !== 0x21) return false;
+  const carriageReturn = bytes.indexOf(0x0d);
+  const lineFeed = bytes.indexOf(0x0a);
+  const lineEnd = carriageReturn < 0
+    ? lineFeed
+    : lineFeed < 0
+      ? carriageReturn
+      : Math.min(carriageReturn, lineFeed);
+  const firstLineBytes = lineEnd < 0 ? bytes : bytes.subarray(0, lineEnd);
+  if (firstLineBytes.byteLength > MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES) {
+    fail(
+      'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE',
+      `sidecar shebang first lines must not exceed ${MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES} bytes`,
+    );
+  }
   let text;
   try {
-    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    text = new TextDecoder('utf-8', { fatal: true }).decode(firstLineBytes);
   } catch {
-    return false;
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'sidecar shebang first lines must be valid UTF-8');
   }
-  if (!text.startsWith('#!')) return false;
-  const lineEnd = text.search(/\r|\n/);
-  return lineEnd < 0 ? text : text.slice(0, lineEnd);
+  return text;
 }
 
 function sidecarBunConfigPreloadArtifacts(command, packArtifacts) {
@@ -2769,7 +2988,7 @@ function assertSafeSidecarCommandToken(command, index) {
   if (sidecarUnsupportedDenoRuntimeOption(command, index)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `Deno sidecars do not support this runtime option before the entrypoint: ${value}`);
   }
-  if (sidecarUnsupportedNonJavaScriptRuntimeOption(command, index)) {
+  if (sidecarUnsupportedOtherNonJavaScriptRuntimeOption(command, index)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `Non-JavaScript sidecars do not support this runtime option before the entrypoint: ${value}`);
   }
   if (sidecarUnsupportedPhpRuntimeOption(command, index)) {
@@ -2961,13 +3180,13 @@ function sidecarUnsupportedDenoRuntimeOption(command, index) {
   return true;
 }
 
-function sidecarUnsupportedNonJavaScriptRuntimeOption(command, index) {
+function sidecarUnsupportedOtherNonJavaScriptRuntimeOption(command, index) {
   if (index < 1) return false;
   const runtime = nonJavaScriptRuntimeName(commandBaseName(command[0]).toLowerCase());
-  if (SIDECAR_JS_RUNTIMES.has(runtime) || !sidecarInlineEvalRuntime(runtime)) return false;
+  if (runtime === 'ruby' || runtime === 'perl' || SIDECAR_JS_RUNTIMES.has(runtime) || !sidecarInlineEvalRuntime(runtime)) return false;
   const entrypointIndex = sidecarEntrypointIndex(command);
   if (entrypointIndex >= 0 && index > entrypointIndex) return false;
-  return unsupportedNonJavaScriptRuntimeOption(runtime, command[index]);
+  return unsupportedOtherNonJavaScriptRuntimeOption(runtime, command[index]);
 }
 
 function sidecarUnsupportedDenoConfigOption(command, index) {
@@ -3086,7 +3305,7 @@ function nonJavaScriptRuntimeName(runtime) {
   return runtime;
 }
 
-function unsupportedNonJavaScriptRuntimeOption(runtime, value) {
+function unsupportedOtherNonJavaScriptRuntimeOption(runtime, value) {
   runtime = nonJavaScriptRuntimeName(runtime);
   if (typeof value !== 'string') return false;
   if (/^python(?:\d+(?:\.\d+)*)?$/.test(runtime) || /^pypy(?:\d+)?$/.test(runtime)) {
@@ -3099,22 +3318,10 @@ function unsupportedNonJavaScriptRuntimeOption(runtime, value) {
     return value === '-e' || value.startsWith('-e') || value === '-l' || value.startsWith('-l') ||
       value === '-v' || value === '--version' || value === '-h' || value === '--help' || value === '-';
   }
-  if (runtime === 'ruby' || runtime === 'rscript') {
+  if (runtime === 'rscript') {
     return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=') ||
       value === '-r' || value.startsWith('-r') ||
-      (runtime === 'ruby' && (value === '-' || value === '-c' || value.startsWith('-c') ||
-        value === '-n' || value.startsWith('-n') || value === '-p' || value.startsWith('-p') ||
-        /^-[acdlpsSvw]*[np]/.test(value) ||
-        value === '-v' || value === '--version' || value === '-h' || value === '--help')) ||
-      (runtime === 'rscript' && (value === '--version' || value === '--help' || value === '-'));
-  }
-  if (runtime === 'perl') {
-    return value === '-' || value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=') ||
-      value === '-m' || value.startsWith('-m') || value === '-M' || value.startsWith('-M') ||
-      value === '-c' || value.startsWith('-c') || value === '-d' || value.startsWith('-d') ||
-      value === '-n' || value.startsWith('-n') || value === '-p' || value.startsWith('-p') ||
-      /^-[aflnpsStTuvWwX]*[np]/.test(value) ||
-      value === '-v' || value.startsWith('-V') || value === '-h' || value === '--help';
+      value === '--version' || value === '--help' || value === '-';
   }
   return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=');
 }
@@ -3196,6 +3403,12 @@ function sidecarCommandEntrypointArtifact(command) {
 }
 
 function sidecarEntrypointIndex(command) {
+  const rubyPerlAdmission = inspectRubyPerlSidecarArgv(command);
+  if (rubyPerlAdmission) {
+    return rubyPerlAdmission.violation || rubyPerlAdmission.entrypointIndex == null
+      ? -1
+      : rubyPerlAdmission.entrypointIndex;
+  }
   for (let index = 1; index < command.length; index += 1) {
     const value = command[index];
     if (sidecarOptionArtifact(value)) continue;
