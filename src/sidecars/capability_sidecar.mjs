@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
-import { accessSync, closeSync, constants, openSync, readSync, statSync } from 'node:fs';
+import { accessSync, closeSync, constants, fstatSync, openSync, readSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -1278,19 +1278,27 @@ function shebangFirstLine(value) {
   let fd;
   let bytes;
   let bytesRead = 0;
+  let nonRegular = false;
   try {
     bytes = Buffer.alloc(MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES + 2);
-    fd = openSync(value, 'r');
-    while (bytesRead < bytes.byteLength) {
-      const count = readSync(fd, bytes, bytesRead, bytes.byteLength - bytesRead, bytesRead);
-      if (count === 0) break;
-      bytesRead += count;
-      if (bytes.subarray(0, bytesRead).includes(0x0a)) break;
+    fd = openSync(value, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+    if (!fstatSync(fd).isFile()) {
+      nonRegular = true;
+    } else {
+      while (bytesRead < bytes.byteLength) {
+        const count = readSync(fd, bytes, bytesRead, bytes.byteLength - bytesRead, bytesRead);
+        if (count === 0) break;
+        bytesRead += count;
+        if (bytes.subarray(0, bytesRead).includes(0x0a)) break;
+      }
     }
   } catch {
     return null;
   } finally {
     if (fd !== undefined) closeSync(fd);
+  }
+  if (nonRegular) {
+    fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar shebang entrypoints must be regular files');
   }
   if (bytesRead < 2 || bytes[0] !== 0x23 || bytes[1] !== 0x21) return null;
   const lineFeed = bytes.subarray(0, bytesRead).indexOf(0x0a);
@@ -1351,11 +1359,10 @@ function resolvePathCommand(value, searchPath, cwd = undefined) {
   if (!value || value.includes('\0') || value.includes('/') || value.includes('\\')) return null;
   if (typeof searchPath !== 'string') return null;
   for (const directory of searchPath.split(path.delimiter)) {
-    const searchDirectory = !directory
-      ? path.resolve(cwd ?? process.cwd())
-      : path.isAbsolute(directory)
-        ? directory
-        : path.resolve(cwd ?? process.cwd(), directory);
+    if (!directory) continue;
+    const searchDirectory = path.isAbsolute(directory)
+      ? directory
+      : path.resolve(cwd ?? process.cwd(), directory);
     const candidate = path.join(searchDirectory, value);
     try {
       accessSync(candidate, constants.X_OK);

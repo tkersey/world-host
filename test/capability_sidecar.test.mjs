@@ -1615,9 +1615,12 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
       const cwdEntrypointRoot = path.join(root, 'cwd-entrypoint');
       await mkdir(cwdEntrypointRoot);
       const cwdEntrypoint = path.join(cwdEntrypointRoot, 'cwd-adapter');
-      await writeFile(cwdEntrypoint, `#!${embeddedRuntimePath}\nignored by the embedded runtime\n`);
+      const selectedCwdEntrypoint = path.join(executableBin, 'cwd-adapter');
+      await writeFile(cwdEntrypoint, '#!/bin/sh\nexit 1\n');
       await chmod(cwdEntrypoint, 0o755);
-      process.env.PATH = `${path.delimiter}${originalPath ?? ''}`;
+      await writeFile(selectedCwdEntrypoint, `#!${embeddedRuntimePath}\nignored by the embedded runtime\n`);
+      await chmod(selectedCwdEntrypoint, 0o755);
+      process.env.PATH = `${path.delimiter}${executableBin}`;
       await assert.rejects(
         async () => new CapabilitySidecar({
           command: ['cwd-adapter'],
@@ -1626,6 +1629,24 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
         }).manifest(),
         { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
       );
+
+      if (process.platform !== 'win32') {
+        const fifoEntrypoint = path.join(root, 'fifo-adapter.rb');
+        const fifo = spawnSync('mkfifo', [fifoEntrypoint], { encoding: 'utf8' });
+        assert.equal(fifo.status, 0, fifo.stderr);
+        const moduleUrl = new URL('../src/sidecars/capability_sidecar.mjs', import.meta.url).href;
+        const probe = spawnSync(process.execPath, ['-e', `
+          import { CapabilitySidecar } from ${JSON.stringify(moduleUrl)};
+          try {
+            new CapabilitySidecar({ command: ['ruby', ${JSON.stringify(fifoEntrypoint)}] });
+            process.stdout.write('admitted');
+          } catch (error) {
+            process.stdout.write(error?.code ?? 'unknown');
+          }
+        `], { encoding: 'utf8', timeout: 1000 });
+        assert.equal(probe.status, 0, probe.error?.message ?? probe.stderr);
+        assert.equal(probe.stdout, 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID');
+      }
       await assert.rejects(readFile(markerPath), { code: 'ENOENT' });
     } finally {
       if (originalPath === undefined) delete process.env.PATH;
