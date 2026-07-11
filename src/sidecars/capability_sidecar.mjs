@@ -516,9 +516,12 @@ function sidecarSpawnArgv(argv, cwd = undefined, env = undefined) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar Node and Deno shebang entrypoints must use explicit runtime commands');
     }
     const directNonJavaScriptShebangArgv = nonJavaScriptShebangRuntimeArgv(inspectionPath);
-    const nonJavaScriptShebangArgv = directNonJavaScriptShebangArgv ??
+    const pathResolvedNonJavaScriptShebangArgv = directNonJavaScriptShebangArgv ? null :
       pathResolvedNonJavaScriptRuntimeShebangArgv(argv[0], env?.PATH ?? sidecarPath(), cwd);
-    if (nonJavaScriptShebangArgv) assertSupportedNonJavaScriptShebangRuntimeCommand(nonJavaScriptShebangArgv);
+    if (pathResolvedNonJavaScriptShebangArgv) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar shebang entrypoints must be path-qualified');
+    }
+    if (directNonJavaScriptShebangArgv) assertSupportedNonJavaScriptShebangRuntimeCommand(directNonJavaScriptShebangArgv);
     assertSupportedDirectRuntimeCommand(argv);
     if (wrappedJavaScriptRuntimeCommand(argv, cwd, env?.PATH)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar JavaScript runtimes must not run through command wrappers');
@@ -1052,7 +1055,9 @@ function assertSupportedWrappedNonJavaScriptRuntimeCommands(argv, cwd = undefine
     const candidateArgv = candidate.argv ?? [candidate.value];
     const shebangArgv = nonJavaScriptShebangRuntimeArgv(commandInspectionPath(candidate.value, candidate.cwd)) ??
       pathResolvedNonJavaScriptRuntimeShebangArgv(candidate.value, candidate.searchPath, candidate.cwd);
-    if (shebangArgv) assertSupportedNonJavaScriptShebangRuntimeCommand(shebangArgv);
+    if (shebangArgv) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar wrapper commands must use explicit runtime entrypoints');
+    }
     assertSupportedNonJavaScriptRuntimeCommand(candidateArgv, candidate.cwd);
   }
 }

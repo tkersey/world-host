@@ -1566,4 +1566,53 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('rejects PATH-resolved and wrapper-selected implicit shebangs before spawn', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-path-spawn-identity-'));
+    const originalPath = process.env.PATH;
+    try {
+      const inspectedBin = path.join(root, 'inspected-bin');
+      const executableBin = path.join(root, 'executable-bin');
+      const embeddedRuntimeRoot = path.join(root, 'embedded');
+      const markerPath = path.join(root, 'embedded-runtime-invoked');
+      await mkdir(inspectedBin);
+      await mkdir(executableBin);
+      await mkdir(embeddedRuntimeRoot);
+
+      const embeddedRuntimePath = path.join(embeddedRuntimeRoot, 'ruby3.2');
+      await writeFile(embeddedRuntimePath, `#!/usr/bin/env bun
+        await Bun.write(${JSON.stringify(markerPath)}, 'invoked');
+        await new Response(Bun.stdin.stream()).text();
+        process.stdout.write(JSON.stringify({
+          command: 'manifest',
+          payload: { source: 'embedded-shebang-path' }
+        }) + '\\n');
+      `);
+      await chmod(embeddedRuntimePath, 0o755);
+
+      const inspectedEntrypoint = path.join(inspectedBin, 'adapter');
+      const executableEntrypoint = path.join(executableBin, 'adapter');
+      await writeFile(inspectedEntrypoint, '#!/usr/bin/env ruby\nignored by admission only\n');
+      await writeFile(executableEntrypoint, `#!${embeddedRuntimePath}\nignored by the embedded runtime\n`);
+      await chmod(executableEntrypoint, 0o755);
+
+      process.env.PATH = `${inspectedBin}${path.delimiter}${executableBin}${path.delimiter}${originalPath ?? ''}`;
+      for (const command of [
+        ['adapter'],
+        ['env', 'adapter'],
+        ['env', executableEntrypoint],
+      ]) {
+        await assert.rejects(
+          async () => new CapabilitySidecar({ command, timeoutMs: 1000 }).manifest(),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+          JSON.stringify(command),
+        );
+      }
+      await assert.rejects(readFile(markerPath), { code: 'ENOENT' });
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
