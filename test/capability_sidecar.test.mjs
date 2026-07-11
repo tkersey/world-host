@@ -525,6 +525,9 @@ exit 97
           { PYTHONPATH: './preload-dir' },
           { PYTHONHOME: './python-home' },
           { PYTHONUSERBASE: './python-user-base' },
+          { PYTHONINSPECT: '1' },
+          { PYTHONWARNINGS: 'ignore::preload.Warning' },
+          { PYTHON_PRESITE: 'preload' },
           { LUA_INIT: '@./preload.lua' },
           { LUA_INIT_5_4: '@./preload.lua' },
           { PHPRC: './php-ini-dir' },
@@ -533,6 +536,14 @@ exit 97
           { R_PROFILE_USER: './preload.R' },
           { R_ENVIRON: './Renviron' },
           { R_ENVIRON_USER: './Renviron' },
+          { R_DEFAULT_PACKAGES: 'preload' },
+          { R_SCRIPT_DEFAULT_PACKAGES: 'preload' },
+          { R_LIBS: './r-library' },
+          { R_LIBS_USER: './r-user-library' },
+          { R_LIBS_SITE: './r-site-library' },
+          { R_HOME: './r-home' },
+          { RHOME: './r-home' },
+          { R_USER: './r-user' },
         ]) {
           assert.throws(
             () => new CapabilitySidecar({
@@ -981,10 +992,19 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
           ['pypy3', '-help', './adapter.py'],
           ['pypy3', '-', './adapter.py'],
           ['python3', '-W', 'ignore', '-c', 'print(1)'],
+          ['python3', '--check-hash-based-pycs', './adapter.py'],
+          ['python3', '--check-hash-based-pycs', 'sometimes', './adapter.py'],
+          ['python3', '-Xpresite=preload', './adapter.py'],
+          ['python3', '-X', 'presite=preload', './adapter.py'],
+          ['python3', '-Wignore::preload.Warning', './adapter.py'],
+          ['python3', '-i', './adapter.py'],
           ['env', 'python3', '-c', 'print(1)'],
           ['env', 'python3', '-', './adapter.py'],
           ['env', 'PYTHONPATH=./preload-dir', 'python3', './adapter.py'],
           ['env', 'PYTHONUSERBASE=./python-user-base', 'python3', './adapter.py'],
+          ['env', 'PYTHONINSPECT=1', 'python3', './adapter.py'],
+          ['env', 'PYTHONWARNINGS=ignore::preload.Warning', 'python3', './adapter.py'],
+          ['env', 'PYTHON_PRESITE=preload', 'python3', './adapter.py'],
           ['timeout', '1', 'python3', '-c', 'print(1)'],
           ['timeout', '1', 'python3', '-', './adapter.py'],
           ['perl', '-e', 'print 1'],
@@ -1028,6 +1048,12 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
           ['Rscript', '--version', './adapter.R'],
           ['Rscript', '--help', './adapter.R'],
           ['Rscript', '-', './adapter.R'],
+          ['Rscript', './adapter.R'],
+          ['Rscript', '--default-packages=preload', './adapter.R'],
+          ['Rscript', '--verbose', './adapter.R'],
+          ['env', 'R_DEFAULT_PACKAGES=preload', 'Rscript', '--vanilla', './adapter.R'],
+          ['env', 'R_SCRIPT_DEFAULT_PACKAGES=preload', 'Rscript', '--vanilla', './adapter.R'],
+          ['env', 'RHOME=./r-home', 'Rscript', '--vanilla', './adapter.R'],
           ['php', '-r', 'echo 1;'],
           ['php', '-B', 'echo 1;', './adapter.php'],
           ['php', '-d', 'auto_prepend_file=./preload.php', './adapter.php'],
@@ -1043,8 +1069,12 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
           ['lua', '-l', 'preload', './adapter.lua'],
           ['lua', '-v', './adapter.lua'],
           ['lua', '-', './adapter.lua'],
+          ['lua', '-i', './adapter.lua'],
           ['lua5.4', '-e', 'print(1)'],
           ['lua5.4', '-v', './adapter.lua'],
+          ['luajit', '-jv', './adapter.lua'],
+          ['luajit', '-j', 'v', './adapter.lua'],
+          ['luajit', '-b', './adapter.lua'],
           ['env', 'LUA_INIT=@./preload.lua', 'lua', './adapter.lua'],
           ['npx', 'unchecked-package'],
           ['npm', 'exec', 'unchecked-package'],
@@ -1529,7 +1559,7 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
     }
   });
 
-  it('runs non-executable Ruby and Perl shebang artifacts through their validated runtimes', async () => {
+  it('runs non-executable portable shebang artifacts through their validated runtimes', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-direct-shebang-runtime-'));
     try {
       const runtimeSource = (source) => `#!/usr/bin/env bun
@@ -1544,10 +1574,10 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
       const originalPath = process.env.PATH;
       try {
         process.env.PATH = `${root}${path.delimiter}${originalPath ?? ''}`;
-        for (const { runtimeName, adapterName, tail } of [
-          { runtimeName: 'ruby3.2', adapterName: 'adapter.rb', tail: 'ruby-tail' },
-          { runtimeName: 'perl5.36', adapterName: 'adapter.pl', tail: 'perl-tail' },
-          { runtimeName: 'Rscript', adapterName: 'adapter.R', tail: 'r-tail' },
+        for (const { runtimeName, runtimeArgs, adapterName, tail } of [
+          { runtimeName: 'ruby3.2', runtimeArgs: ['-w'], adapterName: 'adapter.rb', tail: 'ruby-tail' },
+          { runtimeName: 'perl5.36', runtimeArgs: ['-w'], adapterName: 'adapter.pl', tail: 'perl-tail' },
+          { runtimeName: 'Rscript', runtimeArgs: ['--vanilla'], adapterName: 'adapter.R', tail: 'r-tail' },
         ]) {
           const receiverRuntimePath = path.join(root, runtimeName);
           const embeddedRuntimePath = path.join(embeddedRuntimeRoot, runtimeName);
@@ -1556,7 +1586,7 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
           await chmod(receiverRuntimePath, 0o755);
           await writeFile(embeddedRuntimePath, runtimeSource('embedded-shebang-path'));
           await chmod(embeddedRuntimePath, 0o755);
-          await writeFile(adapterPath, `#!${embeddedRuntimePath} -w\nignored by the fake runtime\n`);
+          await writeFile(adapterPath, `#!${embeddedRuntimePath} ${runtimeArgs.join(' ')}\nignored by the fake runtime\n`);
           await chmod(adapterPath, 0o600);
 
           const result = await new CapabilitySidecar({
@@ -1565,7 +1595,7 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
           }).manifest();
           assert.equal(result.source, 'receiver-path');
           assert.equal(path.basename(result.runtimePath), runtimeName);
-          assert.deepEqual(result.argv, ['-w', adapterPath, tail]);
+          assert.deepEqual(result.argv, [...runtimeArgs, adapterPath, tail]);
         }
       } finally {
         if (originalPath === undefined) delete process.env.PATH;
@@ -1637,10 +1667,12 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
       for (const [runtime, option] of [
         ['python3', '-W'],
         ['python3', '-X'],
+        ['python3', '--check-hash-based-pycs'],
         ['pypy3', '-W'],
         ['pypy3', '-X'],
+        ['pypy3', '--check-hash-based-pycs'],
       ]) {
-        const adapterPath = path.join(root, `${runtime}-${option.slice(1)}-missing-value.py`);
+        const adapterPath = path.join(root, `${runtime}-${option.replaceAll('-', '')}-missing-value.py`);
         await writeFile(adapterPath, `#!/usr/bin/env -S ${runtime} ${option}\n`);
         await chmod(adapterPath, 0o600);
         assert.throws(
@@ -1649,11 +1681,14 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
         );
       }
 
-      for (const args of [
+      for (const [index, args] of [
         ['-W', 'ignore', '-X', 'dev'],
         ['-Wignore', '-Xdev'],
-      ]) {
-        const adapterPath = path.join(root, `python-valued-options-${args.length}.py`);
+        ['--check-hash-based-pycs', 'default'],
+        ['--check-hash-based-pycs', 'always'],
+        ['--check-hash-based-pycs', 'never'],
+      ].entries()) {
+        const adapterPath = path.join(root, `python-valued-options-${index}.py`);
         await writeFile(adapterPath, `#!/usr/bin/env -S python3 ${args.join(' ')}\n`);
         await chmod(adapterPath, 0o600);
         const valued = await new CapabilitySidecar({
@@ -1662,6 +1697,30 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
         }).manifest();
         assert.equal(path.basename(valued.runtimePath), 'python3');
         assert.deepEqual(valued.argv, [...args, adapterPath]);
+      }
+
+      for (const [index, [runtime, ...options]] of [
+        ['python3', '--check-hash-based-pycs', 'sometimes'],
+        ['python3', '-Xpresite=preload'],
+        ['python3', '-X', 'presite=preload'],
+        ['python3', '-Wignore::preload.Warning'],
+        ['python3', '-i'],
+        ['lua', '-i'],
+        ['lua', '-lpreload'],
+        ['luajit', '-jv'],
+        ['luajit', '-j', 'v'],
+        ['luajit', '-b'],
+        ['Rscript', '--default-packages=preload'],
+        ['Rscript', '--verbose'],
+      ].entries()) {
+        const adapterPath = path.join(root, `unsafe-portable-runtime-option-${index}`);
+        await writeFile(adapterPath, `#!/usr/bin/env -S ${runtime} ${options.join(' ')}\n`);
+        await chmod(adapterPath, 0o600);
+        assert.throws(
+          () => new CapabilitySidecar({ command: [adapterPath], timeoutMs: 1000 }),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+          `${runtime} ${options.join(' ')}`,
+        );
       }
 
       for (const [index, selector] of [

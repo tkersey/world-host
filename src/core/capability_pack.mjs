@@ -99,6 +99,50 @@ const PHP_SIDECAR_EXECUTION_NEUTRAL_LONG_OPTIONS = new Set([
   '--no-php-ini',
   '--profile-info',
 ]);
+const PYTHON_SIDECAR_EXECUTION_NEUTRAL_OPTIONS = new Set([
+  '-b',
+  '-bb',
+  '-B',
+  '-E',
+  '-I',
+  '-O',
+  '-OO',
+  '-P',
+  '-q',
+  '-R',
+  '-s',
+  '-S',
+  '-u',
+]);
+const PYTHON_SIDECAR_HASH_PYC_MODES = new Set(['always', 'default', 'never']);
+const PYTHON_SIDECAR_WARNING_ACTIONS = new Set([
+  'a',
+  'all',
+  'always',
+  'd',
+  'default',
+  'e',
+  'error',
+  'i',
+  'ignore',
+  'm',
+  'module',
+  'o',
+  'once',
+]);
+const PYTHON_SIDECAR_X_OPTIONS = new Set(['dev']);
+const RSCRIPT_SIDECAR_EXECUTION_NEUTRAL_OPTIONS = new Set([
+  '--no-echo',
+  '--no-environ',
+  '--no-init-file',
+  '--no-restore',
+  '--no-restore-data',
+  '--no-restore-history',
+  '--no-save',
+  '--no-site-file',
+  '--slave',
+  '--vanilla',
+]);
 const SIDECAR_RUNTIME_VALUE_OPTIONS = new Set([
   '--config',
   '--config-file',
@@ -288,6 +332,145 @@ export function inspectRubyPerlSidecarArgv(argv, { implicitEntrypoint = false } 
   }
   if (implicitEntrypoint) return rubyPerlAdmission(runtime, null, consumedValueIndices);
   return rubyPerlAdmission(runtime, null, consumedValueIndices, 'missing-entrypoint', argv.length - 1, argv.at(-1), null);
+}
+
+export function inspectNonJavaScriptSidecarArgv(argv, { implicitEntrypoint = false } = {}) {
+  const rubyPerl = inspectRubyPerlSidecarArgv(argv, { implicitEntrypoint });
+  if (rubyPerl) return rubyPerl;
+  if (!Array.isArray(argv) || argv.length === 0) return null;
+  const runtime = portableSidecarRuntimeName(commandBaseName(argv[0]).toLowerCase());
+  if (!runtime) return null;
+  const consumedValueIndices = [];
+  let startupIsolated = runtime !== 'rscript';
+  if (argv.some((value) => typeof value !== 'string' || value.length === 0)) {
+    return rubyPerlAdmission(runtime, null, consumedValueIndices, 'invalid-argv', 0, argv[0], null);
+  }
+  for (let index = 1; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value === '--') {
+      if (runtime === 'php' || runtime === 'rscript') {
+        return rubyPerlAdmission(runtime, null, consumedValueIndices, 'unsupported-option', index, value, value);
+      }
+      if (implicitEntrypoint) {
+        if (index + 1 < argv.length) {
+          return rubyPerlAdmission(runtime, null, consumedValueIndices, 'unexpected-entrypoint', index + 1, argv[index + 1], null);
+        }
+        return rubyPerlAdmission(runtime, null, consumedValueIndices);
+      }
+      const entrypointIndex = index + 1;
+      if (entrypointIndex >= argv.length) {
+        return rubyPerlAdmission(runtime, null, consumedValueIndices, 'missing-entrypoint', index, value, null);
+      }
+      return rubyPerlEntrypointAdmission(runtime, argv, entrypointIndex, consumedValueIndices);
+    }
+    if (value === '-') {
+      return rubyPerlAdmission(runtime, null, consumedValueIndices, 'stdin-entrypoint', index, value, '-');
+    }
+    if (!value.startsWith('-')) {
+      if (implicitEntrypoint) {
+        return rubyPerlAdmission(runtime, null, consumedValueIndices, 'unexpected-entrypoint', index, value, null);
+      }
+      if (!startupIsolated) {
+        return rubyPerlAdmission(runtime, null, consumedValueIndices, 'unsafe-startup', index, value, '--vanilla');
+      }
+      return rubyPerlEntrypointAdmission(runtime, argv, index, consumedValueIndices);
+    }
+    if (runtime === 'php' && (value === '-f' || value === '--file')) {
+      if (implicitEntrypoint) {
+        if (index + 1 < argv.length) {
+          return rubyPerlAdmission(runtime, null, consumedValueIndices, 'unexpected-entrypoint', index + 1, argv[index + 1], value);
+        }
+        return rubyPerlAdmission(runtime, null, consumedValueIndices);
+      }
+      const entrypointIndex = index + 1;
+      if (entrypointIndex >= argv.length) {
+        return rubyPerlAdmission(runtime, null, consumedValueIndices, 'missing-entrypoint', index, value, value);
+      }
+      return rubyPerlEntrypointAdmission(runtime, argv, entrypointIndex, consumedValueIndices);
+    }
+    const option = inspectPortableSidecarOption(runtime, value);
+    if (option.violation) {
+      return rubyPerlAdmission(runtime, null, consumedValueIndices, option.violation, index, value, option.option);
+    }
+    if (option.consumesNext) {
+      if (index + 1 >= argv.length) {
+        return rubyPerlAdmission(runtime, null, consumedValueIndices, 'missing-option-value', index, value, option.option);
+      }
+      const optionValue = argv[index + 1];
+      if (!portableSidecarOptionValueIsSafe(option.valueKind, optionValue)) {
+        return rubyPerlAdmission(runtime, null, consumedValueIndices, 'unsafe-option-value', index + 1, optionValue, option.option);
+      }
+      consumedValueIndices.push(index + 1);
+      index += 1;
+    }
+    if (runtime === 'rscript' && value === '--vanilla') startupIsolated = true;
+  }
+  if (!startupIsolated) {
+    return rubyPerlAdmission(runtime, null, consumedValueIndices, 'unsafe-startup', argv.length - 1, argv.at(-1), '--vanilla');
+  }
+  if (implicitEntrypoint) return rubyPerlAdmission(runtime, null, consumedValueIndices);
+  return rubyPerlAdmission(runtime, null, consumedValueIndices, 'missing-entrypoint', argv.length - 1, argv.at(-1), null);
+}
+
+function portableSidecarRuntimeName(runtime) {
+  runtime = nonJavaScriptRuntimeName(runtime);
+  if (/^python(?:\d+(?:\.\d+)*)?$/.test(runtime)) return 'python';
+  if (/^pypy(?:\d+)?$/.test(runtime)) return 'pypy';
+  return ['lua', 'luajit', 'php', 'rscript'].includes(runtime) ? runtime : null;
+}
+
+function inspectPortableSidecarOption(runtime, value) {
+  if (runtime === 'python' || runtime === 'pypy') return inspectPythonSidecarOption(value);
+  if (runtime === 'php') {
+    return phpSidecarRuntimeOptionIsUnsafe(value)
+      ? { violation: 'unsafe-option', option: value.split('=', 1)[0] }
+      : { violation: null, consumesNext: false };
+  }
+  if (runtime === 'lua') {
+    if (value === '-E' || value === '-W') return { violation: null, consumesNext: false };
+    return { violation: 'unsafe-option', option: value.slice(0, 2) };
+  }
+  if (runtime === 'luajit') {
+    if (value === '-E' || /^-O[A-Za-z0-9_+,.=-]*$/.test(value)) return { violation: null, consumesNext: false };
+    return { violation: 'unsafe-option', option: value.slice(0, 2) };
+  }
+  if (runtime === 'rscript') {
+    return RSCRIPT_SIDECAR_EXECUTION_NEUTRAL_OPTIONS.has(value)
+      ? { violation: null, consumesNext: false }
+      : { violation: 'unsafe-option', option: value.split('=', 1)[0] };
+  }
+  return { violation: 'unsupported-option', option: value.split('=', 1)[0] };
+}
+
+function inspectPythonSidecarOption(value) {
+  if (PYTHON_SIDECAR_EXECUTION_NEUTRAL_OPTIONS.has(value)) return { violation: null, consumesNext: false };
+  if (value === '--check-hash-based-pycs') {
+    return { violation: null, consumesNext: true, option: value, valueKind: 'python-hash-pyc-mode' };
+  }
+  if (value === '-W') return { violation: null, consumesNext: true, option: value, valueKind: 'python-warning' };
+  if (value.startsWith('-W') && value.length > 2) {
+    return pythonWarningFilterIsSafe(value.slice(2))
+      ? { violation: null, consumesNext: false }
+      : { violation: 'unsafe-option-value', option: '-W' };
+  }
+  if (value === '-X') return { violation: null, consumesNext: true, option: value, valueKind: 'python-x-option' };
+  if (value.startsWith('-X') && value.length > 2) {
+    return PYTHON_SIDECAR_X_OPTIONS.has(value.slice(2))
+      ? { violation: null, consumesNext: false }
+      : { violation: 'unsafe-option-value', option: '-X' };
+  }
+  return { violation: 'unsafe-option', option: value.split('=', 1)[0] };
+}
+
+function portableSidecarOptionValueIsSafe(kind, value) {
+  if (kind === 'python-hash-pyc-mode') return PYTHON_SIDECAR_HASH_PYC_MODES.has(value);
+  if (kind === 'python-warning') return pythonWarningFilterIsSafe(value);
+  if (kind === 'python-x-option') return PYTHON_SIDECAR_X_OPTIONS.has(value);
+  return false;
+}
+
+function pythonWarningFilterIsSafe(value) {
+  return PYTHON_SIDECAR_WARNING_ACTIONS.has(value);
 }
 
 function rubyPerlEntrypointAdmission(runtime, argv, entrypointIndex, consumedValueIndices) {
@@ -2239,16 +2422,16 @@ function assertReferencedArtifactsCovered(manifest, artifacts) {
 function sidecarCommandArtifacts(command, packArtifacts = null) {
   const artifacts = [];
   let entrypointSeen = false;
-  const rubyPerlAdmission = inspectRubyPerlSidecarArgv(command);
-  if (rubyPerlAdmission?.violation) {
-    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `Ruby and Perl sidecars do not support this runtime argv before the entrypoint: ${rubyPerlAdmission.violation.token}`);
+  const runtimeAdmission = inspectNonJavaScriptSidecarArgv(command);
+  if (runtimeAdmission?.violation) {
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `Non-JavaScript sidecars do not support this runtime argv before the entrypoint: ${runtimeAdmission.violation.token}`);
   }
-  const rubyPerlConsumedValues = new Set(rubyPerlAdmission?.consumedValueIndices ?? []);
+  const runtimeConsumedValues = new Set(runtimeAdmission?.consumedValueIndices ?? []);
   assertDenoConfigIsolated(command);
   for (let index = 0; index < command.length; index += 1) {
     const value = command[index];
     assertSafeSidecarCommandToken(command, index);
-    if (rubyPerlConsumedValues.has(index)) continue;
+    if (runtimeConsumedValues.has(index)) continue;
     const genericOptionArtifact = sidecarGenericOptionArtifact(value);
     if (genericOptionArtifact && !sidecarRuntimeOptionPosition(command, index)) {
       artifacts.push(genericOptionArtifact);
@@ -2298,8 +2481,8 @@ function sidecarCommandArtifacts(command, packArtifacts = null) {
     }
     if (sidecarCommandArtifact(value)) {
       artifacts.push(value);
-      if (rubyPerlAdmission) {
-        if (index === rubyPerlAdmission.entrypointIndex) entrypointSeen = true;
+      if (runtimeAdmission) {
+        if (index === runtimeAdmission.entrypointIndex) entrypointSeen = true;
       } else if (!sidecarRuntimeCommandPosition(command, index) && !sidecarRuntimeOptionValuePosition(command, index)) {
         entrypointSeen = true;
       }
@@ -2988,12 +3171,6 @@ function assertSafeSidecarCommandToken(command, index) {
   if (sidecarUnsupportedDenoRuntimeOption(command, index)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `Deno sidecars do not support this runtime option before the entrypoint: ${value}`);
   }
-  if (sidecarUnsupportedOtherNonJavaScriptRuntimeOption(command, index)) {
-    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `Non-JavaScript sidecars do not support this runtime option before the entrypoint: ${value}`);
-  }
-  if (sidecarUnsupportedPhpRuntimeOption(command, index)) {
-    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `PHP sidecars do not support this runtime option before the entrypoint: ${value}`);
-  }
   if (index === 0 && SIDECAR_RUNTIME_WRAPPERS.has(executable)) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `sidecar command wraps runtime execution outside checksum coverage: ${value}`);
   }
@@ -3180,15 +3357,6 @@ function sidecarUnsupportedDenoRuntimeOption(command, index) {
   return true;
 }
 
-function sidecarUnsupportedOtherNonJavaScriptRuntimeOption(command, index) {
-  if (index < 1) return false;
-  const runtime = nonJavaScriptRuntimeName(commandBaseName(command[0]).toLowerCase());
-  if (runtime === 'ruby' || runtime === 'perl' || SIDECAR_JS_RUNTIMES.has(runtime) || !sidecarInlineEvalRuntime(runtime)) return false;
-  const entrypointIndex = sidecarEntrypointIndex(command);
-  if (entrypointIndex >= 0 && index > entrypointIndex) return false;
-  return unsupportedOtherNonJavaScriptRuntimeOption(runtime, command[index]);
-}
-
 function sidecarUnsupportedDenoConfigOption(command, index) {
   if (commandBaseName(command[0]).toLowerCase() !== 'deno' || !sidecarRuntimeOptionPosition(command, index)) return false;
   if (sidecarRuntimeOptionValuePosition(command, index)) return false;
@@ -3305,27 +3473,6 @@ function nonJavaScriptRuntimeName(runtime) {
   return runtime;
 }
 
-function unsupportedOtherNonJavaScriptRuntimeOption(runtime, value) {
-  runtime = nonJavaScriptRuntimeName(runtime);
-  if (typeof value !== 'string') return false;
-  if (/^python(?:\d+(?:\.\d+)*)?$/.test(runtime) || /^pypy(?:\d+)?$/.test(runtime)) {
-    return value === '-' || value === '-c' || value.startsWith('-c') || value === '-m' || value.startsWith('-m') ||
-      value === '-?' || value.startsWith('-h') || value.startsWith('--help') ||
-      /^-V+$/.test(value) || value === '--version';
-  }
-  if (runtime === 'php') return phpSidecarRuntimeOptionIsUnsafe(value);
-  if (runtime === 'lua' || runtime === 'luajit') {
-    return value === '-e' || value.startsWith('-e') || value === '-l' || value.startsWith('-l') ||
-      value === '-v' || value === '--version' || value === '-h' || value === '--help' || value === '-';
-  }
-  if (runtime === 'rscript') {
-    return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=') ||
-      value === '-r' || value.startsWith('-r') ||
-      value === '--version' || value === '--help' || value === '-';
-  }
-  return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=');
-}
-
 function sidecarInlineEvalFlag(runtime, value) {
   if (typeof value !== 'string') return false;
   if (runtime === 'deno' && value === 'eval') return true;
@@ -3335,18 +3482,6 @@ function sidecarInlineEvalFlag(runtime, value) {
   if (runtime === 'php') return value === '-r' || value.startsWith('-r');
   return value === '-e' || value === '--eval' || value === '-p' || value === '--print' ||
     value.startsWith('-e') || value.startsWith('-p') || value.startsWith('--eval=') || value.startsWith('--print=');
-}
-
-function sidecarUnsupportedPhpRuntimeOption(command, index) {
-  const runtime = phpRuntimeName(commandBaseName(command[0]).toLowerCase());
-  if (runtime !== 'php' || index < 1) return false;
-  const entrypointIndex = sidecarEntrypointIndex(command);
-  if (entrypointIndex >= 0 && index > entrypointIndex) return false;
-  return phpSidecarRuntimeOptionIsUnsafe(command[index]);
-}
-
-function phpRuntimeName(runtime) {
-  return /^php\d+(?:\.\d+)*$/.test(runtime) ? 'php' : runtime;
 }
 
 export function phpSidecarRuntimeOptionIsUnsafe(value) {
@@ -3382,11 +3517,11 @@ function sidecarCommandEntrypointArtifact(command) {
 }
 
 function sidecarEntrypointIndex(command) {
-  const rubyPerlAdmission = inspectRubyPerlSidecarArgv(command);
-  if (rubyPerlAdmission) {
-    return rubyPerlAdmission.violation || rubyPerlAdmission.entrypointIndex == null
+  const runtimeAdmission = inspectNonJavaScriptSidecarArgv(command);
+  if (runtimeAdmission) {
+    return runtimeAdmission.violation || runtimeAdmission.entrypointIndex == null
       ? -1
-      : rubyPerlAdmission.entrypointIndex;
+      : runtimeAdmission.entrypointIndex;
   }
   for (let index = 1; index < command.length; index += 1) {
     const value = command[index];
@@ -3402,6 +3537,8 @@ function sidecarEntrypointIndex(command) {
 }
 
 function sidecarRuntimeOptionValuePosition(command, index) {
+  const runtimeAdmission = inspectNonJavaScriptSidecarArgv(command);
+  if (runtimeAdmission) return runtimeAdmission.consumedValueIndices.includes(index);
   if (!sidecarRuntimeOptionPosition(command, index)) return false;
   const previous = command[index - 1];
   const runtime = commandBaseName(command[0]).toLowerCase();

@@ -13,6 +13,7 @@ import {
   assertCapabilityPackChecksums,
   capabilityConformanceReceiptFingerprint,
   capabilityPackFingerprint,
+  inspectNonJavaScriptSidecarArgv,
   inspectRubyPerlSidecarArgv,
   MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES,
   phpSidecarRuntimeOptionIsUnsafe,
@@ -3912,6 +3913,60 @@ describe('Capability Plane v0.2 core contracts', () => {
         JSON.stringify(command),
       );
     }
+  });
+
+  it('derives portable runtime option operands and adapter ownership from one argv admission result', () => {
+    for (const command of [
+      ['python3', '--check-hash-based-pycs', './adapter.py'],
+      ['python3', '--check-hash-based-pycs', 'sometimes', './adapter.py'],
+      ['python3', '-Xpresite=preload', './adapter.py'],
+      ['python3', '-X', 'presite=preload', './adapter.py'],
+      ['python3', '-Wignore::preload.Warning', './adapter.py'],
+      ['python3', '-i', './adapter.py'],
+      ['luajit', '-jv', './adapter.lua'],
+      ['luajit', '-j', 'v', './adapter.lua'],
+      ['luajit', '-b', './adapter.lua'],
+      ['lua', '-i', './adapter.lua'],
+      ['lua', '-lpreload', './adapter.lua'],
+      ['Rscript', '--default-packages=preload', './adapter.R'],
+      ['Rscript', '--verbose', './adapter.R'],
+      ['Rscript', '-e', 'source("preload.R")'],
+      ['Rscript', './adapter.R'],
+      ['python3', 'adapter.py'],
+    ]) {
+      assert.ok(inspectNonJavaScriptSidecarArgv(command)?.violation, JSON.stringify(command));
+    }
+
+    for (const command of [
+      ['python3', '-B', '-W', 'ignore', '-Xdev', '--check-hash-based-pycs', 'always', './adapter.py', '--tail'],
+      ['python3', '--', './adapter.py', '-i'],
+      ['lua5.4', '-E', '-W', './adapter.lua', '-i'],
+      ['luajit', '-E', '-O2', './adapter.lua', '-jv'],
+      ['Rscript', '--vanilla', '--no-echo', './adapter.R', '--verbose'],
+      ['php', '-n', '-f', './adapter.php', '-r'],
+    ]) {
+      const admission = inspectNonJavaScriptSidecarArgv(command);
+      assert.equal(admission?.violation, null, JSON.stringify(command));
+      assert.ok(admission.entrypointIndex > 0, JSON.stringify(command));
+      assert.equal(command[admission.entrypointIndex].includes('/') || command[admission.entrypointIndex].includes('\\'), true);
+    }
+
+    const pythonShebang = inspectNonJavaScriptSidecarArgv([
+      'python3',
+      '-W',
+      'ignore',
+      '--check-hash-based-pycs',
+      'never',
+    ], { implicitEntrypoint: true });
+    assert.equal(pythonShebang.violation, null);
+    assert.deepEqual(pythonShebang.consumedValueIndices, [2, 4]);
+    assert.equal(inspectNonJavaScriptSidecarArgv(['python3', '--'], { implicitEntrypoint: true }).violation, null);
+    assert.equal(inspectNonJavaScriptSidecarArgv(['php', '-f'], { implicitEntrypoint: true }).violation, null);
+    assert.equal(inspectNonJavaScriptSidecarArgv(['Rscript', '--vanilla'], { implicitEntrypoint: true }).violation, null);
+    assert.ok(inspectNonJavaScriptSidecarArgv(['Rscript'], { implicitEntrypoint: true }).violation);
+    assert.ok(inspectNonJavaScriptSidecarArgv(['luajit', '-jv'], { implicitEntrypoint: true }).violation);
+    assert.ok(inspectNonJavaScriptSidecarArgv(['python3', '--check-hash-based-pycs'], { implicitEntrypoint: true }).violation);
+    assert.equal(inspectNonJavaScriptSidecarArgv(['node', './adapter.mjs']), null);
   });
 
   it('bounds reverse-ordered sidecar alias propagation and preserves admitted detection', async () => {

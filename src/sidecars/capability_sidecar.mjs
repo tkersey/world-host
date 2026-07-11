@@ -7,8 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { receiverLocalEffectContext } from '../core/effect_context.mjs';
 import {
   MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES,
-  inspectRubyPerlSidecarArgv,
-  phpSidecarRuntimeOptionIsUnsafe,
+  inspectNonJavaScriptSidecarArgv,
 } from '../core/capability_pack.mjs';
 import { assertBytes, fail, fromUtf8, stableJson } from '../core/store.mjs';
 
@@ -1004,67 +1003,19 @@ function assertSupportedDenoRuntimeCommand(argv) {
 }
 
 function assertSupportedNonJavaScriptRuntimeCommand(argv, cwd = undefined) {
-  const rubyPerlAdmission = inspectRubyPerlSidecarArgv(argv);
-  if (rubyPerlAdmission) {
-    assertSupportedRubyPerlAdmission(rubyPerlAdmission, 'sidecar runtime commands must use path-qualified adapter entrypoints');
-    const entrypoint = argv[rubyPerlAdmission.entrypointIndex];
-    const shebangArgv = rubyPerlProgramShebangRuntimeArgv(commandInspectionPath(entrypoint, cwd), rubyPerlAdmission.runtime);
+  const admission = inspectNonJavaScriptSidecarArgv(argv);
+  if (admission) {
+    assertSupportedNonJavaScriptAdmission(admission, 'sidecar runtime commands must use path-qualified adapter entrypoints');
+    if (admission.runtime !== 'ruby' && admission.runtime !== 'perl') return;
+    const entrypoint = argv[admission.entrypointIndex];
+    const shebangArgv = rubyPerlProgramShebangRuntimeArgv(commandInspectionPath(entrypoint, cwd), admission.runtime);
     if (shebangArgv) assertSupportedNonJavaScriptShebangRuntimeCommand(shebangArgv);
-    return;
   }
-  const runtime = nonJavaScriptRuntimeName(commandBaseName(argv[0]));
-  if (!nonJavaScriptRuntimeSupportsInlineEval(runtime)) return;
-  for (let index = 1; index < argv.length; index += 1) {
-    const value = argv[index];
-    if (value === '--') {
-      if (index + 1 < argv.length && !argv[index + 1].startsWith('-')) return;
-      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar runtime commands must use path-qualified adapter entrypoints');
-    }
-    if (unsupportedOtherNonJavaScriptRuntimeOption(runtime, value)) {
-      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar runtime commands must use path-qualified adapter entrypoints');
-    }
-    if (nonJavaScriptRuntimeOptionConsumesNext(runtime, value)) {
-      index += 1;
-      continue;
-    }
-    if (!value.startsWith('-')) return;
-  }
-  fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar runtime commands must use path-qualified adapter entrypoints');
 }
 
 function assertSupportedNonJavaScriptShebangRuntimeCommand(argv) {
-  const rubyPerlAdmission = inspectRubyPerlSidecarArgv(argv, { implicitEntrypoint: true });
-  if (rubyPerlAdmission) {
-    assertSupportedRubyPerlAdmission(rubyPerlAdmission, 'sidecar shebang runtime commands must not evaluate code before the entrypoint');
-    return;
-  }
-  const runtime = nonJavaScriptRuntimeName(commandBaseName(argv[0]));
-  if (!nonJavaScriptRuntimeSupportsInlineEval(runtime)) return;
-  for (let index = 1; index < argv.length; index += 1) {
-    const value = argv[index];
-    if (value === '--') {
-      if (index + 1 < argv.length || runtime === 'php') {
-        fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar shebang runtime commands must not name a second entrypoint');
-      }
-      return;
-    }
-    if (unsupportedNonJavaScriptShebangProgramOption(runtime, argv, index)) {
-      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar shebang runtime commands must not name a second entrypoint');
-    }
-    if (unsupportedOtherNonJavaScriptRuntimeOption(runtime, value)) {
-      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar shebang runtime commands must not evaluate code before the entrypoint');
-    }
-    if (nonJavaScriptRuntimeOptionConsumesNext(runtime, value)) {
-      if (index + 1 >= argv.length) {
-        fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar shebang runtime options must include their values before the entrypoint');
-      }
-      index += 1;
-      continue;
-    }
-    if (!value.startsWith('-')) {
-      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar shebang runtime commands must not name a second entrypoint');
-    }
-  }
+  const admission = inspectNonJavaScriptSidecarArgv(argv, { implicitEntrypoint: true });
+  assertSupportedNonJavaScriptAdmission(admission, 'sidecar shebang runtime commands must not evaluate code before the entrypoint');
 }
 
 function assertSupportedWrappedNonJavaScriptRuntimeCommands(argv, cwd = undefined, searchPath = undefined) {
@@ -1081,8 +1032,8 @@ function assertSupportedWrappedNonJavaScriptRuntimeCommands(argv, cwd = undefine
   }
 }
 
-function assertSupportedRubyPerlAdmission(admission, message) {
-  if (admission.violation) fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', message);
+function assertSupportedNonJavaScriptAdmission(admission, message) {
+  if (admission?.violation) fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', message);
 }
 
 function assertNoPackageManagerCommand(argv, cwd = undefined, searchPath = undefined) {
@@ -1111,45 +1062,6 @@ function nonJavaScriptRuntimeName(runtime) {
   if (/^lua\d+(?:\.\d+)*$/.test(runtime)) return 'lua';
   if (/^luajit\d+(?:\.\d+)*$/.test(runtime)) return 'luajit';
   return runtime;
-}
-
-function unsupportedNonJavaScriptShebangProgramOption(runtime, argv, index) {
-  if (nonJavaScriptRuntimeName(runtime) !== 'php') return false;
-  const value = argv[index];
-  if (value === '-f' || value === '--file') return index + 1 < argv.length;
-  return value.startsWith('-f') ||
-    value === '-F' || value.startsWith('-F') ||
-    value.startsWith('--file=') ||
-    value === '--process-file' || value.startsWith('--process-file=');
-}
-
-function unsupportedOtherNonJavaScriptRuntimeOption(runtime, value) {
-  runtime = nonJavaScriptRuntimeName(runtime);
-  if (/^python(?:\d+(?:\.\d+)*)?$/.test(runtime) || /^pypy(?:\d+)?$/.test(runtime)) {
-    return value === '-' || value === '-c' || value.startsWith('-c') || value === '-m' || value.startsWith('-m') ||
-      value === '-?' || value.startsWith('-h') || value.startsWith('--help') ||
-      /^-V+$/.test(value) || value === '--version';
-  }
-  if (runtime === 'php') {
-    return phpSidecarRuntimeOptionIsUnsafe(value);
-  }
-  if (runtime === 'lua' || runtime === 'luajit') {
-    return value === '-e' || value.startsWith('-e') || value === '-l' || value.startsWith('-l') ||
-      value === '-v' || value === '--version' || value === '-h' || value === '--help' || value === '-';
-  }
-  if (runtime === 'rscript') {
-    return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=') ||
-      value === '-r' || value.startsWith('-r') ||
-      value === '--version' || value === '--help' || value === '-';
-  }
-  return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=');
-}
-
-function nonJavaScriptRuntimeOptionConsumesNext(runtime, value) {
-  if (/^python(?:\d+(?:\.\d+)*)?$/.test(runtime) || /^pypy(?:\d+)?$/.test(runtime)) {
-    return value === '-W' || value === '-X';
-  }
-  return false;
 }
 
 function unsupportedDenoPermissionOption(value) {
@@ -1404,6 +1316,9 @@ function unsupportedSidecarPreloadEnvKey(key) {
     normalized === 'PYTHONHOME' ||
     normalized === 'PYTHONUSERBASE' ||
     normalized === 'PYTHONSTARTUP' ||
+    normalized === 'PYTHONINSPECT' ||
+    normalized === 'PYTHONWARNINGS' ||
+    normalized === 'PYTHON_PRESITE' ||
     normalized === 'LUA_INIT' ||
     normalized.startsWith('LUA_INIT_') ||
     normalized === 'PHPRC' ||
@@ -1411,7 +1326,15 @@ function unsupportedSidecarPreloadEnvKey(key) {
     normalized === 'R_PROFILE' ||
     normalized === 'R_PROFILE_USER' ||
     normalized === 'R_ENVIRON' ||
-    normalized === 'R_ENVIRON_USER';
+    normalized === 'R_ENVIRON_USER' ||
+    normalized === 'R_DEFAULT_PACKAGES' ||
+    normalized === 'R_SCRIPT_DEFAULT_PACKAGES' ||
+    normalized === 'R_LIBS' ||
+    normalized === 'R_LIBS_USER' ||
+    normalized === 'R_LIBS_SITE' ||
+    normalized === 'R_HOME' ||
+    normalized === 'RHOME' ||
+    normalized === 'R_USER';
 }
 
 function sidecarPath() {
