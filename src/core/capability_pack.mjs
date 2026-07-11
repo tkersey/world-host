@@ -318,7 +318,8 @@ function inspectRubySidecarOption(value) {
   for (let cursor = 1; cursor < value.length;) {
     const option = value[cursor];
     if ('nperchvSCXxy'.includes(option)) return { violation: 'unsafe-option', option: `-${option}` };
-    if (option === 'I' || option === 'E') {
+    if (option === 'I') return { violation: 'unsafe-option', option: '-I' };
+    if (option === 'E') {
       return { violation: null, consumesNext: cursor + 1 === value.length };
     }
     if (option === 'F' || option === 'i') return { violation: null, consumesNext: false };
@@ -359,7 +360,7 @@ function inspectPerlSidecarOption(value) {
   for (let cursor = 1; cursor < value.length;) {
     const option = value[cursor];
     if ('npaFeEmMcdDhHvVSPxu'.includes(option)) return { violation: 'unsafe-option', option: `-${option}` };
-    if (option === 'I') return { violation: null, consumesNext: cursor + 1 === value.length };
+    if (option === 'I') return { violation: 'unsafe-option', option: '-I' };
     if (option === 'i' || option === 'C') return { violation: null, consumesNext: false };
     if (option === 'l') {
       cursor += 1;
@@ -2337,10 +2338,10 @@ function assertSidecarEntrypointScannable(command, packArtifacts) {
     }
     return;
   }
-  if (artifactHasRubyPerlRuntimeShebang(entrypoint, packArtifacts)) return;
   if (!sidecarRuntimeCommandPosition(command, 0) && sidecarCommandEntrypointArtifact(command) !== entrypoint) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'sidecar adapter entrypoints must be invoked directly or by a JavaScript runtime');
   }
+  if (artifactHasRubyPerlRuntimeShebang(entrypoint, packArtifacts)) return;
   if (sidecarCommandEntrypointNeedsJavaScriptScan(entrypoint, packArtifacts, {
     allowScannableExtensionless: sidecarRuntimeCommandPosition(command, 0),
   })) return;

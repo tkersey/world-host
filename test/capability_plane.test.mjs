@@ -3671,7 +3671,10 @@ describe('Capability Plane v0.2 core contracts', () => {
       ['ruby', '-wc', './adapter.rb'],
       ['ruby', '-wS', './adapter.rb'],
       ['ruby', '-y', './adapter.rb'],
+      ['ruby', '-I/tmp/hooks', './adapter.rb'],
+      ['ruby', '-I', '/tmp/hooks', './adapter.rb'],
       ['ruby', '-I', './lib', '-p', './adapter.rb'],
+      ['ruby3.2', '-I/tmp/hooks', './adapter.rb'],
       ['ruby', 'adapter.rb'],
       ['perl', '-Un', './adapter.pl'],
       ['perl', '-Fn', './adapter.pl'],
@@ -3687,7 +3690,10 @@ describe('Capability Plane v0.2 core contracts', () => {
       ['perl', '-wS', './adapter.pl'],
       ['perl', '-u', './adapter.pl'],
       ['perl', '-q', './adapter.pl'],
+      ['perl', '-I/tmp/hooks', './adapter.pl'],
+      ['perl', '-I', '/tmp/hooks', './adapter.pl'],
       ['perl', '-I', './lib', '-p', './adapter.pl'],
+      ['perl5.36', '-I', '/tmp/hooks', './adapter.pl'],
       ['perl', '--', 'adapter.pl'],
     ];
     for (const command of rejected) {
@@ -3695,24 +3701,22 @@ describe('Capability Plane v0.2 core contracts', () => {
     }
 
     const admitted = [
-      ['ruby', '-Ivendorp', './adapter.rb'],
       ['ruby', '-Fnp', './adapter.rb'],
       ['ruby', '-Kp', './adapter.rb'],
       ['ruby', '-W:performance', './adapter.rb'],
-      ['perl', '-Ip', './adapter.pl'],
       ['perl', '-ip', './adapter.pl'],
       ['perl', '-0x41', './adapter.pl'],
       ['perl', '-0x41f', './adapter.pl'],
       ['ruby', './adapter.rb', '-p'],
+      ['ruby', './adapter.rb', '-I/tmp/hooks'],
+      ['ruby', './adapter.rb', '-I', '/tmp/hooks'],
       ['perl', './adapter.pl', '-p'],
+      ['perl', './adapter.pl', '-I/tmp/hooks'],
+      ['perl', './adapter.pl', '-I', '/tmp/hooks'],
     ];
     for (const command of admitted) {
       assert.equal(inspectRubyPerlSidecarArgv(command)?.violation, null, JSON.stringify(command));
     }
-    const rubyConsumed = inspectRubyPerlSidecarArgv(['ruby3.2', '-I', './lib', './adapter.rb']);
-    const perlConsumed = inspectRubyPerlSidecarArgv(['perl5.36', '-I', './lib', './adapter.pl']);
-    assert.deepEqual({ entrypointIndex: rubyConsumed.entrypointIndex, consumed: rubyConsumed.consumedValueIndices }, { entrypointIndex: 3, consumed: [2] });
-    assert.deepEqual({ entrypointIndex: perlConsumed.entrypointIndex, consumed: perlConsumed.consumedValueIndices }, { entrypointIndex: 3, consumed: [2] });
     assert.ok(inspectRubyPerlSidecarArgv(['ruby', '-Wn'], { implicitEntrypoint: true }).violation);
     assert.equal(inspectRubyPerlSidecarArgv(['perl', '-0x41'], { implicitEntrypoint: true }).violation, null);
     assert.ok(inspectRubyPerlSidecarArgv(['perl', '-0x41p'], { implicitEntrypoint: true }).violation);
@@ -3725,6 +3729,8 @@ describe('Capability Plane v0.2 core contracts', () => {
     const unsafePerl = fromUtf8('#!/usr/bin/env -S perl -Un\nprint "sidecar";\n');
     const unsafeRubyTrace = fromUtf8('#!/usr/bin/env -S ruby -y\nputs "sidecar"\n');
     const unsafePerlCore = fromUtf8('#!/usr/bin/env -S perl -u\nprint "sidecar";\n');
+    const unsafeRubyLoadPath = fromUtf8('#!/usr/bin/env -S ruby -I/tmp/hooks\nputs "sidecar"\n');
+    const unsafePerlLoadPath = fromUtf8('#!/usr/bin/env -S perl -I /tmp/hooks\nprint "sidecar";\n');
     const unsafePerlHexFallback = fromUtf8('#!/usr/bin/env -S perl -0x41p\nprint "sidecar";\n');
     const unsafeRubyAlias = fromUtf8('#!/usr/bin/env -S notruby -n\nputs "sidecar"\n');
     const unsafePerlAlias = fromUtf8('#!/usr/bin/env -S notperl -n\nprint "sidecar";\n');
@@ -3739,14 +3745,25 @@ describe('Capability Plane v0.2 core contracts', () => {
       docs: [],
       checksums: [{ path: artifactPath, checksum: `sha256:${await sha256Hex(bytes)}` }],
     });
-    assert.equal(await assertCapabilityPackChecksums(
-      await manifestFor(['ruby', '-I', './lib', './adapter.rb'], './adapter.rb', safeRuby),
-      { './adapter.rb': safeRuby },
-    ), true);
-    assert.equal(await assertCapabilityPackChecksums(
-      await manifestFor(['perl', '-I', './lib', './adapter.pl'], './adapter.pl', safePerl),
-      { './adapter.pl': safePerl },
-    ), true);
+    for (const [command, artifactPath, bytes] of [
+      [['ruby', '-I/tmp/hooks', './adapter.rb'], './adapter.rb', safeRuby],
+      [['ruby3.2', '-I', './hooks', './adapter.rb'], './adapter.rb', safeRuby],
+      [['env', 'ruby', '-I/tmp/hooks', './adapter.rb'], './adapter.rb', safeRuby],
+      [['perl', '-I/tmp/hooks', './adapter.pl'], './adapter.pl', safePerl],
+      [['perl5.36', '-I', './hooks', './adapter.pl'], './adapter.pl', safePerl],
+      [['timeout', '1', 'perl', '-I/tmp/hooks', './adapter.pl'], './adapter.pl', safePerl],
+      [['./adapter.rb'], './adapter.rb', unsafeRubyLoadPath],
+      [['./adapter.pl'], './adapter.pl', unsafePerlLoadPath],
+    ]) {
+      await assert.rejects(
+        async () => assertCapabilityPackChecksums(
+          await manifestFor(command, artifactPath, bytes),
+          { [artifactPath]: bytes },
+        ),
+        { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+        JSON.stringify(command),
+      );
+    }
     assert.equal(await assertCapabilityPackChecksums(
       await manifestFor(['perl', '-0x41', './adapter.pl'], './adapter.pl', safePerl),
       { './adapter.pl': safePerl },
@@ -3755,6 +3772,27 @@ describe('Capability Plane v0.2 core contracts', () => {
       await manifestFor(['./adapter.rb'], './adapter.rb', safeRuby),
       { './adapter.rb': safeRuby },
     ), true);
+    assert.equal(await assertCapabilityPackChecksums(
+      await manifestFor(['ruby', './adapter.rb', '-I/tmp/hooks'], './adapter.rb', safeRuby),
+      { './adapter.rb': safeRuby },
+    ), true);
+    assert.equal(await assertCapabilityPackChecksums(
+      await manifestFor(['perl', './adapter.pl', '-I', 'hooks'], './adapter.pl', safePerl),
+      { './adapter.pl': safePerl },
+    ), true);
+    for (const [command, artifactPath, bytes] of [
+      [['curl', './adapter.rb', 'https://example.invalid'], './adapter.rb', safeRuby],
+      [['curl', 'https://example.invalid', './adapter.pl'], './adapter.pl', safePerl],
+    ]) {
+      await assert.rejects(
+        async () => assertCapabilityPackChecksums(
+          await manifestFor(command, artifactPath, bytes),
+          { [artifactPath]: bytes },
+        ),
+        { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+        JSON.stringify(command),
+      );
+    }
     await assert.rejects(
       async () => assertCapabilityPackChecksums(
         await manifestFor(['ruby', './adapter.rb'], './adapter.rb', unsafeRuby),

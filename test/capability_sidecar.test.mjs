@@ -511,7 +511,11 @@ exit 97
           { LD_PRELOAD: './preload.so' },
           { DYLD_INSERT_LIBRARIES: './preload.dylib' },
           { RUBYOPT: '-r./preload.rb' },
+          { RUBYLIB: './ruby-lib' },
+          { RUBYGEMS_GEMDEPS: './Gemfile' },
           { PERL5OPT: '-MPreload' },
+          { PERL5LIB: './perl-lib' },
+          { PERLLIB: './legacy-perl-lib' },
           { PYTHONPATH: './preload-dir' },
           { PYTHONHOME: './python-home' },
           { PYTHONUSERBASE: './python-user-base' },
@@ -546,6 +550,11 @@ exit 97
           ['env', '--ignore-environment', 'python3', './adapter.py'],
           ['env', 'LD_PRELOAD=./preload.so', 'python3', './adapter.py'],
           ['env', 'DYLD_INSERT_LIBRARIES=./preload.dylib', 'python3', './adapter.py'],
+          ['env', 'RUBYLIB=./ruby-lib', 'ruby', './adapter.rb'],
+          ['env', '-S', 'RUBYLIB=./ruby-lib ruby ./adapter.rb'],
+          ['env', 'RUBYGEMS_GEMDEPS=./Gemfile', 'ruby', './adapter.rb'],
+          ['env', 'PERL5LIB=./perl-lib', 'perl', './adapter.pl'],
+          ['env', 'PERLLIB=./legacy-perl-lib', 'perl', './adapter.pl'],
         ]) {
           assert.throws(
             () => new CapabilitySidecar({ command, timeoutMs: 1000 }),
@@ -974,6 +983,7 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
           ['timeout', '1', 'python3', '-', './adapter.py'],
           ['perl', '-e', 'print 1'],
           ['perl', '-MPreload', './adapter.pl'],
+          ['perl', '-Ivendor', './adapter.pl'],
           ['perl', '-c', './adapter.pl'],
           ['perl', '-d:Some::Mod', './adapter.pl'],
           ['perl', '-n', './adapter.pl'],
@@ -992,6 +1002,7 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
           ['perl5.36', '-v', './adapter.pl'],
           ['ruby', '-e', 'puts 1'],
           ['ruby', '-r./preload.rb', './adapter.rb'],
+          ['ruby', '-Ivendor', './adapter.rb'],
           ['ruby', '-c', './adapter.rb'],
           ['ruby', '-n', './adapter.rb'],
           ['ruby', '-an', './adapter.rb'],
@@ -1039,12 +1050,6 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
             () => new CapabilitySidecar({ command, timeoutMs: 1000 }).manifest(),
             { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
           );
-        }
-        for (const command of [
-          ['perl', '-Ivendor', './adapter.pl'],
-          ['ruby', '-Ivendor', './adapter.rb'],
-        ]) {
-          assert.doesNotThrow(() => new CapabilitySidecar({ command, timeoutMs: 1000 }));
         }
         assert.throws(
           () => new CapabilitySidecar({ command: ['/tmp/bun', dotenvPath], timeoutMs: 1000 }),
@@ -1309,9 +1314,12 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
       ['ruby', '-y', './adapter.rb'],
       ['ruby', '-S', './adapter.rb'],
       ['ruby', '-Cdir', './adapter.rb'],
+      ['ruby', '-I/tmp/hooks', './adapter.rb'],
+      ['ruby', '-I', '/tmp/hooks', './adapter.rb'],
       ['ruby', '-I', './lib', '-p', './adapter.rb'],
       ['ruby3.2', '-Wn', './adapter.rb'],
       ['ruby3.2', '-y', './adapter.rb'],
+      ['ruby3.2', '-I/tmp/hooks', './adapter.rb'],
       ['perl', '-Un', './adapter.pl'],
       ['perl', '-Fn', './adapter.pl'],
       ['perl', '-0p', './adapter.pl'],
@@ -1327,15 +1335,20 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
       ['perl', '-wS', './adapter.pl'],
       ['perl', '-u', './adapter.pl'],
       ['perl', '-q', './adapter.pl'],
+      ['perl', '-I/tmp/hooks', './adapter.pl'],
+      ['perl', '-I', '/tmp/hooks', './adapter.pl'],
       ['perl', '-I', './lib', '-p', './adapter.pl'],
       ['perl5.36', '-Un', './adapter.pl'],
       ['perl5.36', '-u', './adapter.pl'],
       ['perl5.36', '-q', './adapter.pl'],
       ['perl5.36', '-0x41p', './adapter.pl'],
+      ['perl5.36', '-I', '/tmp/hooks', './adapter.pl'],
       ['env', 'ruby', '-Wn', './adapter.rb'],
       ['env', 'ruby', '-y', './adapter.rb'],
+      ['env', 'ruby', '-I/tmp/hooks', './adapter.rb'],
       ['timeout', '1', 'perl', '-Un', './adapter.pl'],
       ['timeout', '1', 'perl', '-u', './adapter.pl'],
+      ['timeout', '1', 'perl', '-I', '/tmp/hooks', './adapter.pl'],
       ['env', 'perl', '-q', './adapter.pl'],
       ['env', 'perl', '-0x41p', './adapter.pl'],
       ['env', 'timeout', '1', 'ruby', '-0n', './adapter.rb'],
@@ -1353,18 +1366,20 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
     }
 
     const admitted = [
-      ['ruby', '-Ivendorp', './adapter.rb'],
       ['ruby', '-Fnp', './adapter.rb'],
       ['ruby', '-Kp', './adapter.rb'],
       ['ruby', '-W:performance', './adapter.rb'],
-      ['ruby', '-I', './lib', './adapter.rb'],
       ['ruby', './adapter.rb', '-p'],
-      ['perl', '-Ip', './adapter.pl'],
+      ['ruby', './adapter.rb', '-I/tmp/hooks'],
+      ['ruby', './adapter.rb', '-I', '/tmp/hooks'],
       ['perl', '-ip', './adapter.pl'],
       ['perl', '-0x41', './adapter.pl'],
       ['perl', '-0x41f', './adapter.pl'],
-      ['perl', '-I', './lib', './adapter.pl'],
       ['perl', './adapter.pl', '-p'],
+      ['perl', './adapter.pl', '-I/tmp/hooks'],
+      ['perl', './adapter.pl', '-I', '/tmp/hooks'],
+      ['env', 'ruby', './adapter.rb', '-I/tmp/hooks'],
+      ['timeout', '1', 'perl', './adapter.pl', '-I/tmp/hooks'],
     ];
     for (const command of admitted) {
       assert.doesNotThrow(
@@ -1381,6 +1396,8 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
       const unsafePerlEnv = path.join(root, 'unsafe-perl-env');
       const unsafeRubyTrace = path.join(root, 'unsafe-ruby-trace');
       const unsafePerlCore = path.join(root, 'unsafe-perl-core');
+      const unsafeRubyLoadPath = path.join(root, 'unsafe-ruby-load-path');
+      const unsafePerlLoadPath = path.join(root, 'unsafe-perl-load-path');
       const unsafePerlHexFallback = path.join(root, 'unsafe-perl-hex-fallback');
       const unsafeRubyAlias = path.join(root, 'unsafe-ruby-alias');
       const unsafePerlAlias = path.join(root, 'unsafe-perl-alias');
@@ -1397,6 +1414,8 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
       await writeFile(unsafePerlEnv, '#!/usr/bin/env -S PERL5OPT=-MPreload perl\nprint "sidecar";\n');
       await writeFile(unsafeRubyTrace, '#!/usr/bin/env -S ruby -y\nputs "sidecar"\n');
       await writeFile(unsafePerlCore, '#!/usr/bin/env -S perl -u\nprint "sidecar";\n');
+      await writeFile(unsafeRubyLoadPath, '#!/usr/bin/env -S ruby -I/tmp/hooks\nputs "sidecar"\n');
+      await writeFile(unsafePerlLoadPath, '#!/usr/bin/env -S perl -I /tmp/hooks\nprint "sidecar";\n');
       await writeFile(unsafePerlHexFallback, '#!/usr/bin/env -S perl -0x41p\nprint "sidecar";\n');
       await writeFile(unsafeRubyAlias, '#!/usr/bin/env -S notruby -n\nputs "sidecar"\n');
       await writeFile(unsafePerlAlias, '#!/usr/bin/env -S notperl -n\nprint "sidecar";\n');
@@ -1422,6 +1441,14 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
         ['ruby', unsafeRubyTrace],
         [unsafePerlCore],
         ['perl', unsafePerlCore],
+        [unsafeRubyLoadPath],
+        ['ruby', unsafeRubyLoadPath],
+        ['ruby3.2', unsafeRubyLoadPath],
+        ['env', unsafeRubyLoadPath],
+        [unsafePerlLoadPath],
+        ['perl', unsafePerlLoadPath],
+        ['perl5.36', unsafePerlLoadPath],
+        ['timeout', '1', unsafePerlLoadPath],
         [unsafePerlHexFallback],
         ['perl', unsafePerlHexFallback],
         ['ruby', unsafeRubyAlias],
@@ -1468,6 +1495,38 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
       assert.doesNotThrow(() => new CapabilitySidecar({ command: ['ruby', longSafeRuby], timeoutMs: 1000 }));
       assert.doesNotThrow(() => new CapabilitySidecar({ command: [safeRuby], timeoutMs: 1000 }));
       assert.doesNotThrow(() => new CapabilitySidecar({ command: ['ruby', safeRuby], timeoutMs: 1000 }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('runs non-executable Ruby and Perl shebang artifacts through their validated runtimes', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-direct-shebang-runtime-'));
+    try {
+      const runtimeSource = `#!/usr/bin/env bun
+        await new Response(Bun.stdin.stream()).text();
+        process.stdout.write(JSON.stringify({
+          command: 'manifest',
+          payload: { argv: process.argv.slice(2) }
+        }) + '\\n');
+      `;
+      for (const { runtimeName, adapterName, tail } of [
+        { runtimeName: 'ruby3.2', adapterName: 'adapter.rb', tail: 'ruby-tail' },
+        { runtimeName: 'perl5.36', adapterName: 'adapter.pl', tail: 'perl-tail' },
+      ]) {
+        const runtimePath = path.join(root, runtimeName);
+        const adapterPath = path.join(root, adapterName);
+        await writeFile(runtimePath, runtimeSource);
+        await chmod(runtimePath, 0o755);
+        await writeFile(adapterPath, `#!${runtimePath} -w\nignored by the fake runtime\n`);
+        await chmod(adapterPath, 0o600);
+
+        const result = await new CapabilitySidecar({
+          command: [adapterPath, tail],
+          timeoutMs: 1000,
+        }).manifest();
+        assert.deepEqual(result.argv, ['-w', adapterPath, tail]);
+      }
     } finally {
       await rm(root, { recursive: true, force: true });
     }

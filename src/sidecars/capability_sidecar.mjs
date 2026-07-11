@@ -515,7 +515,8 @@ function sidecarSpawnArgv(argv, cwd = undefined, env = undefined) {
     if (shebangRuntime === 'node' || shebangRuntime === 'deno') {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar Node and Deno shebang entrypoints must use explicit runtime commands');
     }
-    const nonJavaScriptShebangArgv = nonJavaScriptShebangRuntimeArgv(inspectionPath) ??
+    const directNonJavaScriptShebangArgv = nonJavaScriptShebangRuntimeArgv(inspectionPath);
+    const nonJavaScriptShebangArgv = directNonJavaScriptShebangArgv ??
       pathResolvedNonJavaScriptRuntimeShebangArgv(argv[0], env?.PATH ?? sidecarPath(), cwd);
     if (nonJavaScriptShebangArgv) assertSupportedNonJavaScriptShebangRuntimeCommand(nonJavaScriptShebangArgv);
     assertSupportedDirectRuntimeCommand(argv);
@@ -533,6 +534,9 @@ function sidecarSpawnArgv(argv, cwd = undefined, env = undefined) {
       const shebangArgv = ['bun', ...bunShebangArgs, ...argv];
       assertSupportedBunEnvFileOptions(shebangArgv);
       return [TRUSTED_BUN_EXECUTABLE, emptyEnvFileArg, emptyConfigArg, noInstallArg, ...bunShebangArgs, ...argv];
+    }
+    if (directNonJavaScriptShebangArgv) {
+      return [...directNonJavaScriptShebangArgv, argv[0], ...argv.slice(1)];
     }
     return argv;
   }
@@ -1380,7 +1384,11 @@ function unsupportedSidecarPreloadEnvKey(key) {
     normalized === 'DYLD_INSERT_LIBRARIES' ||
     normalized === 'NODE_OPTIONS' ||
     normalized === 'RUBYOPT' ||
+    normalized === 'RUBYLIB' ||
+    normalized === 'RUBYGEMS_GEMDEPS' ||
     normalized === 'PERL5OPT' ||
+    normalized === 'PERL5LIB' ||
+    normalized === 'PERLLIB' ||
     normalized === 'PYTHONPATH' ||
     normalized === 'PYTHONHOME' ||
     normalized === 'PYTHONUSERBASE' ||
