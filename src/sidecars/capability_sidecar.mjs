@@ -5,7 +5,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { receiverLocalEffectContext } from '../core/effect_context.mjs';
-import { MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES, inspectRubyPerlSidecarArgv } from '../core/capability_pack.mjs';
+import {
+  MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES,
+  inspectRubyPerlSidecarArgv,
+  phpSidecarRuntimeOptionIsUnsafe,
+} from '../core/capability_pack.mjs';
 import { assertBytes, fail, fromUtf8, stableJson } from '../core/store.mjs';
 
 const TRUSTED_BUN_EXECUTABLE = process.execPath;
@@ -1124,23 +1128,7 @@ function unsupportedOtherNonJavaScriptRuntimeOption(runtime, value) {
       /^-V+$/.test(value) || value === '--version';
   }
   if (runtime === 'php') {
-    return value === '-r' || value.startsWith('-r') ||
-      value === '-B' || value.startsWith('-B') ||
-      value === '-R' || value.startsWith('-R') ||
-      value === '-E' || value.startsWith('-E') ||
-      value === '-d' || value.startsWith('-d') ||
-      value === '-c' || value.startsWith('-c') ||
-      value === '-l' || value.startsWith('-l') ||
-      value === '-?' ||
-      value === '-a' || value.startsWith('-a') ||
-      value === '-h' || value.startsWith('-h') ||
-      value === '-i' || value.startsWith('-i') ||
-      value === '-m' || value.startsWith('-m') ||
-      value === '-s' || value.startsWith('-s') ||
-      value === '-w' || value.startsWith('-w') ||
-      unsupportedPhpLongRuntimeOption(value) ||
-      value === '-v' || value === '--version' ||
-      value === '-S' || value.startsWith('-S');
+    return phpSidecarRuntimeOptionIsUnsafe(value);
   }
   if (runtime === 'lua' || runtime === 'luajit') {
     return value === '-e' || value.startsWith('-e') || value === '-l' || value.startsWith('-l') ||
@@ -1152,24 +1140,6 @@ function unsupportedOtherNonJavaScriptRuntimeOption(runtime, value) {
       value === '--version' || value === '--help' || value === '-';
   }
   return value === '-e' || value.startsWith('-e') || value === '--eval' || value.startsWith('--eval=');
-}
-
-function unsupportedPhpLongRuntimeOption(value) {
-  const option = value.includes('=') ? value.slice(0, value.indexOf('=')) : value;
-  return [
-    '--help',
-    '--info',
-    '--ini',
-    '--interactive',
-    '--modules',
-    '--ri',
-    '--rc',
-    '--re',
-    '--rf',
-    '--rz',
-    '--strip',
-    '--syntax-highlight',
-  ].includes(option);
 }
 
 function nonJavaScriptRuntimeOptionConsumesNext(runtime, value) {

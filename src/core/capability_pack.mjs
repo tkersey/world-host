@@ -91,6 +91,14 @@ const SIDECAR_INLINE_EVAL_RUNTIMES = new Set([
   'ruby',
   'rscript',
 ]);
+const PHP_SIDECAR_EXECUTION_NEUTRAL_SHORT_OPTIONS = new Set(['C', 'e', 'H', 'n', 'q']);
+const PHP_SIDECAR_EXECUTION_NEUTRAL_LONG_OPTIONS = new Set([
+  '--hide-args',
+  '--no-chdir',
+  '--no-header',
+  '--no-php-ini',
+  '--profile-info',
+]);
 const SIDECAR_RUNTIME_VALUE_OPTIONS = new Set([
   '--config',
   '--config-file',
@@ -3305,7 +3313,7 @@ function unsupportedOtherNonJavaScriptRuntimeOption(runtime, value) {
       value === '-?' || value.startsWith('-h') || value.startsWith('--help') ||
       /^-V+$/.test(value) || value === '--version';
   }
-  if (runtime === 'php') return unsupportedPhpRuntimeOption(value);
+  if (runtime === 'php') return phpSidecarRuntimeOptionIsUnsafe(value);
   if (runtime === 'lua' || runtime === 'luajit') {
     return value === '-e' || value.startsWith('-e') || value === '-l' || value.startsWith('-l') ||
       value === '-v' || value === '--version' || value === '-h' || value === '--help' || value === '-';
@@ -3334,41 +3342,20 @@ function sidecarUnsupportedPhpRuntimeOption(command, index) {
   if (runtime !== 'php' || index < 1) return false;
   const entrypointIndex = sidecarEntrypointIndex(command);
   if (entrypointIndex >= 0 && index > entrypointIndex) return false;
-  return unsupportedPhpRuntimeOption(command[index]);
+  return phpSidecarRuntimeOptionIsUnsafe(command[index]);
 }
 
 function phpRuntimeName(runtime) {
   return /^php\d+(?:\.\d+)*$/.test(runtime) ? 'php' : runtime;
 }
 
-function unsupportedPhpRuntimeOption(value) {
+export function phpSidecarRuntimeOptionIsUnsafe(value) {
   if (typeof value !== 'string') return false;
-  const option = value.includes('=') ? value.slice(0, value.indexOf('=')) : value;
-  return value === '-?' ||
-    value === '-r' || value.startsWith('-r') ||
-    value === '-B' || value.startsWith('-B') ||
-    value === '-R' || value.startsWith('-R') ||
-    value === '-E' || value.startsWith('-E') ||
-    value === '-d' || value.startsWith('-d') ||
-    value === '-c' || value.startsWith('-c') ||
-    value === '-l' || value.startsWith('-l') ||
-    ['-a', '-h', '-i', '-m', '-s', '-w'].some((prefix) => value === prefix || value.startsWith(prefix)) ||
-    value === '-v' || value === '--version' ||
-    value === '-S' || value.startsWith('-S') ||
-    [
-      '--help',
-      '--info',
-      '--ini',
-      '--interactive',
-      '--modules',
-      '--ri',
-      '--rc',
-      '--re',
-      '--rf',
-      '--rz',
-      '--strip',
-      '--syntax-highlight',
-    ].includes(option);
+  if (!value.startsWith('-')) return false;
+  if (value === '-f' || value === '--file') return false;
+  if (value.startsWith('--')) return !PHP_SIDECAR_EXECUTION_NEUTRAL_LONG_OPTIONS.has(value);
+  if (value === '-') return true;
+  return [...value.slice(1)].some((option) => !PHP_SIDECAR_EXECUTION_NEUTRAL_SHORT_OPTIONS.has(option));
 }
 
 function sidecarRuntimeRemoteEntrypoint(command, index) {

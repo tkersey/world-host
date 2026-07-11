@@ -15,6 +15,7 @@ import {
   capabilityPackFingerprint,
   inspectRubyPerlSidecarArgv,
   MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES,
+  phpSidecarRuntimeOptionIsUnsafe,
   validateCapabilityPackManifest,
   world_host_capability_driver_abi_version,
   world_host_capability_pack_format_version,
@@ -3169,6 +3170,40 @@ describe('Capability Plane v0.2 core contracts', () => {
         { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
       );
     }
+    const unsafePhpRuntimeOptions = [
+      '-z/tmp/unreviewed.so',
+      '-nz/tmp/unreviewed.so',
+      '-nrecho(1);',
+      '-t/tmp/docroot',
+      '--zend-extension=/tmp/unreviewed.so',
+      '--zend-extension',
+      '--run=echo(1);',
+      '--run',
+      '--process-begin=echo(1);',
+      '--process-code=echo(1);',
+      '--process-end=echo(1);',
+      '--define=auto_prepend_file=/tmp/unreviewed.php',
+      '--php-ini=/tmp/unreviewed.ini',
+      '--docroot=/tmp/docroot',
+      '--server=127.0.0.1:0',
+      '--syntax-check',
+      '--usage',
+      '--unknown-future-mode',
+    ];
+    for (const value of unsafePhpRuntimeOptions) assert.equal(phpSidecarRuntimeOptionIsUnsafe(value), true);
+    for (const value of [
+      './adapter.php',
+      '-n',
+      '-nq',
+      '-CenqH',
+      '-f',
+      '--file',
+      '--hide-args',
+      '--no-chdir',
+      '--no-header',
+      '--no-php-ini',
+      '--profile-info',
+    ]) assert.equal(phpSidecarRuntimeOptionIsUnsafe(value), false);
     for (const command of [
       ['php', '-a', './adapter.php'],
       ['php', '-d', 'memory_limit=128M', './adapter.php'],
@@ -3177,6 +3212,7 @@ describe('Capability Plane v0.2 core contracts', () => {
       ['php', '-s', './adapter.php'],
       ['php', '-w', './adapter.php'],
       ['php', '--ini', './adapter.php'],
+      ...unsafePhpRuntimeOptions.map((value) => ['php', value, './adapter.php']),
     ]) {
       await assert.rejects(
         () => assertCapabilityPackChecksums({

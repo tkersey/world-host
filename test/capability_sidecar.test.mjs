@@ -354,6 +354,12 @@ exit 97
         ['php', '-s', './adapter.php'],
         ['php', '-w', './adapter.php'],
         ['php', '--ini', './adapter.php'],
+        ['php', '-z/tmp/unreviewed.so', './adapter.php'],
+        ['php', '-nz/tmp/unreviewed.so', './adapter.php'],
+        ['php', '--zend-extension=/tmp/unreviewed.so', './adapter.php'],
+        ['php', '--run=echo(1);', './adapter.php'],
+        ['php', '--process-begin=echo(1);', './adapter.php'],
+        ['php', '--php-ini=/tmp/unreviewed.ini', './adapter.php'],
       ]) {
         assert.throws(
           () => new CapabilitySidecar({ command }),
@@ -1659,6 +1665,35 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
         );
       }
 
+      for (const [index, option] of [
+        '-z',
+        '-z/tmp/unreviewed.so',
+        '-nz/tmp/unreviewed.so',
+        '-nrecho(1);',
+        '-t',
+        '-t/tmp/docroot',
+        '--zend-extension',
+        '--zend-extension=/tmp/unreviewed.so',
+        '--run',
+        '--run=echo(1);',
+        '--process-begin=echo(1);',
+        '--process-code=echo(1);',
+        '--process-end=echo(1);',
+        '--define=auto_prepend_file=/tmp/unreviewed.php',
+        '--php-ini=/tmp/unreviewed.ini',
+        '--docroot=/tmp/docroot',
+        '--server=127.0.0.1:0',
+        '--unknown-future-mode',
+      ].entries()) {
+        const adapterPath = path.join(root, `php-pre-entry-option-${index}.php`);
+        await writeFile(adapterPath, `#!/usr/bin/env -S php ${option}\n`);
+        await chmod(adapterPath, 0o600);
+        assert.throws(
+          () => new CapabilitySidecar({ command: [adapterPath], timeoutMs: 1000 }),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+      }
+
       for (const selector of ['-f', '--file']) {
         const adapterPath = path.join(root, `php-terminal-${selector.replaceAll('-', '')}.php`);
         await writeFile(adapterPath, `#!/usr/bin/env -S php ${selector}\n`);
@@ -1671,15 +1706,23 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
         assert.deepEqual(selected.argv, [selector, adapterPath]);
       }
 
-      const safePhpPath = path.join(root, 'safe-php.php');
-      await writeFile(safePhpPath, '#!/usr/bin/env -S php -n\n');
-      await chmod(safePhpPath, 0o600);
-      const safePhp = await new CapabilitySidecar({
-        command: [safePhpPath],
-        timeoutMs: 1000,
-      }).manifest();
-      assert.equal(path.basename(safePhp.runtimePath), 'php');
-      assert.deepEqual(safePhp.argv, ['-n', safePhpPath]);
+      for (const [index, options] of [
+        ['-n'],
+        ['-nq'],
+        ['-CenqH'],
+        ['--no-php-ini'],
+        ['--no-chdir', '--profile-info', '--no-header', '--hide-args'],
+      ].entries()) {
+        const safePhpPath = path.join(root, `safe-php-${index}.php`);
+        await writeFile(safePhpPath, `#!/usr/bin/env -S php ${options.join(' ')}\n`);
+        await chmod(safePhpPath, 0o600);
+        const safePhp = await new CapabilitySidecar({
+          command: [safePhpPath],
+          timeoutMs: 1000,
+        }).manifest();
+        assert.equal(path.basename(safePhp.runtimePath), 'php');
+        assert.deepEqual(safePhp.argv, [...options, safePhpPath]);
+      }
     } finally {
       if (originalPath === undefined) delete process.env.PATH;
       else process.env.PATH = originalPath;
