@@ -1604,6 +1604,25 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
       await chmod(terminalDelimiterPath, 0o600);
       process.env.PATH = `${root}${path.delimiter}${originalPath ?? ''}`;
 
+      for (const [index, [runtime, entrypointToken]] of [
+        ['bun', '--eval=throw;#/adapter'],
+        ['python3', '-cprint(1);#/adapter.py'],
+        ['ruby', '-eabort;#/adapter.rb'],
+        ['php', '-recho(1);#/adapter.php'],
+        ['lua', '-eerror(1);#/adapter.lua'],
+        ['Rscript', '-equit();#/adapter.R'],
+      ].entries()) {
+        const entrypointPath = path.join(root, entrypointToken);
+        await mkdir(path.dirname(entrypointPath), { recursive: true });
+        await writeFile(entrypointPath, `#!/usr/bin/env ${runtime}\n`);
+        await chmod(entrypointPath, 0o600);
+        assert.throws(
+          () => new CapabilitySidecar({ command: [entrypointToken], cwd: root, timeoutMs: 1000 }),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+          `leading-hyphen lowered adapter ${index}`,
+        );
+      }
+
       assert.throws(
         () => new CapabilitySidecar({ command: [secondaryProgramPath], timeoutMs: 1000 }),
         { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },

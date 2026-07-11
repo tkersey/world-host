@@ -537,6 +537,9 @@ function sidecarSpawnArgv(argv, cwd = undefined, env = undefined) {
     assertSupportedNonJavaScriptRuntimeCommand(argv, cwd);
     assertSupportedWrappedNonJavaScriptRuntimeCommands(argv, cwd, env?.PATH ?? sidecarPath());
     const bunShebangArgs = bunShebangRuntimeArgs(inspectionPath);
+    if ((bunShebangArgs || directNonJavaScriptShebangArgv) && argv[0].startsWith('-')) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar shebang adapter paths must not begin with -');
+    }
     if (bunShebangArgs) {
       const shebangArgv = ['bun', ...bunShebangArgs, ...argv];
       assertSupportedBunEnvFileOptions(shebangArgv);
