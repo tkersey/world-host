@@ -2336,12 +2336,11 @@ function assertSidecarEntrypointScannable(command, packArtifacts) {
     if (rubyPerlAdmission.violation) {
       fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Ruby and Perl sidecars must name one checksum-covered adapter entrypoint');
     }
-    return;
+    fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'Ruby and Perl capability-pack adapters require equivalent dependency and host-authority confinement');
   }
   if (!sidecarRuntimeCommandPosition(command, 0) && sidecarCommandEntrypointArtifact(command) !== entrypoint) {
     fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', 'sidecar adapter entrypoints must be invoked directly or by a JavaScript runtime');
   }
-  if (artifactHasRubyPerlRuntimeShebang(entrypoint, packArtifacts)) return;
   if (sidecarCommandEntrypointNeedsJavaScriptScan(entrypoint, packArtifacts, {
     allowScannableExtensionless: sidecarRuntimeCommandPosition(command, 0),
   })) return;
@@ -2364,13 +2363,6 @@ function sidecarCommandEntrypointNeedsJavaScriptScan(artifactPath, packArtifacts
 
 function artifactHasJavaScriptRuntimeShebang(artifactPath, packArtifacts) {
   return artifactJavaScriptRuntimeShebang(artifactPath, packArtifacts) != null;
-}
-
-function artifactHasRubyPerlRuntimeShebang(artifactPath, packArtifacts) {
-  const firstLine = artifactShebangFirstLine(artifactPath, packArtifacts);
-  if (!firstLine) return false;
-  return sidecarShebangTokens(firstLine)
-    .some((token) => rubyPerlRuntimeName(commandBaseName(token).toLowerCase()) != null);
 }
 
 function artifactJavaScriptRuntimeShebang(artifactPath, packArtifacts) {

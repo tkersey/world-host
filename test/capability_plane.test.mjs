@@ -3658,7 +3658,7 @@ describe('Capability Plane v0.2 core contracts', () => {
     );
   });
 
-  it('uses one Ruby and Perl argv admission kernel for static entrypoint selection', async () => {
+  it('keeps one Ruby and Perl argv parser while rejecting unconfined capability-pack adapters', async () => {
     const rejected = [
       ['ruby', '-Wn', './adapter.rb'],
       ['ruby', '-0n', './adapter.rb'],
@@ -3725,6 +3725,8 @@ describe('Capability Plane v0.2 core contracts', () => {
     const base = fixtureCapabilityManifest();
     const safeRuby = fromUtf8('#!/usr/bin/env ruby\nputs "sidecar"\n');
     const safePerl = fromUtf8('#!/usr/bin/env perl\nprint "sidecar";\n');
+    const unconfinedRuby = fromUtf8("#!/usr/bin/env ruby\nFile.write('/tmp/world-host-undeclared-ruby-effect', 'owned')\n");
+    const unconfinedPerl = fromUtf8("#!/usr/bin/env perl\nopen my $file, '>', '/tmp/world-host-undeclared-perl-effect';\n");
     const unsafeRuby = fromUtf8('#!/usr/bin/env -S ruby -Wn\nputs "sidecar"\n');
     const unsafePerl = fromUtf8('#!/usr/bin/env -S perl -Un\nprint "sidecar";\n');
     const unsafeRubyTrace = fromUtf8('#!/usr/bin/env -S ruby -y\nputs "sidecar"\n');
@@ -3780,38 +3782,29 @@ describe('Capability Plane v0.2 core contracts', () => {
         JSON.stringify(command),
       );
     }
-    assert.equal(await assertCapabilityPackChecksums(
-      await manifestFor(['perl', '-0x41', './adapter.pl'], './adapter.pl', safePerl),
-      { './adapter.pl': safePerl },
-    ), true);
-    assert.equal(await assertCapabilityPackChecksums(
-      await manifestFor(['./adapter.rb'], './adapter.rb', safeRuby),
-      { './adapter.rb': safeRuby },
-    ), true);
-    assert.equal(await assertCapabilityPackChecksums(
-      await manifestFor(['ruby', './adapter.rb', '-I/tmp/hooks'], './adapter.rb', safeRuby),
-      { './adapter.rb': safeRuby },
-    ), true);
-    assert.equal(await assertCapabilityPackChecksums(
-      await manifestFor(['perl', './adapter.pl', '-I', 'hooks'], './adapter.pl', safePerl),
-      { './adapter.pl': safePerl },
-    ), true);
-    assert.equal(await assertCapabilityPackChecksums(
-      await manifestFor(['./adapter.rb'], './adapter.rb', safeRubyCrlf),
-      { './adapter.rb': safeRubyCrlf },
-    ), true);
-    assert.equal(await assertCapabilityPackChecksums(
-      await manifestFor(['ruby', './adapter.rb'], './adapter.rb', maximumRubyCrlf),
-      { './adapter.rb': maximumRubyCrlf },
-    ), true);
-    assert.equal(await assertCapabilityPackChecksums(
-      await manifestFor(['perl', './adapter.pl'], './adapter.pl', safeLowerPerlMarker),
-      { './adapter.pl': safeLowerPerlMarker },
-    ), true);
-    assert.equal(await assertCapabilityPackChecksums(
-      await manifestFor(['./adapter.rb'], './adapter.rb', receiverBoundRuby),
-      { './adapter.rb': receiverBoundRuby },
-    ), true);
+    for (const [command, artifactPath, bytes] of [
+      [['perl', '-0x41', './adapter.pl'], './adapter.pl', safePerl],
+      [['./adapter.rb'], './adapter.rb', safeRuby],
+      [['ruby', './adapter.rb', '-I/tmp/hooks'], './adapter.rb', safeRuby],
+      [['perl', './adapter.pl', '-I', 'hooks'], './adapter.pl', safePerl],
+      [['./adapter.rb'], './adapter.rb', safeRubyCrlf],
+      [['ruby', './adapter.rb'], './adapter.rb', maximumRubyCrlf],
+      [['perl', './adapter.pl'], './adapter.pl', safeLowerPerlMarker],
+      [['./adapter.rb'], './adapter.rb', receiverBoundRuby],
+      [['ruby', './adapter.rb'], './adapter.rb', unconfinedRuby],
+      [['./adapter.rb'], './adapter.rb', unconfinedRuby],
+      [['perl', './adapter.pl'], './adapter.pl', unconfinedPerl],
+      [['./adapter.pl'], './adapter.pl', unconfinedPerl],
+    ]) {
+      await assert.rejects(
+        async () => assertCapabilityPackChecksums(
+          await manifestFor(command, artifactPath, bytes),
+          { [artifactPath]: bytes },
+        ),
+        { code: 'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE' },
+        JSON.stringify(command),
+      );
+    }
     for (const [command, artifactPath, bytes] of [
       [['curl', './adapter.rb', 'https://example.invalid'], './adapter.rb', safeRuby],
       [['curl', 'https://example.invalid', './adapter.pl'], './adapter.pl', safePerl],
