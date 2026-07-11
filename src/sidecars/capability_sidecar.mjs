@@ -1036,10 +1036,13 @@ function assertSupportedNonJavaScriptShebangRuntimeCommand(argv) {
   for (let index = 1; index < argv.length; index += 1) {
     const value = argv[index];
     if (value === '--') {
-      if (index + 1 < argv.length) {
+      if (index + 1 < argv.length || runtime === 'php') {
         fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar shebang runtime commands must not name a second entrypoint');
       }
       return;
+    }
+    if (unsupportedNonJavaScriptShebangProgramOption(runtime, value)) {
+      fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar shebang runtime commands must not name a second entrypoint');
     }
     if (unsupportedOtherNonJavaScriptRuntimeOption(runtime, value)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar shebang runtime commands must not evaluate code before the entrypoint');
@@ -1098,6 +1101,14 @@ function nonJavaScriptRuntimeName(runtime) {
   if (/^lua\d+(?:\.\d+)*$/.test(runtime)) return 'lua';
   if (/^luajit\d+(?:\.\d+)*$/.test(runtime)) return 'luajit';
   return runtime;
+}
+
+function unsupportedNonJavaScriptShebangProgramOption(runtime, value) {
+  if (nonJavaScriptRuntimeName(runtime) !== 'php') return false;
+  return value === '-f' || value.startsWith('-f') ||
+    value === '-F' || value.startsWith('-F') ||
+    value === '--file' || value.startsWith('--file=') ||
+    value === '--process-file' || value.startsWith('--process-file=');
 }
 
 function unsupportedOtherNonJavaScriptRuntimeOption(runtime, value) {

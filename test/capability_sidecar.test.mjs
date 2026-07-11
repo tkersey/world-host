@@ -1574,19 +1574,23 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-shebang-program-ownership-'));
     const originalPath = process.env.PATH;
     try {
-      const receiverRuntimePath = path.join(root, 'python3');
+      const pythonRuntimePath = path.join(root, 'python3');
+      const phpRuntimePath = path.join(root, 'php');
       const secondaryProgramPath = path.join(root, 'secondary-program.py');
       const terminalDelimiterPath = path.join(root, 'terminal-delimiter.py');
-      await writeFile(receiverRuntimePath, `#!/usr/bin/env bun
+      const runtimeSource = `#!/usr/bin/env bun
         await new Response(Bun.stdin.stream()).text();
         process.stdout.write(JSON.stringify({
           command: 'manifest',
           payload: { runtimePath: process.argv[1], argv: process.argv.slice(2) }
         }) + '\\n');
-      `);
+      `;
+      await writeFile(pythonRuntimePath, runtimeSource);
+      await writeFile(phpRuntimePath, runtimeSource);
       await writeFile(secondaryProgramPath, '#!/usr/bin/env -S python3 -- /tmp/unchecked.py\n');
       await writeFile(terminalDelimiterPath, '#!/usr/bin/env -S python3 --\n');
-      await chmod(receiverRuntimePath, 0o755);
+      await chmod(pythonRuntimePath, 0o755);
+      await chmod(phpRuntimePath, 0o755);
       await chmod(secondaryProgramPath, 0o600);
       await chmod(terminalDelimiterPath, 0o600);
       process.env.PATH = `${root}${path.delimiter}${originalPath ?? ''}`;
@@ -1601,6 +1605,36 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
       }).manifest();
       assert.equal(path.basename(result.runtimePath), 'python3');
       assert.deepEqual(result.argv, [terminalDelimiterPath]);
+
+      for (const [index, selector] of [
+        ['-f', '/tmp/unchecked.php'],
+        ['-f/tmp/unchecked.php'],
+        ['--file', '/tmp/unchecked.php'],
+        ['--file=/tmp/unchecked.php'],
+        ['-F', '/tmp/unchecked.php'],
+        ['-F/tmp/unchecked.php'],
+        ['--process-file', '/tmp/unchecked.php'],
+        ['--process-file=/tmp/unchecked.php'],
+        ['--'],
+      ].entries()) {
+        const adapterPath = path.join(root, `php-program-selector-${index}.php`);
+        await writeFile(adapterPath, `#!/usr/bin/env -S php ${selector.join(' ')}\n`);
+        await chmod(adapterPath, 0o600);
+        assert.throws(
+          () => new CapabilitySidecar({ command: [adapterPath], timeoutMs: 1000 }),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+      }
+
+      const safePhpPath = path.join(root, 'safe-php.php');
+      await writeFile(safePhpPath, '#!/usr/bin/env -S php -n\n');
+      await chmod(safePhpPath, 0o600);
+      const safePhp = await new CapabilitySidecar({
+        command: [safePhpPath],
+        timeoutMs: 1000,
+      }).manifest();
+      assert.equal(path.basename(safePhp.runtimePath), 'php');
+      assert.deepEqual(safePhp.argv, ['-n', safePhpPath]);
     } finally {
       if (originalPath === undefined) delete process.env.PATH;
       else process.env.PATH = originalPath;
