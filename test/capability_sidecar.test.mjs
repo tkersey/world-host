@@ -1575,6 +1575,7 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
     const originalPath = process.env.PATH;
     try {
       const pythonRuntimePath = path.join(root, 'python3');
+      const pypyRuntimePath = path.join(root, 'pypy3');
       const phpRuntimePath = path.join(root, 'php');
       const secondaryProgramPath = path.join(root, 'secondary-program.py');
       const terminalDelimiterPath = path.join(root, 'terminal-delimiter.py');
@@ -1586,10 +1587,12 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
         }) + '\\n');
       `;
       await writeFile(pythonRuntimePath, runtimeSource);
+      await writeFile(pypyRuntimePath, runtimeSource);
       await writeFile(phpRuntimePath, runtimeSource);
       await writeFile(secondaryProgramPath, '#!/usr/bin/env -S python3 -- /tmp/unchecked.py\n');
       await writeFile(terminalDelimiterPath, '#!/usr/bin/env -S python3 --\n');
       await chmod(pythonRuntimePath, 0o755);
+      await chmod(pypyRuntimePath, 0o755);
       await chmod(phpRuntimePath, 0o755);
       await chmod(secondaryProgramPath, 0o600);
       await chmod(terminalDelimiterPath, 0o600);
@@ -1605,6 +1608,36 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
       }).manifest();
       assert.equal(path.basename(result.runtimePath), 'python3');
       assert.deepEqual(result.argv, [terminalDelimiterPath]);
+
+      for (const [runtime, option] of [
+        ['python3', '-W'],
+        ['python3', '-X'],
+        ['pypy3', '-W'],
+        ['pypy3', '-X'],
+      ]) {
+        const adapterPath = path.join(root, `${runtime}-${option.slice(1)}-missing-value.py`);
+        await writeFile(adapterPath, `#!/usr/bin/env -S ${runtime} ${option}\n`);
+        await chmod(adapterPath, 0o600);
+        assert.throws(
+          () => new CapabilitySidecar({ command: [adapterPath], timeoutMs: 1000 }),
+          { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+        );
+      }
+
+      for (const args of [
+        ['-W', 'ignore', '-X', 'dev'],
+        ['-Wignore', '-Xdev'],
+      ]) {
+        const adapterPath = path.join(root, `python-valued-options-${args.length}.py`);
+        await writeFile(adapterPath, `#!/usr/bin/env -S python3 ${args.join(' ')}\n`);
+        await chmod(adapterPath, 0o600);
+        const valued = await new CapabilitySidecar({
+          command: [adapterPath],
+          timeoutMs: 1000,
+        }).manifest();
+        assert.equal(path.basename(valued.runtimePath), 'python3');
+        assert.deepEqual(valued.argv, [...args, adapterPath]);
+      }
 
       for (const [index, selector] of [
         ['-f', '/tmp/unchecked.php'],
@@ -1624,6 +1657,18 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
           () => new CapabilitySidecar({ command: [adapterPath], timeoutMs: 1000 }),
           { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
         );
+      }
+
+      for (const selector of ['-f', '--file']) {
+        const adapterPath = path.join(root, `php-terminal-${selector.replaceAll('-', '')}.php`);
+        await writeFile(adapterPath, `#!/usr/bin/env -S php ${selector}\n`);
+        await chmod(adapterPath, 0o600);
+        const selected = await new CapabilitySidecar({
+          command: [adapterPath],
+          timeoutMs: 1000,
+        }).manifest();
+        assert.equal(path.basename(selected.runtimePath), 'php');
+        assert.deepEqual(selected.argv, [selector, adapterPath]);
       }
 
       const safePhpPath = path.join(root, 'safe-php.php');

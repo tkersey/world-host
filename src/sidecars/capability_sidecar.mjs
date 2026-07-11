@@ -1041,13 +1041,16 @@ function assertSupportedNonJavaScriptShebangRuntimeCommand(argv) {
       }
       return;
     }
-    if (unsupportedNonJavaScriptShebangProgramOption(runtime, value)) {
+    if (unsupportedNonJavaScriptShebangProgramOption(runtime, argv, index)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar shebang runtime commands must not name a second entrypoint');
     }
     if (unsupportedOtherNonJavaScriptRuntimeOption(runtime, value)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar shebang runtime commands must not evaluate code before the entrypoint');
     }
     if (nonJavaScriptRuntimeOptionConsumesNext(runtime, value)) {
+      if (index + 1 >= argv.length) {
+        fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar shebang runtime options must include their values before the entrypoint');
+      }
       index += 1;
       continue;
     }
@@ -1103,11 +1106,13 @@ function nonJavaScriptRuntimeName(runtime) {
   return runtime;
 }
 
-function unsupportedNonJavaScriptShebangProgramOption(runtime, value) {
+function unsupportedNonJavaScriptShebangProgramOption(runtime, argv, index) {
   if (nonJavaScriptRuntimeName(runtime) !== 'php') return false;
-  return value === '-f' || value.startsWith('-f') ||
+  const value = argv[index];
+  if (value === '-f' || value === '--file') return index + 1 < argv.length;
+  return value.startsWith('-f') ||
     value === '-F' || value.startsWith('-F') ||
-    value === '--file' || value.startsWith('--file=') ||
+    value.startsWith('--file=') ||
     value === '--process-file' || value.startsWith('--process-file=');
 }
 
