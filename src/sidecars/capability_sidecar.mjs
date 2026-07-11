@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
-import { closeSync, openSync, readSync } from 'node:fs';
+import { accessSync, closeSync, constants, openSync, readSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -540,7 +540,8 @@ function sidecarSpawnArgv(argv, cwd = undefined, env = undefined) {
     }
     if (directNonJavaScriptShebangArgv) {
       const [runtime, ...runtimeArgs] = directNonJavaScriptShebangArgv;
-      return [commandBaseName(runtime), ...runtimeArgs, argv[0], ...argv.slice(1)];
+      const runtimeBaseName = runtime.split(/[\\/]/).pop().replace(/\.exe$/i, '');
+      return [runtimeBaseName, ...runtimeArgs, argv[0], ...argv.slice(1)];
     }
     return argv;
   }
@@ -1348,13 +1349,17 @@ function pathResolvedNonJavaScriptRuntimeShebangArgv(value, searchPath, cwd = un
 
 function resolvePathCommand(value, searchPath, cwd = undefined) {
   if (!value || value.includes('\0') || value.includes('/') || value.includes('\\')) return null;
-  for (const directory of String(searchPath ?? '').split(path.delimiter)) {
-    if (!directory) continue;
-    const searchDirectory = path.isAbsolute(directory) ? directory : path.resolve(cwd ?? process.cwd(), directory);
+  if (typeof searchPath !== 'string') return null;
+  for (const directory of searchPath.split(path.delimiter)) {
+    const searchDirectory = !directory
+      ? path.resolve(cwd ?? process.cwd())
+      : path.isAbsolute(directory)
+        ? directory
+        : path.resolve(cwd ?? process.cwd(), directory);
     const candidate = path.join(searchDirectory, value);
     try {
-      const fd = openSync(candidate, 'r');
-      closeSync(fd);
+      accessSync(candidate, constants.X_OK);
+      if (!statSync(candidate).isFile()) continue;
       return candidate;
     } catch {
       continue;

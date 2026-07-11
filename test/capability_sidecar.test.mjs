@@ -1502,6 +1502,7 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
       }
       const originalPath = process.env.PATH;
       try {
+        await chmod(longUnsafeRuby, 0o755);
         process.env.PATH = `${root}${path.delimiter}${originalPath ?? ''}`;
         assert.throws(
           () => new CapabilitySidecar({ command: [path.basename(longUnsafeRuby)], timeoutMs: 1000 }),
@@ -1529,7 +1530,7 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
         await new Response(Bun.stdin.stream()).text();
         process.stdout.write(JSON.stringify({
           command: 'manifest',
-          payload: { source: ${JSON.stringify(source)}, argv: process.argv.slice(2) }
+          payload: { source: ${JSON.stringify(source)}, runtimePath: process.argv[1], argv: process.argv.slice(2) }
         }) + '\\n');
       `;
       const embeddedRuntimeRoot = path.join(root, 'embedded');
@@ -1540,6 +1541,7 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
         for (const { runtimeName, adapterName, tail } of [
           { runtimeName: 'ruby3.2', adapterName: 'adapter.rb', tail: 'ruby-tail' },
           { runtimeName: 'perl5.36', adapterName: 'adapter.pl', tail: 'perl-tail' },
+          { runtimeName: 'Rscript', adapterName: 'adapter.R', tail: 'r-tail' },
         ]) {
           const receiverRuntimePath = path.join(root, runtimeName);
           const embeddedRuntimePath = path.join(embeddedRuntimeRoot, runtimeName);
@@ -1556,6 +1558,7 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
             timeoutMs: 1000,
           }).manifest();
           assert.equal(result.source, 'receiver-path');
+          assert.equal(path.basename(result.runtimePath), runtimeName);
           assert.deepEqual(result.argv, ['-w', adapterPath, tail]);
         }
       } finally {
@@ -1592,7 +1595,7 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
 
       const inspectedEntrypoint = path.join(inspectedBin, 'adapter');
       const executableEntrypoint = path.join(executableBin, 'adapter');
-      await writeFile(inspectedEntrypoint, '#!/usr/bin/env ruby\nignored by admission only\n');
+      await writeFile(inspectedEntrypoint, 'harmless non-executable PATH shadow\n');
       await writeFile(executableEntrypoint, `#!${embeddedRuntimePath}\nignored by the embedded runtime\n`);
       await chmod(executableEntrypoint, 0o755);
 
@@ -1608,6 +1611,21 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
           JSON.stringify(command),
         );
       }
+
+      const cwdEntrypointRoot = path.join(root, 'cwd-entrypoint');
+      await mkdir(cwdEntrypointRoot);
+      const cwdEntrypoint = path.join(cwdEntrypointRoot, 'cwd-adapter');
+      await writeFile(cwdEntrypoint, `#!${embeddedRuntimePath}\nignored by the embedded runtime\n`);
+      await chmod(cwdEntrypoint, 0o755);
+      process.env.PATH = `${path.delimiter}${originalPath ?? ''}`;
+      await assert.rejects(
+        async () => new CapabilitySidecar({
+          command: ['cwd-adapter'],
+          cwd: cwdEntrypointRoot,
+          timeoutMs: 1000,
+        }).manifest(),
+        { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+      );
       await assert.rejects(readFile(markerPath), { code: 'ENOENT' });
     } finally {
       if (originalPath === undefined) delete process.env.PATH;
