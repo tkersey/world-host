@@ -1035,7 +1035,12 @@ function assertSupportedNonJavaScriptShebangRuntimeCommand(argv) {
   if (!nonJavaScriptRuntimeSupportsInlineEval(runtime)) return;
   for (let index = 1; index < argv.length; index += 1) {
     const value = argv[index];
-    if (value === '--') return;
+    if (value === '--') {
+      if (index + 1 < argv.length) {
+        fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar shebang runtime commands must not name a second entrypoint');
+      }
+      return;
+    }
     if (unsupportedOtherNonJavaScriptRuntimeOption(runtime, value)) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar shebang runtime commands must not evaluate code before the entrypoint');
     }

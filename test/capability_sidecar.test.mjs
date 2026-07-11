@@ -1570,6 +1570,44 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
     }
   });
 
+  it('keeps the admitted adapter as the sole program in lowered non-JavaScript shebang argv', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-shebang-program-ownership-'));
+    const originalPath = process.env.PATH;
+    try {
+      const receiverRuntimePath = path.join(root, 'python3');
+      const secondaryProgramPath = path.join(root, 'secondary-program.py');
+      const terminalDelimiterPath = path.join(root, 'terminal-delimiter.py');
+      await writeFile(receiverRuntimePath, `#!/usr/bin/env bun
+        await new Response(Bun.stdin.stream()).text();
+        process.stdout.write(JSON.stringify({
+          command: 'manifest',
+          payload: { runtimePath: process.argv[1], argv: process.argv.slice(2) }
+        }) + '\\n');
+      `);
+      await writeFile(secondaryProgramPath, '#!/usr/bin/env -S python3 -- /tmp/unchecked.py\n');
+      await writeFile(terminalDelimiterPath, '#!/usr/bin/env -S python3 --\n');
+      await chmod(receiverRuntimePath, 0o755);
+      await chmod(secondaryProgramPath, 0o600);
+      await chmod(terminalDelimiterPath, 0o600);
+      process.env.PATH = `${root}${path.delimiter}${originalPath ?? ''}`;
+
+      assert.throws(
+        () => new CapabilitySidecar({ command: [secondaryProgramPath], timeoutMs: 1000 }),
+        { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+      );
+      const result = await new CapabilitySidecar({
+        command: [terminalDelimiterPath],
+        timeoutMs: 1000,
+      }).manifest();
+      assert.equal(path.basename(result.runtimePath), 'python3');
+      assert.deepEqual(result.argv, [terminalDelimiterPath]);
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('rejects PATH-resolved and wrapper-selected implicit shebangs before spawn', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-path-spawn-identity-'));
     const originalPath = process.env.PATH;
