@@ -536,7 +536,8 @@ function sidecarSpawnArgv(argv, cwd = undefined, env = undefined) {
       return [TRUSTED_BUN_EXECUTABLE, emptyEnvFileArg, emptyConfigArg, noInstallArg, ...bunShebangArgs, ...argv];
     }
     if (directNonJavaScriptShebangArgv) {
-      return [...directNonJavaScriptShebangArgv, argv[0], ...argv.slice(1)];
+      const [runtime, ...runtimeArgs] = directNonJavaScriptShebangArgv;
+      return [commandBaseName(runtime), ...runtimeArgs, argv[0], ...argv.slice(1)];
     }
     return argv;
   }
@@ -1251,7 +1252,7 @@ function rubyPerlProgramShebangRuntimeArgv(value, runtime) {
   const firstLine = shebangFirstLine(value);
   if (!firstLine) return null;
   const tokens = shebangRuntimeTokens(firstLine);
-  const runtimeIndex = tokens.findIndex((token) => String(token).toLowerCase().includes(runtime));
+  const runtimeIndex = tokens.findIndex((token) => String(token).includes(runtime));
   if (runtimeIndex < 0) {
     fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', `explicit ${runtime} sidecars must not delegate to another shebang runtime`);
   }
@@ -1272,13 +1273,13 @@ function shebangFirstLine(value) {
   let bytes;
   let bytesRead = 0;
   try {
-    bytes = Buffer.alloc(MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES + 1);
+    bytes = Buffer.alloc(MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES + 2);
     fd = openSync(value, 'r');
     while (bytesRead < bytes.byteLength) {
       const count = readSync(fd, bytes, bytesRead, bytes.byteLength - bytesRead, bytesRead);
       if (count === 0) break;
       bytesRead += count;
-      if (bytes.subarray(0, bytesRead).includes(0x0a) || bytes.subarray(0, bytesRead).includes(0x0d)) break;
+      if (bytes.subarray(0, bytesRead).includes(0x0a)) break;
     }
   } catch {
     return null;
@@ -1286,20 +1287,19 @@ function shebangFirstLine(value) {
     if (fd !== undefined) closeSync(fd);
   }
   if (bytesRead < 2 || bytes[0] !== 0x23 || bytes[1] !== 0x21) return null;
-  const carriageReturn = bytes.subarray(0, bytesRead).indexOf(0x0d);
   const lineFeed = bytes.subarray(0, bytesRead).indexOf(0x0a);
-  const lineEnd = carriageReturn < 0
-    ? lineFeed
-    : lineFeed < 0
-      ? carriageReturn
-      : Math.min(carriageReturn, lineFeed);
-  if (lineEnd < 0 && bytesRead > MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES) {
+  const lineEnd = lineFeed < 0
+    ? bytesRead
+    : lineFeed > 0 && bytes[lineFeed - 1] === 0x0d
+      ? lineFeed - 1
+      : lineFeed;
+  if (lineEnd > MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES) {
     fail(
       'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID',
       `sidecar shebang first lines must not exceed ${MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES} bytes`,
     );
   }
-  const firstLineBytes = lineEnd < 0 ? bytes.subarray(0, bytesRead) : bytes.subarray(0, lineEnd);
+  const firstLineBytes = bytes.subarray(0, lineEnd);
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(firstLineBytes);
   } catch {

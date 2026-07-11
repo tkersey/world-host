@@ -2404,7 +2404,7 @@ function sidecarShebangRuntimeCommand(command, packArtifacts) {
   if (!firstLine) return null;
   const tokens = sidecarShebangTokens(firstLine);
   if (explicitRubyPerl) {
-    const runtimeIndex = tokens.findIndex((token) => String(token).toLowerCase().includes(explicitRubyPerl.runtime));
+    const runtimeIndex = tokens.findIndex((token) => String(token).includes(explicitRubyPerl.runtime));
     if (runtimeIndex < 0) {
       fail('ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE', `explicit ${explicitRubyPerl.runtime} sidecars must not delegate to another shebang runtime`);
     }
@@ -2501,14 +2501,13 @@ function artifactShebangFirstLine(artifactPath, packArtifacts) {
   const bytes = packArtifacts[artifactPath];
   if (!(bytes instanceof Uint8Array)) return false;
   if (bytes.byteLength < 2 || bytes[0] !== 0x23 || bytes[1] !== 0x21) return false;
-  const carriageReturn = bytes.indexOf(0x0d);
   const lineFeed = bytes.indexOf(0x0a);
-  const lineEnd = carriageReturn < 0
-    ? lineFeed
-    : lineFeed < 0
-      ? carriageReturn
-      : Math.min(carriageReturn, lineFeed);
-  const firstLineBytes = lineEnd < 0 ? bytes : bytes.subarray(0, lineEnd);
+  const lineEnd = lineFeed < 0
+    ? bytes.byteLength
+    : lineFeed > 0 && bytes[lineFeed - 1] === 0x0d
+      ? lineFeed - 1
+      : lineFeed;
+  const firstLineBytes = bytes.subarray(0, lineEnd);
   if (firstLineBytes.byteLength > MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES) {
     fail(
       'ERR_CAPABILITY_PACK_SIDECAR_COMMAND_UNSAFE',

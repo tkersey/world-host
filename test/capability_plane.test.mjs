@@ -3734,11 +3734,21 @@ describe('Capability Plane v0.2 core contracts', () => {
     const unsafePerlHexFallback = fromUtf8('#!/usr/bin/env -S perl -0x41p\nprint "sidecar";\n');
     const unsafeRubyAlias = fromUtf8('#!/usr/bin/env -S notruby -n\nputs "sidecar"\n');
     const unsafePerlAlias = fromUtf8('#!/usr/bin/env -S notperl -n\nprint "sidecar";\n');
+    const unsafeUpperRubyMarker = fromUtf8('#!/tmp/NOTRUBY -w\nputs "sidecar"\n');
+    const unsafeUpperPerlMarker = fromUtf8('#!/tmp/NOTPERL -w\nprint "sidecar";\n');
+    const unsafeRubyLoneCarriageReturn = fromUtf8('#!/usr/bin/ruby\r -I/tmp/hooks\nputs "sidecar"\n');
     const foreignPerlShebang = fromUtf8('#!/bin/echo -n\nprint "sidecar";\n');
     const unsafePerlUnknownOption = fromUtf8('#!/usr/bin/env -S perl -q\nprint "sidecar";\n');
     const longUnsafeRuby = fromUtf8(`#!/usr/bin/env -S ruby ${'-w '.repeat(100)}-y\nputs "sidecar"\n`);
     const longUnsafePerl = fromUtf8(`#!/usr/bin/perl${' '.repeat(300)}-u\nprint "sidecar";\n`);
     const overlongRuby = fromUtf8(`#!/usr/bin/env -S ruby ${'-w '.repeat(MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES)}-y\nputs "sidecar"\n`);
+    const safeRubyCrlf = fromUtf8('#!/usr/bin/env -S ruby -W:performance\r\nputs "sidecar"\n');
+    const safeLowerPerlMarker = fromUtf8('#!/tmp/notperl -w\nprint "sidecar";\n');
+    const receiverBoundRuby = fromUtf8('#!/tmp/ruby3.2 -w\nputs "sidecar"\n');
+    const maximumRubyPrefix = '#!/usr/bin/env ruby';
+    const maximumRubyCrlf = fromUtf8(
+      `${maximumRubyPrefix}${' '.repeat(MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES - maximumRubyPrefix.length)}\r\nputs "sidecar"\n`,
+    );
     const manifestFor = async (command, artifactPath, bytes) => ({
       ...base,
       adapter: { kind: 'sidecar', command },
@@ -3754,6 +3764,12 @@ describe('Capability Plane v0.2 core contracts', () => {
       [['timeout', '1', 'perl', '-I/tmp/hooks', './adapter.pl'], './adapter.pl', safePerl],
       [['./adapter.rb'], './adapter.rb', unsafeRubyLoadPath],
       [['./adapter.pl'], './adapter.pl', unsafePerlLoadPath],
+      [['ruby', './adapter.rb'], './adapter.rb', unsafeUpperRubyMarker],
+      [['ruby3.2', './adapter.rb'], './adapter.rb', unsafeUpperRubyMarker],
+      [['perl', './adapter.pl'], './adapter.pl', unsafeUpperPerlMarker],
+      [['perl5.36', './adapter.pl'], './adapter.pl', unsafeUpperPerlMarker],
+      [['./adapter.rb'], './adapter.rb', unsafeRubyLoneCarriageReturn],
+      [['ruby', './adapter.rb'], './adapter.rb', unsafeRubyLoneCarriageReturn],
     ]) {
       await assert.rejects(
         async () => assertCapabilityPackChecksums(
@@ -3779,6 +3795,22 @@ describe('Capability Plane v0.2 core contracts', () => {
     assert.equal(await assertCapabilityPackChecksums(
       await manifestFor(['perl', './adapter.pl', '-I', 'hooks'], './adapter.pl', safePerl),
       { './adapter.pl': safePerl },
+    ), true);
+    assert.equal(await assertCapabilityPackChecksums(
+      await manifestFor(['./adapter.rb'], './adapter.rb', safeRubyCrlf),
+      { './adapter.rb': safeRubyCrlf },
+    ), true);
+    assert.equal(await assertCapabilityPackChecksums(
+      await manifestFor(['ruby', './adapter.rb'], './adapter.rb', maximumRubyCrlf),
+      { './adapter.rb': maximumRubyCrlf },
+    ), true);
+    assert.equal(await assertCapabilityPackChecksums(
+      await manifestFor(['perl', './adapter.pl'], './adapter.pl', safeLowerPerlMarker),
+      { './adapter.pl': safeLowerPerlMarker },
+    ), true);
+    assert.equal(await assertCapabilityPackChecksums(
+      await manifestFor(['./adapter.rb'], './adapter.rb', receiverBoundRuby),
+      { './adapter.rb': receiverBoundRuby },
     ), true);
     for (const [command, artifactPath, bytes] of [
       [['curl', './adapter.rb', 'https://example.invalid'], './adapter.rb', safeRuby],

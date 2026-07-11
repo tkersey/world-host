@@ -1388,7 +1388,7 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
       );
     }
 
-    const root = await mkdtemp(path.join(tmpdir(), 'world-host-ruby-perl-admission-'));
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-runtime-admission-'));
     try {
       const unsafeRuby = path.join(root, 'unsafe-ruby');
       const unsafePerl = path.join(root, 'unsafe-perl');
@@ -1401,6 +1401,9 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
       const unsafePerlHexFallback = path.join(root, 'unsafe-perl-hex-fallback');
       const unsafeRubyAlias = path.join(root, 'unsafe-ruby-alias');
       const unsafePerlAlias = path.join(root, 'unsafe-perl-alias');
+      const unsafeUpperRubyMarker = path.join(root, 'unsafe-upper-ruby-marker');
+      const unsafeUpperPerlMarker = path.join(root, 'unsafe-upper-perl-marker');
+      const unsafeRubyLoneCarriageReturn = path.join(root, 'unsafe-ruby-lone-carriage-return');
       const foreignPerlShebang = path.join(root, 'foreign-perl-shebang');
       const unsafePerlUnknownOption = path.join(root, 'unsafe-perl-unknown-option');
       const longUnsafeRuby = path.join(root, 'long-unsafe-ruby');
@@ -1408,6 +1411,8 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
       const overlongRuby = path.join(root, 'overlong-ruby');
       const longSafeRuby = path.join(root, 'long-safe-ruby');
       const safeRuby = path.join(root, 'safe-ruby');
+      const safeRubyCrlf = path.join(root, 'safe-ruby-crlf');
+      const maximumRubyCrlf = path.join(root, 'maximum-ruby-crlf');
       await writeFile(unsafeRuby, '#!/usr/bin/env -S ruby -Wn\nputs "sidecar"\n');
       await writeFile(unsafePerl, '#!/usr/bin/env -S perl -Un\nprint "sidecar";\n');
       await writeFile(unsafeRubyEnv, '#!/usr/bin/env -S RUBYOPT=-r./preload.rb ruby\nputs "sidecar"\n');
@@ -1419,6 +1424,9 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
       await writeFile(unsafePerlHexFallback, '#!/usr/bin/env -S perl -0x41p\nprint "sidecar";\n');
       await writeFile(unsafeRubyAlias, '#!/usr/bin/env -S notruby -n\nputs "sidecar"\n');
       await writeFile(unsafePerlAlias, '#!/usr/bin/env -S notperl -n\nprint "sidecar";\n');
+      await writeFile(unsafeUpperRubyMarker, `#!${path.join(root, 'NOTRUBY')} -w\nputs "sidecar"\n`);
+      await writeFile(unsafeUpperPerlMarker, `#!${path.join(root, 'NOTPERL')} -w\nprint "sidecar";\n`);
+      await writeFile(unsafeRubyLoneCarriageReturn, '#!/usr/bin/ruby\r -I/tmp/hooks\nputs "sidecar"\n');
       await writeFile(foreignPerlShebang, '#!/bin/echo -n\nprint "sidecar";\n');
       await writeFile(unsafePerlUnknownOption, '#!/usr/bin/env -S perl -q\nprint "sidecar";\n');
       await writeFile(longUnsafeRuby, `#!/usr/bin/env -S ruby ${'-w '.repeat(100)}-y\nputs "sidecar"\n`);
@@ -1426,6 +1434,12 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
       await writeFile(overlongRuby, `#!/usr/bin/env -S ruby ${'-w '.repeat(MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES)}-y\nputs "sidecar"\n`);
       await writeFile(longSafeRuby, `#!/usr/bin/env -S ruby ${'-w '.repeat(100)}-W:performance\nputs "sidecar"\n`);
       await writeFile(safeRuby, '#!/usr/bin/env -S ruby -W:performance\nputs "sidecar"\n');
+      await writeFile(safeRubyCrlf, '#!/usr/bin/env -S ruby -W:performance\r\nputs "sidecar"\n');
+      const maximumRubyPrefix = '#!/usr/bin/env ruby';
+      await writeFile(
+        maximumRubyCrlf,
+        `${maximumRubyPrefix}${' '.repeat(MAXIMUM_SIDECAR_SHEBANG_LINE_BYTES - maximumRubyPrefix.length)}\r\nputs "sidecar"\n`,
+      );
       for (const command of [
         [unsafeRuby],
         ['ruby', unsafeRuby],
@@ -1457,6 +1471,12 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
         ['perl', unsafePerlAlias],
         ['perl5.36', unsafePerlAlias],
         ['env', 'perl', unsafePerlAlias],
+        ['ruby', unsafeUpperRubyMarker],
+        ['ruby3.2', unsafeUpperRubyMarker],
+        ['perl', unsafeUpperPerlMarker],
+        ['perl5.36', unsafeUpperPerlMarker],
+        [unsafeRubyLoneCarriageReturn],
+        ['ruby', unsafeRubyLoneCarriageReturn],
         ['perl', foreignPerlShebang],
         ['timeout', '1', 'perl', foreignPerlShebang],
         [unsafePerlUnknownOption],
@@ -1495,6 +1515,8 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
       assert.doesNotThrow(() => new CapabilitySidecar({ command: ['ruby', longSafeRuby], timeoutMs: 1000 }));
       assert.doesNotThrow(() => new CapabilitySidecar({ command: [safeRuby], timeoutMs: 1000 }));
       assert.doesNotThrow(() => new CapabilitySidecar({ command: ['ruby', safeRuby], timeoutMs: 1000 }));
+      assert.doesNotThrow(() => new CapabilitySidecar({ command: [safeRubyCrlf], timeoutMs: 1000 }));
+      assert.doesNotThrow(() => new CapabilitySidecar({ command: ['ruby', maximumRubyCrlf], timeoutMs: 1000 }));
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1503,29 +1525,42 @@ printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
   it('runs non-executable Ruby and Perl shebang artifacts through their validated runtimes', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-direct-shebang-runtime-'));
     try {
-      const runtimeSource = `#!/usr/bin/env bun
+      const runtimeSource = (source) => `#!/usr/bin/env bun
         await new Response(Bun.stdin.stream()).text();
         process.stdout.write(JSON.stringify({
           command: 'manifest',
-          payload: { argv: process.argv.slice(2) }
+          payload: { source: ${JSON.stringify(source)}, argv: process.argv.slice(2) }
         }) + '\\n');
       `;
-      for (const { runtimeName, adapterName, tail } of [
-        { runtimeName: 'ruby3.2', adapterName: 'adapter.rb', tail: 'ruby-tail' },
-        { runtimeName: 'perl5.36', adapterName: 'adapter.pl', tail: 'perl-tail' },
-      ]) {
-        const runtimePath = path.join(root, runtimeName);
-        const adapterPath = path.join(root, adapterName);
-        await writeFile(runtimePath, runtimeSource);
-        await chmod(runtimePath, 0o755);
-        await writeFile(adapterPath, `#!${runtimePath} -w\nignored by the fake runtime\n`);
-        await chmod(adapterPath, 0o600);
+      const embeddedRuntimeRoot = path.join(root, 'embedded');
+      await mkdir(embeddedRuntimeRoot);
+      const originalPath = process.env.PATH;
+      try {
+        process.env.PATH = `${root}${path.delimiter}${originalPath ?? ''}`;
+        for (const { runtimeName, adapterName, tail } of [
+          { runtimeName: 'ruby3.2', adapterName: 'adapter.rb', tail: 'ruby-tail' },
+          { runtimeName: 'perl5.36', adapterName: 'adapter.pl', tail: 'perl-tail' },
+        ]) {
+          const receiverRuntimePath = path.join(root, runtimeName);
+          const embeddedRuntimePath = path.join(embeddedRuntimeRoot, runtimeName);
+          const adapterPath = path.join(root, adapterName);
+          await writeFile(receiverRuntimePath, runtimeSource('receiver-path'));
+          await chmod(receiverRuntimePath, 0o755);
+          await writeFile(embeddedRuntimePath, runtimeSource('embedded-shebang-path'));
+          await chmod(embeddedRuntimePath, 0o755);
+          await writeFile(adapterPath, `#!${embeddedRuntimePath} -w\nignored by the fake runtime\n`);
+          await chmod(adapterPath, 0o600);
 
-        const result = await new CapabilitySidecar({
-          command: [adapterPath, tail],
-          timeoutMs: 1000,
-        }).manifest();
-        assert.deepEqual(result.argv, ['-w', adapterPath, tail]);
+          const result = await new CapabilitySidecar({
+            command: [adapterPath, tail],
+            timeoutMs: 1000,
+          }).manifest();
+          assert.equal(result.source, 'receiver-path');
+          assert.deepEqual(result.argv, ['-w', adapterPath, tail]);
+        }
+      } finally {
+        if (originalPath === undefined) delete process.env.PATH;
+        else process.env.PATH = originalPath;
       }
     } finally {
       await rm(root, { recursive: true, force: true });
