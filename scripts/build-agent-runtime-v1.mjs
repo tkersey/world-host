@@ -8,12 +8,22 @@ import { ApplicationWorker } from '../src/v1/index.mjs';
 import { checkAgentRuntimeV1Pack } from './check-agent-runtime-v1-pack.mjs';
 
 const options = parseArgs(process.argv.slice(2));
-const sourceCommits = Object.fromEntries(await Promise.all([
-  ['boundaryGitCommit', sourceCommit(options.boundaryRepo)],
-  ['worldGitCommit', sourceCommit(options.worldRepo)],
-  ['worldHostGitCommit', sourceCommit(options.worldHostRepo)],
-  ['worldCapabilitiesGitCommit', sourceCommit(options.capabilitiesRepo)],
-].map(async ([name, promise]) => [name, await promise])));
+const sourceCommits = options.releaseStatus === 'development'
+  ? {}
+  : Object.fromEntries(await Promise.all([
+      ['boundaryGitCommit', sourceCommit(options.boundaryRepo, ['build.zig', 'build.zig.zon', 'src'])],
+      ['worldGitCommit', sourceCommit(options.worldRepo, ['build.zig', 'build.zig.zon', 'src', 'examples'])],
+      ['worldHostGitCommit', sourceCommit(options.worldHostRepo, [
+        'bin/world-host-v1.mjs',
+        'docs',
+        'scripts/build-agent-runtime-v1.mjs',
+        'scripts/check-agent-runtime-v1-pack.mjs',
+        'scripts/run-agent-runtime-v1-conformance.mjs',
+        'src/bun/application_v1_cli.mjs',
+        'src/v1',
+      ])],
+      ['worldCapabilitiesGitCommit', sourceCommit(options.capabilitiesRepo, ['docs', 'packages', 'src/v1'])],
+    ].map(async ([name, promise]) => [name, await promise])));
 await buildWorldApplications(options.worldRepo);
 await prepareOutput(options.out);
 
@@ -303,13 +313,26 @@ function parseArgs(args) {
   return result;
 }
 
-async function sourceCommit(repository) {
-  const diff = Bun.spawn(['git', 'diff', '--quiet', 'HEAD', '--'], {
+async function sourceCommit(repository, sourcePaths) {
+  const status = Bun.spawn([
+    'git',
+    'status',
+    '--porcelain=v1',
+    '--untracked-files=all',
+    '--',
+    ...sourcePaths,
+  ], {
     cwd: repository,
     stdout: 'pipe',
     stderr: 'pipe',
   });
-  assert.equal(await diff.exited, 0, `tracked source changes must be committed before packing: ${repository}`);
+  const [statusOutput, statusError, statusCode] = await Promise.all([
+    new Response(status.stdout).text(),
+    new Response(status.stderr).text(),
+    status.exited,
+  ]);
+  assert.equal(statusCode, 0, statusError || `cannot inspect source state: ${repository}`);
+  assert.equal(statusOutput, '', `release source changes must be committed before packing: ${repository}\n${statusOutput}`);
 
   const revision = Bun.spawn(['git', 'rev-parse', 'HEAD'], {
     cwd: repository,
