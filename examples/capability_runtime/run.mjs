@@ -37,7 +37,7 @@ export async function runExample() {
     approvalGatedFileRewrite: approvalResult,
     shadowModel: { submittedToWorld: shadow.submittedToWorld },
     deniedLiveRun: await deniedLive,
-    sidecarCapability: { fixture: 'covered by proof:sidecars' },
+    sidecarCapability: { fixture: 'covered by proof:legacy-sidecars' },
     externalNetworkUsed: false,
   };
 }

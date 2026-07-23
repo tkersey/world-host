@@ -25,7 +25,7 @@ export async function runApplicationV1Cli(args, io, options = {}) {
   if (command === 'export') return await exportApplication(args.slice(1), io, options);
   if (command === 'import') return await importApplication(args.slice(1), io, options);
   if (command === 'list') return await listApplications(args.slice(1), io);
-  io.stdout.write('world-host app commands: install, run, resume, inspect, fork, export, import, list\n');
+  io.stdout.write('world-host commands: install, run, resume, inspect, fork, export, import, list\n');
   return command === 'help' || command === '--help' || command === '-h' ? 0 : 2;
 }
 
