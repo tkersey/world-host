@@ -7,7 +7,7 @@ These examples exercise Capability Plane v0.2 without external network access by
 - approval-gated file rewrite: human approval fixture gates a sandbox file write.
 - shadow model: fixture resolution remains authoritative while shadow output is diagnostics only.
 - denied live run: missing live policy fails closed.
-- sidecar capability: covered by `bun run proof:sidecars`.
+- sidecar capability: covered by `bun run proof:legacy-sidecars`.
 
 Run through the CLI with:
 

@@ -667,7 +667,8 @@ async function copyWorldHostPackage(worldHostRepo, out) {
 
 async function writePackagedWorldHostPackageJson(worldHostRepo, out) {
   const sourcePackageJson = JSON.parse(await readFile(path.join(worldHostRepo, 'package.json'), 'utf8'));
-  const checkScript = sourcePackageJson.scripts?.['check:agent-runtime'];
+  const checkScript = sourcePackageJson.scripts?.['check:agent-runtime-legacy'] ??
+    sourcePackageJson.scripts?.['check:agent-runtime'];
   if (typeof checkScript !== 'string') throw new Error('ERR_AGENT_RUNTIME_SOURCE_CHECK_SCRIPT');
   const packageJson = {
     ...sourcePackageJson,

@@ -26,8 +26,8 @@ This is v1-to-v1 migration. There is no TurnClosure-to-Frame or Capsule-to-Frame
 The operator transport is bounded JSON with canonical base64 fields:
 
 ```sh
-world-host app export --store SOURCE --run RUN --out migration.json
-world-host app import --store RECEIVER --in migration.json --run NEW_RUN
+world-host export --store SOURCE --run RUN --out migration.json
+world-host import --store RECEIVER --in migration.json --run NEW_RUN
 ```
 
 The JSON envelope is transport packaging, not application semantics. Import
