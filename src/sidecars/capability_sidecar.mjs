@@ -179,6 +179,7 @@ export class CapabilitySidecar {
     if (pathQualifiedSidecarRuntime(command[0])) {
       fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar runtime commands must not be path-qualified');
     }
+    assertJavaScriptSidecarCommand(command, cwd ?? undefined);
     assertSupportedNonJavaScriptRuntimeCommand(command);
     sidecarSpawnArgv(command, cwd ?? undefined, childEnv);
     this.command = Object.freeze([...command]);
@@ -1189,6 +1190,15 @@ function pathQualifiedSidecarRuntime(value) {
   if (!value.includes('/') && !value.includes('\\')) return false;
   if (!JS_RUNTIMES.has(commandBaseName(value))) return false;
   return path.resolve(value) !== path.resolve(TRUSTED_BUN_EXECUTABLE);
+}
+
+function assertJavaScriptSidecarCommand(argv, cwd = undefined) {
+  const command = argv[0];
+  const runtime = commandBaseName(command);
+  if (JS_RUNTIMES.has(runtime)) return;
+  if (path.resolve(command) === path.resolve(TRUSTED_BUN_EXECUTABLE)) return;
+  if (javascriptRuntimeShebangEntrypoint(commandInspectionPath(command, cwd))) return;
+  fail('ERR_CAPABILITY_SIDECAR_COMMAND_INVALID', 'sidecar commands must use an admitted JavaScript runtime or JavaScript shebang');
 }
 
 function bunShebangEntrypoint(value) {

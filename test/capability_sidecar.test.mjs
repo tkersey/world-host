@@ -94,7 +94,7 @@ describe('Capability sidecar transport', () => {
       { label: 'null', value: null },
     ]) {
       assertValidationError(
-        () => new CapabilitySidecar({ command: ['true'], maximumFrameBytes: value }),
+        () => new CapabilitySidecar({ command: [process.execPath, 'sidecar.mjs'], maximumFrameBytes: value }),
         frameLimitError,
         `constructor maximumFrameBytes ${label}`,
       );
@@ -116,23 +116,23 @@ describe('Capability sidecar transport', () => {
       { label: 'null', value: null },
     ]) {
       assertValidationError(
-        () => new CapabilitySidecar({ command: ['true'], timeoutMs: value }),
+        () => new CapabilitySidecar({ command: [process.execPath, 'sidecar.mjs'], timeoutMs: value }),
         timeoutError,
         `constructor timeoutMs ${label}`,
       );
     }
 
-    const defaults = new CapabilitySidecar({ command: ['true'] });
+    const defaults = new CapabilitySidecar({ command: [process.execPath, 'sidecar.mjs'] });
     assert.equal(defaults.maximumFrameBytes, 1024 * 1024);
     assert.equal(defaults.timeoutMs, 5000);
     for (const maximumFrameBytes of [1, Number.MAX_SAFE_INTEGER]) {
       assert.equal(
-        new CapabilitySidecar({ command: ['true'], maximumFrameBytes }).maximumFrameBytes,
+        new CapabilitySidecar({ command: [process.execPath, 'sidecar.mjs'], maximumFrameBytes }).maximumFrameBytes,
         maximumFrameBytes,
       );
     }
     for (const timeoutMs of [1, 2_147_483_647]) {
-      assert.equal(new CapabilitySidecar({ command: ['true'], timeoutMs }).timeoutMs, timeoutMs);
+      assert.equal(new CapabilitySidecar({ command: [process.execPath, 'sidecar.mjs'], timeoutMs }).timeoutMs, timeoutMs);
     }
     assert.throws(
       () => decodeSidecarFrame(frame, 1),
@@ -142,6 +142,27 @@ describe('Capability sidecar transport', () => {
       command: CapabilitySidecarCommand.resolve,
       payload: { ok: true },
     });
+  });
+
+  it('rejects non-JavaScript sidecar commands before spawn', () => {
+    for (const command of [
+      ['python3', './adapter.py'],
+      ['ruby', './adapter.rb'],
+      ['perl', './adapter.pl'],
+      ['php', './adapter.php'],
+      ['lua', './adapter.lua'],
+      ['Rscript', './adapter.R'],
+      ['env', 'python3', './adapter.py'],
+      ['true'],
+    ]) {
+      assert.throws(
+        () => new CapabilitySidecar({ command }),
+        {
+          code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID',
+          message: 'sidecar commands must use an admitted JavaScript runtime or JavaScript shebang',
+        },
+      );
+    }
   });
 
   it('keeps marked default contexts receiver-local in sidecar frames', async () => {
@@ -712,21 +733,16 @@ cat >/dev/null
 printf '%s\\n' '{"command":"manifest","payload":{"driverId":"shell-sidecar"}}'
 `);
         await chmod(shellSidecarPath, 0o755);
-        assert.equal(new CapabilitySidecar({
-          command: ['env', './shell-sidecar.sh'],
-          cwd: root,
-          timeoutMs: 1000,
-        }).manifest().driverId, 'shell-sidecar');
-        assert.equal(new CapabilitySidecar({
-          command: ['env', './shell-sidecar.sh', '--mode=node'],
-          cwd: root,
-          timeoutMs: 1000,
-        }).manifest().driverId, 'shell-sidecar');
-        assert.equal(new CapabilitySidecar({
-          command: ['env', '-S', './shell-sidecar.sh --mode=node'],
-          cwd: root,
-          timeoutMs: 1000,
-        }).manifest().driverId, 'shell-sidecar');
+        for (const command of [
+          ['env', './shell-sidecar.sh'],
+          ['env', './shell-sidecar.sh', '--mode=node'],
+          ['env', '-S', './shell-sidecar.sh --mode=node'],
+        ]) {
+          assert.throws(
+            () => new CapabilitySidecar({ command, cwd: root, timeoutMs: 1000 }),
+            { code: 'ERR_CAPABILITY_SIDECAR_COMMAND_INVALID' },
+          );
+        }
         assert.throws(
           () => new CapabilitySidecar({
             command: [process.execPath, '--env-file', path.join(root, '.env'), dotenvPath],
