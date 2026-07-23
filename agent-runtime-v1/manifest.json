@@ -86,7 +86,7 @@
     "artifactIdentity": "sha256",
     "boundaryGitCommit": "7f2472100454aa2cd5c62e07db0c1e23eaf46a77",
     "worldGitCommit": "6a90d0cf85d3f8233fa49a560c749735b3a11cf6",
-    "worldHostGitCommit": "4a73da0f2263842c8ee2b9858d1685e130558d44",
+    "worldHostGitCommit": "11ba01d630cc7436197945a4b3c1dd85dde541bd",
     "worldCapabilitiesGitCommit": "80130d80b07f526bf2e0a6c90f54323d7eee4a67"
   },
   "nonClaims": [
