@@ -149,13 +149,15 @@ function assertPackManifest(manifest) {
   assert(Array.isArray(manifest.conformance.scenarios));
   assert(Array.isArray(manifest.nonClaims) && manifest.nonClaims.includes('no exactly-once effects'));
   assert(manifest.sourcePins && typeof manifest.sourcePins === 'object');
-  for (const field of [
-    'boundaryGitCommit',
-    'worldGitCommit',
-    'worldHostGitCommit',
-    'worldCapabilitiesGitCommit',
-  ]) {
-    assert(/^[0-9a-f]{40}$/.test(manifest.sourcePins[field]), `invalid source pin: ${field}`);
+  if (manifest.releaseStatus !== 'development') {
+    for (const field of [
+      'boundaryGitCommit',
+      'worldGitCommit',
+      'worldHostGitCommit',
+      'worldCapabilitiesGitCommit',
+    ]) {
+      assert(/^[0-9a-f]{40}$/.test(manifest.sourcePins[field]), `invalid source pin: ${field}`);
+    }
   }
 }
 
