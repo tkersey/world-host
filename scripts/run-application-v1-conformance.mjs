@@ -47,6 +47,24 @@ const continuationInput = encodeStepInput({
   effectResult,
   fuel: 100n,
 }, manifest.limits);
+const wrongRequestResult = createEffectResult({
+  requestId: Buffer.alloc(32, 0x7f),
+  status: EffectStatus.ok,
+  resultSchemaId: parent.frame.pendingEffect.resultSchemaId,
+  resultBytes: value,
+  attempt: 1,
+}, manifest.limits);
+const wrongRequestInput = encodeStepInput({
+  applicationId: manifest.applicationId,
+  expectedParentFrameId: parent.frame.frameId,
+  priorFrameBytes: parent.frameBytes,
+  effectResult: wrongRequestResult,
+  fuel: 100n,
+}, manifest.limits);
+await assert.rejects(
+  () => freshStep(wasmBytes, wrongRequestInput),
+  { code: 'ERR_APPLICATION_V1_RESULT_TARGET' },
+);
 
 const firstChild = await freshStep(wasmBytes, continuationInput);
 const retryChild = await freshStep(wasmBytes, continuationInput);
@@ -209,6 +227,16 @@ const receiverBlocks = new MemoryBlockStore();
 const receiverHeads = new MemoryBranchHeadStore();
 const receiverJournal = new MemoryEffectJournalV1({ blockStore: receiverBlocks });
 let receiverPreflight = 0;
+await assert.rejects(
+  () => RunControllerV1.importBranch({
+    bundle: { ...migrationBundle, applicationId: '00'.repeat(32) },
+    runId: 'run-migration-mismatched-application',
+    branchId: 'main',
+    blockStore: new MemoryBlockStore(),
+    headStore: new MemoryBranchHeadStore(),
+  }),
+  { code: 'ERR_APPLICATION_V1_MIGRATION_MANIFEST' },
+);
 const imported = await RunControllerV1.importBranch({
   bundle: migrationBundle,
   runId: 'run-migration-receiver',

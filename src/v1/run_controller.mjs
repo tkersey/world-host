@@ -78,6 +78,9 @@ export class RunControllerV1 {
     if (!Buffer.from(controller.manifest.encodedBytes).equals(admitted.manifestBytes)) {
       fail('ERR_APPLICATION_V1_MIGRATION_MANIFEST');
     }
+    if (hex(controller.manifest.applicationId) !== admitted.applicationId) {
+      fail('ERR_APPLICATION_V1_MIGRATION_MANIFEST');
+    }
     const frame = decodeFrame(admitted.frameBytes, controller.manifest.limits);
     if (hex(frame.applicationId) !== admitted.applicationId || hex(frame.frameId) !== admitted.frameId ||
         frame.status !== admitted.frameStatus) {
