@@ -143,6 +143,10 @@ describe('World application v1 directory registry', () => {
       () => reopened.applications.register({ ...record, applicationId: '22'.repeat(32) }),
       { code: 'ERR_APPLICATION_V1_APPLICATION_EXISTS' },
     );
+    await assert.rejects(
+      () => reopened.applications.register({ ...record, name: 'alias-agent' }),
+      { code: 'ERR_APPLICATION_V1_APPLICATION_EXISTS' },
+    );
   });
 });
 
