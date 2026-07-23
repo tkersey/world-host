@@ -67,6 +67,10 @@ export async function runBunCli(args, io, options = {}) {
     }, null, 2)}\n`);
     return 0;
   }
+  if (command === 'app') {
+    const { runApplicationV1Cli } = await import('./application_v1_cli.mjs');
+    return await runApplicationV1Cli(args.slice(1), io, options.applicationV1 ?? {});
+  }
   if (command === 'agent') return await runAgentCommand(args.slice(1), io, options);
   if (command === 'capability') return await runCapabilityCommand(args.slice(1), io, options);
   if (command === 'inspect' || command === 'effects') {
@@ -103,7 +107,7 @@ export async function runBunCli(args, io, options = {}) {
     throw new Error('missing required option: --store');
   }
   if (command === 'run-example') return await runExample(args[1], io);
-  io.stdout.write('world-host commands: agent, capability, install, doctor, run, resume, inspect, effects, recover, fork, export, import, run-example, version\n');
+  io.stdout.write('world-host commands: app, agent, capability, install, doctor, run, resume, inspect, effects, recover, fork, export, import, run-example, version\n');
   return command === 'help' || command === '--help' || command === '-h' ? 0 : 2;
 }
 

@@ -1,0 +1,99 @@
+{
+  "formatVersion": "agent-runtime-v1-pack/v1",
+  "releaseStatus": "release-candidate",
+  "protocols": {
+    "applicationAbiVersion": 1,
+    "frameFormatVersion": 1,
+    "effectProtocolVersion": "world-effect-v1"
+  },
+  "host": {
+    "entrypoint": "host/bin/world-host-v1.mjs",
+    "profile": "application-v1",
+    "runtimeDependencies": 0
+  },
+  "applications": [
+    {
+      "name": "one-effect",
+      "applicationId": "9fabe4a91e326256a854f29894bd019ead81624da51c937522f362685f10ff92",
+      "applicationVersion": "1.0.0",
+      "wasmPath": "applications/one-effect.world.wasm",
+      "wasmSha256": "3c19134d752fe865fbe8ae923c66ca75eb700f89383daa6b0274485adba28e70",
+      "manifestPath": "applications/one-effect.manifest.bin",
+      "manifestSha256": "900f4760d7b7f17e81271aaf121cedabf2ccbd35e11553cb07d0990d9a17815a"
+    },
+    {
+      "name": "skeleton-agent",
+      "applicationId": "258562ef364278fedaf2c629379216226f2067996797942d01c863f6e3735a3b",
+      "applicationVersion": "1.0.0",
+      "wasmPath": "applications/skeleton-agent.world.wasm",
+      "wasmSha256": "4a000b5a5f8559d1881162581981ff600d2b55eb80bdb77cafee964561086814",
+      "manifestPath": "applications/skeleton-agent.manifest.bin",
+      "manifestSha256": "f226cec8bd9faf8c56a8902d6a305d6e7d593536ef737e3e141b730d3cb29b2c"
+    },
+    {
+      "name": "fixture-agent",
+      "applicationId": "ad519bca05f05b7b62f11d637e435361bb06faa2a11b7e3c0c15321a23bd8025",
+      "applicationVersion": "1.0.0",
+      "wasmPath": "applications/fixture-agent.world.wasm",
+      "wasmSha256": "59a0eb9071b761e34389b02282bc53973a24265ddb8927d5f04b58d60994e362",
+      "manifestPath": "applications/fixture-agent.manifest.bin",
+      "manifestSha256": "809d210a6ad7cebc42c59f6dea6fe861622f9aa29566b1f62f769f33423bbf56"
+    }
+  ],
+  "capabilities": [
+    {
+      "packageName": "@tkersey/world-capabilities/fixture-model",
+      "path": "capabilities/packages/fixture-model",
+      "packFingerprint": "ec41e18ab228e3fa995efe744806c56c287cc46c7086f1fe76ae9dc55c48a05b"
+    },
+    {
+      "packageName": "@tkersey/world-capabilities/generic-http-json",
+      "path": "capabilities/packages/generic-http-json",
+      "packFingerprint": "422c48fb2ea07c2779af2392387f985904d213daf689d994389a082a8a55c6b6"
+    },
+    {
+      "packageName": "@tkersey/world-capabilities/human-approval",
+      "path": "capabilities/packages/human-approval",
+      "packFingerprint": "545a2f2a29cf3dd2cd707312a6f3f79cd215ee67d947578cb668f6ae0dbd6a6f"
+    },
+    {
+      "packageName": "@tkersey/world-capabilities/local-memory-kv",
+      "path": "capabilities/packages/local-memory-kv",
+      "packFingerprint": "0dbb626abda18cf1d2f3ecf7de03ee5a4aeaf601c1528f3f34a2673daa560e81"
+    },
+    {
+      "packageName": "@tkersey/world-capabilities/sandbox-files",
+      "path": "capabilities/packages/sandbox-files",
+      "packFingerprint": "4274066446ec0c891962ad9d90b91361da1d3f6553081cb53d069ad1cbe8173e"
+    }
+  ],
+  "conformance": {
+    "entrypoint": "conformance/run.mjs",
+    "scenarios": [
+      "one-effect",
+      "skeleton-agent",
+      "fixture-agent",
+      "provider-parked",
+      "retry",
+      "branching"
+    ]
+  },
+  "sourcePins": {
+    "boundaryPackageVersion": "0.7.0",
+    "boundaryStaticMachineAbiVersion": 1,
+    "worldPackageVersion": "1.0.0-rc.1",
+    "worldApplicationAbiVersion": 1,
+    "artifactIdentity": "sha256",
+    "boundaryGitCommit": "7f2472100454aa2cd5c62e07db0c1e23eaf46a77",
+    "worldGitCommit": "6a90d0cf85d3f8233fa49a560c749735b3a11cf6",
+    "worldHostGitCommit": "c47304b7309ad5195d9f83bb1c3780fb191ef56c",
+    "worldCapabilitiesGitCommit": "0ca92bcd5b68983f5294fa4f286650c792088cf8"
+  },
+  "nonClaims": [
+    "no cryptographic authenticity",
+    "no confidentiality",
+    "no exactly-once effects",
+    "no distributed consensus",
+    "no v0 state migration"
+  ]
+}

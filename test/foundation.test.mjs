@@ -26,9 +26,10 @@ describe('repository foundation', () => {
     assert.deepEqual(packageJson.dependencies, {});
     assert.deepEqual(packageJson.devDependencies, {});
     assert.equal(packageJson.scripts.test, 'bun test');
-    assert.match(packageJson.scripts.proof, /^bun test && bun scripts\/run-world-conformance\.mjs/);
-    assert.equal(packageJson.scripts['proof:world-real'], 'bun scripts/run-world-conformance.mjs --world-repo ../world');
-    assert.equal(packageJson.scripts['proof:agent'], 'bun scripts/run-agent-closure-conformance.mjs');
+    assert.match(packageJson.scripts.proof, /^bun run proof:v1-tests && bun run proof:application-v1/);
+    assert.match(packageJson.scripts['proof:legacy'], /^bun test && bun scripts\/run-world-conformance\.mjs/);
+    assert.equal(packageJson.scripts['proof:legacy-world-real'], 'bun scripts/run-world-conformance.mjs --world-repo ../world');
+    assert.equal(packageJson.scripts['proof:legacy-agent'], 'bun scripts/run-agent-closure-conformance.mjs');
   });
 
   it('creates the requested source layout', async () => {
