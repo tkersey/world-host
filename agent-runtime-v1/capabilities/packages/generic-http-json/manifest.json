@@ -1,0 +1,73 @@
+{
+  "artifacts": [
+    {
+      "path": "adapter.mjs",
+      "role": "adapter"
+    }
+  ],
+  "authorityLabels": [
+    "network.http"
+  ],
+  "checksums": {
+    "adapter.mjs": "9d7dd15ae2875480a96d0e33bb2add5b38cdfa5d6e1c568ad2c4f959318a1829"
+  },
+  "conformanceCorpusFingerprint": "02e725eadf1e428d78b4f76bc21f8081574cc0c3a6a67cdbaeb10296f1d27155",
+  "driverAbiVersion": "capability-driver-v0",
+  "driverId": "generic-http-json",
+  "dryRunSupport": true,
+  "effectProtocolV1": {
+    "interfaces": [
+      {
+        "authorityRequirements": "8",
+        "interfaceId": "d76c3e36f0bd57a0ea54caa9c5399252855478db4df16b251b6d3ddae6699189",
+        "interfaceLabel": "host.http.json.v1",
+        "payloadSchemaId": "c0c747fa088e53a78edf901cf6d9fc7dfde00195e2ec58a16f891cb3aac95182",
+        "resultSchemaId": "c0c747fa088e53a78edf901cf6d9fc7dfde00195e2ec58a16f891cb3aac95182"
+      }
+    ]
+  },
+  "idempotencySupport": "required-before-effect",
+  "maximumRequestBytes": 16384,
+  "maximumResponseBytes": 16384,
+  "metadata": {
+    "mode": "dry-run-default"
+  },
+  "packageName": "@tkersey/world-capabilities/generic-http-json",
+  "packageVersion": "0.0.0-foundry-v0",
+  "packFingerprint": "422c48fb2ea07c2779af2392387f985904d213daf689d994389a082a8a55c6b6",
+  "packFormatVersion": "foundry-pack-v0",
+  "recoverSupport": false,
+  "recoveryClass": "best_effort",
+  "replaySupport": false,
+  "secretRequirements": [
+    {
+      "name": "API_TOKEN",
+      "requiredByDefault": false
+    }
+  ],
+  "shadowSupport": true,
+  "supportedActuationClasses": [
+    "http"
+  ],
+  "supportedActuatorRefs": [
+    "actuator.generic-http-json"
+  ],
+  "supportedApplianceAbiVersions": [
+    "agent-runtime-v0.1"
+  ],
+  "supportedDescriptorFingerprints": [
+    "desc.generic-http-json.v0"
+  ],
+  "supportedResponseStatuses": [
+    "ok",
+    "rejected",
+    "failed"
+  ],
+  "supportedTurnClosureVersions": [
+    "turn-closure-v0"
+  ],
+  "supportedWorldProtocolVersions": [
+    "world-effect-v1",
+    "world-hostrequest-v0"
+  ]
+}

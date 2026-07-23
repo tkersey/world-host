@@ -1,0 +1,34 @@
+{
+  "corpusFingerprint": "02e725eadf1e428d78b4f76bc21f8081574cc0c3a6a67cdbaeb10296f1d27155",
+  "driverId": "human-approval",
+  "vectors": [
+    {
+      "id": "target-fingerprint-before-prompt",
+      "passed": true
+    },
+    {
+      "id": "world-host-request-prefix-required",
+      "passed": true
+    },
+    {
+      "id": "policy-before-prompt",
+      "passed": true
+    },
+    {
+      "id": "package-deny-before-prompt",
+      "passed": true
+    },
+    {
+      "id": "no-prompt-in-dry-run",
+      "passed": true
+    },
+    {
+      "id": "schema-incompatible-before-prompt",
+      "passed": true
+    },
+    {
+      "id": "no-world-evidence-output",
+      "passed": true
+    }
+  ]
+}

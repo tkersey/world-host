@@ -1,0 +1,79 @@
+{
+  "artifacts": [
+    {
+      "path": "adapter.mjs",
+      "role": "adapter"
+    }
+  ],
+  "authorityLabels": [
+    "file.fixture"
+  ],
+  "checksums": {
+    "adapter.mjs": "2f5ea5b5801f53e955f86dfe2968b74711430c4d4a143597256241a6f36ba397"
+  },
+  "conformanceCorpusFingerprint": "02e725eadf1e428d78b4f76bc21f8081574cc0c3a6a67cdbaeb10296f1d27155",
+  "driverAbiVersion": "capability-driver-v0",
+  "driverId": "sandbox-files",
+  "dryRunSupport": true,
+  "effectProtocolV1": {
+    "interfaces": [
+      {
+        "authorityRequirements": "2",
+        "interfaceId": "68e03731654ae26c9f15d114362b1d87b513bb95e6d42c8d5debf5dd24f101fd",
+        "interfaceLabel": "host.file.read.v1",
+        "payloadSchemaId": "c0c747fa088e53a78edf901cf6d9fc7dfde00195e2ec58a16f891cb3aac95182",
+        "resultSchemaId": "c0c747fa088e53a78edf901cf6d9fc7dfde00195e2ec58a16f891cb3aac95182"
+      },
+      {
+        "authorityRequirements": "4",
+        "interfaceId": "ab0d64604184d8be92277e2fe992eb8d7ed00a901dc1350ae89cc2573018caaf",
+        "interfaceLabel": "host.file.write.v1",
+        "payloadSchemaId": "c0c747fa088e53a78edf901cf6d9fc7dfde00195e2ec58a16f891cb3aac95182",
+        "resultSchemaId": "c0c747fa088e53a78edf901cf6d9fc7dfde00195e2ec58a16f891cb3aac95182"
+      }
+    ]
+  },
+  "idempotencySupport": "full-world-key-bound",
+  "maximumRequestBytes": 16384,
+  "maximumResponseBytes": 16384,
+  "metadata": {
+    "allowedBuiltins": [
+      "node:fs/promises",
+      "node:path"
+    ],
+    "mode": "fixture-root-only"
+  },
+  "packageName": "@tkersey/world-capabilities/sandbox-files",
+  "packageVersion": "0.0.0-foundry-v0",
+  "packFingerprint": "4274066446ec0c891962ad9d90b91361da1d3f6553081cb53d069ad1cbe8173e",
+  "packFormatVersion": "foundry-pack-v0",
+  "recoverSupport": false,
+  "recoveryClass": "idempotent",
+  "replaySupport": true,
+  "secretRequirements": [],
+  "shadowSupport": false,
+  "supportedActuationClasses": [
+    "file"
+  ],
+  "supportedActuatorRefs": [
+    "actuator.sandbox-files"
+  ],
+  "supportedApplianceAbiVersions": [
+    "agent-runtime-v0.1"
+  ],
+  "supportedDescriptorFingerprints": [
+    "desc.sandbox-files.v0"
+  ],
+  "supportedResponseStatuses": [
+    "ok",
+    "rejected",
+    "failed"
+  ],
+  "supportedTurnClosureVersions": [
+    "turn-closure-v0"
+  ],
+  "supportedWorldProtocolVersions": [
+    "world-effect-v1",
+    "world-hostrequest-v0"
+  ]
+}

@@ -23,6 +23,14 @@ in-memory and directory-backed stores are implemented. The explicit
 imports v1 applications. Carrier v0 remains the default unqualified profile
 until cutover.
 
+`bun run build:agent-runtime-v1` assembles the standalone development pack from
+the current World application artifacts, v1 host, and v1 capability protocol.
+`bun run check:agent-runtime-v1` validates its checksums, manifests,
+zero-import/bounded-memory WASMs, and static capability declarations without
+executing adapters. `bun run conformance:agent-runtime-v1` runs the six required
+behavioral scenarios using only files inside the pack. See
+[`docs/agent_runtime_v1_pack.md`](docs/agent_runtime_v1_pack.md).
+
 `world-host app install --store STORE --name APP --wasm application.world.wasm`
 validates the zero-import ABI and records the WASM and embedded manifest as
 immutable blocks. `world-host app run --store STORE --app APP --run RUN
@@ -76,6 +84,9 @@ bun run proof:world-real
 bun run proof:application-v1
 bun run proof:application-v1-cli
 bun run proof:frame-store
+bun run build:agent-runtime-v1
+bun run check:agent-runtime-v1
+bun run conformance:agent-runtime-v1
 bun run proof:agent
 bun run proof:boundaries
 bun scripts/build-agent-runtime-pack.mjs
