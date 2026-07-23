@@ -213,13 +213,27 @@ function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-function defaultPackPath() {
+function commandOptions() {
   const current = fileURLToPath(import.meta.url);
-  if (path.basename(path.dirname(current)) === 'conformance') return path.resolve(path.dirname(current), '..');
-  return process.argv[2] ?? path.resolve('agent-runtime-v1');
+  const embedded = path.basename(path.dirname(current)) === 'conformance';
+  const args = process.argv.slice(2);
+  const result = {
+    packPath: embedded ? path.resolve(path.dirname(current), '..') : path.resolve('agent-runtime-v1'),
+  };
+  let packPathProvided = false;
+  for (const argument of args) {
+    if (!argument.startsWith('-') && !packPathProvided) {
+      result.packPath = path.resolve(argument);
+      packPathProvided = true;
+    } else {
+      throw new Error(`unknown argument: ${argument}`);
+    }
+  }
+  return result;
 }
 
 if (import.meta.main) {
-  const receipt = await checkAgentRuntimeV1Pack(defaultPackPath());
+  const options = commandOptions();
+  const receipt = await checkAgentRuntimeV1Pack(options.packPath);
   process.stdout.write(`${JSON.stringify(receipt, null, 2)}\n`);
 }
