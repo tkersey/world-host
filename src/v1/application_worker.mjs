@@ -6,6 +6,7 @@ import {
   decodeApplicationManifest,
   decodeFrame,
   decodeStepInput,
+  validateEffectResultForRequest,
 } from './protocol.mjs';
 import { inspectApplicationWasm } from './wasm_module.mjs';
 
@@ -152,6 +153,12 @@ export class ApplicationWorker {
       }
       if (prior.status !== FrameStatus.needsEffect && prior.status !== FrameStatus.yieldedFuel) {
         fail('ERR_APPLICATION_V1_TERMINAL_FRAME');
+      }
+      if (prior.status === FrameStatus.needsEffect) {
+        if (input.effectResult === null) fail('ERR_APPLICATION_V1_EFFECT_RESULT_REQUIRED');
+        validateEffectResultForRequest(prior.pendingEffect, input.effectResult, this.manifest.limits);
+      } else if (input.effectResult !== null) {
+        fail('ERR_APPLICATION_V1_UNEXPECTED_RESULT');
       }
     }
 
