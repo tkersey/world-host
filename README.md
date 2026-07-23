@@ -12,6 +12,26 @@ This repository owns host concerns only: storing World-authored bytes, choosing 
 
 ## Current Surface
 
+World Application Host v1 is present as a disjoint profile under `src/v1/`. It
+admits application-specific, import-free World WASM; validates canonical
+ApplicationManifest, StepInput, EffectRequest, EffectResult, and Frame bytes;
+continues on disposable workers; persists EffectResults before submission;
+retains child Frames before conditional head advancement; and proves retry,
+migration, and branching against the real World one-effect artifact. Both
+in-memory and directory-backed stores are implemented. The explicit
+`world-host app` CLI installs, runs, resumes, inspects, forks, exports, and
+imports v1 applications. Carrier v0 remains the default unqualified profile
+until cutover.
+
+`world-host app install --store STORE --name APP --wasm application.world.wasm`
+validates the zero-import ABI and records the WASM and embedded manifest as
+immutable blocks. `world-host app run --store STORE --app APP --run RUN
+--initial-args args.bin` creates a Frame lineage. `world-host app resume
+--store STORE --run RUN --effect-result result.bin` persists the result before
+submitting it to a fresh worker. The CLI reports identities, statuses, counters,
+and byte lengths; it does not print application state, payload, result, or
+secret bytes.
+
 This repository contains the Carrier v0 host boundary: immutable blob stores, mutable branch heads, effect journal recovery classes, disposable worker/controller contracts, receiver-local capability preflight, constrained reference drivers, migration/fork helpers, redacted CLI diagnostics, deterministic examples, dependency-free World JS codecs, and a Bun WebAssembly worker for the universal Appliance ABI.
 
 `bun scripts/run-world-conformance.mjs --world-repo ../world` executes real World universal Appliance fixture images through Carrier's `BunWorldWorker` and protocol codecs. It also boots a no-host fixture through `RunController` and `MemoryStore`, verifies that the committed branch head points at the same immutable TurnClosure bytes returned by the real worker, then proves a completed head is rejected before a fresh worker is created. The same lane boots a needs-host fixture and lets `RunController` inspect the parent TurnClosure, resolve the real HostRequest through `EffectJournal`, persist the untrusted ResolutionInput before World submission, reuse that persisted outcome on a lost-output retry without invoking the deterministic driver again, and commit the completed TurnClosure. For closures with multiple pending HostRequests, the controller groups requests by exact driver and recovery class, enforces bounded driver concurrency, persists each outcome independently, and constructs one continue TurnInput through the released wire codec so host completion order is not authoritative. Missing driver coverage remains fail-closed by default; a receiver-local `allowPartialEffectBatch` policy may submit only covered persisted outcomes and record unresolved request diagnostics. The deterministic examples still prove Carrier host behavior around stores, effects, migration, and branching; the real World fixture lane is the proof that the worker/codecs/controller can produce, continue from persisted host outcomes, reject terminal heads, and commit World-authored TurnClosure bytes, root result bytes, and Archive append evidence without a native helper process.
@@ -53,6 +73,9 @@ bun --version
 bun run test
 bun run proof
 bun run proof:world-real
+bun run proof:application-v1
+bun run proof:application-v1-cli
+bun run proof:frame-store
 bun run proof:agent
 bun run proof:boundaries
 bun scripts/build-agent-runtime-pack.mjs
