@@ -8,6 +8,12 @@ import { ApplicationWorker } from '../src/v1/index.mjs';
 import { checkAgentRuntimeV1Pack } from './check-agent-runtime-v1-pack.mjs';
 
 const options = parseArgs(process.argv.slice(2));
+const sourceCommits = Object.fromEntries(await Promise.all([
+  ['boundaryGitCommit', sourceCommit(options.boundaryRepo)],
+  ['worldGitCommit', sourceCommit(options.worldRepo)],
+  ['worldHostGitCommit', sourceCommit(options.worldHostRepo)],
+  ['worldCapabilitiesGitCommit', sourceCommit(options.capabilitiesRepo)],
+].map(async ([name, promise]) => [name, await promise])));
 await buildWorldApplications(options.worldRepo);
 await prepareOutput(options.out);
 
@@ -27,6 +33,7 @@ await copySelected(options.worldHostRepo, options.out, [
 ], 'host');
 await writeFile(path.join(options.out, 'host/package.json'), `${JSON.stringify({
   name: '@tkersey/world-host-v1-runtime',
+  version: '1.0.0-rc.1',
   private: true,
   type: 'module',
   dependencies: {},
@@ -47,6 +54,7 @@ await copySelected(options.capabilitiesRepo, options.out, [
 ], 'capabilities');
 await writeFile(path.join(options.out, 'capabilities/package.json'), `${JSON.stringify({
   name: '@tkersey/world-capabilities-v1-runtime',
+  version: '1.0.0-rc.1',
   private: true,
   type: 'module',
   dependencies: {},
@@ -120,6 +128,7 @@ const packManifest = {
     worldPackageVersion: reference.worldPackageVersion,
     worldApplicationAbiVersion: reference.worldApplicationAbiVersion,
     artifactIdentity: 'sha256',
+    ...sourceCommits,
   },
   nonClaims: [
     'no cryptographic authenticity',
@@ -244,7 +253,7 @@ async function allFiles(root, directory = root, result = []) {
 }
 
 function packReadme(manifest) {
-  return `# Agent Runtime v1 development pack
+  return `# Agent Runtime v1 ${manifest.releaseStatus} pack
 
 This pack contains three application-specific World WASM modules, the minimal
 World Application Host v1 profile, receiver-side Effect protocol v1 handlers,
@@ -270,6 +279,7 @@ at the receiving host.
 
 function parseArgs(args) {
   const result = {
+    boundaryRepo: path.resolve('../boundary'),
     worldRepo: path.resolve('../world'),
     worldHostRepo: path.resolve('.'),
     capabilitiesRepo: path.resolve('../world-capabilities'),
@@ -277,7 +287,8 @@ function parseArgs(args) {
     releaseStatus: 'development',
   };
   for (let index = 0; index < args.length; index += 1) {
-    if (args[index] === '--world-repo') result.worldRepo = path.resolve(requireValue(args, ++index, '--world-repo'));
+    if (args[index] === '--boundary-repo') result.boundaryRepo = path.resolve(requireValue(args, ++index, '--boundary-repo'));
+    else if (args[index] === '--world-repo') result.worldRepo = path.resolve(requireValue(args, ++index, '--world-repo'));
     else if (args[index] === '--world-host-repo') result.worldHostRepo = path.resolve(requireValue(args, ++index, '--world-host-repo'));
     else if (args[index] === '--capabilities-repo') result.capabilitiesRepo = path.resolve(requireValue(args, ++index, '--capabilities-repo'));
     else if (args[index] === '--out') result.out = path.resolve(requireValue(args, ++index, '--out'));
@@ -289,6 +300,26 @@ function parseArgs(args) {
     }
   }
   return result;
+}
+
+async function sourceCommit(repository) {
+  const diff = Bun.spawn(['git', 'diff', '--quiet', 'HEAD', '--'], {
+    cwd: repository,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  assert.equal(await diff.exited, 0, `tracked source changes must be committed before packing: ${repository}`);
+
+  const revision = Bun.spawn(['git', 'rev-parse', 'HEAD'], {
+    cwd: repository,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const output = await new Response(revision.stdout).text();
+  assert.equal(await revision.exited, 0, `cannot resolve source commit: ${repository}`);
+  const commit = output.trim();
+  assert(/^[0-9a-f]{40}$/.test(commit), `invalid source commit: ${repository}`);
+  return commit;
 }
 
 function requireValue(args, index, flag) {
