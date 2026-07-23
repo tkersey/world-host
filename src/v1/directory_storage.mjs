@@ -236,13 +236,40 @@ export class DirectoryApplicationRegistryV1 {
       wasmRef,
       manifestRef,
     });
-    const file = this.applicationPath(record.name);
-    if (!await writeJsonNew(file, record)) {
-      const existing = assertApplicationRecord(await readJson(file));
-      if (JSON.stringify(existing) !== JSON.stringify(record)) fail('ERR_APPLICATION_V1_APPLICATION_EXISTS', record.name);
-      return existing;
+    const identityFile = this.applicationIdentityPath(record.applicationId);
+    const priorIdentity = await readJsonIfExists(identityFile);
+    let identityCreated = false;
+    if (priorIdentity !== null) {
+      const existing = assertApplicationRecord(priorIdentity);
+      if (JSON.stringify(existing) !== JSON.stringify(record)) {
+        fail('ERR_APPLICATION_V1_APPLICATION_EXISTS', record.applicationId);
+      }
+    } else {
+      const legacyIdentity = (await this.list()).find((candidate) => candidate.applicationId === record.applicationId);
+      if (legacyIdentity !== undefined && JSON.stringify(legacyIdentity) !== JSON.stringify(record)) {
+        fail('ERR_APPLICATION_V1_APPLICATION_EXISTS', record.applicationId);
+      }
+      identityCreated = await writeJsonNew(identityFile, record);
+      if (!identityCreated) {
+        const winner = assertApplicationRecord(await readJson(identityFile));
+        if (JSON.stringify(winner) !== JSON.stringify(record)) {
+          fail('ERR_APPLICATION_V1_APPLICATION_EXISTS', record.applicationId);
+        }
+      }
     }
-    return record;
+
+    const file = this.applicationPath(record.name);
+    try {
+      if (!await writeJsonNew(file, record)) {
+        const existing = assertApplicationRecord(await readJson(file));
+        if (JSON.stringify(existing) !== JSON.stringify(record)) fail('ERR_APPLICATION_V1_APPLICATION_EXISTS', record.name);
+        return existing;
+      }
+      return record;
+    } catch (error) {
+      if (identityCreated) await rm(identityFile, { force: true });
+      throw error;
+    }
   }
 
   async get(identifier) {
@@ -254,9 +281,9 @@ export class DirectoryApplicationRegistryV1 {
       if (admitted.name !== identifier) fail('ERR_APPLICATION_V1_APPLICATION_REGISTRY');
       return admitted;
     }
-    for (const record of await this.list()) {
-      if (record.applicationId === identifier) return record;
-    }
+    const indexed = await readJsonIfExists(this.applicationIdentityPath(identifier));
+    if (indexed !== null) return assertApplicationRecord(indexed);
+    for (const record of await this.list()) if (record.applicationId === identifier) return record;
     fail('ERR_APPLICATION_V1_APPLICATION_NOT_FOUND', identifier);
   }
 
@@ -276,6 +303,10 @@ export class DirectoryApplicationRegistryV1 {
 
   applicationPath(name) {
     return path.join(this.root, 'applications', `${sha256(Buffer.from(requiredText(name, 'application name'), 'utf8'))}.json`);
+  }
+
+  applicationIdentityPath(applicationId) {
+    return path.join(this.root, 'application-identities', `${digestHex(applicationId, 'applicationId')}.json`);
   }
 }
 

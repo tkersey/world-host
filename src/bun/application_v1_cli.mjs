@@ -65,7 +65,7 @@ async function runApplication(args, io, options) {
     fuel: fuelFrom(args, controller.manifest),
   });
   writeJson(io, summarizeAdvance('app run', runId, branchId, application, result));
-  return 0;
+  return result.status === 'conflict' ? 3 : 0;
 }
 
 async function resumeApplication(args, io, options) {

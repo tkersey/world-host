@@ -86,8 +86,8 @@
     "artifactIdentity": "sha256",
     "boundaryGitCommit": "7f2472100454aa2cd5c62e07db0c1e23eaf46a77",
     "worldGitCommit": "6a90d0cf85d3f8233fa49a560c749735b3a11cf6",
-    "worldHostGitCommit": "11ba01d630cc7436197945a4b3c1dd85dde541bd",
-    "worldCapabilitiesGitCommit": "80130d80b07f526bf2e0a6c90f54323d7eee4a67"
+    "worldHostGitCommit": "c47304b7309ad5195d9f83bb1c3780fb191ef56c",
+    "worldCapabilitiesGitCommit": "0ca92bcd5b68983f5294fa4f286650c792088cf8"
   },
   "nonClaims": [
     "no cryptographic authenticity",
