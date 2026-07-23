@@ -1,4 +1,4 @@
-# Agent Runtime v1 development pack
+# Agent Runtime v1 release-candidate pack
 
 This pack contains three application-specific World WASM modules, the minimal
 World Application Host v1 profile, receiver-side Effect protocol v1 handlers,
@@ -8,7 +8,7 @@ It requires Bun but no Boundary, World, world-host, or world-capabilities source
 checkout. It contains no Boundary Module, Executable.Image, TurnClosure, or
 universal World runtime.
 
-Release status: `development`.
+Release status: `release-candidate`.
 
 ```sh
 bun conformance/check-pack.mjs

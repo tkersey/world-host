@@ -29,7 +29,8 @@ the current World application artifacts, v1 host, and v1 capability protocol.
 zero-import/bounded-memory WASMs, and static capability declarations without
 executing adapters. `bun run conformance:agent-runtime-v1` runs the six required
 behavioral scenarios using only files inside the pack. See
-[`docs/agent_runtime_v1_pack.md`](docs/agent_runtime_v1_pack.md).
+[`docs/agent_runtime_v1_pack.md`](docs/agent_runtime_v1_pack.md) and the
+[`release-candidate performance report`](docs/agent_runtime_v1_performance.md).
 
 The release-candidate package exposes `world-host-v1` for new applications.
 The unqualified `world-host` entrypoint remains the bounded Carrier v0

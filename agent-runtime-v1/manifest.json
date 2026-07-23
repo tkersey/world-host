@@ -1,6 +1,6 @@
 {
   "formatVersion": "agent-runtime-v1-pack/v1",
-  "releaseStatus": "development",
+  "releaseStatus": "release-candidate",
   "protocols": {
     "applicationAbiVersion": 1,
     "frameFormatVersion": 1,
@@ -14,30 +14,30 @@
   "applications": [
     {
       "name": "one-effect",
-      "applicationId": "ed0d712875977dbd8226867b004f9fa68768caf6625c10a5d8f48ed5d10802bf",
+      "applicationId": "9fabe4a91e326256a854f29894bd019ead81624da51c937522f362685f10ff92",
       "applicationVersion": "1.0.0",
       "wasmPath": "applications/one-effect.world.wasm",
-      "wasmSha256": "e17713003cdf2722b97058e3aaa7ed997ea99e916513224ae2782d5db7880b50",
+      "wasmSha256": "3c19134d752fe865fbe8ae923c66ca75eb700f89383daa6b0274485adba28e70",
       "manifestPath": "applications/one-effect.manifest.bin",
-      "manifestSha256": "569731f3b56295e9b12cc218849402f184b69964f40464514bbd44c8dc150864"
+      "manifestSha256": "900f4760d7b7f17e81271aaf121cedabf2ccbd35e11553cb07d0990d9a17815a"
     },
     {
       "name": "skeleton-agent",
-      "applicationId": "dd21008d729920ba44b2f21716398957b9df6075e94c182527ed4612d6efd89f",
+      "applicationId": "258562ef364278fedaf2c629379216226f2067996797942d01c863f6e3735a3b",
       "applicationVersion": "1.0.0",
       "wasmPath": "applications/skeleton-agent.world.wasm",
-      "wasmSha256": "d0c9c2ff6ee542d6f1e3ea1e089085288c2b32f65d19c32416884ae7acee1bc4",
+      "wasmSha256": "4a000b5a5f8559d1881162581981ff600d2b55eb80bdb77cafee964561086814",
       "manifestPath": "applications/skeleton-agent.manifest.bin",
-      "manifestSha256": "af71c1512f6b3a33f5b0bbd8aa15f10e96294d457f4cda217ad84500031c3359"
+      "manifestSha256": "f226cec8bd9faf8c56a8902d6a305d6e7d593536ef737e3e141b730d3cb29b2c"
     },
     {
       "name": "fixture-agent",
-      "applicationId": "19719b7cebaf3b5ca897c0aef5c2f005aabc4eae4d1f8acfc059f4263a085407",
+      "applicationId": "ad519bca05f05b7b62f11d637e435361bb06faa2a11b7e3c0c15321a23bd8025",
       "applicationVersion": "1.0.0",
       "wasmPath": "applications/fixture-agent.world.wasm",
-      "wasmSha256": "04e92a65df9bb4617ba01ec2fd3eb497aeff87a1f1b72589d9df2afa8c894fb5",
+      "wasmSha256": "59a0eb9071b761e34389b02282bc53973a24265ddb8927d5f04b58d60994e362",
       "manifestPath": "applications/fixture-agent.manifest.bin",
-      "manifestSha256": "27240f716763ebf408e74dfecbd4fc6623f5baea1436b2d7e18344864e3169ae"
+      "manifestSha256": "809d210a6ad7cebc42c59f6dea6fe861622f9aa29566b1f62f769f33423bbf56"
     }
   ],
   "capabilities": [
@@ -81,9 +81,13 @@
   "sourcePins": {
     "boundaryPackageVersion": "0.7.0",
     "boundaryStaticMachineAbiVersion": 1,
-    "worldPackageVersion": "1.0.0-rc.1-dev",
+    "worldPackageVersion": "1.0.0-rc.1",
     "worldApplicationAbiVersion": 1,
-    "artifactIdentity": "sha256"
+    "artifactIdentity": "sha256",
+    "boundaryGitCommit": "7f2472100454aa2cd5c62e07db0c1e23eaf46a77",
+    "worldGitCommit": "6a90d0cf85d3f8233fa49a560c749735b3a11cf6",
+    "worldHostGitCommit": "4a73da0f2263842c8ee2b9858d1685e130558d44",
+    "worldCapabilitiesGitCommit": "80130d80b07f526bf2e0a6c90f54323d7eee4a67"
   },
   "nonClaims": [
     "no cryptographic authenticity",

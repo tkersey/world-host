@@ -64,6 +64,7 @@ await copySelected(path.join(options.worldHostRepo, 'docs'), options.out, [
   'application_wasm_hosting.md',
   'frame_storage.md',
   'agent_runtime_v1_pack.md',
+  'agent_runtime_v1_performance.md',
   'v1_replay_retry.md',
   'v1_migration.md',
   'v0_v1_profiles.md',

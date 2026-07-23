@@ -27,5 +27,13 @@ There is no transparent state migration between profiles. Existing v0 runs compl
 The v1 profile provides both in-memory proof stores and a directory-backed
 operator path under `world-host app`. Directory records are namespaced below
 `application-v1/`, and v1 commands never parse or mutate Carrier records. The
-plain `world-host run`, `resume`, and related commands remain v0 until cutover;
-the explicit `app` namespace prevents profile ambiguity during coexistence.
+release-candidate package also exposes `world-host-v1`, and all new examples
+and Agent Runtime v1 packs use that entrypoint. The plain `world-host run`,
+`resume`, and related commands remain the bounded Carrier v0 compatibility
+surface during the release-candidate interval. This keeps existing runs on
+their original record model while making the v1 application host the default
+for new material.
+
+The v0 line is feature-frozen. Only correctness, compatibility, release, and
+retirement changes may land there. Phase 9 moves remaining universal-runtime
+commands behind an explicit legacy profile after the compatibility interval.
