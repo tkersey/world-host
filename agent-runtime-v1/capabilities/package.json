@@ -1,0 +1,6 @@
+{
+  "name": "@tkersey/world-capabilities-v1-runtime",
+  "private": true,
+  "type": "module",
+  "dependencies": {}
+}

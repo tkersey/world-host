@@ -1,0 +1,42 @@
+{
+  "corpusFingerprint": "02e725eadf1e428d78b4f76bc21f8081574cc0c3a6a67cdbaeb10296f1d27155",
+  "driverId": "sandbox-files",
+  "vectors": [
+    {
+      "id": "path-traversal-rejected",
+      "passed": true
+    },
+    {
+      "id": "symlink-ancestor-rejected",
+      "passed": true
+    },
+    {
+      "id": "final-symlink-rejected",
+      "passed": true
+    },
+    {
+      "id": "bounded-read",
+      "passed": true
+    },
+    {
+      "id": "bounded-write",
+      "passed": true
+    },
+    {
+      "id": "idempotent-write-fixture",
+      "passed": true
+    },
+    {
+      "id": "no-arbitrary-shell",
+      "passed": true
+    },
+    {
+      "id": "no-file-effect-without-root",
+      "passed": true
+    },
+    {
+      "id": "no-write-without-policy",
+      "passed": true
+    }
+  ]
+}

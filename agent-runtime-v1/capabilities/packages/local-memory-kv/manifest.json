@@ -1,0 +1,68 @@
+{
+  "artifacts": [
+    {
+      "path": "adapter.mjs",
+      "role": "adapter"
+    }
+  ],
+  "authorityLabels": [
+    "memory.fixture"
+  ],
+  "checksums": {
+    "adapter.mjs": "ca5e3461b1d9aac51c80b6da154a562da685fa3d5db5f6abd43ac77645f4ec65"
+  },
+  "conformanceCorpusFingerprint": "02e725eadf1e428d78b4f76bc21f8081574cc0c3a6a67cdbaeb10296f1d27155",
+  "driverAbiVersion": "capability-driver-v0",
+  "driverId": "local-memory-kv",
+  "dryRunSupport": true,
+  "effectProtocolV1": {
+    "interfaces": [
+      {
+        "authorityRequirements": "128",
+        "interfaceId": "745edb7226cf04676bca057ab26b7cf948da2b3b04ba15e8ef93f4674435c2f8",
+        "interfaceLabel": "host.memory.kv.v1",
+        "payloadSchemaId": "c0c747fa088e53a78edf901cf6d9fc7dfde00195e2ec58a16f891cb3aac95182",
+        "resultSchemaId": "c0c747fa088e53a78edf901cf6d9fc7dfde00195e2ec58a16f891cb3aac95182"
+      }
+    ]
+  },
+  "idempotencySupport": "fixture-only",
+  "maximumRequestBytes": 8192,
+  "maximumResponseBytes": 8192,
+  "metadata": {
+    "durability": "none"
+  },
+  "packageName": "@tkersey/world-capabilities/local-memory-kv",
+  "packageVersion": "0.0.0-foundry-v0",
+  "packFingerprint": "0dbb626abda18cf1d2f3ecf7de03ee5a4aeaf601c1528f3f34a2673daa560e81",
+  "packFormatVersion": "foundry-pack-v0",
+  "recoverSupport": false,
+  "recoveryClass": "pure",
+  "replaySupport": true,
+  "secretRequirements": [],
+  "shadowSupport": false,
+  "supportedActuationClasses": [
+    "memory"
+  ],
+  "supportedActuatorRefs": [
+    "actuator.local-memory-kv"
+  ],
+  "supportedApplianceAbiVersions": [
+    "agent-runtime-v0.1"
+  ],
+  "supportedDescriptorFingerprints": [
+    "desc.local-memory-kv.v0"
+  ],
+  "supportedResponseStatuses": [
+    "ok",
+    "rejected",
+    "failed"
+  ],
+  "supportedTurnClosureVersions": [
+    "turn-closure-v0"
+  ],
+  "supportedWorldProtocolVersions": [
+    "world-effect-v1",
+    "world-hostrequest-v0"
+  ]
+}

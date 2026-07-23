@@ -1,0 +1,73 @@
+{
+  "artifacts": [
+    {
+      "path": "adapter.mjs",
+      "role": "adapter"
+    }
+  ],
+  "authorityLabels": [
+    "human.approval"
+  ],
+  "checksums": {
+    "adapter.mjs": "9c6001412108e7e02d8b11695cdb33bfcb4e31e0c2c03331ad9aba08aae27fc7"
+  },
+  "conformanceCorpusFingerprint": "02e725eadf1e428d78b4f76bc21f8081574cc0c3a6a67cdbaeb10296f1d27155",
+  "driverAbiVersion": "capability-driver-v0",
+  "driverId": "human-approval",
+  "dryRunSupport": true,
+  "effectProtocolV1": {
+    "interfaces": [
+      {
+        "authorityRequirements": "16",
+        "interfaceId": "e5a1be656cc7c864bd205f25351ee4ad7e3dc55bc43da3b3063a9b8850cf001d",
+        "interfaceLabel": "host.human.approval.v1",
+        "payloadSchemaId": "c0c747fa088e53a78edf901cf6d9fc7dfde00195e2ec58a16f891cb3aac95182",
+        "resultSchemaId": "c0c747fa088e53a78edf901cf6d9fc7dfde00195e2ec58a16f891cb3aac95182"
+      }
+    ]
+  },
+  "idempotencySupport": "operator-event-id-required",
+  "maximumRequestBytes": 8192,
+  "maximumResponseBytes": 8192,
+  "metadata": {
+    "modes": [
+      "noninteractive-allow",
+      "noninteractive-deny",
+      "dry-run"
+    ]
+  },
+  "packageName": "@tkersey/world-capabilities/human-approval",
+  "packageVersion": "0.0.0-foundry-v0",
+  "packFingerprint": "545a2f2a29cf3dd2cd707312a6f3f79cd215ee67d947578cb668f6ae0dbd6a6f",
+  "packFormatVersion": "foundry-pack-v0",
+  "recoverSupport": false,
+  "recoveryClass": "best_effort",
+  "replaySupport": false,
+  "secretRequirements": [],
+  "shadowSupport": false,
+  "supportedActuationClasses": [
+    "approval"
+  ],
+  "supportedActuatorRefs": [
+    "actuator.human-approval"
+  ],
+  "supportedApplianceAbiVersions": [
+    "agent-runtime-v0.1"
+  ],
+  "supportedDescriptorFingerprints": [
+    "desc.human-approval.v0"
+  ],
+  "supportedResponseStatuses": [
+    "ok",
+    "rejected",
+    "deferred",
+    "failed"
+  ],
+  "supportedTurnClosureVersions": [
+    "turn-closure-v0"
+  ],
+  "supportedWorldProtocolVersions": [
+    "world-effect-v1",
+    "world-hostrequest-v0"
+  ]
+}
