@@ -29,7 +29,13 @@ the current World application artifacts, v1 host, and v1 capability protocol.
 zero-import/bounded-memory WASMs, and static capability declarations without
 executing adapters. `bun run conformance:agent-runtime-v1` runs the six required
 behavioral scenarios using only files inside the pack. See
-[`docs/agent_runtime_v1_pack.md`](docs/agent_runtime_v1_pack.md).
+[`docs/agent_runtime_v1_pack.md`](docs/agent_runtime_v1_pack.md) and the
+[`release-candidate performance report`](docs/agent_runtime_v1_performance.md).
+
+The release-candidate package exposes `world-host-v1` for new applications.
+The unqualified `world-host` entrypoint remains the bounded Carrier v0
+compatibility surface until Phase 9. New examples and v1 packs use
+`world-host-v1`; v0 accepts correctness and compatibility changes only.
 
 `world-host app install --store STORE --name APP --wasm application.world.wasm`
 validates the zero-import ABI and records the WASM and embedded manifest as
@@ -87,6 +93,7 @@ bun run proof:frame-store
 bun run build:agent-runtime-v1
 bun run check:agent-runtime-v1
 bun run conformance:agent-runtime-v1
+bun run measure:agent-runtime-v1
 bun run proof:agent
 bun run proof:boundaries
 bun scripts/build-agent-runtime-pack.mjs

@@ -21,7 +21,7 @@ const FORBIDDEN_RUNTIME_PATHS = [
   /world[_-]universal/i,
 ];
 
-export async function checkAgentRuntimeV1Pack(packPath) {
+export async function checkAgentRuntimeV1Pack(packPath, options = {}) {
   const root = await safeRoot(packPath);
   const files = await listFiles(root);
   const required = [
@@ -55,6 +55,9 @@ export async function checkAgentRuntimeV1Pack(packPath) {
 
   const manifest = JSON.parse(await readText(root, 'manifest.json'));
   assertPackManifest(manifest);
+  if (options.requiredReleaseStatus !== undefined) {
+    assert.equal(manifest.releaseStatus, options.requiredReleaseStatus, 'release status mismatch');
+  }
   assert.deepEqual([...manifest.conformance.scenarios].sort(), [...REQUIRED_SCENARIOS].sort());
 
   const host = await importFresh(path.join(root, 'host', 'src', 'v1', 'index.mjs'));
@@ -146,6 +149,16 @@ function assertPackManifest(manifest) {
   assert(Array.isArray(manifest.conformance.scenarios));
   assert(Array.isArray(manifest.nonClaims) && manifest.nonClaims.includes('no exactly-once effects'));
   assert(manifest.sourcePins && typeof manifest.sourcePins === 'object');
+  if (manifest.releaseStatus !== 'development') {
+    for (const field of [
+      'boundaryGitCommit',
+      'worldGitCommit',
+      'worldHostGitCommit',
+      'worldCapabilitiesGitCommit',
+    ]) {
+      assert(/^[0-9a-f]{40}$/.test(manifest.sourcePins[field]), `invalid source pin: ${field}`);
+    }
+  }
 }
 
 async function safeRoot(packPath) {
@@ -219,14 +232,16 @@ function commandOptions() {
   const args = process.argv.slice(2);
   const result = {
     packPath: embedded ? path.resolve(path.dirname(current), '..') : path.resolve('agent-runtime-v1'),
+    requiredReleaseStatus: undefined,
   };
   let packPathProvided = false;
-  for (const argument of args) {
-    if (!argument.startsWith('-') && !packPathProvided) {
-      result.packPath = path.resolve(argument);
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === '--require-release-candidate') result.requiredReleaseStatus = 'release-candidate';
+    else if (!args[index].startsWith('-') && !packPathProvided) {
+      result.packPath = path.resolve(args[index]);
       packPathProvided = true;
     } else {
-      throw new Error(`unknown argument: ${argument}`);
+      throw new Error(`unknown argument: ${args[index]}`);
     }
   }
   return result;
@@ -234,6 +249,6 @@ function commandOptions() {
 
 if (import.meta.main) {
   const options = commandOptions();
-  const receipt = await checkAgentRuntimeV1Pack(options.packPath);
+  const receipt = await checkAgentRuntimeV1Pack(options.packPath, options);
   process.stdout.write(`${JSON.stringify(receipt, null, 2)}\n`);
 }

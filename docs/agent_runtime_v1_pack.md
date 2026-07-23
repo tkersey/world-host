@@ -51,3 +51,7 @@ not a release operation. A release-candidate or released pack additionally
 requires reviewed and pinned Boundary, World, world-host, and capability
 artifacts plus the cutover gates in `v0_v1_profiles.md`. Existing v0 runs remain
 on Carrier v0; they are not translated into v1 Frames.
+
+The checked-in Phase 8 pack is a release candidate with exact source commit
+pins. See [`agent_runtime_v1_performance.md`](agent_runtime_v1_performance.md)
+for its structural and environment-specific performance report.
