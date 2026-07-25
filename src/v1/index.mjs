@@ -25,7 +25,12 @@ export {
   encodeStepInput,
   validateEffectResultForRequest,
 } from './protocol.mjs';
-export { WASM_PAGE_BYTES, inspectApplicationWasm } from './wasm_module.mjs';
+export {
+  REQUIRED_APPLICATION_EXPORTS,
+  WASM_PAGE_BYTES,
+  assertApplicationWasmSurface,
+  inspectApplicationWasm,
+} from './wasm_module.mjs';
 export { RunControllerV1 } from './run_controller.mjs';
 export {
   BlockStore,

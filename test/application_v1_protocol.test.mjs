@@ -1,10 +1,12 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 import {
   EffectStatus,
   FrameStatus,
+  assertApplicationWasmSurface,
   createEffectResult,
   decodeApplicationManifest,
   decodeEffectRequest,
@@ -155,6 +157,17 @@ describe('World application WASM inspection', () => {
       maximumBytes: 131_072,
     });
     assert.throws(() => inspectApplicationWasm(unbounded), { code: 'ERR_APPLICATION_V1_WASM_MEMORY_LIMITS' });
+  });
+
+  it('reads the embedded manifest and ABI surface without guest execution', () => {
+    const bytes = readFileSync('agent-runtime-v1/applications/research-digest-agent.world.wasm');
+    const inspection = assertApplicationWasmSurface(inspectApplicationWasm(bytes));
+
+    assert.equal(inspection.importCount, 0);
+    assert.equal(inspection.manifest.applicationName, 'research-digest-agent');
+    assert.equal(inspection.manifest.worldApplicationAbiVersion, 1);
+    assert.equal(inspection.exports.some((entry) =>
+      entry.name === 'world_manifest_ptr' && entry.kind === 'function'), true);
   });
 });
 

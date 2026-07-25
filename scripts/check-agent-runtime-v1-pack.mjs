@@ -208,9 +208,16 @@ function assertPackManifest(manifest) {
   });
   assert.deepEqual(manifest.sourcePins.worldCapabilitiesRelease, {
     tag: 'v1.0.0-rc.3',
+    gitCommit: 'c0745cf2637270e7af659cbae79c5c7e8c7005dd',
     researchPackFingerprint: '97f8684e8eeb722bb8020a2d6dee0236c75e0aac332f43e01aedb1a0920b93a3',
     researchPackAssetSha256: 'bbe00739f8d2b3bdf320feb333116e34345e16fb354a761febcd290fe9491326',
     runtimeAssetSha256: '70906745c927aa2d47f497cdcdd3174d8321e17e25f632fb66646c934c413edb',
+  });
+  assert.deepEqual(manifest.sourcePins.externalApplicationRelease, {
+    name: 'research-digest-agent',
+    worldReleaseTag: 'v1.0.0-rc.2',
+    wasmSha256: 'ced222d3537ca9b36165278190baef8b7ef79b091876d685a1dc24d5a926caca',
+    manifestSha256: 'e48349346439a8b16040d9f98d90b8ab1e559e56be9a18ca10f7d4a1f1e32c4c',
   });
   assert.equal(manifest.sourcePins.worldHostPackageVersion, '1.0.0-rc.2');
   assert.deepEqual(manifest.externality, {
@@ -234,6 +241,12 @@ function assertPackManifest(manifest) {
     ]) {
       assert(/^[0-9a-f]{40}$/.test(manifest.sourcePins[field]), `invalid source pin: ${field}`);
     }
+    assert.equal(manifest.sourcePins.worldCapabilitiesGitCommit,
+      manifest.sourcePins.worldCapabilitiesRelease.gitCommit);
+    assert.equal(externalApplication.wasmSha256,
+      manifest.sourcePins.externalApplicationRelease.wasmSha256);
+    assert.equal(externalApplication.manifestSha256,
+      manifest.sourcePins.externalApplicationRelease.manifestSha256);
   }
 }
 

@@ -65,10 +65,11 @@ world-host resume \
 world-host inspect --store STORE --run run-1
 ```
 
-`world-host inspect-app` reports application, ABI, residual-effect, authority,
-memory, and zero-import metadata without installing or executing a step.
-`world-host retry` and `world-host replay` continue from a retained
-EffectResult; `world-host branch` aliases `fork`; and `export`/`import` move the
+`world-host inspect-app` statically reports application, ABI, residual-effect,
+authority, memory, and zero-import metadata without instantiating guest code.
+`world-host retry` and `world-host replay` accept no fresh EffectResult or
+handler metadata; they continue only from a result already retained by the
+store. `world-host branch` aliases `fork`; and `export`/`import` move the
 application, current Frame, and retained result to a fresh store.
 
 `world-host install --store STORE --name APP --wasm application.world.wasm`
