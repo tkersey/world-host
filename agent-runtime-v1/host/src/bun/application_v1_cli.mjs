@@ -260,6 +260,7 @@ async function importApplication(args, io, options) {
     blockStore: store.blockStore,
     headStore: store.headStore,
     effectJournal: store.effectJournal,
+    workerFactory: applicationWorkerFactory(options),
     preflight: async () => ({ blockers: [] }),
   });
   writeJson(io, {
@@ -288,8 +289,13 @@ async function createController(store, wasmBytes, options) {
     blockStore: store.blockStore,
     headStore: store.headStore,
     effectJournal: store.effectJournal,
+    workerFactory: applicationWorkerFactory(options),
     preflight: options.preflight,
   });
+}
+
+function applicationWorkerFactory(options) {
+  return () => new ApplicationWorker(options.workerOptions);
 }
 
 async function loadController(store, application, options) {

@@ -29,6 +29,7 @@ export function inspectApplicationWasm(wasmBytes, {
       !bytes.subarray(4, 8).equals(Buffer.from([0x01, 0x00, 0x00, 0x00]))) {
     fail('ERR_APPLICATION_V1_WASM_HEADER');
   }
+  if (!WebAssembly.validate(bytes)) fail('ERR_APPLICATION_V1_WASM_VALIDATE');
   const cursor = { offset: 8 };
   const standardSections = new Set();
   let importCount = 0;
@@ -76,19 +77,19 @@ export function assertApplicationWasmSurface(inspection) {
 
 function findEmbeddedApplicationManifest(bytes, admissionLimits) {
   const magic = Buffer.from('WRLDMNF1', 'ascii');
-  const found = [];
+  const found = new Map();
   for (let offset = bytes.indexOf(magic); offset !== -1; offset = bytes.indexOf(magic, offset + 1)) {
     try {
       const manifest = decodeApplicationManifestPrefix(bytes.subarray(offset), admissionLimits);
-      found.push(manifest);
+      found.set(Buffer.from(manifest.encodedBytes).toString('base64'), manifest);
     } catch {
       // A matching byte sequence is not an embedded manifest unless the full
       // canonical record, limits, and semantic identity validate.
     }
   }
-  if (found.length === 0) return null;
-  if (found.length !== 1) fail('ERR_APPLICATION_V1_WASM_MANIFEST_AMBIGUOUS');
-  return found[0];
+  if (found.size === 0) return null;
+  if (found.size !== 1) fail('ERR_APPLICATION_V1_WASM_MANIFEST_AMBIGUOUS');
+  return found.values().next().value;
 }
 
 function readVectorCount(section) {
