@@ -19,6 +19,11 @@ If the host stops after result persistence, the next controller reads that resul
 These properties provide deterministic retry and replay suppression. They do not claim exactly-once external effects.
 
 The directory-backed proof stops after result persistence, discards the active
-controller, and resumes through a new `world-host app` process. The capability
+controller, and resumes through a new `world-host` process. The capability
 outcome is not produced again, and the resulting Frame is byte-identical to a
 fresh deterministic reduction of the same parent, result, and fuel.
+
+The standalone Research Digest proof also loses the computed child before head
+advancement, retains the exact capability result, recomputes identical child
+Frame bytes, and confirms the research capability invocation count remains one.
+Its replay branch consumes the retained result with zero fresh effects.

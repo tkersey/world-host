@@ -114,6 +114,10 @@ export class CapabilityRouterV1 {
       fail("ERR_CAPABILITY_V1_SCHEMA_MISMATCH");
     }
     if (request.authorityRequirements !== binding.authorityRequirements) fail("ERR_CAPABILITY_V1_AUTHORITY_MISMATCH");
+    if (binding.applicationIds !== null &&
+        !binding.applicationIds.some((applicationId) => sameBytes(request.applicationId, applicationId))) {
+      fail("ERR_CAPABILITY_V1_APPLICATION_MISMATCH");
+    }
     return binding;
   }
 }
@@ -129,6 +133,8 @@ function assertBinding(binding) {
       !binding.adapter || typeof binding.adapter.preflight !== "function" || typeof binding.adapter.resolve !== "function") {
     fail("ERR_CAPABILITY_V1_BINDING");
   }
+  const applicationIds = normalizeApplicationIds(binding.applicationIds);
+  const target = Object.freeze({ ...(binding.target ?? {}) });
   return Object.freeze({
     ...binding,
     adapter: Object.freeze({
@@ -138,10 +144,15 @@ function assertBinding(binding) {
     interfaceId: Buffer.from(binding.interfaceId),
     payloadSchemaId: Buffer.from(binding.payloadSchemaId),
     resultSchemaId: Buffer.from(binding.resultSchemaId),
+    applicationIds,
     authorityRequirements: asU64(binding.authorityRequirements ?? 0n, "authorityRequirements"),
-    target: Object.freeze({ ...(binding.target ?? {}) }),
+    target,
     handlerIdentity: binding.handlerIdentity ?? binding.driverId,
-    configurationIdentity: binding.configurationIdentity ?? (() => semanticConfigurationIdentity(binding)),
+    configurationIdentity: binding.configurationIdentity ?? (() => semanticConfigurationIdentity({
+      ...binding,
+      applicationIds,
+      target
+    })),
     recoveryClass: binding.recoveryClass ?? "pure",
     hostClaims: binding.hostClaims ?? (() => new Uint8Array(0))
   });
@@ -191,7 +202,27 @@ function semanticConfigurationIdentity(binding) {
   hasher.update(binding.bindingId);
   hasher.update(Buffer.from(binding.interfaceId));
   hasher.update(JSON.stringify(binding.target ?? {}));
+  for (const applicationId of binding.applicationIds ?? []) {
+    hasher.update(Buffer.from([0]));
+    hasher.update(applicationId);
+  }
   return hasher.digest("hex");
+}
+
+function normalizeApplicationIds(value) {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value) || value.length === 0) fail("ERR_CAPABILITY_V1_APPLICATION_IDS");
+  const ids = value.map((applicationId) => {
+    if (!(applicationId instanceof Uint8Array) || applicationId.length !== 32) {
+      fail("ERR_CAPABILITY_V1_APPLICATION_IDS");
+    }
+    return Buffer.from(applicationId);
+  });
+  ids.sort(Buffer.compare);
+  for (let index = 1; index < ids.length; index += 1) {
+    if (sameBytes(ids[index - 1], ids[index])) fail("ERR_CAPABILITY_V1_APPLICATION_IDS");
+  }
+  return Object.freeze(ids);
 }
 
 function sameBytes(left, right) {

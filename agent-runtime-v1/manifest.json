@@ -14,57 +14,81 @@
   "applications": [
     {
       "name": "one-effect",
-      "applicationId": "9fabe4a91e326256a854f29894bd019ead81624da51c937522f362685f10ff92",
+      "applicationId": "495375e1c26deff7c688c050d3d1395d02a05ab40f7e752f26798ef3b6f3be02",
       "applicationVersion": "1.0.0",
       "wasmPath": "applications/one-effect.world.wasm",
-      "wasmSha256": "3c19134d752fe865fbe8ae923c66ca75eb700f89383daa6b0274485adba28e70",
+      "wasmSha256": "1039ff09b31532c6443351a1d536921d6679f26bff9a330e4f9ba4213def0ab9",
       "manifestPath": "applications/one-effect.manifest.bin",
-      "manifestSha256": "900f4760d7b7f17e81271aaf121cedabf2ccbd35e11553cb07d0990d9a17815a"
+      "manifestSha256": "76b70efc44815eadeaab45318e2789058bbd3d76094fce21738fda6939cab3b6",
+      "provenance": "coordinated-fixture"
     },
     {
       "name": "skeleton-agent",
-      "applicationId": "258562ef364278fedaf2c629379216226f2067996797942d01c863f6e3735a3b",
+      "applicationId": "aace35102fa37e6205d3d07592fd939f4a915c1a9566de754876a39cb4bbae42",
       "applicationVersion": "1.0.0",
       "wasmPath": "applications/skeleton-agent.world.wasm",
-      "wasmSha256": "4a000b5a5f8559d1881162581981ff600d2b55eb80bdb77cafee964561086814",
+      "wasmSha256": "32731391f6124f623fe37850dc8e90b984e8213c178a11a22ca783cdd6798e0d",
       "manifestPath": "applications/skeleton-agent.manifest.bin",
-      "manifestSha256": "f226cec8bd9faf8c56a8902d6a305d6e7d593536ef737e3e141b730d3cb29b2c"
+      "manifestSha256": "415f00f17298428a8cd6bee962927ba9138b906128b53d2c682c128c7bd0150e",
+      "provenance": "coordinated-fixture"
     },
     {
       "name": "fixture-agent",
-      "applicationId": "ad519bca05f05b7b62f11d637e435361bb06faa2a11b7e3c0c15321a23bd8025",
+      "applicationId": "8b869e3685b2db6f527d65d14d0d0681ffce3c4a661a0c9b962cba7b6117b0e5",
       "applicationVersion": "1.0.0",
       "wasmPath": "applications/fixture-agent.world.wasm",
-      "wasmSha256": "59a0eb9071b761e34389b02282bc53973a24265ddb8927d5f04b58d60994e362",
+      "wasmSha256": "1d775975cb7234d2316e08e2c1c253f463c43798adb813ac4d208f4e76182e50",
       "manifestPath": "applications/fixture-agent.manifest.bin",
-      "manifestSha256": "809d210a6ad7cebc42c59f6dea6fe861622f9aa29566b1f62f769f33423bbf56"
+      "manifestSha256": "732d6199b221f7ab5e495bf7747e0b6f9efb7e3d037f537cbdcf385bd4014642",
+      "provenance": "coordinated-fixture"
+    },
+    {
+      "name": "research-digest-agent",
+      "applicationId": "88e5a053c2a16fe9093abe4aa9f0c34d3e56abc9d1080aff5eb346687e72be85",
+      "applicationVersion": "1.0.0",
+      "wasmPath": "applications/research-digest-agent.world.wasm",
+      "wasmSha256": "ced222d3537ca9b36165278190baef8b7ef79b091876d685a1dc24d5a926caca",
+      "manifestPath": "applications/research-digest-agent.manifest.bin",
+      "manifestSha256": "e48349346439a8b16040d9f98d90b8ab1e559e56be9a18ca10f7d4a1f1e32c4c",
+      "provenance": "external-clean-room"
     }
   ],
   "capabilities": [
     {
       "packageName": "@tkersey/world-capabilities/fixture-model",
       "path": "capabilities/packages/fixture-model",
-      "packFingerprint": "ec41e18ab228e3fa995efe744806c56c287cc46c7086f1fe76ae9dc55c48a05b"
+      "packFingerprint": "ec41e18ab228e3fa995efe744806c56c287cc46c7086f1fe76ae9dc55c48a05b",
+      "packageVersion": "0.0.0-foundry-v0"
     },
     {
       "packageName": "@tkersey/world-capabilities/generic-http-json",
       "path": "capabilities/packages/generic-http-json",
-      "packFingerprint": "422c48fb2ea07c2779af2392387f985904d213daf689d994389a082a8a55c6b6"
+      "packFingerprint": "422c48fb2ea07c2779af2392387f985904d213daf689d994389a082a8a55c6b6",
+      "packageVersion": "0.0.0-foundry-v0"
     },
     {
       "packageName": "@tkersey/world-capabilities/human-approval",
       "path": "capabilities/packages/human-approval",
-      "packFingerprint": "545a2f2a29cf3dd2cd707312a6f3f79cd215ee67d947578cb668f6ae0dbd6a6f"
+      "packFingerprint": "545a2f2a29cf3dd2cd707312a6f3f79cd215ee67d947578cb668f6ae0dbd6a6f",
+      "packageVersion": "0.0.0-foundry-v0"
     },
     {
       "packageName": "@tkersey/world-capabilities/local-memory-kv",
       "path": "capabilities/packages/local-memory-kv",
-      "packFingerprint": "0dbb626abda18cf1d2f3ecf7de03ee5a4aeaf601c1528f3f34a2673daa560e81"
+      "packFingerprint": "0dbb626abda18cf1d2f3ecf7de03ee5a4aeaf601c1528f3f34a2673daa560e81",
+      "packageVersion": "0.0.0-foundry-v0"
+    },
+    {
+      "packageName": "@tkersey/world-capabilities/research-lookup-fixture",
+      "path": "capabilities/packages/research-lookup-fixture",
+      "packFingerprint": "97f8684e8eeb722bb8020a2d6dee0236c75e0aac332f43e01aedb1a0920b93a3",
+      "packageVersion": "1.0.0-rc.3"
     },
     {
       "packageName": "@tkersey/world-capabilities/sandbox-files",
       "path": "capabilities/packages/sandbox-files",
-      "packFingerprint": "4274066446ec0c891962ad9d90b91361da1d3f6553081cb53d069ad1cbe8173e"
+      "packFingerprint": "4274066446ec0c891962ad9d90b91361da1d3f6553081cb53d069ad1cbe8173e",
+      "packageVersion": "0.0.0-foundry-v0"
     }
   ],
   "conformance": {
@@ -73,21 +97,50 @@
       "one-effect",
       "skeleton-agent",
       "fixture-agent",
+      "research-digest",
       "provider-parked",
-      "retry",
-      "branching"
+      "fresh-instance-resume",
+      "deterministic-retry",
+      "replay",
+      "branching",
+      "migration",
+      "negative"
     ]
   },
   "sourcePins": {
     "boundaryPackageVersion": "0.7.0",
     "boundaryStaticMachineAbiVersion": 1,
-    "worldPackageVersion": "1.0.0-rc.1",
+    "worldPackageVersion": "1.0.0-rc.2",
     "worldApplicationAbiVersion": 1,
     "artifactIdentity": "sha256",
-    "boundaryGitCommit": "7f2472100454aa2cd5c62e07db0c1e23eaf46a77",
-    "worldGitCommit": "6a90d0cf85d3f8233fa49a560c749735b3a11cf6",
-    "worldHostGitCommit": "c47304b7309ad5195d9f83bb1c3780fb191ef56c",
-    "worldCapabilitiesGitCommit": "0ca92bcd5b68983f5294fa4f286650c792088cf8"
+    "boundaryRelease": {
+      "tag": "v0.7.0",
+      "packageHash": "boundary-0.7.0-flclaCnjkABOSWaiSkxMBDQZsBEeA-Niai-l1u0q3A7_",
+      "url": "https://github.com/tkersey/boundary/archive/refs/tags/v0.7.0.tar.gz"
+    },
+    "worldRelease": {
+      "tag": "v1.0.0-rc.2",
+      "packageHash": "world-1.0.0-rc.2-XXTUeOXYhwC1anDePj7Lr4SfwDCxG-ofPw92_-PGGyKv",
+      "url": "https://github.com/tkersey/world/archive/refs/tags/v1.0.0-rc.2.tar.gz"
+    },
+    "worldCapabilitiesRelease": {
+      "tag": "v1.0.0-rc.3",
+      "researchPackFingerprint": "97f8684e8eeb722bb8020a2d6dee0236c75e0aac332f43e01aedb1a0920b93a3",
+      "researchPackAssetSha256": "bbe00739f8d2b3bdf320feb333116e34345e16fb354a761febcd290fe9491326",
+      "runtimeAssetSha256": "70906745c927aa2d47f497cdcdd3174d8321e17e25f632fb66646c934c413edb"
+    },
+    "worldHostPackageVersion": "1.0.0-rc.2",
+    "boundaryGitCommit": "1fe1a1dfdd2724ac9b61f760baac4db0dd9505ae",
+    "worldGitCommit": "a79265906bdf75d432b8f5286159598ef2282da0",
+    "worldHostGitCommit": "1245c4f11f6f9ebf60df27d8935f8079d5b2ea53",
+    "worldCapabilitiesGitCommit": "c0745cf2637270e7af659cbae79c5c7e8c7005dd"
+  },
+  "externality": {
+    "application": "research-digest-agent",
+    "authoredOutsideSourceRepositories": true,
+    "sourceCheckoutRequiredForConformance": false,
+    "capabilitySpecificHostLogic": false,
+    "hostAuthoredFrame": false
   },
   "nonClaims": [
     "no cryptographic authenticity",

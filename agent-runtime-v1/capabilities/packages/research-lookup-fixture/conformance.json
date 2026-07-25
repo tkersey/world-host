@@ -1,0 +1,46 @@
+{
+  "corpusFingerprint": "02e725eadf1e428d78b4f76bc21f8081574cc0c3a6a67cdbaeb10296f1d27155",
+  "driverId": "research-lookup-fixture",
+  "vectors": [
+    {
+      "id": "request-admission-before-effect",
+      "passed": true
+    },
+    {
+      "id": "malformed-request-rejected",
+      "passed": true
+    },
+    {
+      "id": "wrong-schema-rejected",
+      "passed": true
+    },
+    {
+      "id": "wrong-application-rejected",
+      "passed": true
+    },
+    {
+      "id": "wrong-request-identity-rejected",
+      "passed": true
+    },
+    {
+      "id": "excessive-result-rejected",
+      "passed": true
+    },
+    {
+      "id": "forbidden-world-evidence-rejected",
+      "passed": true
+    },
+    {
+      "id": "retry-result-reused",
+      "passed": true
+    },
+    {
+      "id": "static-inspection-does-not-execute-adapter",
+      "passed": true
+    },
+    {
+      "id": "receipt-bound-to-pack-and-corpus",
+      "passed": true
+    }
+  ]
+}

@@ -11,7 +11,7 @@ const check = await checkAgentRuntimeV1Pack(pack);
 const host = await import(pathToFileURL(path.join(pack, 'host/src/v1/index.mjs')).href);
 const capabilities = await import(pathToFileURL(path.join(pack, 'capabilities/src/v1/index.mjs')).href);
 const applications = Object.fromEntries(await Promise.all(
-  ['one-effect', 'skeleton-agent', 'fixture-agent'].map(async (name) => [
+  ['one-effect', 'skeleton-agent', 'fixture-agent', 'research-digest-agent'].map(async (name) => [
     name,
     await readFile(path.join(pack, `applications/${name}.world.wasm`)),
   ]),
@@ -25,6 +25,9 @@ try {
   const fixture = await proveFixture(router, root);
   const branching = await proveBranching();
   const migration = await proveMigration();
+  const research = await proveResearchDigest();
+  const negative = await proveResearchNegatives();
+  const researchCli = await proveResearchCli(root);
 
   const receipt = {
     receiptVersion: 'agent-runtime-v1-conformance/v1',
@@ -40,11 +43,27 @@ try {
       replayFreshEffects: fixture.replayFreshEffects,
       branchingChildren: branching.children,
       migrationReceiverPreflight: migration.receiverPreflight,
+      researchDigest: research.completed,
+      researchCustomEffect: research.customEffect,
+      researchInternalProvider: research.internalProvider,
+      researchExternalCapability: research.externalCapability,
+      researchFreshInstanceResume: research.freshInstanceResume,
+      researchDeterministicRetry: research.deterministicRetry,
+      researchCapabilityInvocations: research.capabilityInvocations,
+      researchReplayFreshEffects: research.replayFreshEffects,
+      researchBranchingChildren: research.branchingChildren,
+      researchMigrationReceiverPreflight: research.migrationReceiverPreflight,
+      researchNegativeCases: negative,
+      researchCli: researchCli,
     },
     exactFixtureOutput: fixture.output,
     exactFixtureFinal: fixture.final,
+    exactResearchDigest: research.digest,
+    exactResearchItemCount: research.itemCount,
     sourceCheckoutRequired: false,
+    sourceIndependentHost: true,
     capabilityAuthoredFrame: false,
+    applicationSpecificHostLogic: false,
     v0RuntimeArtifactPresent: false,
   };
   process.stdout.write(`${JSON.stringify(receipt, null, 2)}\n`);
@@ -211,6 +230,506 @@ async function proveMigration() {
   return { receiverPreflight: true };
 }
 
+async function proveResearchDigest() {
+  const wasmBytes = applications['research-digest-agent'];
+  const initialArgsBytes = encodeResearchRequest({
+    query: 'portable algebraic effects',
+    maximumItems: 2n,
+  });
+  const blocks = new host.MemoryBlockStore();
+  const heads = new host.MemoryBranchHeadStore();
+  let lostFrameBytes = null;
+  let loseFirstChild = true;
+  const controller = await host.RunControllerV1.create({
+    wasmBytes,
+    blockStore: blocks,
+    headStore: heads,
+    faultInjector: async (stage, context) => {
+      if (stage === 'after-world-step' && context.expectedHead !== null && loseFirstChild) {
+        loseFirstChild = false;
+        lostFrameBytes = Buffer.from(context.output.frameBytes);
+        throw new Error('simulated lost child before head advancement');
+      }
+    },
+  });
+  const manifest = controller.manifest;
+  const parent = await controller.initialize('research-retry', 'main', {
+    initialArgsBytes,
+    fuel: 100n,
+  });
+  assert.equal(parent.frame.status, host.FrameStatus.needsEffect);
+  assert.equal(parent.frame.resourceCounters.internalHandlerCalls, 1n);
+  assert.equal(parent.frame.pendingEffect.interfaceId.toString('hex'), capabilities.effectInterfaceId(
+    capabilities.RESEARCH_LOOKUP_INTERFACE_LABEL,
+  ).toString('hex'));
+
+  const router = new capabilities.CapabilityRouterV1({
+    bindings: [capabilities.researchLookupFixtureBinding()],
+  });
+  const context = {
+    policy: { researchLookup: true },
+    effectAttempted: 0,
+    attempt: 1,
+  };
+  const resolution = await router.resolve(context, parent.frame.pendingEffect.encodedBytes);
+  assert.equal(resolution.bindingId, 'research-lookup-fixture.v1');
+  await assert.rejects(
+    () => controller.advance('research-retry', 'main', {
+      effectResult: resolution.result,
+      fuel: 100n,
+      effectMetadata: resolutionMetadata(resolution),
+    }),
+    /simulated lost child before head advancement/,
+  );
+  assert.equal((await controller.readCurrentFrame('research-retry', 'main')).head.frameId,
+    parent.nextHead.frameId);
+
+  const retried = await controller.advance('research-retry', 'main', { fuel: 100n });
+  assert(lostFrameBytes !== null);
+  assert.deepEqual(retried.frameBytes, lostFrameBytes);
+  assert.equal(retried.frame.status, host.FrameStatus.completed);
+  const digest = decodeDigestResult(retried.frame.finalResultBytes);
+  assert.equal(digest.digest,
+    'Static closure keeps authority external; canonical Frames keep continuation portable.');
+  assert.equal(digest.itemCount, 2n);
+  assert.equal(context.effectAttempted, 1);
+
+  const replayInput = host.encodeStepInput({
+    applicationId: manifest.applicationId,
+    expectedParentFrameId: parent.frame.frameId,
+    priorFrameBytes: parent.frameBytes,
+    effectResult: resolution.result,
+    fuel: 100n,
+  }, manifest.limits);
+  const replay = await freshStep(wasmBytes, replayInput);
+  assert.deepEqual(replay.frameBytes, retried.frameBytes);
+
+  const branch = await proveResearchBranching(wasmBytes, initialArgsBytes, resolution.result);
+  const migration = await proveResearchMigration(wasmBytes, initialArgsBytes, resolution.result);
+  return {
+    completed: true,
+    customEffect: true,
+    internalProvider: true,
+    externalCapability: true,
+    freshInstanceResume: true,
+    deterministicRetry: true,
+    capabilityInvocations: context.effectAttempted,
+    replayFreshEffects: 0,
+    branchingChildren: branch.children,
+    migrationReceiverPreflight: migration.receiverPreflight,
+    digest: digest.digest,
+    itemCount: digest.itemCount.toString(),
+  };
+}
+
+async function proveResearchBranching(wasmBytes, initialArgsBytes, firstResult) {
+  const blocks = new host.MemoryBlockStore();
+  const heads = new host.MemoryBranchHeadStore();
+  const controller = await host.RunControllerV1.create({ wasmBytes, blockStore: blocks, headStore: heads });
+  const parent = await controller.initialize('research-branch', 'main', {
+    initialArgsBytes,
+    fuel: 100n,
+  });
+  const parentBytes = await blocks.getBlock(parent.frameRef);
+  await controller.forkBranch('research-branch', 'main', 'alternate');
+  const alternateResult = host.createEffectResult({
+    requestId: parent.frame.pendingEffect.requestId,
+    status: host.EffectStatus.ok,
+    resultSchemaId: parent.frame.pendingEffect.resultSchemaId,
+    resultBytes: capabilities.encodeResearchResponse({
+      first: {
+        title: 'A different research corpus',
+        summary: 'The same parent may accept another valid result.',
+      },
+      second: {
+        title: 'Branch isolation',
+        summary: 'The parent Frame remains immutable.',
+      },
+      digestResult: {
+        digest: 'Alternate valid research creates a distinct deterministic branch.',
+        itemCount: 2n,
+      },
+    }),
+  }, controller.manifest.limits);
+  const main = await controller.advance('research-branch', 'main', {
+    effectResult: firstResult,
+    fuel: 100n,
+  });
+  const alternate = await controller.advance('research-branch', 'alternate', {
+    effectResult: alternateResult,
+    fuel: 100n,
+  });
+  assert.equal(main.previousHead.frameId, alternate.previousHead.frameId);
+  assert.notEqual(main.nextHead.frameId, alternate.nextHead.frameId);
+  assert.deepEqual(await blocks.getBlock(parent.frameRef), parentBytes);
+  return { children: 2 };
+}
+
+async function proveResearchMigration(wasmBytes, initialArgsBytes, result) {
+  const sourceBlocks = new host.MemoryBlockStore();
+  const sourceHeads = new host.MemoryBranchHeadStore();
+  let resultPersisted = false;
+  const source = await host.RunControllerV1.create({
+    wasmBytes,
+    blockStore: sourceBlocks,
+    headStore: sourceHeads,
+    faultInjector: async (stage) => {
+      if (stage === 'after-result-persistence' && !resultPersisted) {
+        resultPersisted = true;
+        throw new Error('simulated migration after result persistence');
+      }
+    },
+  });
+  await source.initialize('research-migration-source', 'main', {
+    initialArgsBytes,
+    fuel: 100n,
+  });
+  await assert.rejects(
+    () => source.advance('research-migration-source', 'main', {
+      effectResult: result,
+      fuel: 100n,
+    }),
+    /simulated migration after result persistence/,
+  );
+  const bundle = await source.exportBranch('research-migration-source', 'main');
+  assert(bundle.retainedEffectResultBytes !== null);
+
+  const receiverBlocks = new host.MemoryBlockStore();
+  const receiverHeads = new host.MemoryBranchHeadStore();
+  let receiverPreflight = 0;
+  const imported = await host.RunControllerV1.importBranch({
+    bundle,
+    runId: 'research-migration-receiver',
+    branchId: 'main',
+    blockStore: receiverBlocks,
+    headStore: receiverHeads,
+    preflight: async (manifest) => {
+      receiverPreflight += 1;
+      return {
+        blockers: manifest.residualEffects.some((effect) =>
+          effect.interfaceId.toString('hex') === capabilities.effectInterfaceId(
+            capabilities.RESEARCH_LOOKUP_INTERFACE_LABEL,
+          ).toString('hex'))
+          ? []
+          : ['research.lookup.v1 unavailable'],
+      };
+    },
+  });
+  const completed = await imported.controller.advance('research-migration-receiver', 'main', {
+    fuel: 100n,
+  });
+  assert.equal(completed.frame.status, host.FrameStatus.completed);
+  assert.equal(receiverPreflight, 1);
+  return { receiverPreflight: true };
+}
+
+async function proveResearchNegatives() {
+  const wasmBytes = applications['research-digest-agent'];
+  const initialArgsBytes = encodeResearchRequest({
+    query: 'portable algebraic effects',
+    maximumItems: 2n,
+  });
+  const blocks = new host.MemoryBlockStore();
+  const heads = new host.MemoryBranchHeadStore();
+  const controller = await host.RunControllerV1.create({ wasmBytes, blockStore: blocks, headStore: heads });
+  const parent = await controller.initialize('research-negative', 'main', {
+    initialArgsBytes,
+    fuel: 100n,
+  });
+  const request = parent.frame.pendingEffect;
+  const router = new capabilities.CapabilityRouterV1({
+    bindings: [capabilities.researchLookupFixtureBinding()],
+  });
+  const resolution = await router.resolve({
+    policy: { researchLookup: true },
+    effectAttempted: 0,
+    attempt: 1,
+  }, request.encodedBytes);
+
+  const wrongTarget = host.createEffectResult({
+    requestId: Buffer.alloc(32, 0xa5),
+    status: host.EffectStatus.ok,
+    resultSchemaId: request.resultSchemaId,
+    resultBytes: resolution.result.resultBytes,
+  }, controller.manifest.limits);
+  await assert.rejects(
+    () => controller.advance('research-negative', 'main', { effectResult: wrongTarget }),
+    { code: 'ERR_APPLICATION_V1_RESULT_TARGET' },
+  );
+
+  const wrongSchema = host.createEffectResult({
+    requestId: request.requestId,
+    status: host.EffectStatus.ok,
+    resultSchemaId: Buffer.alloc(32, 0x5a),
+    resultBytes: resolution.result.resultBytes,
+  }, controller.manifest.limits);
+  await assert.rejects(
+    () => controller.advance('research-negative', 'main', { effectResult: wrongSchema }),
+    { code: 'ERR_APPLICATION_V1_RESULT_SCHEMA' },
+  );
+  assert.throws(
+    () => host.createEffectResult({
+      requestId: request.requestId,
+      status: host.EffectStatus.ok,
+      resultSchemaId: request.resultSchemaId,
+      resultBytes: Buffer.alloc(controller.manifest.limits.maximumResultBytes + 1),
+    }, controller.manifest.limits),
+    { code: 'ERR_APPLICATION_V1_RESULT_LIMIT' },
+  );
+
+  await assert.rejects(
+    () => host.RunControllerV1.create({
+      wasmBytes,
+      blockStore: new host.MemoryBlockStore(),
+      headStore: new host.MemoryBranchHeadStore(),
+      preflight: async () => ({ blockers: ['receiver result limit is insufficient'] }),
+    }),
+    { code: 'ERR_APPLICATION_V1_PREFLIGHT_BLOCKED' },
+  );
+  const missingRouter = new capabilities.CapabilityRouterV1({
+    bindings: capabilities.fixtureAgentBindings(),
+  });
+  await assert.rejects(
+    () => missingRouter.resolve({}, request.encodedBytes),
+    { code: 'ERR_CAPABILITY_V1_INTERFACE_UNCOVERED' },
+  );
+  const deniedContext = { policy: { researchLookup: false }, effectAttempted: 0, attempt: 1 };
+  const denied = await router.resolve(deniedContext, request.encodedBytes);
+  assert.equal(denied.result.status, capabilities.EffectStatus.rejected);
+  assert.equal(deniedContext.effectAttempted, 0);
+
+  const altered = Buffer.from(wasmBytes);
+  altered[0] ^= 0xff;
+  await assert.rejects(
+    () => host.RunControllerV1.create({
+      wasmBytes: altered,
+      blockStore: new host.MemoryBlockStore(),
+      headStore: new host.MemoryBranchHeadStore(),
+    }),
+    { code: 'ERR_APPLICATION_V1_WASM_HEADER' },
+  );
+
+  const otherBlocks = new host.MemoryBlockStore();
+  const sharedHeads = new host.MemoryBranchHeadStore();
+  const other = await host.RunControllerV1.create({
+    wasmBytes: applications['one-effect'],
+    blockStore: otherBlocks,
+    headStore: sharedHeads,
+  });
+  await other.initialize('other-application-frame', 'main', {
+    initialArgsBytes: Buffer.alloc(0),
+    fuel: 100n,
+  });
+  const researchOnOtherHead = await host.RunControllerV1.create({
+    wasmBytes,
+    blockStore: otherBlocks,
+    headStore: sharedHeads,
+  });
+  await assert.rejects(
+    () => researchOnOtherHead.advance('other-application-frame', 'main'),
+    { code: 'ERR_APPLICATION_V1_HEAD_APPLICATION' },
+  );
+
+  const completed = await controller.advance('research-negative', 'main', {
+    effectResult: resolution.result,
+    fuel: 100n,
+  });
+  assert.equal(completed.frame.status, host.FrameStatus.completed);
+  await assert.rejects(
+    () => controller.advance('research-negative', 'main', { effectResult: resolution.result }),
+    { code: 'ERR_APPLICATION_V1_TERMINAL_FRAME' },
+  );
+
+  const bundle = await controller.exportBranch('research-negative', 'main');
+  const wrongManifest = {
+    ...bundle,
+    manifestBytes: Buffer.from(bundle.manifestBytes),
+  };
+  wrongManifest.manifestBytes[12] ^= 1;
+  await assert.rejects(
+    () => host.RunControllerV1.importBranch({
+      bundle: wrongManifest,
+      runId: 'wrong-manifest',
+      branchId: 'main',
+      blockStore: new host.MemoryBlockStore(),
+      headStore: new host.MemoryBranchHeadStore(),
+    }),
+    { code: 'ERR_APPLICATION_V1_MIGRATION_MANIFEST' },
+  );
+
+  return {
+    wrongApplicationManifest: true,
+    wrongEffectResultTarget: true,
+    staleOrDuplicateResult: true,
+    wrongSchema: true,
+    excessiveResponseBytes: true,
+    insufficientReceiverLimits: true,
+    missingCapability: true,
+    capabilityPolicyDenial: true,
+    alteredWasmBytes: true,
+    frameForAnotherApplication: true,
+  };
+}
+
+async function proveResearchCli(root) {
+  const storeRoot = path.join(root, 'research-cli-store');
+  const receiverRoot = path.join(root, 'research-cli-receiver');
+  const initialArgsPath = path.join(root, 'research-initial-args.bin');
+  const alternateResultPath = path.join(root, 'research-alternate-result.bin');
+  const migrationPath = path.join(root, 'research-migration.json');
+  const wasmPath = path.join(pack, 'applications/research-digest-agent.world.wasm');
+  await writeFile(initialArgsPath, encodeResearchRequest({
+    query: 'portable algebraic effects',
+    maximumItems: 2n,
+  }));
+
+  const inspectedApp = await packedCli(['inspect-app', wasmPath]);
+  assert.equal(inspectedApp.application.name, 'research-digest-agent');
+  assert.equal(inspectedApp.abi.application, 1);
+  assert.equal(inspectedApp.abi.frame, 1);
+  assert.equal(inspectedApp.wasm.importCount, 0);
+  assert.equal(inspectedApp.residualEffects.length, 1);
+
+  const installed = await packedCli([
+    'install',
+    '--store', storeRoot,
+    '--name', 'research-digest-agent',
+    '--wasm', wasmPath,
+  ]);
+  assert.equal(installed.application.name, 'research-digest-agent');
+  const started = await packedCli([
+    'run',
+    '--store', storeRoot,
+    '--app', 'research-digest-agent',
+    '--run', 'research-cli-run',
+    '--initial-args', initialArgsPath,
+    '--fuel', '100',
+  ]);
+  assert.equal(started.frame.status, 'needsEffect');
+  await packedCli([
+    'branch',
+    '--store', storeRoot,
+    '--run', 'research-cli-run',
+    '--branch', 'replay',
+  ]);
+  await packedCli([
+    'branch',
+    '--store', storeRoot,
+    '--run', 'research-cli-run',
+    '--branch', 'alternate',
+  ]);
+
+  const store = new host.DirectoryApplicationStoreV1(storeRoot);
+  const head = await store.headStore.readHead('research-cli-run', 'main');
+  const application = await store.applications.get(head.applicationId);
+  const manifest = host.decodeApplicationManifest(await store.blockStore.getBlock(application.manifestRef));
+  const parent = host.decodeFrame(await store.blockStore.getBlock(head.frameRef), manifest.limits);
+  const router = new capabilities.CapabilityRouterV1({
+    bindings: [capabilities.researchLookupFixtureBinding()],
+  });
+  const resolution = await router.resolve({
+    policy: { researchLookup: true },
+    effectAttempted: 0,
+    attempt: 1,
+  }, parent.pendingEffect.encodedBytes);
+  for (const branchId of ['main', 'replay']) {
+    await store.effectJournal.persistResult({
+      runId: 'research-cli-run',
+      branchId,
+      parentFrameId: parent.frameId,
+      request: parent.pendingEffect,
+      result: resolution.result,
+      limits: manifest.limits,
+      ...resolutionMetadata(resolution),
+    });
+  }
+
+  const retried = await packedCli([
+    'retry',
+    '--store', storeRoot,
+    '--run', 'research-cli-run',
+    '--fuel', '100',
+  ]);
+  const replayed = await packedCli([
+    'replay',
+    '--store', storeRoot,
+    '--run', 'research-cli-run',
+    '--branch', 'replay',
+    '--fuel', '100',
+  ]);
+  assert.equal(retried.frame.status, 'completed');
+  assert.equal(replayed.frame.status, 'completed');
+  assert.equal(retried.frame.frameId, replayed.frame.frameId);
+
+  const alternateResult = host.createEffectResult({
+    requestId: parent.pendingEffect.requestId,
+    status: host.EffectStatus.ok,
+    resultSchemaId: parent.pendingEffect.resultSchemaId,
+    resultBytes: capabilities.encodeResearchResponse({
+      first: {
+        title: 'CLI alternate research',
+        summary: 'A second valid result advances an isolated branch.',
+      },
+      second: {
+        title: 'Portable operator flow',
+        summary: 'The host remains application-independent.',
+      },
+      digestResult: {
+        digest: 'CLI branching preserves the parent and isolates the child.',
+        itemCount: 2n,
+      },
+    }),
+  }, manifest.limits);
+  await writeFile(alternateResultPath, alternateResult.encodedBytes);
+  const alternate = await packedCli([
+    'resume',
+    '--store', storeRoot,
+    '--run', 'research-cli-run',
+    '--branch', 'alternate',
+    '--effect-result', alternateResultPath,
+    '--fuel', '100',
+  ]);
+  assert.equal(alternate.frame.status, 'completed');
+  assert.notEqual(alternate.frame.frameId, retried.frame.frameId);
+
+  await packedCli([
+    'export',
+    '--store', storeRoot,
+    '--run', 'research-cli-run',
+    '--out', migrationPath,
+  ]);
+  const imported = await packedCli([
+    'import',
+    '--store', receiverRoot,
+    '--in', migrationPath,
+    '--run', 'research-cli-imported',
+    '--name', 'research-digest-agent',
+  ]);
+  assert.equal(imported.receiverPreflightApplied, true);
+  const inspectedRun = await packedCli([
+    'inspect',
+    '--store', receiverRoot,
+    '--run', 'research-cli-imported',
+  ]);
+  assert.equal(inspectedRun.frame.status, 'completed');
+  assert.equal(inspectedRun.frame.finalResult.byteLength > 0, true);
+  const rendered = JSON.stringify({ inspectedApp, installed, started, retried, replayed, alternate, imported, inspectedRun });
+  assert(!rendered.includes('portable algebraic effects'));
+  assert(!rendered.includes('Static closure keeps authority external'));
+  return {
+    inspectApp: true,
+    install: true,
+    run: true,
+    resume: true,
+    retry: true,
+    replay: true,
+    branch: true,
+    export: true,
+    import: true,
+    payloadBytesExposed: false,
+  };
+}
+
 async function runStringApplication({
   wasmBytes,
   initial,
@@ -303,6 +822,55 @@ function stringResult(request, manifest, value) {
     resultSchemaId: request.resultSchemaId,
     resultBytes: capabilities.encodeStringValue(value),
   }, manifest.limits);
+}
+
+function resolutionMetadata(resolution) {
+  return {
+    handlerId: resolution.handlerIdentity,
+    handlerConfigurationId: resolution.handlerConfigurationIdentity,
+    recoveryClass: resolution.recoveryClass,
+  };
+}
+
+function encodeResearchRequest(value) {
+  const query = Buffer.from(value.query, 'utf8');
+  const length = Buffer.alloc(4);
+  length.writeUInt32LE(query.length);
+  const maximumItems = Buffer.alloc(8);
+  maximumItems.writeBigUInt64LE(value.maximumItems);
+  return Buffer.concat([length, query, maximumItems]);
+}
+
+function decodeDigestResult(bytes) {
+  const value = Buffer.from(bytes);
+  const digestLength = value.readUInt32LE(0);
+  const digestEnd = 4 + digestLength;
+  assert.equal(digestEnd + 8, value.length);
+  return {
+    digest: value.subarray(4, digestEnd).toString('utf8'),
+    itemCount: value.readBigUInt64LE(digestEnd),
+  };
+}
+
+async function packedCli(args) {
+  const child = Bun.spawn([
+    process.execPath,
+    path.join(pack, 'host/bin/world-host-v1.mjs'),
+    ...args,
+  ], {
+    cwd: pack,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  if (exitCode !== 0) {
+    throw new Error(stderr || stdout || `world-host-v1 exited ${exitCode}`);
+  }
+  return JSON.parse(stdout);
 }
 
 async function packRoot(argument) {

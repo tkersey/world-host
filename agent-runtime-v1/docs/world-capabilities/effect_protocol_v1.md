@@ -37,18 +37,28 @@ A pack that supports v1 includes `world-effect-v1` in
 
 ```json
 {
-  "authorityRequirements": "2",
-  "interfaceId": "68e03731654ae26c9f15d114362b1d87b513bb95e6d42c8d5debf5dd24f101fd",
-  "interfaceLabel": "host.file.read.v1",
-  "payloadSchemaId": "c0c747fa088e53a78edf901cf6d9fc7dfde00195e2ec58a16f891cb3aac95182",
-  "resultSchemaId": "c0c747fa088e53a78edf901cf6d9fc7dfde00195e2ec58a16f891cb3aac95182"
+  "applicationIds": [
+    "88e5a053c2a16fe9093abe4aa9f0c34d3e56abc9d1080aff5eb346687e72be85"
+  ],
+  "authorityRequirements": "128",
+  "interfaceId": "56b70f28567ba9275cb5533652d83fa7bc05c8e37c5b61c94c85763dbbf2de58",
+  "interfaceLabel": "research.lookup.v1",
+  "payloadSchemaId": "24eb8230d48242130660a1229ad28857eaad2d85315dfcee6d41f21badf3a03a",
+  "resultSchemaId": "79828538ca9f2e3899120ce1ce96314bce094ab585c92b127d63f94ac8eb2172"
 }
 ```
+
+`applicationIds` is optional for reusable protocol packs. When present, the
+router rejects a validly sealed request from every other application before
+adapter preflight.
 
 The pack verifier derives `interfaceId` from `interfaceLabel`, rejects duplicate
 or malformed declarations, and includes the complete v1 declaration in the
 pack fingerprint. A parity test compares each declaration with the live router
 binding.
+
+`inspectPack` validates declarations, checksums, and self-contained source
+without importing adapter code. `verifyPack` adds executable adapter checks.
 
 ## Compatibility
 
@@ -64,7 +74,11 @@ manifests.
 bun run proof:v1
 ```
 
-The proof covers request and result identity, malformed input, static
-inspection, policy-before-effect, evidence rejection, manifest parity, the
-fixture agent's complete effect sequence, replay suppression, and deterministic
-lost-output retry.
+The source-independent proof covers request and result identity, malformed
+input, static inspection, policy-before-effect, evidence rejection, manifest
+parity, replay result reuse, and exact pack/corpus receipt binding. The released
+world-host lifecycle gate owns complete application execution, replay, retry,
+branching, and migration.
+
+The older checkout-coupled fixture integration remains available as
+`bun run proof:v1-checkout-integration`; it is not part of the release gate.
