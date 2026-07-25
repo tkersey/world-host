@@ -1,5 +1,4 @@
 import { assertBytes, fail } from './errors.mjs';
-import { DEFAULT_ADMISSION_LIMITS, decodeApplicationManifestPrefix } from './protocol.mjs';
 
 export const WASM_PAGE_BYTES = 65_536;
 export const REQUIRED_APPLICATION_EXPORTS = Object.freeze([
@@ -19,11 +18,9 @@ export const REQUIRED_APPLICATION_EXPORTS = Object.freeze([
   ].map((name) => Object.freeze({ name, kind: 'function' })),
 ]);
 
-/// Inspect the declared ABI surface, memory bounds, and embedded manifest
-/// without compiling or instantiating untrusted guest code.
-export function inspectApplicationWasm(wasmBytes, {
-  admissionLimits = DEFAULT_ADMISSION_LIMITS,
-} = {}) {
+/// Inspect the declared ABI surface and memory bounds without instantiating
+/// untrusted guest code. The runtime-exported manifest remains authoritative.
+export function inspectApplicationWasm(wasmBytes) {
   const bytes = Buffer.from(assertBytes(wasmBytes, 'wasmBytes'));
   if (bytes.length < 8 || !bytes.subarray(0, 4).equals(Buffer.from([0x00, 0x61, 0x73, 0x6d])) ||
       !bytes.subarray(4, 8).equals(Buffer.from([0x01, 0x00, 0x00, 0x00]))) {
@@ -53,13 +50,11 @@ export function inspectApplicationWasm(wasmBytes, {
     cursor.offset = sectionEnd;
   }
   if (memory === null) fail('ERR_APPLICATION_V1_WASM_MEMORY_MISSING');
-  const manifest = findEmbeddedApplicationManifest(bytes, admissionLimits);
   return Object.freeze({
     byteLength: bytes.length,
     importCount,
     exports: Object.freeze(exports),
     memory: Object.freeze(memory),
-    manifest,
   });
 }
 
@@ -71,25 +66,7 @@ export function assertApplicationWasmSurface(inspection) {
     }
   }
   if (inspection.importCount !== 0) fail('ERR_APPLICATION_V1_WASM_IMPORTS_FORBIDDEN');
-  if (inspection.manifest === null) fail('ERR_APPLICATION_V1_WASM_MANIFEST_MISSING');
   return inspection;
-}
-
-function findEmbeddedApplicationManifest(bytes, admissionLimits) {
-  const magic = Buffer.from('WRLDMNF1', 'ascii');
-  const found = new Map();
-  for (let offset = bytes.indexOf(magic); offset !== -1; offset = bytes.indexOf(magic, offset + 1)) {
-    try {
-      const manifest = decodeApplicationManifestPrefix(bytes.subarray(offset), admissionLimits);
-      found.set(Buffer.from(manifest.encodedBytes).toString('base64'), manifest);
-    } catch {
-      // A matching byte sequence is not an embedded manifest unless the full
-      // canonical record, limits, and semantic identity validate.
-    }
-  }
-  if (found.size === 0) return null;
-  if (found.size !== 1) fail('ERR_APPLICATION_V1_WASM_MANIFEST_AMBIGUOUS');
-  return found.values().next().value;
 }
 
 function readVectorCount(section) {

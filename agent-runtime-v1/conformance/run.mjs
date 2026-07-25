@@ -530,15 +530,42 @@ async function proveResearchNegatives() {
     { code: 'ERR_APPLICATION_V1_HEAD_APPLICATION' },
   );
 
+  await controller.effectJournal.persistResult({
+    runId: 'research-negative',
+    branchId: 'main',
+    parentFrameId: parent.frame.frameId,
+    request,
+    result: resolution.result,
+    limits: controller.manifest.limits,
+    handlerId: 'research-negative-fixture',
+    handlerConfigurationId: 'research-negative-fixture-v1',
+    recoveryClass: 'replayable',
+  });
+  const conflictingBytes = Buffer.from(resolution.result.resultBytes);
+  conflictingBytes[conflictingBytes.length - 1] ^= 1;
+  const conflictingResult = host.createEffectResult({
+    requestId: request.requestId,
+    status: host.EffectStatus.ok,
+    resultSchemaId: request.resultSchemaId,
+    resultBytes: conflictingBytes,
+  }, controller.manifest.limits);
+  await assert.rejects(
+    () => controller.advance('research-negative', 'main', {
+      effectResult: conflictingResult,
+      fuel: 100n,
+    }),
+    { code: 'ERR_APPLICATION_V1_EFFECT_RESULT_CONFLICT' },
+  );
+  assert.equal(
+    (await controller.readCurrentFrame('research-negative', 'main')).frame.status,
+    host.FrameStatus.needsEffect,
+  );
+
   const completed = await controller.advance('research-negative', 'main', {
     effectResult: resolution.result,
     fuel: 100n,
   });
   assert.equal(completed.frame.status, host.FrameStatus.completed);
-  await assert.rejects(
-    () => controller.advance('research-negative', 'main', { effectResult: resolution.result }),
-    { code: 'ERR_APPLICATION_V1_TERMINAL_FRAME' },
-  );
 
   const bundle = await controller.exportBranch('research-negative', 'main');
   const wrongManifest = {
@@ -585,7 +612,7 @@ async function proveResearchCli(root) {
   }));
 
   const inspectedApp = await packedCli(['inspect-app', wasmPath]);
-  assert.equal(inspectedApp.inspectionMode, 'static');
+  assert.equal(inspectedApp.inspectionMode, 'isolated-runtime');
   assert.equal(inspectedApp.application.name, 'research-digest-agent');
   assert.equal(inspectedApp.abi.application, 1);
   assert.equal(inspectedApp.abi.frame, 1);

@@ -57,9 +57,7 @@ export class ApplicationWorker {
     this.#assertLive();
     if (this.instance !== null) fail('ERR_APPLICATION_V1_WORKER_ALREADY_INSTANTIATED');
     const bytes = Buffer.from(assertBytes(wasmBytes, 'wasmBytes'));
-    const inspection = assertApplicationWasmSurface(inspectApplicationWasm(bytes, {
-      admissionLimits: this.admissionLimits,
-    }));
+    const inspection = assertApplicationWasmSurface(inspectApplicationWasm(bytes));
     if (inspection.memory.maximumBytes > this.maximumMemoryBytes) {
       fail('ERR_APPLICATION_V1_HOST_MEMORY_LIMIT', `application declares ${inspection.memory.maximumBytes} bytes`);
     }
@@ -100,9 +98,6 @@ export class ApplicationWorker {
         'manifest',
       );
       this.manifest = decodeApplicationManifest(manifestBytes, this.admissionLimits);
-      if (!Buffer.from(this.manifest.encodedBytes).equals(inspection.manifest.encodedBytes)) {
-        fail('ERR_APPLICATION_V1_WASM_MANIFEST_MISMATCH');
-      }
       if (this.manifest.worldApplicationAbiVersion !== APPLICATION_ABI_VERSION) fail('ERR_APPLICATION_V1_WASM_ABI_VERSION');
       const inputPointer = this.#callU32('world_input_ptr');
       const inputCapacity = this.#callU32('world_input_capacity');
