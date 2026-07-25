@@ -21,6 +21,12 @@ The bundle carries no receiver policy, secret, credential, storage path, or live
 
 The receiver can then continue with a fresh worker and the retained result.
 
+The Research Digest conformance lane exports while the application is parked
+on `research.lookup.v1` after the capability result has been persisted but
+before the child Frame is published. A fresh receiver re-runs capability
+coverage preflight, imports the WASM, manifest, parent Frame, and retained
+result, then completes without a new capability call.
+
 This is v1-to-v1 migration. There is no TurnClosure-to-Frame or Capsule-to-Frame translation.
 
 The operator transport is bounded JSON with canonical base64 fields:

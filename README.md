@@ -22,23 +22,54 @@ admits application-specific, import-free World WASM; validates canonical
 ApplicationManifest, StepInput, EffectRequest, EffectResult, and Frame bytes;
 continues on disposable workers; persists EffectResults before submission;
 retains child Frames before conditional head advancement; and proves retry,
-migration, and branching against the real World one-effect artifact. Both
+migration, replay, and branching against both the real World one-effect
+artifact and a clean-room Research Digest application. Both
 in-memory and directory-backed stores are implemented. The `world-host` CLI
-installs, runs, resumes, inspects, forks, exports, imports, and lists v1
-applications.
+inspects artifacts; installs, runs, resumes, retries, replays, and inspects
+runs; branches lineages; and exports, imports, and lists v1 applications.
 
 `bun run build:agent-runtime-v1` assembles the standalone development pack from
 the current World application artifacts, v1 host, and v1 capability protocol.
 `bun run check:agent-runtime-v1` validates its checksums, manifests,
 zero-import/bounded-memory WASMs, and static capability declarations without
-executing adapters. `bun run conformance:agent-runtime-v1` runs the six required
-behavioral scenarios using only files inside the pack. See
+executing adapters. `bun run conformance:agent-runtime-v1` runs the complete
+Research Digest lifecycle and the retained coordinated fixtures using only
+files inside the pack. See
 [`docs/agent_runtime_v1_pack.md`](docs/agent_runtime_v1_pack.md) and the
 [`release-candidate performance report`](docs/agent_runtime_v1_performance.md).
 
 Both `world-host` and `world-host-v1` run application-specific v1 artifacts.
 Existing Carrier v0 runs remain available through `world-host-legacy`; v0
 accepts correctness and compatibility changes only.
+
+## Five-minute external application run
+
+No Boundary, World, world-host, or world-capabilities source checkout is needed
+after the release pack has been assembled:
+
+```sh
+world-host inspect-app research-digest-agent.world.wasm
+world-host install \
+  --store STORE \
+  --name research-digest-agent \
+  --wasm research-digest-agent.world.wasm
+world-host run \
+  --store STORE \
+  --app research-digest-agent \
+  --run run-1 \
+  --initial-args input.bin
+world-host resume \
+  --store STORE \
+  --run run-1 \
+  --effect-result research-result.bin
+world-host inspect --store STORE --run run-1
+```
+
+`world-host inspect-app` reports application, ABI, residual-effect, authority,
+memory, and zero-import metadata without installing or executing a step.
+`world-host retry` and `world-host replay` continue from a retained
+EffectResult; `world-host branch` aliases `fork`; and `export`/`import` move the
+application, current Frame, and retained result to a fresh store.
 
 `world-host install --store STORE --name APP --wasm application.world.wasm`
 validates the zero-import ABI and records the WASM and embedded manifest as

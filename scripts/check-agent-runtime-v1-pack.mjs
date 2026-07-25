@@ -10,9 +10,14 @@ const REQUIRED_SCENARIOS = [
   'one-effect',
   'skeleton-agent',
   'fixture-agent',
+  'research-digest',
   'provider-parked',
-  'retry',
+  'fresh-instance-resume',
+  'deterministic-retry',
+  'replay',
   'branching',
+  'migration',
+  'negative',
 ];
 const FORBIDDEN_RUNTIME_PATHS = [
   /boundary-module/i,
@@ -33,9 +38,12 @@ export async function checkAgentRuntimeV1Pack(packPath, options = {}) {
     'applications/skeleton-agent.manifest.bin',
     'applications/fixture-agent.world.wasm',
     'applications/fixture-agent.manifest.bin',
+    'applications/research-digest-agent.world.wasm',
+    'applications/research-digest-agent.manifest.bin',
     'host/bin/world-host-v1.mjs',
     'host/src/v1/index.mjs',
     'capabilities/src/v1/index.mjs',
+    'capabilities/packages/research-lookup-fixture/conformance-receipt.json',
     'conformance/check-pack.mjs',
     'conformance/run.mjs',
     'README.md',
@@ -90,13 +98,43 @@ export async function checkAgentRuntimeV1Pack(packPath, options = {}) {
 
   const capabilityResults = [];
   for (const capability of manifest.capabilities) {
-    const packManifest = JSON.parse(await readText(root, path.posix.join(capability.path, 'manifest.json')));
+    const manifestPath = path.posix.join(capability.path, 'manifest.json');
+    const packManifest = JSON.parse(await readText(root, manifestPath));
     assert.equal(packManifest.packageName, capability.packageName);
+    assert.equal(packManifest.packageVersion, capability.packageVersion);
     assert.equal(packManifest.packFingerprint, capability.packFingerprint);
     assert(packManifest.supportedWorldProtocolVersions.includes('world-effect-v1'));
     assert(Array.isArray(packManifest.effectProtocolV1?.interfaces) && packManifest.effectProtocolV1.interfaces.length > 0);
+    assert(Array.isArray(packManifest.artifacts) && packManifest.artifacts.length > 0);
+    for (const artifact of packManifest.artifacts) {
+      assert(typeof artifact.path === 'string' && !path.posix.isAbsolute(artifact.path) &&
+        !artifact.path.split('/').includes('..'), `${capability.packageName}: invalid artifact path`);
+      const artifactBytes = await readBytes(root, path.posix.join(capability.path, artifact.path));
+      assert.equal(sha256(artifactBytes), packManifest.checksums[artifact.path],
+        `${capability.packageName}: artifact checksum mismatch`);
+    }
+    assert.equal(packManifest.packFingerprint, expectedCapabilityPackFingerprint(packManifest),
+      `${capability.packageName}: pack fingerprint mismatch`);
+    if (capability.packageName === '@tkersey/world-capabilities/research-lookup-fixture') {
+      const receipt = JSON.parse(await readText(
+        root,
+        path.posix.join(capability.path, 'conformance-receipt.json'),
+      ));
+      assert.equal(receipt.packFingerprint, packManifest.packFingerprint);
+      const expectedReceipt = { ...receipt, receiptFingerprint: '' };
+      assert.equal(
+        receipt.receiptFingerprint,
+        createHash('sha256')
+          .update('world.effect-v1-conformance-receipt.v1')
+          .update(Buffer.from([0]))
+          .update(stableStringify(expectedReceipt))
+          .digest('hex'),
+        `${capability.packageName}: conformance receipt fingerprint mismatch`,
+      );
+    }
     capabilityResults.push(Object.freeze({
       packageName: capability.packageName,
+      packageVersion: capability.packageVersion,
       packFingerprint: capability.packFingerprint,
       interfaceCount: packManifest.effectProtocolV1.interfaces.length,
       adapterExecuted: false,
@@ -132,8 +170,13 @@ function assertPackManifest(manifest) {
     profile: 'application-v1',
     runtimeDependencies: 0,
   });
-  assert(Array.isArray(manifest.applications) && manifest.applications.length === 3);
-  assert.deepEqual(manifest.applications.map((value) => value.name).sort(), ['fixture-agent', 'one-effect', 'skeleton-agent']);
+  assert(Array.isArray(manifest.applications) && manifest.applications.length === 4);
+  assert.deepEqual(manifest.applications.map((value) => value.name).sort(), [
+    'fixture-agent',
+    'one-effect',
+    'research-digest-agent',
+    'skeleton-agent',
+  ]);
   for (const application of manifest.applications) {
     assert(typeof application.name === 'string' && application.name.length > 0);
     assert(/^[0-9a-f]{64}$/.test(application.applicationId));
@@ -141,14 +184,47 @@ function assertPackManifest(manifest) {
     assert(/^[0-9a-f]{64}$/.test(application.manifestSha256));
     assert(application.wasmPath === `applications/${application.name}.world.wasm`);
     assert(application.manifestPath === `applications/${application.name}.manifest.bin`);
+    assert(['coordinated-fixture', 'development-helper', 'external-clean-room'].includes(application.provenance));
   }
+  const externalApplication = manifest.applications.find((value) => value.name === 'research-digest-agent');
+  assert(externalApplication);
   assert(Array.isArray(manifest.capabilities) && manifest.capabilities.length >= 2);
   assert(manifest.capabilities.every((value) => typeof value.packageName === 'string' &&
-    typeof value.path === 'string' && /^[0-9a-f]{64}$/.test(value.packFingerprint)));
+    typeof value.packageVersion === 'string' && typeof value.path === 'string' &&
+    /^[0-9a-f]{64}$/.test(value.packFingerprint)));
   assert(manifest.conformance?.entrypoint === 'conformance/run.mjs');
   assert(Array.isArray(manifest.conformance.scenarios));
   assert(Array.isArray(manifest.nonClaims) && manifest.nonClaims.includes('no exactly-once effects'));
   assert(manifest.sourcePins && typeof manifest.sourcePins === 'object');
+  assert.deepEqual(manifest.sourcePins.boundaryRelease, {
+    tag: 'v0.7.0',
+    packageHash: 'boundary-0.7.0-flclaCnjkABOSWaiSkxMBDQZsBEeA-Niai-l1u0q3A7_',
+    url: 'https://github.com/tkersey/boundary/archive/refs/tags/v0.7.0.tar.gz',
+  });
+  assert.deepEqual(manifest.sourcePins.worldRelease, {
+    tag: 'v1.0.0-rc.2',
+    packageHash: 'world-1.0.0-rc.2-XXTUeOXYhwC1anDePj7Lr4SfwDCxG-ofPw92_-PGGyKv',
+    url: 'https://github.com/tkersey/world/archive/refs/tags/v1.0.0-rc.2.tar.gz',
+  });
+  assert.deepEqual(manifest.sourcePins.worldCapabilitiesRelease, {
+    tag: 'v1.0.0-rc.3',
+    researchPackFingerprint: '97f8684e8eeb722bb8020a2d6dee0236c75e0aac332f43e01aedb1a0920b93a3',
+    researchPackAssetSha256: 'bbe00739f8d2b3bdf320feb333116e34345e16fb354a761febcd290fe9491326',
+    runtimeAssetSha256: '70906745c927aa2d47f497cdcdd3174d8321e17e25f632fb66646c934c413edb',
+  });
+  assert.equal(manifest.sourcePins.worldHostPackageVersion, '1.0.0-rc.2');
+  assert.deepEqual(manifest.externality, {
+    application: 'research-digest-agent',
+    authoredOutsideSourceRepositories: manifest.releaseStatus === 'development'
+      ? manifest.externality.authoredOutsideSourceRepositories
+      : true,
+    sourceCheckoutRequiredForConformance: false,
+    capabilitySpecificHostLogic: false,
+    hostAuthoredFrame: false,
+  });
+  if (manifest.externality.authoredOutsideSourceRepositories) {
+    assert.equal(externalApplication.provenance, 'external-clean-room');
+  }
   if (manifest.releaseStatus !== 'development') {
     for (const field of [
       'boundaryGitCommit',
@@ -224,6 +300,41 @@ function pathInside(root, target) {
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+function expectedCapabilityPackFingerprint(manifest) {
+  const material = {
+    packageName: manifest.packageName,
+    packageVersion: manifest.packageVersion,
+    driverId: manifest.driverId,
+    driverAbiVersion: manifest.driverAbiVersion,
+    conformanceCorpusFingerprint: manifest.conformanceCorpusFingerprint,
+    artifacts: manifest.artifacts,
+    checksums: manifest.checksums,
+    ...(manifest.supportedWorldProtocolVersions?.includes('world-effect-v1')
+      ? {
+          supportedWorldProtocolVersions: manifest.supportedWorldProtocolVersions,
+          effectProtocolV1: manifest.effectProtocolV1,
+        }
+      : {}),
+  };
+  return createHash('sha256').update(stableStringify(material)).digest('hex');
+}
+
+function stableStringify(value) {
+  return JSON.stringify(sortValue(value), null, 2);
+}
+
+function sortValue(value) {
+  if (Array.isArray(value)) return value.map(sortValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, sortValue(item)]),
+    );
+  }
+  return value;
 }
 
 function commandOptions() {

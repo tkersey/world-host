@@ -7,6 +7,23 @@ import path from 'node:path';
 import { ApplicationWorker } from '../src/v1/index.mjs';
 import { checkAgentRuntimeV1Pack } from './check-agent-runtime-v1-pack.mjs';
 
+const BOUNDARY_RELEASE = Object.freeze({
+  tag: 'v0.7.0',
+  packageHash: 'boundary-0.7.0-flclaCnjkABOSWaiSkxMBDQZsBEeA-Niai-l1u0q3A7_',
+  url: 'https://github.com/tkersey/boundary/archive/refs/tags/v0.7.0.tar.gz',
+});
+const WORLD_RELEASE = Object.freeze({
+  tag: 'v1.0.0-rc.2',
+  packageHash: 'world-1.0.0-rc.2-XXTUeOXYhwC1anDePj7Lr4SfwDCxG-ofPw92_-PGGyKv',
+  url: 'https://github.com/tkersey/world/archive/refs/tags/v1.0.0-rc.2.tar.gz',
+});
+const CAPABILITY_RELEASE = Object.freeze({
+  tag: 'v1.0.0-rc.3',
+  researchPackFingerprint: '97f8684e8eeb722bb8020a2d6dee0236c75e0aac332f43e01aedb1a0920b93a3',
+  researchPackAssetSha256: 'bbe00739f8d2b3bdf320feb333116e34345e16fb354a761febcd290fe9491326',
+  runtimeAssetSha256: '70906745c927aa2d47f497cdcdd3174d8321e17e25f632fb66646c934c413edb',
+});
+
 const options = parseArgs(process.argv.slice(2));
 const sourceCommits = options.releaseStatus === 'development'
   ? {}
@@ -22,16 +39,31 @@ const sourceCommits = options.releaseStatus === 'development'
         'src/bun/application_v1_cli.mjs',
         'src/v1',
       ])],
-      ['worldCapabilitiesGitCommit', sourceCommit(options.capabilitiesRepo, ['docs', 'packages', 'src/v1'])],
+      ['worldCapabilitiesGitCommit', options.worldCapabilitiesGitCommit ??
+        sourceCommit(options.capabilitiesRepo, ['docs', 'packages', 'src/v1'])],
     ].map(async ([name, promise]) => [name, await promise])));
+if (options.releaseStatus === 'release-candidate') {
+  assert(options.externalApplicationRoot !== null,
+    'release-candidate builds require --external-application-root from the clean-room World release proof');
+  assert(options.worldCapabilitiesGitCommit !== null,
+    'release-candidate builds require --world-capabilities-git-commit for the released runtime source');
+}
 await buildWorldApplications(options.worldRepo);
 await prepareOutput(options.out);
 
+const externalApplicationRoot = options.externalApplicationRoot ??
+  path.join(options.worldRepo, 'conformance/external-build-helper/zig-out/world-apps');
 const applications = [];
 for (const source of [
   { name: 'one-effect', wasm: path.join(options.worldRepo, 'zig-out/bin/one-effect.world.wasm') },
   { name: 'skeleton-agent', wasm: path.join(options.worldRepo, 'zig-out/world-apps/skeleton-agent.world.wasm') },
   { name: 'fixture-agent', wasm: path.join(options.worldRepo, 'zig-out/world-apps/fixture-agent.world.wasm') },
+  {
+    name: 'research-digest-agent',
+    wasm: path.join(externalApplicationRoot, 'research-digest-agent.world.wasm'),
+    manifest: path.join(externalApplicationRoot, 'research-digest-agent.manifest.bin'),
+    provenance: options.externalApplicationRoot === null ? 'development-helper' : 'external-clean-room',
+  },
 ]) {
   applications.push(await copyApplication(source));
 }
@@ -43,7 +75,7 @@ await copySelected(options.worldHostRepo, options.out, [
 ], 'host');
 await writeFile(path.join(options.out, 'host/package.json'), `${JSON.stringify({
   name: '@tkersey/world-host-v1-runtime',
-  version: '1.0.0-rc.1',
+  version: '1.0.0-rc.2',
   private: true,
   type: 'module',
   dependencies: {},
@@ -54,6 +86,7 @@ const capabilityPackages = [
   'generic-http-json',
   'human-approval',
   'local-memory-kv',
+  'research-lookup-fixture',
   'sandbox-files',
 ];
 await copySelected(options.capabilitiesRepo, options.out, [
@@ -64,7 +97,7 @@ await copySelected(options.capabilitiesRepo, options.out, [
 ], 'capabilities');
 await writeFile(path.join(options.out, 'capabilities/package.json'), `${JSON.stringify({
   name: '@tkersey/world-capabilities-v1-runtime',
-  version: '1.0.0-rc.1',
+  version: '1.0.0-rc.3',
   private: true,
   type: 'module',
   dependencies: {},
@@ -96,6 +129,7 @@ for (const name of capabilityPackages) {
     packageName: manifest.packageName,
     path: `capabilities/packages/${name}`,
     packFingerprint: manifest.packFingerprint,
+    packageVersion: manifest.packageVersion,
   });
 }
 
@@ -128,9 +162,14 @@ const packManifest = {
       'one-effect',
       'skeleton-agent',
       'fixture-agent',
+      'research-digest',
       'provider-parked',
-      'retry',
+      'fresh-instance-resume',
+      'deterministic-retry',
+      'replay',
       'branching',
+      'migration',
+      'negative',
     ],
   },
   sourcePins: {
@@ -139,7 +178,18 @@ const packManifest = {
     worldPackageVersion: reference.worldPackageVersion,
     worldApplicationAbiVersion: reference.worldApplicationAbiVersion,
     artifactIdentity: 'sha256',
+    boundaryRelease: BOUNDARY_RELEASE,
+    worldRelease: WORLD_RELEASE,
+    worldCapabilitiesRelease: CAPABILITY_RELEASE,
+    worldHostPackageVersion: '1.0.0-rc.2',
     ...sourceCommits,
+  },
+  externality: {
+    application: 'research-digest-agent',
+    authoredOutsideSourceRepositories: options.externalApplicationRoot !== null,
+    sourceCheckoutRequiredForConformance: false,
+    capabilitySpecificHostLogic: false,
+    hostAuthoredFrame: false,
   },
   nonClaims: [
     'no cryptographic authenticity',
@@ -164,7 +214,7 @@ process.stdout.write(`${JSON.stringify({
   sourceCheckoutRequiredForConformance: false,
 }, null, 2)}\n`);
 
-async function copyApplication({ name, wasm }) {
+async function copyApplication({ name, wasm, manifest: declaredManifest = null, provenance = 'coordinated-fixture' }) {
   const wasmBytes = await readFile(wasm);
   const worker = new ApplicationWorker();
   let manifest;
@@ -175,6 +225,10 @@ async function copyApplication({ name, wasm }) {
     worker.dispose();
   }
   assert.equal(manifest.applicationName, name);
+  if (declaredManifest !== null) {
+    assert.deepEqual(await readFile(declaredManifest), manifest.encodedBytes,
+      `${name}: supplied manifest differs from embedded manifest`);
+  }
   const wasmPath = `applications/${name}.world.wasm`;
   const manifestPath = `applications/${name}.manifest.bin`;
   await mkdir(path.join(options.out, 'applications'), { recursive: true });
@@ -188,6 +242,7 @@ async function copyApplication({ name, wasm }) {
     wasmSha256: sha256(wasmBytes),
     manifestPath,
     manifestSha256: sha256(manifest.encodedBytes),
+    provenance,
     manifest,
   };
 }
@@ -238,6 +293,7 @@ async function buildWorldApplications(worldRepo) {
     'world-one-effect-application-wasm',
     'world-skeleton-agent-wasm',
     'world-fixture-agent-wasm',
+    ...(options.externalApplicationRoot === null ? ['check-world-external-build-helper'] : []),
   ], {
     cwd: worldRepo,
     stdout: 'inherit',
@@ -266,7 +322,8 @@ async function allFiles(root, directory = root, result = []) {
 function packReadme(manifest) {
   return `# Agent Runtime v1 ${manifest.releaseStatus} pack
 
-This pack contains three application-specific World WASM modules, the minimal
+This pack contains four application-specific World WASM modules, including one
+clean-room Research Digest application, the minimal
 World Application Host v1 profile, receiver-side Effect protocol v1 handlers,
 standalone conformance, documentation, and exact SHA-256 checksums.
 
@@ -294,14 +351,24 @@ function parseArgs(args) {
     worldRepo: path.resolve('../world'),
     worldHostRepo: path.resolve('.'),
     capabilitiesRepo: path.resolve('../world-capabilities'),
+    externalApplicationRoot: null,
     out: path.resolve('agent-runtime-v1'),
     releaseStatus: 'development',
+    worldCapabilitiesGitCommit: null,
   };
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === '--boundary-repo') result.boundaryRepo = path.resolve(requireValue(args, ++index, '--boundary-repo'));
     else if (args[index] === '--world-repo') result.worldRepo = path.resolve(requireValue(args, ++index, '--world-repo'));
     else if (args[index] === '--world-host-repo') result.worldHostRepo = path.resolve(requireValue(args, ++index, '--world-host-repo'));
     else if (args[index] === '--capabilities-repo') result.capabilitiesRepo = path.resolve(requireValue(args, ++index, '--capabilities-repo'));
+    else if (args[index] === '--external-application-root') {
+      result.externalApplicationRoot = path.resolve(requireValue(args, ++index, '--external-application-root'));
+    }
+    else if (args[index] === '--world-capabilities-git-commit') {
+      const commit = requireValue(args, ++index, '--world-capabilities-git-commit');
+      assert(/^[0-9a-f]{40}$/.test(commit), 'invalid World capabilities git commit');
+      result.worldCapabilitiesGitCommit = commit;
+    }
     else if (args[index] === '--out') result.out = path.resolve(requireValue(args, ++index, '--out'));
     else if (args[index] === '--release-status') {
       result.releaseStatus = requireValue(args, ++index, '--release-status');
