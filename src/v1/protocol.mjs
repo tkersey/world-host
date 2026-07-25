@@ -52,21 +52,6 @@ export function decodeApplicationManifest(encoded, admission = DEFAULT_ADMISSION
   return freezeRecord(manifest, bytes);
 }
 
-/// Decode one canonical ApplicationManifest from the beginning of a larger,
-/// bounded byte region. This is used only for static WASM data inspection;
-/// ordinary protocol admission must use decodeApplicationManifest so trailing
-/// bytes remain invalid.
-export function decodeApplicationManifestPrefix(encoded, admission = DEFAULT_ADMISSION_LIMITS) {
-  const limits = normalizeLimits(admission, 'admission limits');
-  const source = Buffer.from(assertBytes(encoded, 'ApplicationManifest prefix'));
-  const bytes = source.subarray(0, Math.min(source.length, limits.maximumManifestBytes));
-  const reader = new Reader(bytes);
-  const manifest = readApplicationManifest(reader, limits);
-  const manifestBytes = bytes.subarray(0, reader.offset);
-  validateManifest(manifest, limits, manifestBytes.length);
-  return freezeRecord(manifest, manifestBytes);
-}
-
 function readApplicationManifest(reader, limits) {
   reader.magic('WRLDMNF1');
   reader.version();

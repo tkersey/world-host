@@ -2,14 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 
 import {
-  APPLICATION_ABI_VERSION,
   ApplicationWorker,
   DirectoryApplicationStoreV1,
   FrameStatus,
   RunControllerV1,
-  assertApplicationWasmSurface,
   decodeEffectResult,
-  inspectApplicationWasm as inspectApplicationWasmBytes,
 } from '../v1/index.mjs';
 import { fail } from '../v1/errors.mjs';
 
@@ -18,6 +15,8 @@ const MAXIMUM_MIGRATION_TRANSPORT_BYTES = 96 << 20;
 const MAXIMUM_MIGRATION_MANIFEST_BYTES = 1 << 20;
 const MAXIMUM_MIGRATION_FRAME_BYTES = 8 << 20;
 const MAXIMUM_MIGRATION_RESULT_BYTES = 2 << 20;
+const DEFAULT_INSPECTION_TIMEOUT_MS = 5_000;
+const MAXIMUM_INSPECTION_TIMEOUT_MS = 60_000;
 
 export async function runApplicationV1Cli(args, io, options = {}) {
   const command = args[0] ?? 'help';
@@ -40,50 +39,62 @@ export async function runApplicationV1Cli(args, io, options = {}) {
 async function inspectApplicationWasm(args, io, options) {
   const wasmPath = valueAfter(args, '--wasm') ?? positional(args);
   const wasmBytes = await readBoundedFile(wasmPath, MAXIMUM_APPLICATION_BYTES, 'application WASM');
-  const inspection = assertApplicationWasmSurface(inspectApplicationWasmBytes(wasmBytes, {
-    admissionLimits: options.workerOptions?.admissionLimits,
-  }));
-  const maximumMemoryBytes = options.workerOptions?.maximumMemoryBytes ?? 256 * 1024 * 1024;
-  if (!Number.isSafeInteger(maximumMemoryBytes) || maximumMemoryBytes <= 0 ||
-      inspection.memory.maximumBytes > maximumMemoryBytes) {
-    fail('ERR_APPLICATION_V1_HOST_MEMORY_LIMIT');
-  }
-  const manifest = inspection.manifest;
-  if (manifest.worldApplicationAbiVersion !== APPLICATION_ABI_VERSION) fail('ERR_APPLICATION_V1_WASM_ABI_VERSION');
+  const inspection = await inspectApplicationInWorker(wasmBytes, options);
   writeJson(io, {
     command: 'app inspect-app',
-    inspectionMode: 'static',
-    application: {
-      name: manifest.applicationName,
-      applicationId: hex(manifest.applicationId),
-      applicationVersion: manifest.applicationVersion,
-    },
-    abi: {
-      application: manifest.worldApplicationAbiVersion,
-      frame: 1,
-      boundaryStaticMachine: manifest.boundaryStaticMachineAbiVersion,
-      boundaryPackage: manifest.boundaryPackageVersion,
-      worldPackage: manifest.worldPackageVersion,
-    },
-    residualEffects: manifest.residualEffects.map((effect) => ({
-      interfaceId: hex(effect.interfaceId),
-      siteId: effect.siteId.toString(),
-      payloadSchemaId: hex(effect.payloadSchemaId),
-      resultSchemaId: hex(effect.resultSchemaId),
-      allowedStatuses: effect.allowedStatuses,
-      authorityRequirements: effect.authorityRequirements.toString(),
-    })),
-    requiredHostCapabilities: manifest.requiredHostCapabilities.toString(),
-    memory: {
-      initialBytes: inspection.memory.minimumBytes,
-      maximumBytes: inspection.memory.maximumBytes,
-    },
-    wasm: {
-      byteLength: inspection.byteLength,
-      importCount: inspection.importCount,
-    },
+    inspectionMode: 'isolated-runtime',
+    ...inspection,
   });
   return 0;
+}
+
+async function inspectApplicationInWorker(wasmBytes, options) {
+  const timeoutMs = options.inspectionTimeoutMs ?? DEFAULT_INSPECTION_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAXIMUM_INSPECTION_TIMEOUT_MS) {
+    fail('ERR_APPLICATION_V1_CLI_OPTION', 'invalid inspection timeout');
+  }
+  const worker = new Worker(new URL('./application_v1_inspection_worker.mjs', import.meta.url), {
+    type: 'module',
+  });
+  const transferableBytes = Uint8Array.from(wasmBytes);
+  return await new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (operation) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      worker.terminate();
+      operation();
+    };
+    const timer = setTimeout(() => finish(() => reject(inspectionError(
+      'ERR_APPLICATION_V1_WASM_INSPECTION_TIMEOUT',
+      `application inspection exceeded ${timeoutMs} ms`,
+    ))), timeoutMs);
+    worker.onmessage = ({ data }) => {
+      if (data?.ok === true) finish(() => resolve(data.inspection));
+      else finish(() => reject(inspectionError(
+        data?.error?.code ?? 'ERR_APPLICATION_V1_WASM_INSPECTION',
+        data?.error?.message ?? 'application inspection failed',
+        data?.error?.details ?? {},
+      )));
+    };
+    worker.onerror = (event) => finish(() => reject(inspectionError(
+      'ERR_APPLICATION_V1_WASM_INSPECTION',
+      event?.message ?? 'application inspection worker failed',
+    )));
+    worker.postMessage({
+      wasmBytes: transferableBytes.buffer,
+      workerOptions: options.workerOptions ?? {},
+    }, [transferableBytes.buffer]);
+  });
+}
+
+function inspectionError(code, message, details = {}) {
+  const error = new Error(message);
+  error.name = 'WorldApplicationHostError';
+  error.code = code;
+  error.details = details;
+  return error;
 }
 
 async function installApplication(args, io, options) {

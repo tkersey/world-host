@@ -50,6 +50,7 @@ const sourceCommits = options.releaseStatus === 'development'
         'scripts/check-agent-runtime-v1-pack.mjs',
         'scripts/run-agent-runtime-v1-conformance.mjs',
         'src/bun/application_v1_cli.mjs',
+        'src/bun/application_v1_inspection_worker.mjs',
         'src/v1',
       ])],
       ['worldCapabilitiesGitCommit', CAPABILITY_RELEASE.gitCommit],
@@ -92,6 +93,7 @@ for (const source of [
 await copySelected(options.worldHostRepo, options.out, [
   'bin/world-host-v1.mjs',
   'src/bun/application_v1_cli.mjs',
+  'src/bun/application_v1_inspection_worker.mjs',
   ...await filesBelow(options.worldHostRepo, 'src/v1'),
 ], 'host');
 await writeFile(path.join(options.out, 'host/package.json'), `${JSON.stringify({

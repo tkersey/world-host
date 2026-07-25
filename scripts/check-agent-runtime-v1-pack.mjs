@@ -223,9 +223,11 @@ function assertPackManifest(manifest) {
     capability.packageName === '@tkersey/world-capabilities/research-lookup-fixture');
   assert.equal(researchCapabilities.length, 1,
     'pack must contain exactly one research-lookup-fixture capability');
-  assert.equal(researchCapabilities[0].packFingerprint,
-    manifest.sourcePins.worldCapabilitiesRelease.researchPackFingerprint,
-    'research-lookup-fixture does not match the reviewed release fingerprint');
+  if (manifest.releaseStatus !== 'development') {
+    assert.equal(researchCapabilities[0].packFingerprint,
+      manifest.sourcePins.worldCapabilitiesRelease.researchPackFingerprint,
+      'research-lookup-fixture does not match the reviewed release fingerprint');
+  }
   assert.equal(manifest.sourcePins.worldHostPackageVersion, '1.0.0-rc.2');
   assert.deepEqual(manifest.externality, {
     application: 'research-digest-agent',

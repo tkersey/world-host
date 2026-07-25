@@ -65,8 +65,9 @@ world-host resume \
 world-host inspect --store STORE --run run-1
 ```
 
-`world-host inspect-app` statically reports application, ABI, residual-effect,
-authority, memory, and zero-import metadata without instantiating guest code.
+`world-host inspect-app` reports application, ABI, residual-effect, authority,
+memory, and zero-import metadata through a disposable isolated worker with a
+bounded deadline; guest initialization cannot stall the operator process.
 `world-host retry` and `world-host replay` accept no fresh EffectResult or
 handler metadata; they continue only from a result already retained by the
 store. `world-host branch` aliases `fork`; and `export`/`import` move the

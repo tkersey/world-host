@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
 import {
+  ApplicationWorker,
   EffectStatus,
   FrameStatus,
   assertApplicationWasmSurface,
@@ -159,13 +160,11 @@ describe('World application WASM inspection', () => {
     assert.throws(() => inspectApplicationWasm(unbounded), { code: 'ERR_APPLICATION_V1_WASM_MEMORY_LIMITS' });
   });
 
-  it('reads the embedded manifest and ABI surface without guest execution', () => {
+  it('validates the declared ABI surface without guest execution', () => {
     const bytes = readFileSync('agent-runtime-v1/applications/research-digest-agent.world.wasm');
     const inspection = assertApplicationWasmSurface(inspectApplicationWasm(bytes));
 
     assert.equal(inspection.importCount, 0);
-    assert.equal(inspection.manifest.applicationName, 'research-digest-agent');
-    assert.equal(inspection.manifest.worldApplicationAbiVersion, 1);
     assert.equal(inspection.exports.some((entry) =>
       entry.name === 'world_manifest_ptr' && entry.kind === 'function'), true);
   });
@@ -181,23 +180,27 @@ describe('World application WASM inspection', () => {
     );
   });
 
-  it('accepts byte-identical embedded manifest copies', () => {
+  it('uses the runtime-exported manifest when unrelated canonical manifests exist', async () => {
     const bytes = readFileSync('agent-runtime-v1/applications/research-digest-agent.world.wasm');
-    const original = assertApplicationWasmSurface(inspectApplicationWasm(bytes));
     const customPayload = Buffer.concat([
       Buffer.from([0]),
-      original.manifest.encodedBytes,
+      MANIFEST,
     ]);
-    const duplicate = Buffer.concat([
+    const withUnrelatedManifest = Buffer.concat([
       bytes,
       Buffer.from([0]),
       varUint32(customPayload.length),
       customPayload,
     ]);
 
-    assert.equal(WebAssembly.validate(duplicate), true);
-    const inspected = assertApplicationWasmSurface(inspectApplicationWasm(duplicate));
-    assert.deepEqual(inspected.manifest.encodedBytes, original.manifest.encodedBytes);
+    assert.equal(WebAssembly.validate(withUnrelatedManifest), true);
+    const worker = new ApplicationWorker();
+    try {
+      await worker.instantiate(withUnrelatedManifest);
+      assert.equal(worker.readManifest().applicationName, 'research-digest-agent');
+    } finally {
+      worker.dispose();
+    }
   });
 });
 
