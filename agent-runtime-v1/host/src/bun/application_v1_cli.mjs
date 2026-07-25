@@ -2,11 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 
 import {
+  APPLICATION_ABI_VERSION,
   ApplicationWorker,
   DirectoryApplicationStoreV1,
   FrameStatus,
   RunControllerV1,
+  assertApplicationWasmSurface,
   decodeEffectResult,
+  inspectApplicationWasm as inspectApplicationWasmBytes,
 } from '../v1/index.mjs';
 import { fail } from '../v1/errors.mjs';
 
@@ -22,8 +25,8 @@ export async function runApplicationV1Cli(args, io, options = {}) {
   if (command === 'install') return await installApplication(args.slice(1), io, options);
   if (command === 'run') return await runApplication(args.slice(1), io, options);
   if (command === 'resume') return await resumeApplication(args.slice(1), io, options, 'app resume');
-  if (command === 'retry') return await resumeApplication(args.slice(1), io, options, 'app retry');
-  if (command === 'replay') return await resumeApplication(args.slice(1), io, options, 'app replay');
+  if (command === 'retry') return await replayRetainedApplication(args.slice(1), io, options, 'app retry');
+  if (command === 'replay') return await replayRetainedApplication(args.slice(1), io, options, 'app replay');
   if (command === 'inspect') return await inspectApplication(args.slice(1), io, options);
   if (command === 'fork') return await forkApplication(args.slice(1), io, options);
   if (command === 'branch') return await forkApplication(args.slice(1), io, options, 'app branch');
@@ -37,45 +40,49 @@ export async function runApplicationV1Cli(args, io, options = {}) {
 async function inspectApplicationWasm(args, io, options) {
   const wasmPath = valueAfter(args, '--wasm') ?? positional(args);
   const wasmBytes = await readBoundedFile(wasmPath, MAXIMUM_APPLICATION_BYTES, 'application WASM');
-  const worker = new ApplicationWorker(options.workerOptions);
-  try {
-    const runtime = await worker.instantiate(wasmBytes);
-    const manifest = worker.readManifest();
-    writeJson(io, {
-      command: 'app inspect-app',
-      application: {
-        name: manifest.applicationName,
-        applicationId: hex(manifest.applicationId),
-        applicationVersion: manifest.applicationVersion,
-      },
-      abi: {
-        application: manifest.worldApplicationAbiVersion,
-        frame: 1,
-        boundaryStaticMachine: manifest.boundaryStaticMachineAbiVersion,
-        boundaryPackage: manifest.boundaryPackageVersion,
-        worldPackage: manifest.worldPackageVersion,
-      },
-      residualEffects: manifest.residualEffects.map((effect) => ({
-        interfaceId: hex(effect.interfaceId),
-        siteId: effect.siteId.toString(),
-        payloadSchemaId: hex(effect.payloadSchemaId),
-        resultSchemaId: hex(effect.resultSchemaId),
-        allowedStatuses: effect.allowedStatuses,
-        authorityRequirements: effect.authorityRequirements.toString(),
-      })),
-      requiredHostCapabilities: manifest.requiredHostCapabilities.toString(),
-      memory: {
-        initialBytes: runtime.initialMemoryBytes,
-        maximumBytes: runtime.maximumMemoryBytes,
-      },
-      wasm: {
-        byteLength: runtime.wasmByteLength,
-        importCount: runtime.importCount,
-      },
-    });
-  } finally {
-    worker.dispose();
+  const inspection = assertApplicationWasmSurface(inspectApplicationWasmBytes(wasmBytes, {
+    admissionLimits: options.workerOptions?.admissionLimits,
+  }));
+  const maximumMemoryBytes = options.workerOptions?.maximumMemoryBytes ?? 256 * 1024 * 1024;
+  if (!Number.isSafeInteger(maximumMemoryBytes) || maximumMemoryBytes <= 0 ||
+      inspection.memory.maximumBytes > maximumMemoryBytes) {
+    fail('ERR_APPLICATION_V1_HOST_MEMORY_LIMIT');
   }
+  const manifest = inspection.manifest;
+  if (manifest.worldApplicationAbiVersion !== APPLICATION_ABI_VERSION) fail('ERR_APPLICATION_V1_WASM_ABI_VERSION');
+  writeJson(io, {
+    command: 'app inspect-app',
+    inspectionMode: 'static',
+    application: {
+      name: manifest.applicationName,
+      applicationId: hex(manifest.applicationId),
+      applicationVersion: manifest.applicationVersion,
+    },
+    abi: {
+      application: manifest.worldApplicationAbiVersion,
+      frame: 1,
+      boundaryStaticMachine: manifest.boundaryStaticMachineAbiVersion,
+      boundaryPackage: manifest.boundaryPackageVersion,
+      worldPackage: manifest.worldPackageVersion,
+    },
+    residualEffects: manifest.residualEffects.map((effect) => ({
+      interfaceId: hex(effect.interfaceId),
+      siteId: effect.siteId.toString(),
+      payloadSchemaId: hex(effect.payloadSchemaId),
+      resultSchemaId: hex(effect.resultSchemaId),
+      allowedStatuses: effect.allowedStatuses,
+      authorityRequirements: effect.authorityRequirements.toString(),
+    })),
+    requiredHostCapabilities: manifest.requiredHostCapabilities.toString(),
+    memory: {
+      initialBytes: inspection.memory.minimumBytes,
+      maximumBytes: inspection.memory.maximumBytes,
+    },
+    wasm: {
+      byteLength: inspection.byteLength,
+      importCount: inspection.importCount,
+    },
+  });
   return 0;
 }
 
@@ -146,6 +153,21 @@ async function resumeApplication(args, io, options, command) {
   });
   writeJson(io, summarizeAdvance(command, runId, branchId, application, result));
   return result.status === 'conflict' ? 3 : 0;
+}
+
+async function replayRetainedApplication(args, io, options, command) {
+  for (const option of [
+    '--effect-result',
+    '--handler',
+    '--handler-configuration',
+    '--recovery-class',
+    '--external-transaction',
+  ]) {
+    if (args.includes(option)) {
+      fail('ERR_APPLICATION_V1_CLI_OPTION', `${command} does not admit ${option}`);
+    }
+  }
+  return await resumeApplication(args, io, options, command);
 }
 
 async function inspectApplication(args, io, options) {

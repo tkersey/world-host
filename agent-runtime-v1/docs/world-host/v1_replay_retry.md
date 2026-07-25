@@ -27,3 +27,5 @@ The standalone Research Digest proof also loses the computed child before head
 advancement, retains the exact capability result, recomputes identical child
 Frame bytes, and confirms the research capability invocation count remains one.
 Its replay branch consumes the retained result with zero fresh effects.
+The `retry` and `replay` operator commands reject `--effect-result` and all
+fresh handler metadata; only `resume` can admit a new external result.

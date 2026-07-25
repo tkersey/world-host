@@ -47,7 +47,9 @@ world-host import --store RECEIVER --in migration.json --run IMPORTED
 
 The generic host does not translate application-specific text into typed
 initial arguments. Applications or release packs supply those canonical bytes.
-`retry` and `replay` reuse a result already admitted to the effect journal and
+`inspect-app` parses bounded WASM metadata and the embedded manifest without
+instantiating guest code. `retry` and `replay` reject fresh result and handler
+options, reuse only a result already admitted to the effect journal, and
 therefore do not call a capability. Diagnostics expose identities, statuses,
 limits, and byte lengths only.
 

@@ -575,6 +575,7 @@ async function proveResearchCli(root) {
   const storeRoot = path.join(root, 'research-cli-store');
   const receiverRoot = path.join(root, 'research-cli-receiver');
   const initialArgsPath = path.join(root, 'research-initial-args.bin');
+  const freshResultPath = path.join(root, 'research-fresh-result.bin');
   const alternateResultPath = path.join(root, 'research-alternate-result.bin');
   const migrationPath = path.join(root, 'research-migration.json');
   const wasmPath = path.join(pack, 'applications/research-digest-agent.world.wasm');
@@ -584,6 +585,7 @@ async function proveResearchCli(root) {
   }));
 
   const inspectedApp = await packedCli(['inspect-app', wasmPath]);
+  assert.equal(inspectedApp.inspectionMode, 'static');
   assert.equal(inspectedApp.application.name, 'research-digest-agent');
   assert.equal(inspectedApp.abi.application, 1);
   assert.equal(inspectedApp.abi.frame, 1);
@@ -632,6 +634,19 @@ async function proveResearchCli(root) {
     effectAttempted: 0,
     attempt: 1,
   }, parent.pendingEffect.encodedBytes);
+  await writeFile(freshResultPath, resolution.result.encodedBytes);
+  for (const [command, branchId] of [['retry', 'main'], ['replay', 'replay']]) {
+    const rejected = await packedCliFailure([
+      command,
+      '--store', storeRoot,
+      '--run', 'research-cli-run',
+      '--branch', branchId,
+      '--effect-result', freshResultPath,
+      '--fuel', '100',
+    ]);
+    assert.notEqual(rejected.exitCode, 0);
+    assert.match(rejected.stderr, /ERR_APPLICATION_V1_CLI_OPTION/);
+  }
   for (const branchId of ['main', 'replay']) {
     await store.effectJournal.persistResult({
       runId: 'research-cli-run',
@@ -723,6 +738,7 @@ async function proveResearchCli(root) {
     resume: true,
     retry: true,
     replay: true,
+    retainedResultOnly: true,
     branch: true,
     export: true,
     import: true,
@@ -853,6 +869,18 @@ function decodeDigestResult(bytes) {
 }
 
 async function packedCli(args) {
+  const result = await invokePackedCli(args);
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr || result.stdout || `world-host-v1 exited ${result.exitCode}`);
+  }
+  return JSON.parse(result.stdout);
+}
+
+async function packedCliFailure(args) {
+  return await invokePackedCli(args);
+}
+
+async function invokePackedCli(args) {
   const child = Bun.spawn([
     process.execPath,
     path.join(pack, 'host/bin/world-host-v1.mjs'),
@@ -867,10 +895,7 @@ async function packedCli(args) {
     new Response(child.stderr).text(),
     child.exited,
   ]);
-  if (exitCode !== 0) {
-    throw new Error(stderr || stdout || `world-host-v1 exited ${exitCode}`);
-  }
-  return JSON.parse(stdout);
+  return { stdout, stderr, exitCode };
 }
 
 async function packRoot(argument) {
