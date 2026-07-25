@@ -169,7 +169,49 @@ describe('World application WASM inspection', () => {
     assert.equal(inspection.exports.some((entry) =>
       entry.name === 'world_manifest_ptr' && entry.kind === 'function'), true);
   });
+
+  it('rejects invalid section ordering during static inspection', () => {
+    const bytes = readFileSync('agent-runtime-v1/applications/research-digest-agent.world.wasm');
+    const outOfOrderTagSection = Buffer.concat([bytes, Buffer.from([13, 1, 0])]);
+
+    assert.equal(WebAssembly.validate(outOfOrderTagSection), false);
+    assert.throws(
+      () => inspectApplicationWasm(outOfOrderTagSection),
+      { code: 'ERR_APPLICATION_V1_WASM_VALIDATE' },
+    );
+  });
+
+  it('accepts byte-identical embedded manifest copies', () => {
+    const bytes = readFileSync('agent-runtime-v1/applications/research-digest-agent.world.wasm');
+    const original = assertApplicationWasmSurface(inspectApplicationWasm(bytes));
+    const customPayload = Buffer.concat([
+      Buffer.from([0]),
+      original.manifest.encodedBytes,
+    ]);
+    const duplicate = Buffer.concat([
+      bytes,
+      Buffer.from([0]),
+      varUint32(customPayload.length),
+      customPayload,
+    ]);
+
+    assert.equal(WebAssembly.validate(duplicate), true);
+    const inspected = assertApplicationWasmSurface(inspectApplicationWasm(duplicate));
+    assert.deepEqual(inspected.manifest.encodedBytes, original.manifest.encodedBytes);
+  });
 });
+
+function varUint32(value) {
+  const bytes = [];
+  let remaining = value >>> 0;
+  do {
+    let byte = remaining & 0x7f;
+    remaining >>>= 7;
+    if (remaining !== 0) byte |= 0x80;
+    bytes.push(byte);
+  } while (remaining !== 0);
+  return Buffer.from(bytes);
+}
 
 function fromBase64(value) {
   return Buffer.from(value, 'base64');

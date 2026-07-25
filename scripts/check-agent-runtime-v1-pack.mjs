@@ -219,6 +219,13 @@ function assertPackManifest(manifest) {
     wasmSha256: 'ced222d3537ca9b36165278190baef8b7ef79b091876d685a1dc24d5a926caca',
     manifestSha256: 'e48349346439a8b16040d9f98d90b8ab1e559e56be9a18ca10f7d4a1f1e32c4c',
   });
+  const researchCapabilities = manifest.capabilities.filter((capability) =>
+    capability.packageName === '@tkersey/world-capabilities/research-lookup-fixture');
+  assert.equal(researchCapabilities.length, 1,
+    'pack must contain exactly one research-lookup-fixture capability');
+  assert.equal(researchCapabilities[0].packFingerprint,
+    manifest.sourcePins.worldCapabilitiesRelease.researchPackFingerprint,
+    'research-lookup-fixture does not match the reviewed release fingerprint');
   assert.equal(manifest.sourcePins.worldHostPackageVersion, '1.0.0-rc.2');
   assert.deepEqual(manifest.externality, {
     application: 'research-digest-agent',
