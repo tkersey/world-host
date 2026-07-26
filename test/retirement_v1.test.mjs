@@ -11,7 +11,7 @@ describe('World Application Host v1 retirement boundary', () => {
     assert.equal(packageJson.bin['world-host-legacy'], './bin/world-host.mjs');
 
     assert(packageJson.scripts.proof.includes('proof:v1-tests'));
-    assert(packageJson.scripts.proof.includes('check:agent-runtime-v1-rc'));
+    assert(packageJson.scripts.proof.includes('check:agent-runtime-v1-release'));
     assert(!packageJson.scripts.proof.includes('run-world-conformance'));
     assert(!Object.prototype.hasOwnProperty.call(packageJson.scripts, 'build:agent-runtime'));
     assert(!Object.prototype.hasOwnProperty.call(packageJson.scripts, 'check:agent-runtime'));

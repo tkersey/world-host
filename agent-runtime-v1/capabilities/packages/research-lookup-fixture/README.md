@@ -1,7 +1,7 @@
 # Research Lookup Fixture
 
 `research-lookup-fixture` implements only `research.lookup.v1` for the
-Research Digest application in World `v1.0.0-rc.2`.
+Research Digest application in World `v1.0.0`.
 
 The pack is deterministic, bounded, network-free, secret-free, and
 application-identity-bound. It accepts one typed request for at most two

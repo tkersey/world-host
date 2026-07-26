@@ -1,6 +1,6 @@
 {
   "name": "@tkersey/world-host-v1-runtime",
-  "version": "1.0.0-rc.2",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "dependencies": {}

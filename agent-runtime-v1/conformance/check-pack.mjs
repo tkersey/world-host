@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const MAXIMUM_FILE_BYTES = 64 << 20;
-const REVIEWED_WORLD_HOST_GIT_COMMIT = '0bce534f12f926d069be8c0ac5a458a2e9f9f30c';
+const REVIEWED_WORLD_HOST_GIT_COMMIT = '957fbe0c98f8f4b104530e995c8e0bf69c60e8f7';
 const REVIEWED_WORLD_HOST_SOURCE_SHA256 = {"host/bin/world-host-v1.mjs":"93900063f5069de8afb94c1e9e59a5ad6cba9a3dd14533f69b69b388d55e3f25","host/src/bun/application_v1_cli.mjs":"b998b46adf937d62c622c724a276e0e05f878cf8c95eb8e85e70084dd227431a","host/src/bun/application_v1_inspection_worker.mjs":"949c101c92010e3e55d2feaea30e01c64a3ff16ea6a112ad2ea882a6a18d633f","host/src/v1/application_worker.mjs":"34fa722e47e550a5405df7a6db965d999f58fb51447a9bd179de88f694e11e50","host/src/v1/directory_storage.mjs":"45b08e986ba63ac332012cdd4c8bebc60880368961f6884ba5c9a31a5754e92c","host/src/v1/effect_journal.mjs":"fc1d390229e07110940d294e844e94a6963fb2ee60cef1bac34a801fd5f58453","host/src/v1/errors.mjs":"d6bf2c3d68347ed3730f1594f652521558b5b4e43ef2333259312a7015180427","host/src/v1/index.mjs":"e033d4c61ede2b28bcaa75f60f3e9f0c5b94a02847fb1320b9cf5da25b85dc20","host/src/v1/protocol.mjs":"63d6f7e79e41b0401d4cf3740dbcb26a2173946e99533e6bf6d48f4ec2cdcabc","host/src/v1/run_controller.mjs":"9f1afbb90f9b6725abdfbf138f204eb541dd2e3b7c84199e508f17275ac0b5fb","host/src/v1/storage.mjs":"0493514c9190637868f5c57cc8e7dbb4891cba48f5106d2037fac89678bf090b","host/src/v1/wasm_module.mjs":"ca87d67c5b58c2f736de2c0af7a392ff7b11a9f830258967bc1114bcd6632d0f"};
 const REQUIRED_SCENARIOS = [
   'one-effect',
@@ -270,34 +270,34 @@ function assertPackManifest(manifest) {
     url: 'https://github.com/tkersey/boundary/archive/refs/tags/v0.7.0.tar.gz',
   });
   assert.deepEqual(manifest.sourcePins.worldRelease, {
-    tag: 'v1.0.0-rc.2',
-    packageHash: 'world-1.0.0-rc.2-XXTUeOXYhwC1anDePj7Lr4SfwDCxG-ofPw92_-PGGyKv',
-    url: 'https://github.com/tkersey/world/archive/refs/tags/v1.0.0-rc.2.tar.gz',
+    tag: 'v1.0.0',
+    packageHash: 'world-1.0.0-XXTUeF0tiAC_5jqj2oVDvgGmmh8c7CRCnuaG8p2i9Zk_',
+    url: 'https://github.com/tkersey/world/archive/refs/tags/v1.0.0.tar.gz',
   });
   assert.deepEqual(manifest.sourcePins.worldCapabilitiesRelease, {
-    tag: 'v1.0.0-rc.4',
-    gitCommit: '45d023f2bd0658e377142eda9b5103589308870c',
-    researchPackFingerprint: 'ff4cecaf449db1bf2032dd22e1b0dcca94c02091ba547719fe36089dd61c205e',
-    researchPackAssetSha256: '96ea017436264f7574e1dd8e385df3acb0cde97babd855ca3b98ee43d56f4d1f',
-    runtimeAssetSha256: 'b6b87dc78e90d5ba626f20489016bab4c0f3ff39ae1e9ce77c2ab76ed1150cfc',
-    researchManifestSha256: 'd4dd78c9e33094c7a1b68f58503f57418dd82148274272a5ec0dd645280c6787',
-    researchCorpusSha256: '93b00d2b93f035f03bf8ed645a4fc82a60029d2e7f34a05ef0accf315c8944a5',
+    tag: 'v1.0.0',
+    gitCommit: 'bb5ed3ebd695b0343d58e5ae2ff658653ff69997',
+    researchPackFingerprint: 'c3106b770e2d14237c981b4671da3d42dfbaed33eed81ccc78c257a42419354e',
+    researchPackAssetSha256: '99e57ec54d8c39f305aa162e4ba334d102f358eba3ccb78469662bd676e0b6c4',
+    runtimeAssetSha256: '1d9011faf1932de66ca4f7f24dcfaea41671175999bf278683bda4702854e0ca',
+    researchManifestSha256: '696457f7134200bc294049bf92f7943bc89ca305038cf9a8c90d790e32bec2db',
+    researchCorpusSha256: '485027cb5401bc12b84f3b9646c651214ee260881c8bc0f93ede5829efa24fc8',
     researchConformanceSha256: '51c401f45457984eba266483305ba1b7be3be9f5044ccabe573fa1544a4442e3',
-    researchConformanceReceiptSha256: 'e7f067d21c38643ea436e1e4b22794b616f8ce69974048a881a537ad9e0e3eea',
+    researchConformanceReceiptSha256: '8f0c70ea42a11ebfe91bb721639f53026b59babfa24b66abb0e5f7d800d7b5a3',
     capabilityManifestSha256: {
       '@tkersey/world-capabilities/fixture-model': '1b29784e303e9e54253ff701e99adf73650d8b47effb0e61559051bfd7f61645',
       '@tkersey/world-capabilities/generic-http-json': '8c83e794ad6f507f6c2cb9040b464d2e62b7880fcb047a46bf73e1e519adde3e',
       '@tkersey/world-capabilities/human-approval': '2afd6e5ad491d2c8b72be32176922186d48e151bd36c238afadd67c342a6991e',
       '@tkersey/world-capabilities/local-memory-kv': '5ba65a48e2a28c2b1b3cdcd27a433724997e915312dd5cd83560efee490106ee',
-      '@tkersey/world-capabilities/research-lookup-fixture': 'd4dd78c9e33094c7a1b68f58503f57418dd82148274272a5ec0dd645280c6787',
+      '@tkersey/world-capabilities/research-lookup-fixture': '696457f7134200bc294049bf92f7943bc89ca305038cf9a8c90d790e32bec2db',
       '@tkersey/world-capabilities/sandbox-files': '7c087eeb01df5f8fed3dab1912a8cf14155c0dc23a88ba765c015c94bfbcb2eb',
     },
   });
   assert.deepEqual(manifest.sourcePins.externalApplicationRelease, {
     name: 'research-digest-agent',
-    worldReleaseTag: 'v1.0.0-rc.2',
-    wasmSha256: 'ced222d3537ca9b36165278190baef8b7ef79b091876d685a1dc24d5a926caca',
-    manifestSha256: 'e48349346439a8b16040d9f98d90b8ab1e559e56be9a18ca10f7d4a1f1e32c4c',
+    worldReleaseTag: 'v1.0.0',
+    wasmSha256: 'c5cb0bdde50f88165fa24dfad31baa46e5719e911a4ca77d39c5e88df6f5074d',
+    manifestSha256: 'fd9298888aee141948cc62477dc3bbb4ccf89d60a9ad4ac2207ed59832a67f87',
   });
   const researchCapabilities = manifest.capabilities.filter((capability) =>
     capability.packageName === '@tkersey/world-capabilities/research-lookup-fixture');
@@ -308,7 +308,7 @@ function assertPackManifest(manifest) {
       manifest.sourcePins.worldCapabilitiesRelease.researchPackFingerprint,
       'research-lookup-fixture does not match the reviewed release fingerprint');
   }
-  assert.equal(manifest.sourcePins.worldHostPackageVersion, '1.0.0-rc.2');
+  assert.equal(manifest.sourcePins.worldHostPackageVersion, '1.0.0');
   assert.deepEqual(manifest.externality, {
     application: 'research-digest-agent',
     authoredOutsideSourceRepositories: manifest.releaseStatus === 'development'
@@ -325,7 +325,7 @@ function assertPackManifest(manifest) {
     assert.equal(manifest.sourcePins.boundaryGitCommit,
       '7f2472100454aa2cd5c62e07db0c1e23eaf46a77');
     assert.equal(manifest.sourcePins.worldGitCommit,
-      'a79265906bdf75d432b8f5286159598ef2282da0');
+      '1bbd613ed4e9b1b6fbdaf79eec15cbff92d014ab');
     assert.equal(manifest.sourcePins.worldCapabilitiesGitCommit,
       manifest.sourcePins.worldCapabilitiesRelease.gitCommit);
     assert.equal(externalApplication.wasmSha256,
@@ -475,6 +475,7 @@ function commandOptions() {
   let packPathProvided = false;
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === '--require-release-candidate') result.requiredReleaseStatus = 'release-candidate';
+    else if (args[index] === '--require-released') result.requiredReleaseStatus = 'released';
     else if (!args[index].startsWith('-') && !packPathProvided) {
       result.packPath = path.resolve(args[index]);
       packPathProvided = true;
