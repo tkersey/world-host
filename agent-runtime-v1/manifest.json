@@ -137,9 +137,9 @@
       "manifestSha256": "e48349346439a8b16040d9f98d90b8ab1e559e56be9a18ca10f7d4a1f1e32c4c"
     },
     "worldHostPackageVersion": "1.0.0-rc.2",
-    "boundaryGitCommit": "1fe1a1dfdd2724ac9b61f760baac4db0dd9505ae",
+    "boundaryGitCommit": "7f2472100454aa2cd5c62e07db0c1e23eaf46a77",
     "worldGitCommit": "a79265906bdf75d432b8f5286159598ef2282da0",
-    "worldHostGitCommit": "355560004108f4531baf704d700415870a413893",
+    "worldHostGitCommit": "fe1534f14ab36641d0e5a5fdfc7c95d5f07d10d7",
     "worldCapabilitiesGitCommit": "c0745cf2637270e7af659cbae79c5c7e8c7005dd"
   },
   "externality": {

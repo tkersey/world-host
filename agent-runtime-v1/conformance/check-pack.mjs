@@ -116,11 +116,48 @@ export async function checkAgentRuntimeV1Pack(packPath, options = {}) {
     assert.equal(packManifest.packFingerprint, expectedCapabilityPackFingerprint(packManifest),
       `${capability.packageName}: pack fingerprint mismatch`);
     if (capability.packageName === '@tkersey/world-capabilities/research-lookup-fixture') {
+      const corpusBytes = await readBytes(root, path.posix.join(capability.path, 'corpus.json'));
+      const conformance = JSON.parse(await readText(
+        root,
+        path.posix.join(capability.path, 'conformance.json'),
+      ));
       const receipt = JSON.parse(await readText(
         root,
         path.posix.join(capability.path, 'conformance-receipt.json'),
       ));
+      assert.deepEqual(Object.keys(receipt).sort(), [
+        'corpusFingerprint',
+        'globalConformanceCorpusFingerprint',
+        'packFingerprint',
+        'receiptFingerprint',
+        'schema',
+        'vectors',
+      ]);
+      assert.equal(receipt.schema, 'effect-v1-conformance-receipt/v1');
       assert.equal(receipt.packFingerprint, packManifest.packFingerprint);
+      assert.equal(receipt.corpusFingerprint, sha256(corpusBytes),
+        `${capability.packageName}: receipt corpus fingerprint mismatch`);
+      assert.equal(receipt.corpusFingerprint, packManifest.checksums['corpus.json'],
+        `${capability.packageName}: receipt is not bound to the declared corpus artifact`);
+      assert.equal(
+        receipt.globalConformanceCorpusFingerprint,
+        packManifest.conformanceCorpusFingerprint,
+        `${capability.packageName}: receipt global corpus fingerprint mismatch`,
+      );
+      assert.equal(conformance.driverId, packManifest.driverId);
+      assert.equal(
+        conformance.corpusFingerprint,
+        packManifest.conformanceCorpusFingerprint,
+        `${capability.packageName}: conformance corpus fingerprint mismatch`,
+      );
+      assert(Array.isArray(conformance.vectors) && conformance.vectors.length > 0);
+      assert(conformance.vectors.every((vector) =>
+        vector && typeof vector.id === 'string' && vector.id.length > 0 && vector.passed === true));
+      const conformanceVectors = conformance.vectors.map((vector) => vector.id);
+      assert.equal(new Set(conformanceVectors).size, conformanceVectors.length,
+        `${capability.packageName}: duplicate conformance vector`);
+      assert.deepEqual(receipt.vectors, conformanceVectors,
+        `${capability.packageName}: receipt vectors do not match conformance`);
       const expectedReceipt = { ...receipt, receiptFingerprint: '' };
       assert.equal(
         receipt.receiptFingerprint,
@@ -242,14 +279,12 @@ function assertPackManifest(manifest) {
     assert.equal(externalApplication.provenance, 'external-clean-room');
   }
   if (manifest.releaseStatus !== 'development') {
-    for (const field of [
-      'boundaryGitCommit',
-      'worldGitCommit',
-      'worldHostGitCommit',
-      'worldCapabilitiesGitCommit',
-    ]) {
-      assert(/^[0-9a-f]{40}$/.test(manifest.sourcePins[field]), `invalid source pin: ${field}`);
-    }
+    assert.equal(manifest.sourcePins.boundaryGitCommit,
+      '7f2472100454aa2cd5c62e07db0c1e23eaf46a77');
+    assert.equal(manifest.sourcePins.worldGitCommit,
+      'a79265906bdf75d432b8f5286159598ef2282da0');
+    assert(/^[0-9a-f]{40}$/.test(manifest.sourcePins.worldHostGitCommit),
+      'invalid source pin: worldHostGitCommit');
     assert.equal(manifest.sourcePins.worldCapabilitiesGitCommit,
       manifest.sourcePins.worldCapabilitiesRelease.gitCommit);
     assert.equal(externalApplication.wasmSha256,
