@@ -6,7 +6,9 @@ import {
   EffectJournalV1,
   admitEffectJournalResult,
   admitJournalFuel,
+  assertSameEffectJournalRecord,
   cloneEffectJournalRecord,
+  copyEffectJournalRecord,
   createEffectJournalRecord,
   effectJournalKey,
   readEffectJournalResult,
@@ -183,7 +185,9 @@ export class DirectoryEffectJournalV1 extends EffectJournalV1 {
     if (previous !== null) {
       const retained = await readEffectJournalResult({ record: previous, blockStore: this.blockStore, request, limits });
       if (!sameBytes(retained.result.resultId, admittedResult.resultId)) fail('ERR_APPLICATION_V1_EFFECT_RESULT_CONFLICT');
-      if (retained.record.fuel !== admittedFuel) fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL_CONFLICT');
+      if (retained.record.fuel !== null && retained.record.fuel !== admittedFuel) {
+        fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL_CONFLICT');
+      }
       return cloneEffectJournalRecord(retained.record);
     }
 
@@ -209,7 +213,9 @@ export class DirectoryEffectJournalV1 extends EffectJournalV1 {
         limits,
       });
       if (!sameBytes(winner.result.resultId, admittedResult.resultId)) fail('ERR_APPLICATION_V1_EFFECT_RESULT_CONFLICT');
-      if (winner.record.fuel !== admittedFuel) fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL_CONFLICT');
+      if (winner.record.fuel !== null && winner.record.fuel !== admittedFuel) {
+        fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL_CONFLICT');
+      }
       return cloneEffectJournalRecord(winner.record);
     }
     return cloneEffectJournalRecord(record);
@@ -219,6 +225,37 @@ export class DirectoryEffectJournalV1 extends EffectJournalV1 {
     const record = await readJsonIfExists(this.recordPath(runId, branchId, parentFrameId, request.requestId));
     if (record === null) return null;
     return await readEffectJournalResult({ record, blockStore: this.blockStore, request, limits });
+  }
+
+  async copyResult({
+    runId,
+    sourceBranchId,
+    targetBranchId,
+    parentFrameId,
+    request,
+    limits,
+  }) {
+    const retained = await this.readResult({
+      runId,
+      branchId: sourceBranchId,
+      parentFrameId,
+      request,
+      limits,
+    });
+    if (retained === null) return null;
+    const copied = copyEffectJournalRecord(retained.record, runId, targetBranchId);
+    const file = this.recordPath(runId, targetBranchId, parentFrameId, request.requestId);
+    const previous = await readJsonIfExists(file);
+    if (previous !== null) {
+      assertSameEffectJournalRecord(previous, copied);
+      return cloneEffectJournalRecord(previous);
+    }
+    if (!await writeJsonNew(file, copied)) {
+      const winner = await readJson(file);
+      assertSameEffectJournalRecord(winner, copied);
+      return cloneEffectJournalRecord(winner);
+    }
+    return cloneEffectJournalRecord(copied);
   }
 
   recordPath(runId, branchId, parentFrameId, requestId) {

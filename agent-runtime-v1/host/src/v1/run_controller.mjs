@@ -1,6 +1,6 @@
 import { ApplicationWorker } from './application_worker.mjs';
 import { assertBytes, fail } from './errors.mjs';
-import { MemoryEffectJournalV1 } from './effect_journal.mjs';
+import { MemoryEffectJournalV1, admitJournalFuel } from './effect_journal.mjs';
 import {
   FrameStatus,
   createEffectResult,
@@ -164,7 +164,7 @@ export class RunControllerV1 {
 
   async advance(runId, branchId, {
     effectResult = null,
-    fuel = this.#manifest.limits.maximumFuelPerStep,
+    fuel = null,
     hostMetadata = new Uint8Array(0),
     effectMetadata = {},
   } = {}) {
@@ -179,6 +179,7 @@ export class RunControllerV1 {
     }
 
     let admittedResult = null;
+    let stepFuel = fuel === null ? this.#manifest.limits.maximumFuelPerStep : fuel;
     if (parent.status === FrameStatus.needsEffect) {
       const request = parent.pendingEffect;
       if (effectResult !== null) {
@@ -198,7 +199,7 @@ export class RunControllerV1 {
           handlerConfigurationId: effectMetadata.handlerConfigurationId,
           recoveryClass: effectMetadata.recoveryClass,
           externalTransactionRef: effectMetadata.externalTransactionRef,
-          fuel,
+          fuel: stepFuel,
         });
         await this.#fault('after-result-persistence', { runId, branchId, head, parent, persisted });
       } else {
@@ -211,6 +212,16 @@ export class RunControllerV1 {
         });
         if (retained === null) fail('ERR_APPLICATION_V1_EFFECT_RESULT_REQUIRED');
         admittedResult = retained.result;
+        if (retained.record.fuel === null) {
+          if (fuel === null) fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL_REQUIRED');
+          stepFuel = BigInt(admitJournalFuel(fuel, this.#manifest.limits));
+        } else {
+          if (fuel !== null &&
+              admitJournalFuel(fuel, this.#manifest.limits) !== retained.record.fuel) {
+            fail('ERR_APPLICATION_V1_RETAINED_FUEL_MISMATCH');
+          }
+          stepFuel = BigInt(retained.record.fuel);
+        }
       }
     } else if (effectResult !== null) {
       fail('ERR_APPLICATION_V1_UNEXPECTED_RESULT');
@@ -221,45 +232,44 @@ export class RunControllerV1 {
       expectedParentFrameId: parent.frameId,
       priorFrameBytes: parentBytes,
       effectResult: admittedResult,
-      fuel,
+      fuel: stepFuel,
       hostMetadata,
     }, this.#manifest.limits);
     return this.#executeAndPublish(runId, branchId, head, input);
   }
 
   async forkBranch(runId, sourceBranchId, targetBranchId) {
+    if (await this.headStore.readHead(runId, targetBranchId) !== null) {
+      fail('ERR_APPLICATION_V1_BRANCH_EXISTS');
+    }
     const current = await this.readCurrentFrame(runId, sourceBranchId);
     if (current === null) fail('ERR_APPLICATION_V1_BRANCH_NOT_FOUND');
     const source = current.head;
     const sourceFrame = current.frame;
-    let retained = null;
+    let copied = null;
     if (sourceFrame.status === FrameStatus.needsEffect) {
-      retained = await this.effectJournal.readResult({
+      copied = await this.effectJournal.copyResult({
         runId,
-        branchId: sourceBranchId,
+        sourceBranchId,
+        targetBranchId,
         parentFrameId: sourceFrame.frameId,
         request: sourceFrame.pendingEffect,
         limits: this.#manifest.limits,
       });
+      if (copied !== null) {
+        await this.#fault('after-fork-result-persistence', {
+          runId,
+          sourceBranchId,
+          targetBranchId,
+          source,
+          sourceFrame,
+          copied,
+        });
+      }
     }
     const target = makeHead({ ...source, generation: 0 });
     const result = await this.headStore.advanceHeadIfCurrent(runId, targetBranchId, null, target);
     if (!result.advanced) fail('ERR_APPLICATION_V1_BRANCH_EXISTS');
-    if (retained !== null) {
-      await this.effectJournal.persistResult({
-        runId,
-        branchId: targetBranchId,
-        parentFrameId: sourceFrame.frameId,
-        request: sourceFrame.pendingEffect,
-        result: retained.result,
-        limits: this.#manifest.limits,
-        handlerId: retained.record.handlerId,
-        handlerConfigurationId: retained.record.handlerConfigurationId,
-        recoveryClass: retained.record.recoveryClass,
-        externalTransactionRef: retained.record.externalTransactionRef,
-        fuel: retained.record.fuel,
-      });
-    }
     return result.current;
   }
 
@@ -374,7 +384,7 @@ function assertMigrationBundle(bundle) {
   const retainedEffectResultBytes = bundle.retainedEffectResultBytes === null
     ? null
     : Buffer.from(assertBytes(bundle.retainedEffectResultBytes, 'retainedEffectResultBytes'));
-  const retainedEffectFuel = bundle.retainedEffectFuel === null
+  const retainedEffectFuel = bundle.retainedEffectFuel === null || bundle.retainedEffectFuel === undefined
     ? null
     : retainedFuel(bundle.retainedEffectFuel);
   if ((retainedEffectResultBytes === null) !== (retainedEffectFuel === null)) {
@@ -396,7 +406,7 @@ function assertMigrationBundle(bundle) {
 }
 
 function retainedFuel(value) {
-  if (typeof value !== 'string' || !/^[1-9][0-9]*$/.test(value)) {
+  if (typeof value !== 'string' || !/^[1-9][0-9]*$/.test(value) || value.length > 20) {
     fail('ERR_APPLICATION_V1_MIGRATION_RESULT');
   }
   return value;

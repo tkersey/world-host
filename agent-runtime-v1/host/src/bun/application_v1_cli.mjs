@@ -444,7 +444,7 @@ function decodeMigrationTransport(bytes) {
   } catch {
     fail('ERR_APPLICATION_V1_MIGRATION_TRANSPORT');
   }
-  const fields = [
+  const requiredFields = [
     'applicationId',
     'applicationWasmBase64',
     'bundleVersion',
@@ -454,12 +454,16 @@ function decodeMigrationTransport(bytes) {
     'frameStatus',
     'manifestBase64',
     'retainedEffectResultBase64',
-    'retainedEffectFuel',
     'sourceHeadGeneration',
     'transportVersion',
   ];
+  const allowedFields = new Set([...requiredFields, 'retainedEffectFuel']);
+  const keys = value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.keys(value)
+    : [];
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
-      Object.keys(value).sort().join('\0') !== fields.sort().join('\0') ||
+      requiredFields.some((field) => !Object.prototype.hasOwnProperty.call(value, field)) ||
+      keys.some((field) => !allowedFields.has(field)) ||
       value.transportVersion !== 'world-host.application-migration-json-v1') {
     fail('ERR_APPLICATION_V1_MIGRATION_TRANSPORT');
   }
@@ -476,7 +480,9 @@ function decodeMigrationTransport(bytes) {
     retainedEffectResultBytes: value.retainedEffectResultBase64 === null
       ? null
       : decodeBase64(value.retainedEffectResultBase64, MAXIMUM_MIGRATION_RESULT_BYTES),
-    retainedEffectFuel: value.retainedEffectFuel,
+    retainedEffectFuel: Object.prototype.hasOwnProperty.call(value, 'retainedEffectFuel')
+      ? value.retainedEffectFuel
+      : null,
   };
 }
 
@@ -505,11 +511,19 @@ function fuelFrom(args, manifest) {
 }
 
 function retainedFuelFrom(args, manifest, record) {
+  const raw = valueAfter(args, '--fuel');
+  if (record.fuel === null) {
+    if (raw === null) fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL_REQUIRED');
+    const requestedFuel = parseUnsigned(raw, 'fuel');
+    if (requestedFuel === 0n || requestedFuel > manifest.limits.maximumFuelPerStep) {
+      fail('ERR_APPLICATION_V1_FUEL');
+    }
+    return requestedFuel;
+  }
   const retainedFuel = parseUnsigned(record.fuel, 'retained fuel');
   if (retainedFuel === 0n || retainedFuel > manifest.limits.maximumFuelPerStep) {
     fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL');
   }
-  const raw = valueAfter(args, '--fuel');
   if (raw === null) return retainedFuel;
   const requestedFuel = parseUnsigned(raw, 'fuel');
   if (requestedFuel !== retainedFuel) fail('ERR_APPLICATION_V1_RETAINED_FUEL_MISMATCH');
@@ -517,7 +531,10 @@ function retainedFuelFrom(args, manifest, record) {
 }
 
 function parseUnsigned(value, label) {
-  if (!/^(?:0|[1-9][0-9]*)$/.test(value)) fail('ERR_APPLICATION_V1_CLI_OPTION', label);
+  if (typeof value !== 'string' || value.length > 20 ||
+      !/^(?:0|[1-9][0-9]*)$/.test(value)) {
+    fail('ERR_APPLICATION_V1_CLI_OPTION', label);
+  }
   return BigInt(value);
 }
 

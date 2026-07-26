@@ -22,6 +22,11 @@ If the host stops after result persistence, the next controller reads that resul
 
 These properties provide deterministic retry and replay suppression. They do not claim exactly-once external effects.
 
+Early release-candidate journal records did not retain fuel. The v1 reader
+accepts those records without inventing a budget. `retry` and `replay` require
+an explicit `--fuel` for such a record; the operator must supply the budget used
+for the interrupted step. New records retain fuel and reuse it automatically.
+
 The directory-backed proof stops after result persistence, discards the active
 controller, and resumes through a new `world-host` process. The capability
 outcome is not produced again, and the resulting Frame is byte-identical to a

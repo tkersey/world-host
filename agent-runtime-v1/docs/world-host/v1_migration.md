@@ -37,6 +37,8 @@ world-host import --store RECEIVER --in migration.json --run NEW_RUN
 ```
 
 The JSON envelope is transport packaging, not application semantics. Import
-rejects unknown fields, malformed or non-canonical base64, oversized embedded
-records, manifest disagreement, and an existing target branch. Receiver
-preflight occurs before the imported head becomes authoritative.
+accepts an early v1 envelope without `retainedEffectFuel` only when no retained
+result requires retry fuel. It rejects unknown fields, malformed or
+non-canonical base64, oversized embedded records, a retained result without
+fuel, manifest disagreement, and an existing target branch. Receiver preflight
+occurs before the imported head becomes authoritative.
