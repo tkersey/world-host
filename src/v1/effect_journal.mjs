@@ -10,6 +10,7 @@ import {
 export class EffectJournalV1 {
   async persistResult() { fail('ERR_APPLICATION_V1_ABSTRACT_EFFECT_JOURNAL'); }
   async readResult() { fail('ERR_APPLICATION_V1_ABSTRACT_EFFECT_JOURNAL'); }
+  async copyResult() { fail('ERR_APPLICATION_V1_ABSTRACT_EFFECT_JOURNAL'); }
 }
 
 export class MemoryEffectJournalV1 extends EffectJournalV1 {
@@ -39,7 +40,9 @@ export class MemoryEffectJournalV1 extends EffectJournalV1 {
     const previous = this.records.get(key);
     if (previous !== undefined) {
       if (previous.resultId !== hex(admittedResult.resultId)) fail('ERR_APPLICATION_V1_EFFECT_RESULT_CONFLICT');
-      if (previous.fuel !== admittedFuel) fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL_CONFLICT');
+      if (previous.fuel !== null && previous.fuel !== admittedFuel) {
+        fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL_CONFLICT');
+      }
       return cloneRecord(previous);
     }
 
@@ -65,6 +68,33 @@ export class MemoryEffectJournalV1 extends EffectJournalV1 {
     const record = this.records.get(effectJournalKey(runId, branchId, parentFrameId, request.requestId));
     if (record === undefined) return null;
     return await readEffectJournalResult({ record, blockStore: this.blockStore, request, limits });
+  }
+
+  async copyResult({
+    runId,
+    sourceBranchId,
+    targetBranchId,
+    parentFrameId,
+    request,
+    limits,
+  }) {
+    const retained = await this.readResult({
+      runId,
+      branchId: sourceBranchId,
+      parentFrameId,
+      request,
+      limits,
+    });
+    if (retained === null) return null;
+    const copied = copyEffectJournalRecord(retained.record, runId, targetBranchId);
+    const key = effectJournalKey(runId, targetBranchId, parentFrameId, request.requestId);
+    const previous = this.records.get(key);
+    if (previous !== undefined) {
+      assertSameEffectJournalRecord(previous, copied);
+      return cloneRecord(previous);
+    }
+    this.records.set(key, copied);
+    return cloneRecord(copied);
   }
 }
 
@@ -127,7 +157,7 @@ export function assertEffectJournalRecord(record) {
     handlerId: requiredText(record.handlerId, 'handlerId'),
     handlerConfigurationId: requiredText(record.handlerConfigurationId, 'handlerConfigurationId'),
     recoveryClass: requiredText(record.recoveryClass, 'recoveryClass'),
-    fuel: requiredFuel(record.fuel),
+    fuel: optionalLegacyFuel(record.fuel),
     state: record.state,
     resultId: digestHex(record.resultId, 'resultId'),
     resultRef: assertResultRef(record.resultRef),
@@ -137,7 +167,7 @@ export function assertEffectJournalRecord(record) {
 
 export async function readEffectJournalResult({ record, blockStore, request, limits }) {
   const admitted = assertEffectJournalRecord(record);
-  admitJournalFuel(admitted.fuel, limits);
+  if (admitted.fuel !== null) admitJournalFuel(admitted.fuel, limits);
   if (admitted.requestId !== hex(request.requestId) || admitted.idempotencyKey !== hex(request.idempotencyKey) ||
       admitted.requestArtifactChecksum !== requestArtifactChecksum(request)) {
     fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_MISMATCH');
@@ -151,9 +181,13 @@ export async function readEffectJournalResult({ record, blockStore, request, lim
 
 export function admitJournalFuel(value, limits) {
   let fuel;
-  try {
-    fuel = typeof value === 'bigint' ? value : BigInt(value);
-  } catch {
+  if (typeof value === 'bigint') {
+    fuel = value;
+  } else if (typeof value === 'number' && Number.isSafeInteger(value)) {
+    fuel = BigInt(value);
+  } else if (typeof value === 'string' && /^[1-9][0-9]*$/.test(value) && value.length <= 20) {
+    fuel = BigInt(value);
+  } else {
     fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL');
   }
   if (fuel <= 0n || fuel > limits.maximumFuelPerStep) {
@@ -163,10 +197,32 @@ export function admitJournalFuel(value, limits) {
 }
 
 function requiredFuel(value) {
-  if (typeof value !== 'string' || !/^[1-9][0-9]*$/.test(value)) {
+  if (typeof value !== 'string' || !/^[1-9][0-9]*$/.test(value) || value.length > 20) {
     fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL');
   }
   return value;
+}
+
+function optionalLegacyFuel(value) {
+  if (value === null || value === undefined) return null;
+  return requiredFuel(value);
+}
+
+export function copyEffectJournalRecord(record, runId, branchId) {
+  return assertEffectJournalRecord({
+    ...assertEffectJournalRecord(record),
+    runId,
+    branchId,
+  });
+}
+
+export function assertSameEffectJournalRecord(previous, copied) {
+  const admitted = assertEffectJournalRecord(previous);
+  if (admitted.resultId !== copied.resultId) fail('ERR_APPLICATION_V1_EFFECT_RESULT_CONFLICT');
+  if (admitted.fuel !== copied.fuel) fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL_CONFLICT');
+  if (JSON.stringify(admitted) !== JSON.stringify(copied)) {
+    fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_RECORD');
+  }
 }
 
 export function effectJournalKey(runId, branchId, parentFrameId, requestId) {

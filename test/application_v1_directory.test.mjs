@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -11,6 +11,7 @@ import {
   decodeEffectRequest,
   makeHead,
 } from '../src/v1/index.mjs';
+import { admitJournalFuel } from '../src/v1/effect_journal.mjs';
 
 const REQUEST_BYTES = Buffer.from('V1JMREVSUTEBAAAAzsv4PjOqIpx6fIhz3PpQIQfQBpBJgGPl/ZhB61sPIQ60PALu7Q1toJPlzqEcNzWLUTkSdG2wFdviJDPdp75bkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+PnsVNnMCk9QDrj7fk3SRRxHDJ8DAxdOz9pTKNio+HV23O/j1AZsz8DHR/oIjlOnjt+QHPbZ/H394AGV4uxYoW+JHLOqyVGCqBl1l5Nu/Snak4YmG3Lyvx64Rbugn7b+3Kp04wMkjDMXCwAAAAcAAABwYXlsb2Fk9+yRHaSj2v0yozJM8OeKhy9t02kvUfN8O1szV59ej9cBAAAAAAAAAAAAEAADAAAA', 'base64');
 
@@ -133,6 +134,53 @@ describe('World application v1 directory effect journal', () => {
         limits: firstLimits(),
       }),
       { code: 'ERR_APPLICATION_V1_EFFECT_RESULT_CONFLICT' },
+    );
+  });
+
+  it('reads fuel-less release-candidate records without inventing retry fuel', async () => {
+    const first = new DirectoryApplicationStoreV1(root);
+    const request = decodeEffectRequest(REQUEST_BYTES);
+    const result = createEffectResult({
+      requestId: request.requestId,
+      status: EffectStatus.ok,
+      resultSchemaId: request.resultSchemaId,
+      resultBytes: Buffer.from('legacy'),
+    });
+    await first.effectJournal.persistResult({
+      runId: 'run',
+      branchId: 'main',
+      parentFrameId: request.parentFrameId,
+      request,
+      result,
+      limits: firstLimits(),
+      fuel: 17n,
+    });
+    const recordPath = first.effectJournal.recordPath(
+      'run',
+      'main',
+      request.parentFrameId,
+      request.requestId,
+    );
+    const legacy = JSON.parse(await readFile(recordPath, 'utf8'));
+    delete legacy.fuel;
+    await writeFile(recordPath, `${JSON.stringify(legacy, null, 2)}\n`);
+
+    const reopened = new DirectoryApplicationStoreV1(root);
+    const retained = await reopened.effectJournal.readResult({
+      runId: 'run',
+      branchId: 'main',
+      parentFrameId: request.parentFrameId,
+      request,
+      limits: firstLimits(),
+    });
+    assert.deepEqual(retained.result.encodedBytes, result.encodedBytes);
+    assert.equal(retained.record.fuel, null);
+  });
+
+  it('rejects overlong decimal fuel before numeric conversion', () => {
+    assert.throws(
+      () => admitJournalFuel('9'.repeat(21), firstLimits()),
+      { code: 'ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL' },
     );
   });
 });
