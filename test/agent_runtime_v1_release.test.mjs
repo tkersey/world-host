@@ -122,18 +122,63 @@ describe('Agent Runtime v1 pack release identities', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('rejects a self-consistent unreviewed manifest for any bundled capability', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agent-runtime-v1-capability-manifest-'));
+    const pack = path.join(root, 'agent-runtime-v1');
+    try {
+      await cp(path.resolve('agent-runtime-v1'), pack, { recursive: true });
+      const outerManifestPath = path.join(pack, 'manifest.json');
+      const outerManifest = JSON.parse(await readFile(outerManifestPath, 'utf8'));
+      Object.assign(outerManifest.sourcePins.worldCapabilitiesRelease, reviewedCapabilityFiles());
+      const capability = outerManifest.capabilities.find((candidate) =>
+        candidate.packageName === '@tkersey/world-capabilities/generic-http-json');
+      assert(capability);
+      const relative = 'capabilities/packages/generic-http-json/manifest.json';
+      const capabilityManifestPath = path.join(pack, relative);
+      const capabilityManifest = JSON.parse(await readFile(capabilityManifestPath, 'utf8'));
+      capabilityManifest.authorityLabels = [...capabilityManifest.authorityLabels, 'altered.authority'];
+      const capabilityManifestBytes = Buffer.from(`${JSON.stringify(capabilityManifest, null, 2)}\n`);
+      await writeFile(capabilityManifestPath, capabilityManifestBytes);
+      capability.manifestSha256 = sha256(capabilityManifestBytes);
+      await writeFile(outerManifestPath, `${JSON.stringify(outerManifest, null, 2)}\n`);
+      await rewriteOuterChecksum(pack, relative);
+      await rewriteOuterChecksum(pack, 'manifest.json');
+
+      await assert.rejects(
+        () => checkAgentRuntimeV1Pack(pack),
+        /reviewed manifest checksum mismatch/,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 function reviewedCapabilityFiles() {
   return {
     researchManifestSha256:
-      '93615f2d1cfaa1150ce197f28ce11bf1bbaffc18f4617472897be788abfde35c',
+      'd4dd78c9e33094c7a1b68f58503f57418dd82148274272a5ec0dd645280c6787',
     researchCorpusSha256:
       '93b00d2b93f035f03bf8ed645a4fc82a60029d2e7f34a05ef0accf315c8944a5',
     researchConformanceSha256:
       '51c401f45457984eba266483305ba1b7be3be9f5044ccabe573fa1544a4442e3',
     researchConformanceReceiptSha256:
-      'ee082050534f58cc70d65677e001085e1f8a10e0bf96aa4d7894dad050b229ca',
+      'e7f067d21c38643ea436e1e4b22794b616f8ce69974048a881a537ad9e0e3eea',
+    capabilityManifestSha256: {
+      '@tkersey/world-capabilities/fixture-model':
+        '1b29784e303e9e54253ff701e99adf73650d8b47effb0e61559051bfd7f61645',
+      '@tkersey/world-capabilities/generic-http-json':
+        '8c83e794ad6f507f6c2cb9040b464d2e62b7880fcb047a46bf73e1e519adde3e',
+      '@tkersey/world-capabilities/human-approval':
+        '2afd6e5ad491d2c8b72be32176922186d48e151bd36c238afadd67c342a6991e',
+      '@tkersey/world-capabilities/local-memory-kv':
+        '5ba65a48e2a28c2b1b3cdcd27a433724997e915312dd5cd83560efee490106ee',
+      '@tkersey/world-capabilities/research-lookup-fixture':
+        'd4dd78c9e33094c7a1b68f58503f57418dd82148274272a5ec0dd645280c6787',
+      '@tkersey/world-capabilities/sandbox-files':
+        '7c087eeb01df5f8fed3dab1912a8cf14155c0dc23a88ba765c015c94bfbcb2eb',
+    },
   };
 }
 
