@@ -32,4 +32,40 @@ describe('World application v1 CLI admission policy', () => {
       await rm(store, { recursive: true, force: true });
     }
   });
+
+  it('requires a retained effect result before retry or replay', async () => {
+    const store = await mkdtemp(path.join(tmpdir(), 'world-host-v1-cli-retained-'));
+    const wasm = path.resolve(
+      'agent-runtime-v1/applications/one-effect.world.wasm',
+    );
+    const io = { stdout: { write() {} } };
+    try {
+      await runApplicationV1Cli([
+        'install',
+        '--store', store,
+        '--name', 'one-effect',
+        '--wasm', wasm,
+      ], io);
+      await runApplicationV1Cli([
+        'run',
+        '--store', store,
+        '--app', 'one-effect',
+        '--run', 'fuel-yielded',
+        '--fuel', '1',
+      ], io);
+      for (const command of ['retry', 'replay']) {
+        await assert.rejects(
+          () => runApplicationV1Cli([
+            command,
+            '--store', store,
+            '--run', 'fuel-yielded',
+            '--fuel', '100',
+          ], io),
+          { code: 'ERR_APPLICATION_V1_EFFECT_RESULT_REQUIRED' },
+        );
+      }
+    } finally {
+      await rm(store, { recursive: true, force: true });
+    }
+  });
 });

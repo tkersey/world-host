@@ -68,6 +68,7 @@ describe('Agent Runtime v1 pack release identities', () => {
         '7f2472100454aa2cd5c62e07db0c1e23eaf46a77';
       manifest.sourcePins.worldGitCommit =
         'a79265906bdf75d432b8f5286159598ef2282da0';
+      Object.assign(manifest.sourcePins.worldCapabilitiesRelease, reviewedCapabilityFiles());
       await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
       await rewriteOuterChecksum(pack, 'manifest.json');
       const receiptPath = path.join(
@@ -83,13 +84,58 @@ describe('Agent Runtime v1 pack release identities', () => {
 
       await assert.rejects(
         () => checkAgentRuntimeV1Pack(pack),
-        /receipt corpus fingerprint mismatch/,
+        /released conformance receipt checksum mismatch/,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects altered release capability policy outside the pack fingerprint', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agent-runtime-v1-policy-'));
+    const pack = path.join(root, 'agent-runtime-v1');
+    try {
+      await cp(path.resolve('agent-runtime-v1'), pack, { recursive: true });
+      const outerManifestPath = path.join(pack, 'manifest.json');
+      const outerManifest = JSON.parse(await readFile(outerManifestPath, 'utf8'));
+      outerManifest.sourcePins.boundaryGitCommit =
+        '7f2472100454aa2cd5c62e07db0c1e23eaf46a77';
+      outerManifest.sourcePins.worldGitCommit =
+        'a79265906bdf75d432b8f5286159598ef2282da0';
+      Object.assign(outerManifest.sourcePins.worldCapabilitiesRelease, reviewedCapabilityFiles());
+      await writeFile(outerManifestPath, `${JSON.stringify(outerManifest, null, 2)}\n`);
+      await rewriteOuterChecksum(pack, 'manifest.json');
+
+      const relative =
+        'capabilities/packages/research-lookup-fixture/manifest.json';
+      const capabilityManifestPath = path.join(pack, relative);
+      const capabilityManifest = JSON.parse(await readFile(capabilityManifestPath, 'utf8'));
+      capabilityManifest.authorityLabels = ['research.fixture', 'altered.authority'];
+      await writeFile(capabilityManifestPath, `${JSON.stringify(capabilityManifest, null, 2)}\n`);
+      await rewriteOuterChecksum(pack, relative);
+
+      await assert.rejects(
+        () => checkAgentRuntimeV1Pack(pack),
+        /released manifest checksum mismatch/,
       );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 });
+
+function reviewedCapabilityFiles() {
+  return {
+    researchManifestSha256:
+      '93615f2d1cfaa1150ce197f28ce11bf1bbaffc18f4617472897be788abfde35c',
+    researchCorpusSha256:
+      '93b00d2b93f035f03bf8ed645a4fc82a60029d2e7f34a05ef0accf315c8944a5',
+    researchConformanceSha256:
+      '51c401f45457984eba266483305ba1b7be3be9f5044ccabe573fa1544a4442e3',
+    researchConformanceReceiptSha256:
+      'ee082050534f58cc70d65677e001085e1f8a10e0bf96aa4d7894dad050b229ca',
+  };
+}
 
 function receiptFingerprint(receipt) {
   return createHash('sha256')

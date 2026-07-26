@@ -99,7 +99,8 @@ export async function checkAgentRuntimeV1Pack(packPath, options = {}) {
   const capabilityResults = [];
   for (const capability of manifest.capabilities) {
     const manifestPath = path.posix.join(capability.path, 'manifest.json');
-    const packManifest = JSON.parse(await readText(root, manifestPath));
+    const packManifestBytes = await readBytes(root, manifestPath);
+    const packManifest = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(packManifestBytes));
     assert.equal(packManifest.packageName, capability.packageName);
     assert.equal(packManifest.packageVersion, capability.packageVersion);
     assert.equal(packManifest.packFingerprint, capability.packFingerprint);
@@ -117,14 +118,31 @@ export async function checkAgentRuntimeV1Pack(packPath, options = {}) {
       `${capability.packageName}: pack fingerprint mismatch`);
     if (capability.packageName === '@tkersey/world-capabilities/research-lookup-fixture') {
       const corpusBytes = await readBytes(root, path.posix.join(capability.path, 'corpus.json'));
-      const conformance = JSON.parse(await readText(
+      const conformanceBytes = await readBytes(
         root,
         path.posix.join(capability.path, 'conformance.json'),
-      ));
-      const receipt = JSON.parse(await readText(
+      );
+      const conformance = JSON.parse(
+        new TextDecoder('utf-8', { fatal: true }).decode(conformanceBytes),
+      );
+      const receiptBytes = await readBytes(
         root,
         path.posix.join(capability.path, 'conformance-receipt.json'),
-      ));
+      );
+      const receipt = JSON.parse(
+        new TextDecoder('utf-8', { fatal: true }).decode(receiptBytes),
+      );
+      if (manifest.releaseStatus !== 'development') {
+        const release = manifest.sourcePins.worldCapabilitiesRelease;
+        assert.equal(sha256(packManifestBytes), release.researchManifestSha256,
+          `${capability.packageName}: released manifest checksum mismatch`);
+        assert.equal(sha256(corpusBytes), release.researchCorpusSha256,
+          `${capability.packageName}: released corpus checksum mismatch`);
+        assert.equal(sha256(conformanceBytes), release.researchConformanceSha256,
+          `${capability.packageName}: released conformance checksum mismatch`);
+        assert.equal(sha256(receiptBytes), release.researchConformanceReceiptSha256,
+          `${capability.packageName}: released conformance receipt checksum mismatch`);
+      }
       assert.deepEqual(Object.keys(receipt).sort(), [
         'corpusFingerprint',
         'globalConformanceCorpusFingerprint',
@@ -249,6 +267,10 @@ function assertPackManifest(manifest) {
     researchPackFingerprint: '97f8684e8eeb722bb8020a2d6dee0236c75e0aac332f43e01aedb1a0920b93a3',
     researchPackAssetSha256: 'bbe00739f8d2b3bdf320feb333116e34345e16fb354a761febcd290fe9491326',
     runtimeAssetSha256: '70906745c927aa2d47f497cdcdd3174d8321e17e25f632fb66646c934c413edb',
+    researchManifestSha256: '93615f2d1cfaa1150ce197f28ce11bf1bbaffc18f4617472897be788abfde35c',
+    researchCorpusSha256: '93b00d2b93f035f03bf8ed645a4fc82a60029d2e7f34a05ef0accf315c8944a5',
+    researchConformanceSha256: '51c401f45457984eba266483305ba1b7be3be9f5044ccabe573fa1544a4442e3',
+    researchConformanceReceiptSha256: 'ee082050534f58cc70d65677e001085e1f8a10e0bf96aa4d7894dad050b229ca',
   });
   assert.deepEqual(manifest.sourcePins.externalApplicationRelease, {
     name: 'research-digest-agent',

@@ -136,7 +136,7 @@ async function runApplication(args, io, options) {
   return result.status === 'conflict' ? 3 : 0;
 }
 
-async function resumeApplication(args, io, options, command) {
+async function resumeApplication(args, io, options, command, { retainedOnly = false } = {}) {
   const store = new DirectoryApplicationStoreV1(requiredOption(args, '--store'));
   const runId = requiredOption(args, '--run');
   const branchId = valueAfter(args, '--branch') ?? 'main';
@@ -144,6 +144,21 @@ async function resumeApplication(args, io, options, command) {
   if (head === null) fail('ERR_APPLICATION_V1_BRANCH_NOT_FOUND');
   const application = await store.applications.get(head.applicationId);
   const controller = await loadController(store, application, options);
+  if (retainedOnly) {
+    const current = await controller.readCurrentFrame(runId, branchId);
+    if (current.frame.status !== FrameStatus.needsEffect ||
+        current.frame.pendingEffect === null) {
+      fail('ERR_APPLICATION_V1_EFFECT_RESULT_REQUIRED');
+    }
+    const retained = await store.effectJournal.readResult({
+      runId,
+      branchId,
+      parentFrameId: current.frame.frameId,
+      request: current.frame.pendingEffect,
+      limits: controller.manifest.limits,
+    });
+    if (retained === null) fail('ERR_APPLICATION_V1_EFFECT_RESULT_REQUIRED');
+  }
   const effectResultPath = valueAfter(args, '--effect-result');
   const effectResult = effectResultPath === null
     ? null
@@ -178,7 +193,7 @@ async function replayRetainedApplication(args, io, options, command) {
       fail('ERR_APPLICATION_V1_CLI_OPTION', `${command} does not admit ${option}`);
     }
   }
-  return await resumeApplication(args, io, options, command);
+  return await resumeApplication(args, io, options, command, { retainedOnly: true });
 }
 
 async function inspectApplication(args, io, options) {
