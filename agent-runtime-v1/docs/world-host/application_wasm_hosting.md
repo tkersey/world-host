@@ -28,21 +28,31 @@ import {
 
 `RunControllerV1` adds immutable block retention, an effect-result journal, and
 conditional branch-head advancement. `DirectoryApplicationStoreV1` retains
-those records across process loss. The `world-host app` command family installs
+those records across process loss. The `world-host` command family installs
 and drives arbitrary conforming application modules without interpreting
 Boundary or World machine semantics.
 
 Canonical initial arguments and EffectResults enter through files:
 
 ```sh
-world-host app install --store STORE --name APP --wasm application.world.wasm
-world-host app run --store STORE --app APP --run RUN --initial-args args.bin
-world-host app resume --store STORE --run RUN --effect-result result.bin
-world-host app inspect --store STORE --run RUN
+world-host inspect-app application.world.wasm
+world-host install --store STORE --name APP --wasm application.world.wasm
+world-host run --store STORE --app APP --run RUN --initial-args args.bin
+world-host resume --store STORE --run RUN --effect-result result.bin
+world-host inspect --store STORE --run RUN
+world-host branch --store STORE --run RUN --branch alternate
+world-host export --store STORE --run RUN --out migration.json
+world-host import --store RECEIVER --in migration.json --run IMPORTED
 ```
 
 The generic host does not translate application-specific text into typed
 initial arguments. Applications or release packs supply those canonical bytes.
+`inspect-app` validates bounded WASM metadata and reads the manifest through a
+disposable isolated worker with a deadline. A nonterminating guest initializer
+cannot stall the operator process. `retry` and `replay` reject fresh result and
+handler options, reuse only a result already admitted to the effect journal,
+and therefore do not call a capability. Diagnostics expose identities,
+statuses, limits, and byte lengths only.
 
 ## Proof
 
@@ -52,8 +62,9 @@ bun run proof:application-v1
 bun run proof:application-v1-cli
 ```
 
-The real-artifact proofs use the sibling World one-effect application. They
-prove zero imports, bounded memory, fresh-instance continuation, byte-identical
-retry, result persistence before submission, Frame persistence before head
-advancement, competing branches, separate-process CLI continuation, and
-receiver-preflighted migration.
+The real-artifact proofs retain the World one-effect application and add the
+clean-room Research Digest application built from public release packages.
+They prove zero imports, bounded memory, fresh-instance continuation,
+byte-identical retry, result persistence before submission, Frame persistence
+before head advancement, zero-fresh-effect replay, competing branches,
+separate-process CLI continuation, and receiver-preflighted migration.

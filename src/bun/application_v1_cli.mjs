@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 
 import {
+  ApplicationWorker,
   DirectoryApplicationStoreV1,
   FrameStatus,
   RunControllerV1,
@@ -14,19 +15,86 @@ const MAXIMUM_MIGRATION_TRANSPORT_BYTES = 96 << 20;
 const MAXIMUM_MIGRATION_MANIFEST_BYTES = 1 << 20;
 const MAXIMUM_MIGRATION_FRAME_BYTES = 8 << 20;
 const MAXIMUM_MIGRATION_RESULT_BYTES = 2 << 20;
+const DEFAULT_INSPECTION_TIMEOUT_MS = 5_000;
+const MAXIMUM_INSPECTION_TIMEOUT_MS = 60_000;
 
 export async function runApplicationV1Cli(args, io, options = {}) {
   const command = args[0] ?? 'help';
+  if (command === 'inspect-app') return await inspectApplicationWasm(args.slice(1), io, options);
   if (command === 'install') return await installApplication(args.slice(1), io, options);
   if (command === 'run') return await runApplication(args.slice(1), io, options);
-  if (command === 'resume') return await resumeApplication(args.slice(1), io, options);
+  if (command === 'resume') return await resumeApplication(args.slice(1), io, options, 'app resume');
+  if (command === 'retry') return await replayRetainedApplication(args.slice(1), io, options, 'app retry');
+  if (command === 'replay') return await replayRetainedApplication(args.slice(1), io, options, 'app replay');
   if (command === 'inspect') return await inspectApplication(args.slice(1), io, options);
   if (command === 'fork') return await forkApplication(args.slice(1), io, options);
+  if (command === 'branch') return await forkApplication(args.slice(1), io, options, 'app branch');
   if (command === 'export') return await exportApplication(args.slice(1), io, options);
   if (command === 'import') return await importApplication(args.slice(1), io, options);
   if (command === 'list') return await listApplications(args.slice(1), io);
-  io.stdout.write('world-host commands: install, run, resume, inspect, fork, export, import, list\n');
+  io.stdout.write('world-host commands: inspect-app, install, run, resume, retry, replay, inspect, fork, branch, export, import, list\n');
   return command === 'help' || command === '--help' || command === '-h' ? 0 : 2;
+}
+
+async function inspectApplicationWasm(args, io, options) {
+  const wasmPath = valueAfter(args, '--wasm') ?? positional(args);
+  const wasmBytes = await readBoundedFile(wasmPath, MAXIMUM_APPLICATION_BYTES, 'application WASM');
+  const inspection = await inspectApplicationInWorker(wasmBytes, options);
+  writeJson(io, {
+    command: 'app inspect-app',
+    inspectionMode: 'isolated-runtime',
+    ...inspection,
+  });
+  return 0;
+}
+
+async function inspectApplicationInWorker(wasmBytes, options) {
+  const timeoutMs = options.inspectionTimeoutMs ?? DEFAULT_INSPECTION_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAXIMUM_INSPECTION_TIMEOUT_MS) {
+    fail('ERR_APPLICATION_V1_CLI_OPTION', 'invalid inspection timeout');
+  }
+  const worker = new Worker(new URL('./application_v1_inspection_worker.mjs', import.meta.url), {
+    type: 'module',
+  });
+  const transferableBytes = Uint8Array.from(wasmBytes);
+  return await new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (operation) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      worker.terminate();
+      operation();
+    };
+    const timer = setTimeout(() => finish(() => reject(inspectionError(
+      'ERR_APPLICATION_V1_WASM_INSPECTION_TIMEOUT',
+      `application inspection exceeded ${timeoutMs} ms`,
+    ))), timeoutMs);
+    worker.onmessage = ({ data }) => {
+      if (data?.ok === true) finish(() => resolve(data.inspection));
+      else finish(() => reject(inspectionError(
+        data?.error?.code ?? 'ERR_APPLICATION_V1_WASM_INSPECTION',
+        data?.error?.message ?? 'application inspection failed',
+        data?.error?.details ?? {},
+      )));
+    };
+    worker.onerror = (event) => finish(() => reject(inspectionError(
+      'ERR_APPLICATION_V1_WASM_INSPECTION',
+      event?.message ?? 'application inspection worker failed',
+    )));
+    worker.postMessage({
+      wasmBytes: transferableBytes.buffer,
+      workerOptions: options.workerOptions ?? {},
+    }, [transferableBytes.buffer]);
+  });
+}
+
+function inspectionError(code, message, details = {}) {
+  const error = new Error(message);
+  error.name = 'WorldApplicationHostError';
+  error.code = code;
+  error.details = details;
+  return error;
 }
 
 async function installApplication(args, io, options) {
@@ -68,7 +136,7 @@ async function runApplication(args, io, options) {
   return result.status === 'conflict' ? 3 : 0;
 }
 
-async function resumeApplication(args, io, options) {
+async function resumeApplication(args, io, options, command, { retainedOnly = false } = {}) {
   const store = new DirectoryApplicationStoreV1(requiredOption(args, '--store'));
   const runId = requiredOption(args, '--run');
   const branchId = valueAfter(args, '--branch') ?? 'main';
@@ -76,6 +144,25 @@ async function resumeApplication(args, io, options) {
   if (head === null) fail('ERR_APPLICATION_V1_BRANCH_NOT_FOUND');
   const application = await store.applications.get(head.applicationId);
   const controller = await loadController(store, application, options);
+  let retained = null;
+  let retainedHead;
+  if (retainedOnly) {
+    const current = await controller.readCurrentFrame(runId, branchId);
+    if (current.frame.status !== FrameStatus.needsEffect ||
+        current.frame.pendingEffect === null) {
+      fail('ERR_APPLICATION_V1_EFFECT_RESULT_REQUIRED');
+    }
+    retained = await store.effectJournal.readResult({
+      runId,
+      branchId,
+      parentFrameId: current.frame.frameId,
+      request: current.frame.pendingEffect,
+      limits: controller.manifest.limits,
+      publicationBindingId: current.head.journalBindingId,
+    });
+    if (retained === null) fail('ERR_APPLICATION_V1_EFFECT_RESULT_REQUIRED');
+    retainedHead = current.head;
+  }
   const effectResultPath = valueAfter(args, '--effect-result');
   const effectResult = effectResultPath === null
     ? null
@@ -86,7 +173,10 @@ async function resumeApplication(args, io, options) {
       );
   const result = await controller.advance(runId, branchId, {
     effectResult,
-    fuel: fuelFrom(args, controller.manifest),
+    fuel: retained === null
+      ? fuelFrom(args, controller.manifest)
+      : retainedFuelFrom(args, controller.manifest, retained.record),
+    expectedHead: retainedHead,
     effectMetadata: effectResult === null ? {} : {
       handlerId: valueAfter(args, '--handler') ?? 'operator-supplied',
       handlerConfigurationId: valueAfter(args, '--handler-configuration') ?? 'operator-supplied',
@@ -94,8 +184,23 @@ async function resumeApplication(args, io, options) {
       externalTransactionRef: valueAfter(args, '--external-transaction'),
     },
   });
-  writeJson(io, summarizeAdvance('app resume', runId, branchId, application, result));
+  writeJson(io, summarizeAdvance(command, runId, branchId, application, result));
   return result.status === 'conflict' ? 3 : 0;
+}
+
+async function replayRetainedApplication(args, io, options, command) {
+  for (const option of [
+    '--effect-result',
+    '--handler',
+    '--handler-configuration',
+    '--recovery-class',
+    '--external-transaction',
+  ]) {
+    if (args.includes(option)) {
+      fail('ERR_APPLICATION_V1_CLI_OPTION', `${command} does not admit ${option}`);
+    }
+  }
+  return await resumeApplication(args, io, options, command, { retainedOnly: true });
 }
 
 async function inspectApplication(args, io, options) {
@@ -118,7 +223,7 @@ async function inspectApplication(args, io, options) {
   return 0;
 }
 
-async function forkApplication(args, io, options) {
+async function forkApplication(args, io, options, command = 'app fork') {
   const store = new DirectoryApplicationStoreV1(requiredOption(args, '--store'));
   const runId = requiredOption(args, '--run');
   const sourceBranchId = valueAfter(args, '--source-branch') ?? 'main';
@@ -129,7 +234,7 @@ async function forkApplication(args, io, options) {
   const controller = await loadController(store, application, options);
   const head = await controller.forkBranch(runId, sourceBranchId, targetBranchId);
   writeJson(io, {
-    command: 'app fork',
+    command,
     runId,
     sourceBranchId,
     targetBranchId,
@@ -188,6 +293,7 @@ async function importApplication(args, io, options) {
     blockStore: store.blockStore,
     headStore: store.headStore,
     effectJournal: store.effectJournal,
+    workerFactory: applicationWorkerFactory(options),
     preflight: async () => ({ blockers: [] }),
   });
   writeJson(io, {
@@ -216,8 +322,13 @@ async function createController(store, wasmBytes, options) {
     blockStore: store.blockStore,
     headStore: store.headStore,
     effectJournal: store.effectJournal,
+    workerFactory: applicationWorkerFactory(options),
     preflight: options.preflight,
   });
+}
+
+function applicationWorkerFactory(options) {
+  return () => new ApplicationWorker(options.workerOptions);
 }
 
 async function loadController(store, application, options) {
@@ -326,6 +437,7 @@ function encodeMigrationTransport(bundle) {
     retainedEffectResultBase64: bundle.retainedEffectResultBytes === null
       ? null
       : Buffer.from(bundle.retainedEffectResultBytes).toString('base64'),
+    retainedEffectFuel: bundle.retainedEffectFuel,
   };
 }
 
@@ -336,7 +448,7 @@ function decodeMigrationTransport(bytes) {
   } catch {
     fail('ERR_APPLICATION_V1_MIGRATION_TRANSPORT');
   }
-  const fields = [
+  const requiredFields = [
     'applicationId',
     'applicationWasmBase64',
     'bundleVersion',
@@ -349,8 +461,13 @@ function decodeMigrationTransport(bytes) {
     'sourceHeadGeneration',
     'transportVersion',
   ];
+  const allowedFields = new Set([...requiredFields, 'retainedEffectFuel']);
+  const keys = value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.keys(value)
+    : [];
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
-      Object.keys(value).sort().join('\0') !== fields.sort().join('\0') ||
+      requiredFields.some((field) => !Object.prototype.hasOwnProperty.call(value, field)) ||
+      keys.some((field) => !allowedFields.has(field)) ||
       value.transportVersion !== 'world-host.application-migration-json-v1') {
     fail('ERR_APPLICATION_V1_MIGRATION_TRANSPORT');
   }
@@ -367,6 +484,9 @@ function decodeMigrationTransport(bytes) {
     retainedEffectResultBytes: value.retainedEffectResultBase64 === null
       ? null
       : decodeBase64(value.retainedEffectResultBase64, MAXIMUM_MIGRATION_RESULT_BYTES),
+    retainedEffectFuel: Object.prototype.hasOwnProperty.call(value, 'retainedEffectFuel')
+      ? value.retainedEffectFuel
+      : null,
   };
 }
 
@@ -394,8 +514,31 @@ function fuelFrom(args, manifest) {
   return fuel;
 }
 
+function retainedFuelFrom(args, manifest, record) {
+  const raw = valueAfter(args, '--fuel');
+  if (record.fuel === null) {
+    if (raw === null) fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL_REQUIRED');
+    const requestedFuel = parseUnsigned(raw, 'fuel');
+    if (requestedFuel === 0n || requestedFuel > manifest.limits.maximumFuelPerStep) {
+      fail('ERR_APPLICATION_V1_FUEL');
+    }
+    return requestedFuel;
+  }
+  const retainedFuel = parseUnsigned(record.fuel, 'retained fuel');
+  if (retainedFuel === 0n || retainedFuel > manifest.limits.maximumFuelPerStep) {
+    fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL');
+  }
+  if (raw === null) return retainedFuel;
+  const requestedFuel = parseUnsigned(raw, 'fuel');
+  if (requestedFuel !== retainedFuel) fail('ERR_APPLICATION_V1_RETAINED_FUEL_MISMATCH');
+  return retainedFuel;
+}
+
 function parseUnsigned(value, label) {
-  if (!/^(?:0|[1-9][0-9]*)$/.test(value)) fail('ERR_APPLICATION_V1_CLI_OPTION', label);
+  if (typeof value !== 'string' || value.length > 20 ||
+      !/^(?:0|[1-9][0-9]*)$/.test(value)) {
+    fail('ERR_APPLICATION_V1_CLI_OPTION', label);
+  }
   return BigInt(value);
 }
 

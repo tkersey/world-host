@@ -1,6 +1,7 @@
 # Agent Runtime v1 release-candidate pack
 
-This pack contains three application-specific World WASM modules, the minimal
+This pack contains four application-specific World WASM modules, including one
+clean-room Research Digest application, the minimal
 World Application Host v1 profile, receiver-side Effect protocol v1 handlers,
 standalone conformance, documentation, and exact SHA-256 checksums.
 

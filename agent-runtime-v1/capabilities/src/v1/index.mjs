@@ -26,3 +26,13 @@ export {
   humanApprovalBinding,
   localMemoryKvBinding
 } from "./standard_bindings.mjs";
+export {
+  RESEARCH_DIGEST_APPLICATION_ID,
+  RESEARCH_LOOKUP_INTERFACE_LABEL,
+  RESEARCH_REQUEST_SCHEMA_ID,
+  RESEARCH_RESPONSE_SCHEMA_ID,
+  decodeResearchRequest,
+  decodeResearchResponse,
+  encodeResearchResponse,
+  researchLookupFixtureBinding
+} from "./research_lookup_fixture.mjs";

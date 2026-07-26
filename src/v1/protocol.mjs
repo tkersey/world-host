@@ -46,6 +46,13 @@ export function decodeApplicationManifest(encoded, admission = DEFAULT_ADMISSION
   const limits = normalizeLimits(admission, 'admission limits');
   const bytes = boundedBytes(encoded, limits.maximumManifestBytes, 'ApplicationManifest');
   const reader = new Reader(bytes);
+  const manifest = readApplicationManifest(reader, limits);
+  reader.finish();
+  validateManifest(manifest, limits, bytes.length);
+  return freezeRecord(manifest, bytes);
+}
+
+function readApplicationManifest(reader, limits) {
   reader.magic('WRLDMNF1');
   reader.version();
   const manifest = {
@@ -80,14 +87,12 @@ export function decodeApplicationManifest(encoded, admission = DEFAULT_ADMISSION
   }
   manifest.limits = readLimits(reader);
   manifest.requiredHostCapabilities = reader.u64();
-  reader.finish();
 
   manifest.applicationName = decodeRequiredText(manifest.applicationNameBytes, 'application name');
   manifest.applicationVersion = decodeRequiredText(manifest.applicationVersionBytes, 'application version');
   manifest.boundaryPackageVersion = decodeRequiredText(manifest.boundaryPackageVersionBytes, 'Boundary package version');
   manifest.worldPackageVersion = decodeRequiredText(manifest.worldPackageVersionBytes, 'World package version');
-  validateManifest(manifest, limits, bytes.length);
-  return freezeRecord(manifest, bytes);
+  return manifest;
 }
 
 export function decodeEffectRequest(encoded, limits = DEFAULT_ADMISSION_LIMITS) {

@@ -8,7 +8,11 @@ import {
   decodeStepInput,
   validateEffectResultForRequest,
 } from './protocol.mjs';
-import { inspectApplicationWasm } from './wasm_module.mjs';
+import {
+  REQUIRED_APPLICATION_EXPORTS,
+  assertApplicationWasmSurface,
+  inspectApplicationWasm,
+} from './wasm_module.mjs';
 
 export const ApplicationWasmStatus = Object.freeze({
   success: 0,
@@ -24,21 +28,6 @@ export const ApplicationWasmStatus = Object.freeze({
 const producingStatuses = new Set([
   ApplicationWasmStatus.success,
   ApplicationWasmStatus.yieldedFuel,
-]);
-
-const requiredExports = Object.freeze([
-  'memory',
-  'world_abi_version',
-  'world_manifest_ptr',
-  'world_manifest_len',
-  'world_input_ptr',
-  'world_input_capacity',
-  'world_step',
-  'world_output_ptr',
-  'world_output_len',
-  'world_error_ptr',
-  'world_error_len',
-  'world_reset',
 ]);
 
 const textDecoder = new TextDecoder('utf-8', { fatal: false });
@@ -68,7 +57,7 @@ export class ApplicationWorker {
     this.#assertLive();
     if (this.instance !== null) fail('ERR_APPLICATION_V1_WORKER_ALREADY_INSTANTIATED');
     const bytes = Buffer.from(assertBytes(wasmBytes, 'wasmBytes'));
-    const inspection = inspectApplicationWasm(bytes);
+    const inspection = assertApplicationWasmSurface(inspectApplicationWasm(bytes));
     if (inspection.memory.maximumBytes > this.maximumMemoryBytes) {
       fail('ERR_APPLICATION_V1_HOST_MEMORY_LIMIT', `application declares ${inspection.memory.maximumBytes} bytes`);
     }
@@ -82,9 +71,8 @@ export class ApplicationWorker {
     const imports = WebAssembly.Module.imports(module);
     if (imports.length !== 0) fail('ERR_APPLICATION_V1_WASM_IMPORTS_FORBIDDEN');
     const declaredExports = new Map(WebAssembly.Module.exports(module).map((entry) => [entry.name, entry.kind]));
-    for (const name of requiredExports) {
-      const expectedKind = name === 'memory' ? 'memory' : 'function';
-      if (declaredExports.get(name) !== expectedKind) fail('ERR_APPLICATION_V1_WASM_EXPORT_MISSING', name);
+    for (const { name, kind } of REQUIRED_APPLICATION_EXPORTS) {
+      if (declaredExports.get(name) !== kind) fail('ERR_APPLICATION_V1_WASM_EXPORT_MISSING', name);
     }
 
     let instance;

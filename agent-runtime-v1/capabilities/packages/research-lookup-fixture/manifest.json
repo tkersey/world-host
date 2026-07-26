@@ -1,0 +1,77 @@
+{
+  "artifacts": [
+    {
+      "path": "adapter.mjs",
+      "role": "adapter"
+    },
+    {
+      "path": "corpus.json",
+      "role": "conformance-corpus"
+    }
+  ],
+  "authorityLabels": [
+    "research.fixture"
+  ],
+  "checksums": {
+    "adapter.mjs": "d5c16fb8c169b445302ae60f7aa6ec138bd1bd5d6d3436324f16527af4702afc",
+    "corpus.json": "93b00d2b93f035f03bf8ed645a4fc82a60029d2e7f34a05ef0accf315c8944a5"
+  },
+  "conformanceCorpusFingerprint": "02e725eadf1e428d78b4f76bc21f8081574cc0c3a6a67cdbaeb10296f1d27155",
+  "driverAbiVersion": "capability-driver-v1",
+  "driverId": "research-lookup-fixture",
+  "dryRunSupport": true,
+  "effectProtocolV1": {
+    "interfaces": [
+      {
+        "applicationIds": [
+          "88e5a053c2a16fe9093abe4aa9f0c34d3e56abc9d1080aff5eb346687e72be85"
+        ],
+        "authorityRequirements": "128",
+        "interfaceId": "56b70f28567ba9275cb5533652d83fa7bc05c8e37c5b61c94c85763dbbf2de58",
+        "interfaceLabel": "research.lookup.v1",
+        "payloadSchemaId": "24eb8230d48242130660a1229ad28857eaad2d85315dfcee6d41f21badf3a03a",
+        "resultSchemaId": "79828538ca9f2e3899120ce1ce96314bce094ab585c92b127d63f94ac8eb2172"
+      }
+    ]
+  },
+  "idempotencySupport": "full-world-key-bound",
+  "maximumRequestBytes": 65536,
+  "maximumResponseBytes": 262144,
+  "metadata": {
+    "mode": "deterministic-research-fixture",
+    "network": false,
+    "worldApplicationRelease": "v1.0.0-rc.2"
+  },
+  "packageName": "@tkersey/world-capabilities/research-lookup-fixture",
+  "packageVersion": "1.0.0-rc.4",
+  "packFingerprint": "ff4cecaf449db1bf2032dd22e1b0dcca94c02091ba547719fe36089dd61c205e",
+  "packFormatVersion": "foundry-effect-pack-v1",
+  "recoverSupport": true,
+  "recoveryClass": "pure",
+  "replaySupport": true,
+  "secretRequirements": [],
+  "shadowSupport": true,
+  "supportedActuationClasses": [
+    "research"
+  ],
+  "supportedActuatorRefs": [
+    "actuator.research-lookup-fixture.v1"
+  ],
+  "supportedApplianceAbiVersions": [
+    "world-application-abi-v1"
+  ],
+  "supportedDescriptorFingerprints": [
+    "desc.research-lookup-fixture.v1"
+  ],
+  "supportedResponseStatuses": [
+    "ok",
+    "rejected",
+    "failed"
+  ],
+  "supportedTurnClosureVersions": [
+    "world-frame-v1"
+  ],
+  "supportedWorldProtocolVersions": [
+    "world-effect-v1"
+  ]
+}

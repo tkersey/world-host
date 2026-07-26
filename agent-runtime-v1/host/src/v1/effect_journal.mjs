@@ -10,6 +10,7 @@ import {
 export class EffectJournalV1 {
   async persistResult() { fail('ERR_APPLICATION_V1_ABSTRACT_EFFECT_JOURNAL'); }
   async readResult() { fail('ERR_APPLICATION_V1_ABSTRACT_EFFECT_JOURNAL'); }
+  async copyResult() { fail('ERR_APPLICATION_V1_ABSTRACT_EFFECT_JOURNAL'); }
 }
 
 export class MemoryEffectJournalV1 extends EffectJournalV1 {
@@ -31,12 +32,24 @@ export class MemoryEffectJournalV1 extends EffectJournalV1 {
     handlerConfigurationId = 'operator-supplied',
     recoveryClass = 'replayable',
     externalTransactionRef = null,
+    fuel = null,
+    publicationBindingId = null,
   }) {
     const admittedResult = admitEffectJournalResult(request, result, limits);
-    const key = effectJournalKey(runId, branchId, parentFrameId, request.requestId);
+    const admittedFuel = admitJournalFuel(fuel ?? limits.maximumFuelPerStep, limits);
+    const key = effectJournalKey(
+      runId,
+      branchId,
+      parentFrameId,
+      request.requestId,
+      publicationBindingId,
+    );
     const previous = this.records.get(key);
     if (previous !== undefined) {
       if (previous.resultId !== hex(admittedResult.resultId)) fail('ERR_APPLICATION_V1_EFFECT_RESULT_CONFLICT');
+      if (previous.fuel !== null && previous.fuel !== admittedFuel) {
+        fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL_CONFLICT');
+      }
       return cloneRecord(previous);
     }
 
@@ -52,15 +65,77 @@ export class MemoryEffectJournalV1 extends EffectJournalV1 {
       handlerConfigurationId,
       recoveryClass,
       externalTransactionRef,
+      fuel: admittedFuel,
+      publicationBindingId,
     });
     this.records.set(key, record);
     return cloneRecord(record);
   }
 
-  async readResult({ runId, branchId, parentFrameId, request, limits }) {
-    const record = this.records.get(effectJournalKey(runId, branchId, parentFrameId, request.requestId));
+  async readResult({
+    runId,
+    branchId,
+    parentFrameId,
+    request,
+    limits,
+    publicationBindingId = null,
+  }) {
+    const record = this.records.get(effectJournalKey(
+      runId,
+      branchId,
+      parentFrameId,
+      request.requestId,
+      publicationBindingId,
+    ));
     if (record === undefined) return null;
-    return await readEffectJournalResult({ record, blockStore: this.blockStore, request, limits });
+    return await readEffectJournalResult({
+      record,
+      blockStore: this.blockStore,
+      request,
+      limits,
+      publicationBindingId,
+    });
+  }
+
+  async copyResult({
+    runId,
+    sourceBranchId,
+    targetBranchId,
+    parentFrameId,
+    request,
+    limits,
+    sourcePublicationBindingId = null,
+    targetPublicationBindingId,
+  }) {
+    const retained = await this.readResult({
+      runId,
+      branchId: sourceBranchId,
+      parentFrameId,
+      request,
+      limits,
+      publicationBindingId: sourcePublicationBindingId,
+    });
+    if (retained === null) return null;
+    const copied = copyEffectJournalRecord(
+      retained.record,
+      runId,
+      targetBranchId,
+      targetPublicationBindingId,
+    );
+    const key = effectJournalKey(
+      runId,
+      targetBranchId,
+      parentFrameId,
+      request.requestId,
+      targetPublicationBindingId,
+    );
+    const previous = this.records.get(key);
+    if (previous !== undefined) {
+      assertSameEffectJournalRecord(previous, copied);
+      return cloneRecord(previous);
+    }
+    this.records.set(key, copied);
+    return cloneRecord(copied);
   }
 }
 
@@ -85,6 +160,8 @@ export function createEffectJournalRecord({
   handlerConfigurationId,
   recoveryClass,
   externalTransactionRef,
+  fuel,
+  publicationBindingId = null,
 }) {
   return assertEffectJournalRecord({
     journalVersion: 'world-host.effect-journal-v1',
@@ -98,6 +175,8 @@ export function createEffectJournalRecord({
     handlerId,
     handlerConfigurationId,
     recoveryClass,
+    fuel: requiredFuel(fuel),
+    publicationBindingId: optionalDigestHex(publicationBindingId, 'publicationBindingId'),
     state: 'resolved',
     resultId: hex(result.resultId),
     resultRef,
@@ -121,6 +200,8 @@ export function assertEffectJournalRecord(record) {
     handlerId: requiredText(record.handlerId, 'handlerId'),
     handlerConfigurationId: requiredText(record.handlerConfigurationId, 'handlerConfigurationId'),
     recoveryClass: requiredText(record.recoveryClass, 'recoveryClass'),
+    fuel: optionalLegacyFuel(record.fuel),
+    publicationBindingId: optionalDigestHex(record.publicationBindingId, 'publicationBindingId'),
     state: record.state,
     resultId: digestHex(record.resultId, 'resultId'),
     resultRef: assertResultRef(record.resultRef),
@@ -128,8 +209,19 @@ export function assertEffectJournalRecord(record) {
   });
 }
 
-export async function readEffectJournalResult({ record, blockStore, request, limits }) {
+export async function readEffectJournalResult({
+  record,
+  blockStore,
+  request,
+  limits,
+  publicationBindingId = null,
+}) {
   const admitted = assertEffectJournalRecord(record);
+  if (admitted.fuel !== null) admitJournalFuel(admitted.fuel, limits);
+  if (admitted.publicationBindingId !==
+      optionalDigestHex(publicationBindingId, 'publicationBindingId')) {
+    fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_MISMATCH');
+  }
   if (admitted.requestId !== hex(request.requestId) || admitted.idempotencyKey !== hex(request.idempotencyKey) ||
       admitted.requestArtifactChecksum !== requestArtifactChecksum(request)) {
     fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_MISMATCH');
@@ -141,13 +233,69 @@ export async function readEffectJournalResult({ record, blockStore, request, lim
   return Object.freeze({ record: cloneRecord(admitted), result });
 }
 
-export function effectJournalKey(runId, branchId, parentFrameId, requestId) {
-  return [
+export function admitJournalFuel(value, limits) {
+  let fuel;
+  if (typeof value === 'bigint') {
+    fuel = value;
+  } else if (typeof value === 'number' && Number.isSafeInteger(value)) {
+    fuel = BigInt(value);
+  } else if (typeof value === 'string' && /^[1-9][0-9]*$/.test(value) && value.length <= 20) {
+    fuel = BigInt(value);
+  } else {
+    fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL');
+  }
+  if (fuel <= 0n || fuel > limits.maximumFuelPerStep) {
+    fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL');
+  }
+  return fuel.toString();
+}
+
+function requiredFuel(value) {
+  if (typeof value !== 'string' || !/^[1-9][0-9]*$/.test(value) || value.length > 20) {
+    fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL');
+  }
+  return value;
+}
+
+function optionalLegacyFuel(value) {
+  if (value === null || value === undefined) return null;
+  return requiredFuel(value);
+}
+
+export function copyEffectJournalRecord(record, runId, branchId, publicationBindingId) {
+  return assertEffectJournalRecord({
+    ...assertEffectJournalRecord(record),
+    runId,
+    branchId,
+    publicationBindingId,
+  });
+}
+
+export function assertSameEffectJournalRecord(previous, copied) {
+  const admitted = assertEffectJournalRecord(previous);
+  if (admitted.resultId !== copied.resultId) fail('ERR_APPLICATION_V1_EFFECT_RESULT_CONFLICT');
+  if (admitted.fuel !== copied.fuel) fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL_CONFLICT');
+  if (JSON.stringify(admitted) !== JSON.stringify(copied)) {
+    fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_RECORD');
+  }
+}
+
+export function effectJournalKey(
+  runId,
+  branchId,
+  parentFrameId,
+  requestId,
+  publicationBindingId = null,
+) {
+  const parts = [
     requiredText(runId, 'runId'),
     requiredText(branchId, 'branchId'),
     digestHex(parentFrameId, 'parentFrameId'),
     digestHex(requestId, 'requestId'),
-  ].map((part) => `${part.length}:${part}`).join('');
+  ];
+  const admittedBinding = optionalDigestHex(publicationBindingId, 'publicationBindingId');
+  if (admittedBinding !== null) parts.push(admittedBinding);
+  return parts.map((part) => `${part.length}:${part}`).join('');
 }
 
 function requestArtifactChecksum(request) {
@@ -185,6 +333,11 @@ function digestHex(value, label) {
   if (typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)) return value;
   if (value instanceof Uint8Array && value.length === 32) return hex(value);
   fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_DIGEST', label);
+}
+
+function optionalDigestHex(value, label) {
+  if (value === null || value === undefined) return null;
+  return digestHex(value, label);
 }
 
 function hex(value) {

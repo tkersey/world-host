@@ -1,10 +1,13 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 import {
+  ApplicationWorker,
   EffectStatus,
   FrameStatus,
+  assertApplicationWasmSurface,
   createEffectResult,
   decodeApplicationManifest,
   decodeEffectRequest,
@@ -156,7 +159,62 @@ describe('World application WASM inspection', () => {
     });
     assert.throws(() => inspectApplicationWasm(unbounded), { code: 'ERR_APPLICATION_V1_WASM_MEMORY_LIMITS' });
   });
+
+  it('validates the declared ABI surface without guest execution', () => {
+    const bytes = readFileSync('agent-runtime-v1/applications/research-digest-agent.world.wasm');
+    const inspection = assertApplicationWasmSurface(inspectApplicationWasm(bytes));
+
+    assert.equal(inspection.importCount, 0);
+    assert.equal(inspection.exports.some((entry) =>
+      entry.name === 'world_manifest_ptr' && entry.kind === 'function'), true);
+  });
+
+  it('rejects invalid section ordering during static inspection', () => {
+    const bytes = readFileSync('agent-runtime-v1/applications/research-digest-agent.world.wasm');
+    const outOfOrderTagSection = Buffer.concat([bytes, Buffer.from([13, 1, 0])]);
+
+    assert.equal(WebAssembly.validate(outOfOrderTagSection), false);
+    assert.throws(
+      () => inspectApplicationWasm(outOfOrderTagSection),
+      { code: 'ERR_APPLICATION_V1_WASM_VALIDATE' },
+    );
+  });
+
+  it('uses the runtime-exported manifest when unrelated canonical manifests exist', async () => {
+    const bytes = readFileSync('agent-runtime-v1/applications/research-digest-agent.world.wasm');
+    const customPayload = Buffer.concat([
+      Buffer.from([0]),
+      MANIFEST,
+    ]);
+    const withUnrelatedManifest = Buffer.concat([
+      bytes,
+      Buffer.from([0]),
+      varUint32(customPayload.length),
+      customPayload,
+    ]);
+
+    assert.equal(WebAssembly.validate(withUnrelatedManifest), true);
+    const worker = new ApplicationWorker();
+    try {
+      await worker.instantiate(withUnrelatedManifest);
+      assert.equal(worker.readManifest().applicationName, 'research-digest-agent');
+    } finally {
+      worker.dispose();
+    }
+  });
 });
+
+function varUint32(value) {
+  const bytes = [];
+  let remaining = value >>> 0;
+  do {
+    let byte = remaining & 0x7f;
+    remaining >>>= 7;
+    if (remaining !== 0) byte |= 0x80;
+    bytes.push(byte);
+  } while (remaining !== 0);
+  return Buffer.from(bytes);
+}
 
 function fromBase64(value) {
   return Buffer.from(value, 'base64');

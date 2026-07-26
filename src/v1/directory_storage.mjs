@@ -5,7 +5,10 @@ import path from 'node:path';
 import {
   EffectJournalV1,
   admitEffectJournalResult,
+  admitJournalFuel,
+  assertSameEffectJournalRecord,
   cloneEffectJournalRecord,
+  copyEffectJournalRecord,
   createEffectJournalRecord,
   effectJournalKey,
   readEffectJournalResult,
@@ -173,13 +176,31 @@ export class DirectoryEffectJournalV1 extends EffectJournalV1 {
     handlerConfigurationId = 'operator-supplied',
     recoveryClass = 'replayable',
     externalTransactionRef = null,
+    fuel = null,
+    publicationBindingId = null,
   }) {
     const admittedResult = admitEffectJournalResult(request, result, limits);
-    const file = this.recordPath(runId, branchId, parentFrameId, request.requestId);
+    const admittedFuel = admitJournalFuel(fuel ?? limits.maximumFuelPerStep, limits);
+    const file = this.recordPath(
+      runId,
+      branchId,
+      parentFrameId,
+      request.requestId,
+      publicationBindingId,
+    );
     const previous = await readJsonIfExists(file);
     if (previous !== null) {
-      const retained = await readEffectJournalResult({ record: previous, blockStore: this.blockStore, request, limits });
+      const retained = await readEffectJournalResult({
+        record: previous,
+        blockStore: this.blockStore,
+        request,
+        limits,
+        publicationBindingId,
+      });
       if (!sameBytes(retained.result.resultId, admittedResult.resultId)) fail('ERR_APPLICATION_V1_EFFECT_RESULT_CONFLICT');
+      if (retained.record.fuel !== null && retained.record.fuel !== admittedFuel) {
+        fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL_CONFLICT');
+      }
       return cloneEffectJournalRecord(retained.record);
     }
 
@@ -195,6 +216,8 @@ export class DirectoryEffectJournalV1 extends EffectJournalV1 {
       handlerConfigurationId,
       recoveryClass,
       externalTransactionRef,
+      fuel: admittedFuel,
+      publicationBindingId,
     });
     if (!await writeJsonNew(file, record)) {
       const winner = await readEffectJournalResult({
@@ -202,21 +225,95 @@ export class DirectoryEffectJournalV1 extends EffectJournalV1 {
         blockStore: this.blockStore,
         request,
         limits,
+        publicationBindingId,
       });
       if (!sameBytes(winner.result.resultId, admittedResult.resultId)) fail('ERR_APPLICATION_V1_EFFECT_RESULT_CONFLICT');
+      if (winner.record.fuel !== null && winner.record.fuel !== admittedFuel) {
+        fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL_CONFLICT');
+      }
       return cloneEffectJournalRecord(winner.record);
     }
     return cloneEffectJournalRecord(record);
   }
 
-  async readResult({ runId, branchId, parentFrameId, request, limits }) {
-    const record = await readJsonIfExists(this.recordPath(runId, branchId, parentFrameId, request.requestId));
+  async readResult({
+    runId,
+    branchId,
+    parentFrameId,
+    request,
+    limits,
+    publicationBindingId = null,
+  }) {
+    const record = await readJsonIfExists(this.recordPath(
+      runId,
+      branchId,
+      parentFrameId,
+      request.requestId,
+      publicationBindingId,
+    ));
     if (record === null) return null;
-    return await readEffectJournalResult({ record, blockStore: this.blockStore, request, limits });
+    return await readEffectJournalResult({
+      record,
+      blockStore: this.blockStore,
+      request,
+      limits,
+      publicationBindingId,
+    });
   }
 
-  recordPath(runId, branchId, parentFrameId, requestId) {
-    const key = effectJournalKey(runId, branchId, parentFrameId, requestId);
+  async copyResult({
+    runId,
+    sourceBranchId,
+    targetBranchId,
+    parentFrameId,
+    request,
+    limits,
+    sourcePublicationBindingId = null,
+    targetPublicationBindingId,
+  }) {
+    const retained = await this.readResult({
+      runId,
+      branchId: sourceBranchId,
+      parentFrameId,
+      request,
+      limits,
+      publicationBindingId: sourcePublicationBindingId,
+    });
+    if (retained === null) return null;
+    const copied = copyEffectJournalRecord(
+      retained.record,
+      runId,
+      targetBranchId,
+      targetPublicationBindingId,
+    );
+    const file = this.recordPath(
+      runId,
+      targetBranchId,
+      parentFrameId,
+      request.requestId,
+      targetPublicationBindingId,
+    );
+    const previous = await readJsonIfExists(file);
+    if (previous !== null) {
+      assertSameEffectJournalRecord(previous, copied);
+      return cloneEffectJournalRecord(previous);
+    }
+    if (!await writeJsonNew(file, copied)) {
+      const winner = await readJson(file);
+      assertSameEffectJournalRecord(winner, copied);
+      return cloneEffectJournalRecord(winner);
+    }
+    return cloneEffectJournalRecord(copied);
+  }
+
+  recordPath(runId, branchId, parentFrameId, requestId, publicationBindingId = null) {
+    const key = effectJournalKey(
+      runId,
+      branchId,
+      parentFrameId,
+      requestId,
+      publicationBindingId,
+    );
     const checksum = sha256(Buffer.from(key, 'utf8'));
     return path.join(this.root, 'effects', checksum.slice(0, 2), `${checksum}.json`);
   }
@@ -357,7 +454,8 @@ function sameHead(left, right) {
     left.frameRef.algorithm === right.frameRef.algorithm &&
     left.frameRef.checksum === right.frameRef.checksum &&
     left.frameRef.byteLength === right.frameRef.byteLength &&
-    left.status === right.status;
+    left.status === right.status &&
+    left.journalBindingId === right.journalBindingId;
 }
 
 async function writeBytesTemporary(file, bytes) {
