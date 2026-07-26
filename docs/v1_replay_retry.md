@@ -41,4 +41,6 @@ Its replay branch consumes the retained result with zero fresh effects.
 The `retry` and `replay` operator commands reject `--effect-result` and all
 fresh handler metadata; only `resume` can admit a new external result. They
 reuse the recorded fuel automatically and reject an explicit `--fuel` that
-differs from that retained budget.
+differs from that retained budget. They also bind retained-result validation to
+the exact branch head they attempt to advance, so concurrent retry processes
+cannot apply one validation to a later head.

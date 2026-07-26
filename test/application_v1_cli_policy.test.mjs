@@ -134,12 +134,22 @@ describe('World application v1 CLI admission policy', () => {
         /lost child/,
       );
       await controller.forkBranch('lost-low-fuel', 'main', 'programmatic');
+      const programmaticHead = await store.headStore.readHead(
+        'lost-low-fuel',
+        'programmatic',
+      );
       await assert.rejects(
         () => controller.advance('lost-low-fuel', 'programmatic', { fuel: 2n }),
         { code: 'ERR_APPLICATION_V1_RETAINED_FUEL_MISMATCH' },
       );
       const programmatic = await controller.advance('lost-low-fuel', 'programmatic');
       assert.equal(programmatic.frame.status, FrameStatus.yieldedFuel);
+      await assert.rejects(
+        () => controller.advance('lost-low-fuel', 'programmatic', {
+          expectedHead: programmaticHead,
+        }),
+        { code: 'ERR_APPLICATION_V1_HEAD_CONFLICT' },
+      );
       await controller.forkBranch('lost-low-fuel', 'main', 'legacy');
       const legacyHead = await store.headStore.readHead('lost-low-fuel', 'legacy');
       const legacyRecordPath = store.effectJournal.recordPath(

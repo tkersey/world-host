@@ -145,6 +145,7 @@ async function resumeApplication(args, io, options, command, { retainedOnly = fa
   const application = await store.applications.get(head.applicationId);
   const controller = await loadController(store, application, options);
   let retained = null;
+  let retainedHead;
   if (retainedOnly) {
     const current = await controller.readCurrentFrame(runId, branchId);
     if (current.frame.status !== FrameStatus.needsEffect ||
@@ -160,6 +161,7 @@ async function resumeApplication(args, io, options, command, { retainedOnly = fa
       publicationBindingId: current.head.journalBindingId,
     });
     if (retained === null) fail('ERR_APPLICATION_V1_EFFECT_RESULT_REQUIRED');
+    retainedHead = current.head;
   }
   const effectResultPath = valueAfter(args, '--effect-result');
   const effectResult = effectResultPath === null
@@ -174,6 +176,7 @@ async function resumeApplication(args, io, options, command, { retainedOnly = fa
     fuel: retained === null
       ? fuelFrom(args, controller.manifest)
       : retainedFuelFrom(args, controller.manifest, retained.record),
+    expectedHead: retainedHead,
     effectMetadata: effectResult === null ? {} : {
       handlerId: valueAfter(args, '--handler') ?? 'operator-supplied',
       handlerConfigurationId: valueAfter(args, '--handler-configuration') ?? 'operator-supplied',
