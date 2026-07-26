@@ -16,7 +16,9 @@
 The journal rejects a different result or fuel budget for the same branch-local
 request key. Reusing the same result and fuel returns the existing record. A
 fork of a parked branch copies an already retained result, metadata, and fuel
-into the target branch before replay.
+into a candidate journal namespace before publishing the target head. The
+winning head binds that namespace, so a losing concurrent fork cannot expose
+its copied result through the winning branch.
 
 If the host stops after result persistence, the next controller reads that result and submits it without invoking a capability again. If the host stops after child-Frame persistence but before head advancement, the same parent Frame, semantic EffectResult, and fuel reproduce the same child Frame bytes, which can then be published once.
 

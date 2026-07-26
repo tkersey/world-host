@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { ApplicationWorker } from './application_worker.mjs';
 import { assertBytes, fail } from './errors.mjs';
 import { MemoryEffectJournalV1, admitJournalFuel } from './effect_journal.mjs';
@@ -200,6 +202,7 @@ export class RunControllerV1 {
           recoveryClass: effectMetadata.recoveryClass,
           externalTransactionRef: effectMetadata.externalTransactionRef,
           fuel: stepFuel,
+          publicationBindingId: head.journalBindingId,
         });
         await this.#fault('after-result-persistence', { runId, branchId, head, parent, persisted });
       } else {
@@ -209,6 +212,7 @@ export class RunControllerV1 {
           parentFrameId: parent.frameId,
           request,
           limits: this.#manifest.limits,
+          publicationBindingId: head.journalBindingId,
         });
         if (retained === null) fail('ERR_APPLICATION_V1_EFFECT_RESULT_REQUIRED');
         admittedResult = retained.result;
@@ -246,8 +250,26 @@ export class RunControllerV1 {
     if (current === null) fail('ERR_APPLICATION_V1_BRANCH_NOT_FOUND');
     const source = current.head;
     const sourceFrame = current.frame;
-    let copied = null;
+    let retained = null;
     if (sourceFrame.status === FrameStatus.needsEffect) {
+      retained = await this.effectJournal.readResult({
+        runId,
+        branchId: sourceBranchId,
+        parentFrameId: sourceFrame.frameId,
+        request: sourceFrame.pendingEffect,
+        limits: this.#manifest.limits,
+        publicationBindingId: source.journalBindingId,
+      });
+    }
+    const journalBindingId = forkJournalBindingId({
+      runId,
+      sourceBranchId,
+      targetBranchId,
+      source,
+      retained,
+    });
+    let copied = null;
+    if (retained !== null) {
       copied = await this.effectJournal.copyResult({
         runId,
         sourceBranchId,
@@ -255,19 +277,20 @@ export class RunControllerV1 {
         parentFrameId: sourceFrame.frameId,
         request: sourceFrame.pendingEffect,
         limits: this.#manifest.limits,
+        sourcePublicationBindingId: source.journalBindingId,
+        targetPublicationBindingId: journalBindingId,
       });
-      if (copied !== null) {
-        await this.#fault('after-fork-result-persistence', {
-          runId,
-          sourceBranchId,
-          targetBranchId,
-          source,
-          sourceFrame,
-          copied,
-        });
-      }
+      if (copied === null) fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_MISMATCH');
+      await this.#fault('after-fork-result-persistence', {
+        runId,
+        sourceBranchId,
+        targetBranchId,
+        source,
+        sourceFrame,
+        copied,
+      });
     }
-    const target = makeHead({ ...source, generation: 0 });
+    const target = makeHead({ ...source, generation: 0, journalBindingId });
     const result = await this.headStore.advanceHeadIfCurrent(runId, targetBranchId, null, target);
     if (!result.advanced) fail('ERR_APPLICATION_V1_BRANCH_EXISTS');
     return result.current;
@@ -285,8 +308,15 @@ export class RunControllerV1 {
         parentFrameId: current.frame.frameId,
         request: current.frame.pendingEffect,
         limits: this.#manifest.limits,
+        publicationBindingId: current.head.journalBindingId,
       });
       if (retained !== null) {
+        if (retained.record.fuel === null) {
+          fail(
+            'ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL_REQUIRED',
+            'legacy retained result requires explicit retry fuel before export',
+          );
+        }
         retainedEffectResultBytes = Buffer.from(retained.result.encodedBytes);
         retainedEffectFuel = retained.record.fuel;
       }
@@ -336,6 +366,7 @@ export class RunControllerV1 {
       frameId: hex(output.frame.frameId),
       frameRef,
       status: output.frame.status,
+      journalBindingId: expectedHead?.journalBindingId ?? null,
     });
     await this.#fault('after-frame-persistence', { runId, branchId, expectedHead, output, frameRef, requestRef, nextHead });
     const advanced = await this.headStore.advanceHeadIfCurrent(runId, branchId, expectedHead, nextHead);
@@ -410,4 +441,29 @@ function retainedFuel(value) {
     fail('ERR_APPLICATION_V1_MIGRATION_RESULT');
   }
   return value;
+}
+
+function forkJournalBindingId({
+  runId,
+  sourceBranchId,
+  targetBranchId,
+  source,
+  retained,
+}) {
+  const snapshot = {
+    runId,
+    sourceBranchId,
+    targetBranchId,
+    sourceGeneration: source.generation,
+    sourceApplicationId: source.applicationId,
+    sourceFrameId: source.frameId,
+    sourceJournalBindingId: source.journalBindingId,
+    retainedResultId: retained?.record.resultId ?? null,
+    retainedFuel: retained?.record.fuel ?? null,
+  };
+  return createHash('sha256')
+    .update('world-host.application-v1.fork-journal-binding.v1')
+    .update(Buffer.from([0]))
+    .update(JSON.stringify(snapshot))
+    .digest('hex');
 }

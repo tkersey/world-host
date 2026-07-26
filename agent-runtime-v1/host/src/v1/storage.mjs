@@ -88,8 +88,15 @@ export function assertBlockRef(ref) {
   return Object.freeze({ algorithm: 'sha256', checksum: ref.checksum, byteLength: ref.byteLength });
 }
 
-export function makeHead({ generation, applicationId, frameId, frameRef, status }) {
-  return assertHead({ generation, applicationId, frameId, frameRef, status });
+export function makeHead({
+  generation,
+  applicationId,
+  frameId,
+  frameRef,
+  status,
+  journalBindingId = null,
+}) {
+  return assertHead({ generation, applicationId, frameId, frameRef, status, journalBindingId });
 }
 
 function assertHead(head) {
@@ -104,6 +111,7 @@ function assertHead(head) {
     frameId: head.frameId,
     frameRef: assertBlockRef(head.frameRef),
     status: head.status,
+    journalBindingId: optionalDigest(head.journalBindingId, 'journalBindingId'),
   });
 }
 
@@ -119,7 +127,14 @@ function sameHead(left, right) {
     left.frameId === admittedRight.frameId &&
     left.frameRef.checksum === admittedRight.frameRef.checksum &&
     left.frameRef.byteLength === admittedRight.frameRef.byteLength &&
-    left.status === admittedRight.status;
+    left.status === admittedRight.status &&
+    left.journalBindingId === admittedRight.journalBindingId;
+}
+
+function optionalDigest(value, label) {
+  if (value === null || value === undefined) return null;
+  if (!/^[0-9a-f]{64}$/.test(value)) fail('ERR_APPLICATION_V1_HEAD', label);
+  return value;
 }
 
 function headKey(runId, branchId) {
