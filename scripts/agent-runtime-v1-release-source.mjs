@@ -13,7 +13,7 @@ export const WORLD_HOST_RELEASE_SOURCE_PATHS = Object.freeze([
   'src/v1',
 ]);
 
-const WORLD_HOST_RUNTIME_SOURCE_PATHS = Object.freeze([
+export const WORLD_HOST_RUNTIME_SOURCE_PATHS = Object.freeze([
   'bin/world-host-v1.mjs',
   'src/bun/application_v1_cli.mjs',
   'src/bun/application_v1_inspection_worker.mjs',
@@ -29,12 +29,15 @@ export async function worldHostReleaseSourceEvidence(repository) {
 }
 
 export async function resolveWorldHostReleaseSourceCommit(repository) {
+  // Packaging sources must be clean, but only executable sources own the
+  // embedded runtime identity. A squash merge may rewrite packaging commits
+  // after the pack is built without changing the shipped host bytes.
   const output = await gitBytes(repository, [
     'log',
     '-1',
     '--format=%H',
     '--',
-    ...WORLD_HOST_RELEASE_SOURCE_PATHS,
+    ...WORLD_HOST_RUNTIME_SOURCE_PATHS,
   ]);
   const commit = new TextDecoder().decode(output).trim();
   assert(/^[0-9a-f]{40}$/.test(commit), 'invalid reviewed world-host source commit');

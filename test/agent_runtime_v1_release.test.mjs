@@ -2,10 +2,13 @@ import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
+
+import { resolveWorldHostReleaseSourceCommit } from
+  '../scripts/agent-runtime-v1-release-source.mjs';
 
 describe('Agent Runtime v1 pack release identities', () => {
   it('builds and validates development packs without a Boundary checkout', async () => {
@@ -52,6 +55,30 @@ describe('Agent Runtime v1 pack release identities', () => {
       assert.match(built.stderr, /untracked-release-source\.mjs/);
     } finally {
       await rm(untracked, { force: true });
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps packaging-only commits outside executable source identity', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agent-runtime-v1-source-identity-'));
+    try {
+      await mkdir(path.join(root, 'src/v1'), { recursive: true });
+      await mkdir(path.join(root, 'scripts'), { recursive: true });
+      await writeFile(path.join(root, 'src/v1/index.mjs'), 'export const runtime = true;\n');
+      await writeFile(path.join(root, 'scripts/build-agent-runtime-v1.mjs'), 'export const pack = 1;\n');
+      git(root, ['init']);
+      git(root, ['config', 'user.email', 'world-host-test@example.invalid']);
+      git(root, ['config', 'user.name', 'world-host test']);
+      git(root, ['add', '.']);
+      git(root, ['commit', '-m', 'Add runtime']);
+      const runtimeCommit = git(root, ['rev-parse', 'HEAD']).stdout.trim();
+
+      await writeFile(path.join(root, 'scripts/build-agent-runtime-v1.mjs'), 'export const pack = 2;\n');
+      git(root, ['add', '.']);
+      git(root, ['commit', '-m', 'Change packaging']);
+
+      assert.equal(await resolveWorldHostReleaseSourceCommit(root), runtimeCommit);
+    } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -206,6 +233,12 @@ function reviewedCapabilityFiles() {
         '7c087eeb01df5f8fed3dab1912a8cf14155c0dc23a88ba765c015c94bfbcb2eb',
     },
   };
+}
+
+function git(cwd, args) {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  return result;
 }
 
 function receiptFingerprint(receipt) {
