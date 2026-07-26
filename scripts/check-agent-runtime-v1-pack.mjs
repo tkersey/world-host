@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const MAXIMUM_FILE_BYTES = 64 << 20;
 const REVIEWED_WORLD_HOST_GIT_COMMIT = '__WORLD_HOST_GIT_COMMIT__';
+const REVIEWED_WORLD_HOST_SOURCE_SHA256 = '__WORLD_HOST_SOURCE_SHA256__';
 const REQUIRED_SCENARIOS = [
   'one-effect',
   'skeleton-agent',
@@ -64,7 +65,7 @@ export async function checkAgentRuntimeV1Pack(packPath, options = {}) {
 
   const manifest = JSON.parse(await readText(root, 'manifest.json'));
   assertPackManifest(manifest);
-  assertReviewedWorldHostSource(manifest, options);
+  await assertReviewedWorldHostSource(root, files, manifest, options);
   if (options.requiredReleaseStatus !== undefined) {
     assert.equal(manifest.releaseStatus, options.requiredReleaseStatus, 'release status mismatch');
   }
@@ -334,16 +335,33 @@ function assertPackManifest(manifest) {
   }
 }
 
-function assertReviewedWorldHostSource(manifest, options) {
+async function assertReviewedWorldHostSource(root, files, manifest, options) {
   if (manifest.releaseStatus === 'development') return;
-  const expected = options.expectedWorldHostGitCommit ?? REVIEWED_WORLD_HOST_GIT_COMMIT;
-  assert(/^[0-9a-f]{40}$/.test(expected),
+  const expectedCommit = options.expectedWorldHostGitCommit ?? REVIEWED_WORLD_HOST_GIT_COMMIT;
+  assert(/^[0-9a-f]{40}$/.test(expectedCommit),
     'release checker is not bound to a reviewed world-host source commit');
   assert.equal(
     manifest.sourcePins.worldHostGitCommit,
-    expected,
+    expectedCommit,
     'reviewed world-host source commit mismatch',
   );
+  const expectedFiles =
+    options.expectedWorldHostSourceSha256 ?? REVIEWED_WORLD_HOST_SOURCE_SHA256;
+  assert(expectedFiles && typeof expectedFiles === 'object' && !Array.isArray(expectedFiles),
+    'release checker is not bound to reviewed world-host source files');
+  const hostSourceFiles = files.filter((file) =>
+    file.startsWith('host/bin/') || file.startsWith('host/src/'));
+  assert.deepEqual(Object.keys(expectedFiles).sort(), hostSourceFiles,
+    'reviewed world-host source file coverage mismatch');
+  for (const file of hostSourceFiles) {
+    assert(/^[0-9a-f]{64}$/.test(expectedFiles[file]),
+      `invalid reviewed world-host source checksum: ${file}`);
+    assert.equal(
+      sha256(await readBytes(root, file)),
+      expectedFiles[file],
+      `reviewed world-host source checksum mismatch: ${file}`,
+    );
+  }
 }
 
 async function safeRoot(packPath) {
@@ -469,6 +487,16 @@ function commandOptions() {
 
 if (import.meta.main) {
   const options = commandOptions();
+  const current = fileURLToPath(import.meta.url);
+  if (path.basename(path.dirname(current)) !== 'conformance') {
+    const { worldHostReleaseSourceEvidence } = await import(
+      pathToFileURL(path.join(path.dirname(current), 'agent-runtime-v1-release-source.mjs')).href
+    );
+    Object.assign(
+      options,
+      await worldHostReleaseSourceEvidence(path.resolve(path.dirname(current), '..')),
+    );
+  }
   const receipt = await checkAgentRuntimeV1Pack(options.packPath, options);
   process.stdout.write(`${JSON.stringify(receipt, null, 2)}\n`);
 }

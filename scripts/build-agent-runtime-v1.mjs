@@ -7,7 +7,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { ApplicationWorker } from '../src/v1/index.mjs';
-import { WORLD_HOST_RELEASE_SOURCE_PATHS } from './agent-runtime-v1-release-source.mjs';
+import {
+  resolveWorldHostReleaseSourceCommit,
+  WORLD_HOST_RELEASE_SOURCE_PATHS,
+  worldHostReleaseSourceSha256,
+} from './agent-runtime-v1-release-source.mjs';
 import { checkAgentRuntimeV1Pack } from './check-agent-runtime-v1-pack.mjs';
 
 const BOUNDARY_RELEASE = Object.freeze({
@@ -74,6 +78,12 @@ const sourceCommits = options.releaseStatus === 'development'
       ),
       worldCapabilitiesGitCommit: CAPABILITY_RELEASE.gitCommit,
     };
+const expectedWorldHostSourceSha256 = options.releaseStatus === 'development'
+  ? undefined
+  : await worldHostReleaseSourceSha256(
+      options.worldHostRepo,
+      sourceCommits.worldHostGitCommit,
+    );
 const worldReleaseMaterialization = options.releaseStatus === 'release-candidate'
   ? await materializeWorldRelease(options.boundaryReleaseArchive, options.worldReleaseArchive)
   : null;
@@ -174,13 +184,19 @@ const checkerSource = await readFile(
   'utf8',
 );
 const checkerCommitToken = "'__WORLD_HOST_GIT_COMMIT__'";
+const checkerSourceToken = "'__WORLD_HOST_SOURCE_SHA256__'";
 assert.equal(checkerSource.split(checkerCommitToken).length, 2,
   'pack checker must contain exactly one world-host source commit token');
+assert.equal(checkerSource.split(checkerSourceToken).length, 2,
+  'pack checker must contain exactly one world-host source checksum token');
 const packagedChecker = options.releaseStatus === 'development'
   ? checkerSource
   : checkerSource.replace(
       checkerCommitToken,
       `'${sourceCommits.worldHostGitCommit}'`,
+    ).replace(
+      checkerSourceToken,
+      JSON.stringify(expectedWorldHostSourceSha256),
     );
 await writeFile(path.join(options.out, 'conformance/check-pack.mjs'), packagedChecker);
 await copyFile(path.join(options.worldHostRepo, 'scripts/run-agent-runtime-v1-conformance.mjs'), path.join(options.out, 'conformance/run.mjs'));
@@ -279,6 +295,7 @@ if (worldReleaseMaterialization !== null) {
 
 const receipt = await checkAgentRuntimeV1Pack(options.out, {
   expectedWorldHostGitCommit: sourceCommits.worldHostGitCommit,
+  expectedWorldHostSourceSha256,
 });
 process.stdout.write(`${JSON.stringify({
   command: 'build-agent-runtime-v1',
@@ -647,16 +664,7 @@ async function sourceCommit(repository, sourcePaths) {
   assert.equal(statusCode, 0, statusError || `cannot inspect source state: ${repository}`);
   assert.equal(statusOutput, '', `release source changes must be committed before packing: ${repository}\n${statusOutput}`);
 
-  const revision = Bun.spawn(['git', 'rev-parse', 'HEAD'], {
-    cwd: repository,
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-  const output = await new Response(revision.stdout).text();
-  assert.equal(await revision.exited, 0, `cannot resolve source commit: ${repository}`);
-  const commit = output.trim();
-  assert(/^[0-9a-f]{40}$/.test(commit), `invalid source commit: ${repository}`);
-  return commit;
+  return resolveWorldHostReleaseSourceCommit(repository);
 }
 
 function requireValue(args, index, flag) {
