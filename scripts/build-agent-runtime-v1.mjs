@@ -14,11 +14,13 @@ const BOUNDARY_RELEASE = Object.freeze({
   packageHash: 'boundary-0.7.0-flclaCnjkABOSWaiSkxMBDQZsBEeA-Niai-l1u0q3A7_',
   url: 'https://github.com/tkersey/boundary/archive/refs/tags/v0.7.0.tar.gz',
 });
+const BOUNDARY_RELEASE_GIT_COMMIT = '7f2472100454aa2cd5c62e07db0c1e23eaf46a77';
 const WORLD_RELEASE = Object.freeze({
   tag: 'v1.0.0-rc.2',
   packageHash: 'world-1.0.0-rc.2-XXTUeOXYhwC1anDePj7Lr4SfwDCxG-ofPw92_-PGGyKv',
   url: 'https://github.com/tkersey/world/archive/refs/tags/v1.0.0-rc.2.tar.gz',
 });
+const WORLD_RELEASE_GIT_COMMIT = 'a79265906bdf75d432b8f5286159598ef2282da0';
 const CAPABILITY_RELEASE = Object.freeze({
   tag: 'v1.0.0-rc.3',
   gitCommit: 'c0745cf2637270e7af659cbae79c5c7e8c7005dd',
@@ -38,12 +40,22 @@ const temporaryRoots = new Set();
 process.on('exit', () => {
   for (const root of temporaryRoots) rmSync(root, { recursive: true, force: true });
 });
+if (options.releaseStatus === 'release-candidate') {
+  assert(options.externalApplicationRoot !== null,
+    'release-candidate builds require --external-application-root from the clean-room World release proof');
+  assert(options.capabilitiesRuntimeArchive !== null,
+    'release-candidate builds require --world-capabilities-runtime-archive from the reviewed release');
+  assert(options.boundaryReleaseArchive !== null,
+    'release-candidate builds require --boundary-release-archive from the reviewed release');
+  assert(options.worldReleaseArchive !== null,
+    'release-candidate builds require --world-release-archive from the reviewed release');
+}
 const sourceCommits = options.releaseStatus === 'development'
   ? {}
-  : Object.fromEntries(await Promise.all([
-      ['boundaryGitCommit', sourceCommit(options.boundaryRepo, ['build.zig', 'build.zig.zon', 'src'])],
-      ['worldGitCommit', sourceCommit(options.worldRepo, ['build.zig', 'build.zig.zon', 'src', 'examples'])],
-      ['worldHostGitCommit', sourceCommit(options.worldHostRepo, [
+  : {
+      boundaryGitCommit: BOUNDARY_RELEASE_GIT_COMMIT,
+      worldGitCommit: WORLD_RELEASE_GIT_COMMIT,
+      worldHostGitCommit: await sourceCommit(options.worldHostRepo, [
         'bin/world-host-v1.mjs',
         'docs',
         'scripts/build-agent-runtime-v1.mjs',
@@ -52,34 +64,42 @@ const sourceCommits = options.releaseStatus === 'development'
         'src/bun/application_v1_cli.mjs',
         'src/bun/application_v1_inspection_worker.mjs',
         'src/v1',
-      ])],
-      ['worldCapabilitiesGitCommit', CAPABILITY_RELEASE.gitCommit],
-    ].map(async ([name, promise]) => [name, await promise])));
-if (options.releaseStatus === 'release-candidate') {
-  assert(options.externalApplicationRoot !== null,
-    'release-candidate builds require --external-application-root from the clean-room World release proof');
-  assert(options.capabilitiesRuntimeArchive !== null,
-    'release-candidate builds require --world-capabilities-runtime-archive from the reviewed release');
-}
+      ]),
+      worldCapabilitiesGitCommit: CAPABILITY_RELEASE.gitCommit,
+    };
+const worldReleaseMaterialization = options.releaseStatus === 'release-candidate'
+  ? await materializeWorldRelease(options.boundaryReleaseArchive, options.worldReleaseArchive)
+  : null;
 const capabilityMaterialization = options.releaseStatus === 'release-candidate'
   ? await materializeCapabilityRuntime(options.capabilitiesRuntimeArchive)
   : null;
 const capabilitiesRepo = capabilityMaterialization?.packageRoot ?? options.capabilitiesRepo;
+const worldRepo = worldReleaseMaterialization?.packageRoot ?? options.worldRepo;
 const externalApplication = options.releaseStatus === 'release-candidate'
-  ? await verifyExternalApplicationRoot(options)
+  ? await verifyExternalApplicationRoot({
+      externalApplicationRoot: options.externalApplicationRoot,
+      sourceRoots: [
+        { path: worldReleaseMaterialization.temporaryRoot, optional: false },
+        { path: capabilityMaterialization.temporaryRoot, optional: false },
+        { path: options.worldHostRepo, optional: false },
+        { path: options.boundaryRepo, optional: true },
+        { path: options.worldRepo, optional: true },
+        { path: options.capabilitiesRepo, optional: true },
+      ],
+    })
   : Object.freeze({
       root: options.externalApplicationRoot ??
         path.join(options.worldRepo, 'conformance/external-build-helper/zig-out/world-apps'),
       verified: false,
     });
-await buildWorldApplications(options.worldRepo);
+await buildWorldApplications(worldRepo, worldReleaseMaterialization);
 await prepareOutput(options.out);
 
 const applications = [];
 for (const source of [
-  { name: 'one-effect', wasm: path.join(options.worldRepo, 'zig-out/bin/one-effect.world.wasm') },
-  { name: 'skeleton-agent', wasm: path.join(options.worldRepo, 'zig-out/world-apps/skeleton-agent.world.wasm') },
-  { name: 'fixture-agent', wasm: path.join(options.worldRepo, 'zig-out/world-apps/fixture-agent.world.wasm') },
+  { name: 'one-effect', wasm: path.join(worldRepo, 'zig-out/bin/one-effect.world.wasm') },
+  { name: 'skeleton-agent', wasm: path.join(worldRepo, 'zig-out/world-apps/skeleton-agent.world.wasm') },
+  { name: 'fixture-agent', wasm: path.join(worldRepo, 'zig-out/world-apps/fixture-agent.world.wasm') },
   {
     name: 'research-digest-agent',
     wasm: path.join(externalApplication.root, 'research-digest-agent.world.wasm'),
@@ -230,6 +250,10 @@ if (capabilityMaterialization !== null) {
   await rm(capabilityMaterialization.temporaryRoot, { recursive: true, force: true });
   temporaryRoots.delete(capabilityMaterialization.temporaryRoot);
 }
+if (worldReleaseMaterialization !== null) {
+  await rm(worldReleaseMaterialization.temporaryRoot, { recursive: true, force: true });
+  temporaryRoots.delete(worldReleaseMaterialization.temporaryRoot);
+}
 
 const receipt = await checkAgentRuntimeV1Pack(options.out);
 process.stdout.write(`${JSON.stringify({
@@ -314,15 +338,22 @@ async function prepareOutput(output) {
   await mkdir(output, { recursive: true });
 }
 
-async function buildWorldApplications(worldRepo) {
-  const process = Bun.spawn([
+async function buildWorldApplications(worldRepo, releaseMaterialization = null) {
+  const args = [
     'zig',
     'build',
     'world-one-effect-application-wasm',
     'world-skeleton-agent-wasm',
     'world-fixture-agent-wasm',
     ...(options.externalApplicationRoot === null ? ['check-world-external-build-helper'] : []),
-  ], {
+  ];
+  if (releaseMaterialization !== null) {
+    args.push(
+      '--cache-dir', releaseMaterialization.localCache,
+      '--global-cache-dir', releaseMaterialization.globalCache,
+    );
+  }
+  const process = Bun.spawn(args, {
     cwd: worldRepo,
     stdout: 'inherit',
     stderr: 'inherit',
@@ -376,7 +407,9 @@ at the receiving host.
 function parseArgs(args) {
   const result = {
     boundaryRepo: path.resolve('../boundary'),
+    boundaryReleaseArchive: null,
     worldRepo: path.resolve('../world'),
+    worldReleaseArchive: null,
     worldHostRepo: path.resolve('.'),
     capabilitiesRepo: path.resolve('../world-capabilities'),
     capabilitiesRuntimeArchive: null,
@@ -386,7 +419,13 @@ function parseArgs(args) {
   };
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === '--boundary-repo') result.boundaryRepo = path.resolve(requireValue(args, ++index, '--boundary-repo'));
+    else if (args[index] === '--boundary-release-archive') {
+      result.boundaryReleaseArchive = path.resolve(requireValue(args, ++index, '--boundary-release-archive'));
+    }
     else if (args[index] === '--world-repo') result.worldRepo = path.resolve(requireValue(args, ++index, '--world-repo'));
+    else if (args[index] === '--world-release-archive') {
+      result.worldReleaseArchive = path.resolve(requireValue(args, ++index, '--world-release-archive'));
+    }
     else if (args[index] === '--world-host-repo') result.worldHostRepo = path.resolve(requireValue(args, ++index, '--world-host-repo'));
     else if (args[index] === '--capabilities-repo') result.capabilitiesRepo = path.resolve(requireValue(args, ++index, '--capabilities-repo'));
     else if (args[index] === '--world-capabilities-runtime-archive') {
@@ -449,21 +488,95 @@ async function materializeCapabilityRuntime(archivePath) {
   return Object.freeze({ temporaryRoot, packageRoot });
 }
 
+async function materializeWorldRelease(boundaryArchivePath, worldArchivePath) {
+  const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'world-release-runtime-'));
+  temporaryRoots.add(temporaryRoot);
+  const globalCache = path.join(temporaryRoot, 'global-cache');
+  const localCache = path.join(temporaryRoot, 'local-cache');
+  const extractionRoot = path.join(temporaryRoot, 'world-source');
+  await mkdir(globalCache, { recursive: true });
+  await mkdir(localCache, { recursive: true });
+  await mkdir(extractionRoot, { recursive: true });
+  await writeFile(
+    path.join(temporaryRoot, 'build.zig'),
+    'const std = @import("std");\npub fn build(_: *std.Build) void {}\n',
+  );
+
+  await verifyZigReleaseArchive(
+    boundaryArchivePath,
+    BOUNDARY_RELEASE,
+    globalCache,
+    temporaryRoot,
+    'Boundary',
+  );
+  await verifyZigReleaseArchive(
+    worldArchivePath,
+    WORLD_RELEASE,
+    globalCache,
+    temporaryRoot,
+    'World',
+  );
+  const extraction = Bun.spawn(['tar', '-xzf', worldArchivePath, '-C', extractionRoot], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const extractionError = await new Response(extraction.stderr).text();
+  assert.equal(await extraction.exited, 0,
+    extractionError || 'cannot extract World release archive');
+  const entries = (await readdir(extractionRoot, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory());
+  assert.equal(entries.length, 1, 'World release archive must contain one package root');
+  const packageRoot = path.join(extractionRoot, entries[0].name);
+  for (const required of ['build.zig', 'build.zig.zon', 'src/world.zig']) {
+    const requiredInfo = await lstat(path.join(packageRoot, required));
+    assert(requiredInfo.isFile() && !requiredInfo.isSymbolicLink(),
+      `World release archive is missing ${required}`);
+  }
+  return Object.freeze({ temporaryRoot, packageRoot, globalCache, localCache });
+}
+
+async function verifyZigReleaseArchive(archivePath, release, globalCache, cwd, label) {
+  const info = await lstat(archivePath);
+  assert(info.isFile() && !info.isSymbolicLink(), `${label} release archive must be a regular file`);
+  const fetch = Bun.spawn([
+    'zig',
+    'fetch',
+    '--global-cache-dir',
+    globalCache,
+    archivePath,
+  ], {
+    cwd,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const [output, errorOutput, exitCode] = await Promise.all([
+    new Response(fetch.stdout).text(),
+    new Response(fetch.stderr).text(),
+    fetch.exited,
+  ]);
+  assert.equal(exitCode, 0, errorOutput || `cannot inspect ${label} release archive`);
+  assert.equal(output.trim(), release.packageHash,
+    `${label} release archive package hash does not match ${release.tag}`);
+}
+
 async function verifyExternalApplicationRoot({
   externalApplicationRoot,
-  boundaryRepo,
-  worldRepo,
-  worldHostRepo,
-  capabilitiesRepo,
+  sourceRoots,
 }) {
   const rootInfo = await lstat(externalApplicationRoot);
   assert(rootInfo.isDirectory() && !rootInfo.isSymbolicLink(),
     'external application root must be a real directory');
   const resolvedRoot = await realpath(externalApplicationRoot);
-  for (const repository of [boundaryRepo, worldRepo, worldHostRepo, capabilitiesRepo]) {
-    const resolvedRepository = await realpath(repository);
+  for (const repository of sourceRoots) {
+    let resolvedRepository;
+    try {
+      resolvedRepository = await realpath(repository.path);
+    } catch (error) {
+      if (repository.optional && error?.code === 'ENOENT') continue;
+      throw error;
+    }
     assert(!isSameOrBelow(resolvedRepository, resolvedRoot),
-      `external application root is inside a source repository: ${repository}`);
+      `external application root is inside a source repository: ${repository.path}`);
   }
 
   const artifacts = [
