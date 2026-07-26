@@ -6,10 +6,13 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const pack = await packRoot(process.argv[2]);
+const checker = await checkerFor(pack);
 const { checkAgentRuntimeV1Pack } = await import(
-  pathToFileURL(path.join(pack, 'conformance/check-pack.mjs')).href
+  pathToFileURL(checker.path).href
 );
-const check = await checkAgentRuntimeV1Pack(pack);
+const check = await checkAgentRuntimeV1Pack(pack, {
+  expectedWorldHostGitCommit: checker.expectedWorldHostGitCommit,
+});
 const host = await import(pathToFileURL(path.join(pack, 'host/src/v1/index.mjs')).href);
 const capabilities = await import(pathToFileURL(path.join(pack, 'capabilities/src/v1/index.mjs')).href);
 const applications = Object.fromEntries(await Promise.all(
@@ -931,4 +934,44 @@ async function packRoot(argument) {
   const current = fileURLToPath(import.meta.url);
   if (path.basename(path.dirname(current)) === 'conformance') return path.resolve(path.dirname(current), '..');
   return path.resolve('agent-runtime-v1');
+}
+
+async function checkerFor(pack) {
+  const current = fileURLToPath(import.meta.url);
+  if (path.basename(path.dirname(current)) === 'conformance') {
+    return Object.freeze({
+      path: path.join(pack, 'conformance/check-pack.mjs'),
+      expectedWorldHostGitCommit: undefined,
+    });
+  }
+
+  const repository = path.resolve(path.dirname(current), '..');
+  const { WORLD_HOST_RELEASE_SOURCE_PATHS } = await import(
+    pathToFileURL(path.join(path.dirname(current), 'agent-runtime-v1-release-source.mjs')).href
+  );
+  const revision = Bun.spawn([
+    'git',
+    'log',
+    '-1',
+    '--format=%H',
+    '--',
+    ...WORLD_HOST_RELEASE_SOURCE_PATHS,
+  ], {
+    cwd: repository,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const [output, errorOutput, exitCode] = await Promise.all([
+    new Response(revision.stdout).text(),
+    new Response(revision.stderr).text(),
+    revision.exited,
+  ]);
+  assert.equal(exitCode, 0, errorOutput || 'cannot resolve reviewed world-host source commit');
+  const expectedWorldHostGitCommit = output.trim();
+  assert(/^[0-9a-f]{40}$/.test(expectedWorldHostGitCommit),
+    'invalid reviewed world-host source commit');
+  return Object.freeze({
+    path: path.join(path.dirname(current), 'check-agent-runtime-v1-pack.mjs'),
+    expectedWorldHostGitCommit,
+  });
 }

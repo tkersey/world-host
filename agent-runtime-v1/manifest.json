@@ -157,7 +157,7 @@
     "worldHostPackageVersion": "1.0.0-rc.2",
     "boundaryGitCommit": "7f2472100454aa2cd5c62e07db0c1e23eaf46a77",
     "worldGitCommit": "a79265906bdf75d432b8f5286159598ef2282da0",
-    "worldHostGitCommit": "8b93f69d24b485c716b930588bccc857e3c14cee",
+    "worldHostGitCommit": "4771eb7c5ed01fcb36c99a020db345bbbf896481",
     "worldCapabilitiesGitCommit": "45d023f2bd0658e377142eda9b5103589308870c"
   },
   "externality": {

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const MAXIMUM_FILE_BYTES = 64 << 20;
-const REVIEWED_WORLD_HOST_GIT_COMMIT = '8b93f69d24b485c716b930588bccc857e3c14cee';
+const REVIEWED_WORLD_HOST_GIT_COMMIT = '4771eb7c5ed01fcb36c99a020db345bbbf896481';
 const REQUIRED_SCENARIOS = [
   'one-effect',
   'skeleton-agent',
