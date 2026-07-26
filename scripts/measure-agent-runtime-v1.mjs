@@ -108,7 +108,22 @@ function initialArgs(applicationName) {
   if (applicationName === 'one-effect') return Buffer.alloc(0);
   if (applicationName === 'skeleton-agent') return capabilities.encodeStringValue('goal=invoke');
   if (applicationName === 'fixture-agent') return capabilities.encodeStringValue('goal=fixture');
+  if (applicationName === 'research-digest-agent') {
+    return encodeResearchRequest({
+      query: 'portable algebraic effects',
+      maximumItems: 2n,
+    });
+  }
   assert.fail(`unknown application: ${applicationName}`);
+}
+
+function encodeResearchRequest(value) {
+  const query = Buffer.from(value.query, 'utf8');
+  const length = Buffer.alloc(4);
+  length.writeUInt32LE(query.length);
+  const maximumItems = Buffer.alloc(8);
+  maximumItems.writeBigUInt64LE(value.maximumItems);
+  return Buffer.concat([length, query, maximumItems]);
 }
 
 async function measureWorldBuild(worldRepo) {
