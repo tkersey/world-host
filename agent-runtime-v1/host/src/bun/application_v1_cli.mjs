@@ -144,13 +144,14 @@ async function resumeApplication(args, io, options, command, { retainedOnly = fa
   if (head === null) fail('ERR_APPLICATION_V1_BRANCH_NOT_FOUND');
   const application = await store.applications.get(head.applicationId);
   const controller = await loadController(store, application, options);
+  let retained = null;
   if (retainedOnly) {
     const current = await controller.readCurrentFrame(runId, branchId);
     if (current.frame.status !== FrameStatus.needsEffect ||
         current.frame.pendingEffect === null) {
       fail('ERR_APPLICATION_V1_EFFECT_RESULT_REQUIRED');
     }
-    const retained = await store.effectJournal.readResult({
+    retained = await store.effectJournal.readResult({
       runId,
       branchId,
       parentFrameId: current.frame.frameId,
@@ -169,7 +170,9 @@ async function resumeApplication(args, io, options, command, { retainedOnly = fa
       );
   const result = await controller.advance(runId, branchId, {
     effectResult,
-    fuel: fuelFrom(args, controller.manifest),
+    fuel: retained === null
+      ? fuelFrom(args, controller.manifest)
+      : retainedFuelFrom(args, controller.manifest, retained.record),
     effectMetadata: effectResult === null ? {} : {
       handlerId: valueAfter(args, '--handler') ?? 'operator-supplied',
       handlerConfigurationId: valueAfter(args, '--handler-configuration') ?? 'operator-supplied',
@@ -430,6 +433,7 @@ function encodeMigrationTransport(bundle) {
     retainedEffectResultBase64: bundle.retainedEffectResultBytes === null
       ? null
       : Buffer.from(bundle.retainedEffectResultBytes).toString('base64'),
+    retainedEffectFuel: bundle.retainedEffectFuel,
   };
 }
 
@@ -450,6 +454,7 @@ function decodeMigrationTransport(bytes) {
     'frameStatus',
     'manifestBase64',
     'retainedEffectResultBase64',
+    'retainedEffectFuel',
     'sourceHeadGeneration',
     'transportVersion',
   ];
@@ -471,6 +476,7 @@ function decodeMigrationTransport(bytes) {
     retainedEffectResultBytes: value.retainedEffectResultBase64 === null
       ? null
       : decodeBase64(value.retainedEffectResultBase64, MAXIMUM_MIGRATION_RESULT_BYTES),
+    retainedEffectFuel: value.retainedEffectFuel,
   };
 }
 
@@ -496,6 +502,18 @@ function fuelFrom(args, manifest) {
   const fuel = raw === null ? manifest.limits.maximumFuelPerStep : parseUnsigned(raw, 'fuel');
   if (fuel === 0n || fuel > manifest.limits.maximumFuelPerStep) fail('ERR_APPLICATION_V1_FUEL');
   return fuel;
+}
+
+function retainedFuelFrom(args, manifest, record) {
+  const retainedFuel = parseUnsigned(record.fuel, 'retained fuel');
+  if (retainedFuel === 0n || retainedFuel > manifest.limits.maximumFuelPerStep) {
+    fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL');
+  }
+  const raw = valueAfter(args, '--fuel');
+  if (raw === null) return retainedFuel;
+  const requestedFuel = parseUnsigned(raw, 'fuel');
+  if (requestedFuel !== retainedFuel) fail('ERR_APPLICATION_V1_RETAINED_FUEL_MISMATCH');
+  return retainedFuel;
 }
 
 function parseUnsigned(value, label) {

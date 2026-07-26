@@ -540,6 +540,7 @@ async function proveResearchNegatives() {
     handlerId: 'research-negative-fixture',
     handlerConfigurationId: 'research-negative-fixture-v1',
     recoveryClass: 'replayable',
+    fuel: 100n,
   });
   const conflictingBytes = Buffer.from(resolution.result.resultBytes);
   conflictingBytes[conflictingBytes.length - 1] ^= 1;
@@ -639,12 +640,6 @@ async function proveResearchCli(root) {
     'branch',
     '--store', storeRoot,
     '--run', 'research-cli-run',
-    '--branch', 'replay',
-  ]);
-  await packedCli([
-    'branch',
-    '--store', storeRoot,
-    '--run', 'research-cli-run',
     '--branch', 'alternate',
   ]);
 
@@ -662,6 +657,22 @@ async function proveResearchCli(root) {
     attempt: 1,
   }, parent.pendingEffect.encodedBytes);
   await writeFile(freshResultPath, resolution.result.encodedBytes);
+  await store.effectJournal.persistResult({
+    runId: 'research-cli-run',
+    branchId: 'main',
+    parentFrameId: parent.frameId,
+    request: parent.pendingEffect,
+    result: resolution.result,
+    limits: manifest.limits,
+    fuel: 100n,
+    ...resolutionMetadata(resolution),
+  });
+  await packedCli([
+    'branch',
+    '--store', storeRoot,
+    '--run', 'research-cli-run',
+    '--branch', 'replay',
+  ]);
   for (const [command, branchId] of [['retry', 'main'], ['replay', 'replay']]) {
     const rejected = await packedCliFailure([
       command,
@@ -674,18 +685,6 @@ async function proveResearchCli(root) {
     assert.notEqual(rejected.exitCode, 0);
     assert.match(rejected.stderr, /ERR_APPLICATION_V1_CLI_OPTION/);
   }
-  for (const branchId of ['main', 'replay']) {
-    await store.effectJournal.persistResult({
-      runId: 'research-cli-run',
-      branchId,
-      parentFrameId: parent.frameId,
-      request: parent.pendingEffect,
-      result: resolution.result,
-      limits: manifest.limits,
-      ...resolutionMetadata(resolution),
-    });
-  }
-
   const retried = await packedCli([
     'retry',
     '--store', storeRoot,

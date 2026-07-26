@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   EffectJournalV1,
   admitEffectJournalResult,
+  admitJournalFuel,
   cloneEffectJournalRecord,
   createEffectJournalRecord,
   effectJournalKey,
@@ -173,13 +174,16 @@ export class DirectoryEffectJournalV1 extends EffectJournalV1 {
     handlerConfigurationId = 'operator-supplied',
     recoveryClass = 'replayable',
     externalTransactionRef = null,
+    fuel = null,
   }) {
     const admittedResult = admitEffectJournalResult(request, result, limits);
+    const admittedFuel = admitJournalFuel(fuel ?? limits.maximumFuelPerStep, limits);
     const file = this.recordPath(runId, branchId, parentFrameId, request.requestId);
     const previous = await readJsonIfExists(file);
     if (previous !== null) {
       const retained = await readEffectJournalResult({ record: previous, blockStore: this.blockStore, request, limits });
       if (!sameBytes(retained.result.resultId, admittedResult.resultId)) fail('ERR_APPLICATION_V1_EFFECT_RESULT_CONFLICT');
+      if (retained.record.fuel !== admittedFuel) fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL_CONFLICT');
       return cloneEffectJournalRecord(retained.record);
     }
 
@@ -195,6 +199,7 @@ export class DirectoryEffectJournalV1 extends EffectJournalV1 {
       handlerConfigurationId,
       recoveryClass,
       externalTransactionRef,
+      fuel: admittedFuel,
     });
     if (!await writeJsonNew(file, record)) {
       const winner = await readEffectJournalResult({
@@ -204,6 +209,7 @@ export class DirectoryEffectJournalV1 extends EffectJournalV1 {
         limits,
       });
       if (!sameBytes(winner.result.resultId, admittedResult.resultId)) fail('ERR_APPLICATION_V1_EFFECT_RESULT_CONFLICT');
+      if (winner.record.fuel !== admittedFuel) fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL_CONFLICT');
       return cloneEffectJournalRecord(winner.record);
     }
     return cloneEffectJournalRecord(record);
