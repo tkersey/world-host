@@ -5,7 +5,7 @@
 - application WASM bytes;
 - exact `ApplicationManifest` bytes;
 - the selected current Frame bytes and identities;
-- one retained pending `EffectResult`, when available;
+- one retained pending `EffectResult` and its exact retry fuel, when available;
 - source-head generation as provenance.
 
 The bundle carries no receiver policy, secret, credential, storage path, or live worker state.
@@ -42,3 +42,7 @@ result requires retry fuel. It rejects unknown fields, malformed or
 non-canonical base64, oversized embedded records, a retained result without
 fuel, manifest disagreement, and an existing target branch. Receiver preflight
 occurs before the imported head becomes authoritative.
+
+Export also fails closed when an early release-candidate journal record retains
+a result without fuel. Retry that branch with the original explicit fuel before
+exporting it; the host does not emit a migration bundle that import must reject.

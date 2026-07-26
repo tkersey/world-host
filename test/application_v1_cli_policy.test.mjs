@@ -141,15 +141,21 @@ describe('World application v1 CLI admission policy', () => {
       const programmatic = await controller.advance('lost-low-fuel', 'programmatic');
       assert.equal(programmatic.frame.status, FrameStatus.yieldedFuel);
       await controller.forkBranch('lost-low-fuel', 'main', 'legacy');
+      const legacyHead = await store.headStore.readHead('lost-low-fuel', 'legacy');
       const legacyRecordPath = store.effectJournal.recordPath(
         'lost-low-fuel',
         'legacy',
         parent.frameId,
         parent.pendingEffect.requestId,
+        legacyHead.journalBindingId,
       );
       const legacyRecord = JSON.parse(await readFile(legacyRecordPath, 'utf8'));
       delete legacyRecord.fuel;
       await writeFile(legacyRecordPath, `${JSON.stringify(legacyRecord, null, 2)}\n`);
+      await assert.rejects(
+        () => controller.exportBranch('lost-low-fuel', 'legacy'),
+        { code: 'ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL_REQUIRED' },
+      );
       await assert.rejects(
         () => runApplicationV1Cli([
           'retry',
@@ -238,13 +244,17 @@ describe('World application v1 CLI admission policy', () => {
         limits: manifest.limits,
         fuel: 1n,
       });
+      let copiedBindingId = null;
       const interrupted = await RunControllerV1.create({
         wasmBytes: await readFile(wasmPath),
         blockStore: store.blockStore,
         headStore: store.headStore,
         effectJournal: store.effectJournal,
-        faultInjector: async (stage) => {
-          if (stage === 'after-fork-result-persistence') throw new Error('lost fork publication');
+        faultInjector: async (stage, context) => {
+          if (stage === 'after-fork-result-persistence') {
+            copiedBindingId = context.copied.publicationBindingId;
+            throw new Error('lost fork publication');
+          }
         },
       });
       await assert.rejects(
@@ -258,6 +268,7 @@ describe('World application v1 CLI admission policy', () => {
         parentFrameId: parent.frameId,
         request: parent.pendingEffect,
         limits: manifest.limits,
+        publicationBindingId: copiedBindingId,
       });
       assert.equal(retained.record.fuel, '1');
 
@@ -268,7 +279,124 @@ describe('World application v1 CLI admission policy', () => {
         effectJournal: store.effectJournal,
       });
       await recovered.forkBranch('atomic-fork', 'main', 'replay');
-      assert.notEqual(await store.headStore.readHead('atomic-fork', 'replay'), null);
+      const replayHead = await store.headStore.readHead('atomic-fork', 'replay');
+      assert.equal(replayHead.journalBindingId, copiedBindingId);
+    } finally {
+      await rm(storeRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a losing concurrent fork result outside the winning head namespace', async () => {
+    const storeRoot = await mkdtemp(path.join(tmpdir(), 'world-host-v1-cli-fork-race-'));
+    const wasmPath = path.resolve(
+      'agent-runtime-v1/applications/one-effect.world.wasm',
+    );
+    const io = { stdout: { write() {} } };
+    try {
+      await runApplicationV1Cli([
+        'install',
+        '--store', storeRoot,
+        '--name', 'one-effect',
+        '--wasm', wasmPath,
+      ], io);
+      await runApplicationV1Cli([
+        'run',
+        '--store', storeRoot,
+        '--app', 'one-effect',
+        '--run', 'fork-race',
+        '--fuel', '100',
+      ], io);
+      const store = new DirectoryApplicationStoreV1(storeRoot);
+      const mainHead = await store.headStore.readHead('fork-race', 'main');
+      const application = await store.applications.get(mainHead.applicationId);
+      const manifest = decodeApplicationManifest(
+        await store.blockStore.getBlock(application.manifestRef),
+      );
+      const parent = decodeFrame(
+        await store.blockStore.getBlock(mainHead.frameRef),
+        manifest.limits,
+      );
+      const resultBytes = Buffer.alloc(8);
+      resultBytes.writeBigInt64LE(41n);
+      const effectResult = createEffectResult({
+        requestId: parent.pendingEffect.requestId,
+        status: EffectStatus.ok,
+        resultSchemaId: parent.pendingEffect.resultSchemaId,
+        resultBytes,
+      }, manifest.limits);
+      const sourceController = await RunControllerV1.create({
+        wasmBytes: await readFile(wasmPath),
+        blockStore: store.blockStore,
+        headStore: store.headStore,
+        effectJournal: store.effectJournal,
+      });
+      await sourceController.forkBranch('fork-race', 'main', 'with-result');
+      const resultSourceHead = await store.headStore.readHead('fork-race', 'with-result');
+      await store.effectJournal.persistResult({
+        runId: 'fork-race',
+        branchId: 'with-result',
+        parentFrameId: parent.frameId,
+        request: parent.pendingEffect,
+        result: effectResult,
+        limits: manifest.limits,
+        fuel: 1n,
+        publicationBindingId: resultSourceHead.journalBindingId,
+      });
+
+      let copiedResolve;
+      const copied = new Promise((resolve) => {
+        copiedResolve = resolve;
+      });
+      let releaseResolve;
+      const release = new Promise((resolve) => {
+        releaseResolve = resolve;
+      });
+      const losingController = await RunControllerV1.create({
+        wasmBytes: await readFile(wasmPath),
+        blockStore: store.blockStore,
+        headStore: store.headStore,
+        effectJournal: store.effectJournal,
+        faultInjector: async (stage) => {
+          if (stage === 'after-fork-result-persistence') {
+            copiedResolve();
+            await release;
+          }
+        },
+      });
+      const losing = losingController
+        .forkBranch('fork-race', 'with-result', 'winner')
+        .then(() => null, (error) => error);
+      await copied;
+
+      const winningController = await RunControllerV1.create({
+        wasmBytes: await readFile(wasmPath),
+        blockStore: store.blockStore,
+        headStore: store.headStore,
+        effectJournal: store.effectJournal,
+      });
+      await winningController.forkBranch('fork-race', 'main', 'winner');
+      releaseResolve();
+      assert.equal((await losing).code, 'ERR_APPLICATION_V1_BRANCH_EXISTS');
+
+      const winningHead = await store.headStore.readHead('fork-race', 'winner');
+      const inherited = await store.effectJournal.readResult({
+        runId: 'fork-race',
+        branchId: 'winner',
+        parentFrameId: parent.frameId,
+        request: parent.pendingEffect,
+        limits: manifest.limits,
+        publicationBindingId: winningHead.journalBindingId,
+      });
+      assert.equal(inherited, null);
+      await assert.rejects(
+        () => winningController.advance('fork-race', 'winner'),
+        { code: 'ERR_APPLICATION_V1_EFFECT_RESULT_REQUIRED' },
+      );
+      const advanced = await winningController.advance('fork-race', 'winner', {
+        effectResult,
+        fuel: 1n,
+      });
+      assert.equal(advanced.frame.status, FrameStatus.yieldedFuel);
     } finally {
       await rm(storeRoot, { recursive: true, force: true });
     }

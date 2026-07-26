@@ -157,6 +157,7 @@ async function resumeApplication(args, io, options, command, { retainedOnly = fa
       parentFrameId: current.frame.frameId,
       request: current.frame.pendingEffect,
       limits: controller.manifest.limits,
+      publicationBindingId: current.head.journalBindingId,
     });
     if (retained === null) fail('ERR_APPLICATION_V1_EFFECT_RESULT_REQUIRED');
   }
