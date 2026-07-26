@@ -83,6 +83,30 @@ describe('Agent Runtime v1 pack release identities', () => {
     }
   });
 
+  it('measures every application in the released pack', () => {
+    const measured = spawnSync(process.execPath, [
+      path.resolve('scripts/measure-agent-runtime-v1.mjs'),
+      '--pack', path.resolve('agent-runtime-v1'),
+      '--cold-samples', '1',
+      '--warm-samples', '1',
+    ], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+    });
+    assert.equal(measured.status, 0, measured.stderr);
+    const receipt = JSON.parse(measured.stdout);
+    assert.equal(receipt.releaseStatus, 'released');
+    assert.deepEqual(
+      receipt.applications.map((application) => application.name),
+      [
+        'one-effect',
+        'skeleton-agent',
+        'fixture-agent',
+        'research-digest-agent',
+      ],
+    );
+  });
+
   it('rejects a self-consistent receipt for the wrong capability corpus', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agent-runtime-v1-receipt-'));
     const pack = path.join(root, 'agent-runtime-v1');

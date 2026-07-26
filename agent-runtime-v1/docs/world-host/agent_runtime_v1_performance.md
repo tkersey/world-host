@@ -1,6 +1,6 @@
 # Agent Runtime v1 Performance Report
 
-This report records the World Comptime v1 release-candidate measurements. The
+This report records the World Comptime v1.0.0 released-pack measurements. The
 architecture is accepted on structural grounds first: application-specific
 WASM, zero imports, fixed memory, no runtime image loader, no source checkout,
 and explicit portable Frames. Wall-clock measurements are observations, not
@@ -20,16 +20,17 @@ The reported compile measurement used the existing Zig cache. It measures the
 three-owner-target incremental build, not a clean toolchain bootstrap.
 
 ```text
-Incremental application build: 290.5 ms
+Incremental application build: 288.6 ms
 ```
 
 ## Application measurements
 
 | Application | WASM bytes | Fixed memory | First Frame | First state | Cold instantiate median | First step median | Warm step median |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| one-effect | 106,539 | 8 MiB | 771 B | 336 B | 0.753 ms | 1.407 ms | 0.117 ms |
-| skeleton-agent | 143,276 | 16 MiB | 809 B | 370 B | 0.734 ms | 1.498 ms | 0.108 ms |
-| fixture-agent | 190,385 | 16 MiB | 816 B | 376 B | 0.863 ms | 1.483 ms | 0.114 ms |
+| one-effect | 106,535 | 8 MiB | 771 B | 336 B | 1.119 ms | 1.419 ms | 0.110 ms |
+| skeleton-agent | 143,256 | 16 MiB | 809 B | 370 B | 1.184 ms | 1.419 ms | 0.112 ms |
+| fixture-agent | 190,381 | 16 MiB | 816 B | 376 B | 1.409 ms | 1.404 ms | 0.113 ms |
+| research-digest-agent | 171,289 | 32 MiB | 1,425 B | 963 B | 1.316 ms | 1.836 ms | 0.140 ms |
 
 `First step` runs genesis to the first external effect boundary. `Warm step`
 reuses one instantiated worker only as a cache; each call still begins from
@@ -40,7 +41,7 @@ explicit input bytes, and no live worker state is authoritative.
 The v1 pack requires only each application WASM and its host state. It contains
 no universal World WASM, `Executable.Image`, Boundary Module, runtime linker,
 Fabric-plan loader, or source checkout. The application artifacts are
-106–190 KiB with 8–16 MiB fixed memories. The retained Carrier v0 universal
+106–190 KiB with 8–32 MiB fixed memories. The retained Carrier v0 universal
 WASM uses 64 MiB linear memory and additionally requires an
 `Executable.Image`.
 
