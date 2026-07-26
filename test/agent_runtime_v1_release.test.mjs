@@ -116,7 +116,7 @@ describe('Agent Runtime v1 pack release identities', () => {
 
       await assert.rejects(
         () => checkAgentRuntimeV1Pack(pack),
-        /released manifest checksum mismatch/,
+        /manifest identity mismatch/,
       );
     } finally {
       await rm(root, { recursive: true, force: true });
