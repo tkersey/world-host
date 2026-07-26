@@ -21,7 +21,9 @@ complete `checksums.sha256` manifest. A release-candidate build fails unless
 the Research Digest artifact is supplied outside all source repositories with
 the exact reviewed WASM and manifest checksums. It also requires the
 world-capabilities runtime release archive and verifies that archive's exact
-checksum before copying any capability code.
+checksum before copying any capability code. Each bundled capability records
+its manifest checksum, and release packs require every checksum—not only the
+clean-room fixture—to match the reviewed runtime distribution.
 
 Check the distribution without loading capability adapters during static pack
 inspection:

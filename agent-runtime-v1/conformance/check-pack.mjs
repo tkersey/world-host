@@ -101,6 +101,8 @@ export async function checkAgentRuntimeV1Pack(packPath, options = {}) {
     const manifestPath = path.posix.join(capability.path, 'manifest.json');
     const packManifestBytes = await readBytes(root, manifestPath);
     const packManifest = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(packManifestBytes));
+    assert.equal(sha256(packManifestBytes), capability.manifestSha256,
+      `${capability.packageName}: manifest identity mismatch`);
     assert.equal(packManifest.packageName, capability.packageName);
     assert.equal(packManifest.packageVersion, capability.packageVersion);
     assert.equal(packManifest.packFingerprint, capability.packFingerprint);
@@ -116,6 +118,13 @@ export async function checkAgentRuntimeV1Pack(packPath, options = {}) {
     }
     assert.equal(packManifest.packFingerprint, expectedCapabilityPackFingerprint(packManifest),
       `${capability.packageName}: pack fingerprint mismatch`);
+    if (manifest.releaseStatus !== 'development') {
+      assert.equal(
+        capability.manifestSha256,
+        manifest.sourcePins.worldCapabilitiesRelease.capabilityManifestSha256[capability.packageName],
+        `${capability.packageName}: reviewed manifest checksum mismatch`,
+      );
+    }
     if (capability.packageName === '@tkersey/world-capabilities/research-lookup-fixture') {
       const corpusBytes = await readBytes(root, path.posix.join(capability.path, 'corpus.json'));
       const conformanceBytes = await readBytes(
@@ -246,7 +255,8 @@ function assertPackManifest(manifest) {
   assert(Array.isArray(manifest.capabilities) && manifest.capabilities.length >= 2);
   assert(manifest.capabilities.every((value) => typeof value.packageName === 'string' &&
     typeof value.packageVersion === 'string' && typeof value.path === 'string' &&
-    /^[0-9a-f]{64}$/.test(value.packFingerprint)));
+    /^[0-9a-f]{64}$/.test(value.packFingerprint) &&
+    /^[0-9a-f]{64}$/.test(value.manifestSha256)));
   assert(manifest.conformance?.entrypoint === 'conformance/run.mjs');
   assert(Array.isArray(manifest.conformance.scenarios));
   assert(Array.isArray(manifest.nonClaims) && manifest.nonClaims.includes('no exactly-once effects'));
@@ -262,15 +272,23 @@ function assertPackManifest(manifest) {
     url: 'https://github.com/tkersey/world/archive/refs/tags/v1.0.0-rc.2.tar.gz',
   });
   assert.deepEqual(manifest.sourcePins.worldCapabilitiesRelease, {
-    tag: 'v1.0.0-rc.3',
-    gitCommit: 'c0745cf2637270e7af659cbae79c5c7e8c7005dd',
-    researchPackFingerprint: '97f8684e8eeb722bb8020a2d6dee0236c75e0aac332f43e01aedb1a0920b93a3',
-    researchPackAssetSha256: 'bbe00739f8d2b3bdf320feb333116e34345e16fb354a761febcd290fe9491326',
-    runtimeAssetSha256: '70906745c927aa2d47f497cdcdd3174d8321e17e25f632fb66646c934c413edb',
-    researchManifestSha256: '93615f2d1cfaa1150ce197f28ce11bf1bbaffc18f4617472897be788abfde35c',
+    tag: 'v1.0.0-rc.4',
+    gitCommit: '45d023f2bd0658e377142eda9b5103589308870c',
+    researchPackFingerprint: 'ff4cecaf449db1bf2032dd22e1b0dcca94c02091ba547719fe36089dd61c205e',
+    researchPackAssetSha256: '96ea017436264f7574e1dd8e385df3acb0cde97babd855ca3b98ee43d56f4d1f',
+    runtimeAssetSha256: 'b6b87dc78e90d5ba626f20489016bab4c0f3ff39ae1e9ce77c2ab76ed1150cfc',
+    researchManifestSha256: 'd4dd78c9e33094c7a1b68f58503f57418dd82148274272a5ec0dd645280c6787',
     researchCorpusSha256: '93b00d2b93f035f03bf8ed645a4fc82a60029d2e7f34a05ef0accf315c8944a5',
     researchConformanceSha256: '51c401f45457984eba266483305ba1b7be3be9f5044ccabe573fa1544a4442e3',
-    researchConformanceReceiptSha256: 'ee082050534f58cc70d65677e001085e1f8a10e0bf96aa4d7894dad050b229ca',
+    researchConformanceReceiptSha256: 'e7f067d21c38643ea436e1e4b22794b616f8ce69974048a881a537ad9e0e3eea',
+    capabilityManifestSha256: {
+      '@tkersey/world-capabilities/fixture-model': '1b29784e303e9e54253ff701e99adf73650d8b47effb0e61559051bfd7f61645',
+      '@tkersey/world-capabilities/generic-http-json': '8c83e794ad6f507f6c2cb9040b464d2e62b7880fcb047a46bf73e1e519adde3e',
+      '@tkersey/world-capabilities/human-approval': '2afd6e5ad491d2c8b72be32176922186d48e151bd36c238afadd67c342a6991e',
+      '@tkersey/world-capabilities/local-memory-kv': '5ba65a48e2a28c2b1b3cdcd27a433724997e915312dd5cd83560efee490106ee',
+      '@tkersey/world-capabilities/research-lookup-fixture': 'd4dd78c9e33094c7a1b68f58503f57418dd82148274272a5ec0dd645280c6787',
+      '@tkersey/world-capabilities/sandbox-files': '7c087eeb01df5f8fed3dab1912a8cf14155c0dc23a88ba765c015c94bfbcb2eb',
+    },
   });
   assert.deepEqual(manifest.sourcePins.externalApplicationRelease, {
     name: 'research-digest-agent',

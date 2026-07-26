@@ -36,15 +36,17 @@ const FORBIDDEN_OUTPUT_KEY_NORMAL_FORMS = new Set([...FORBIDDEN_OUTPUT_KEYS]
   .map((key) => key.replace(/[^a-z0-9]/gi, "").toLowerCase()));
 
 export class CapabilityRouterV1 {
+  #bindings;
+
   constructor({ bindings, limits = DEFAULT_LIMITS }) {
     if (!Array.isArray(bindings) || bindings.length === 0) fail("ERR_CAPABILITY_V1_BINDINGS");
     this.limits = Object.freeze({ ...limits });
-    this.bindings = new Map();
+    this.#bindings = new Map();
     for (const binding of bindings) {
       const admitted = assertBinding(binding);
       const key = Buffer.from(admitted.interfaceId).toString("hex");
-      if (this.bindings.has(key)) fail("ERR_CAPABILITY_V1_BINDING_AMBIGUOUS", key);
-      this.bindings.set(key, admitted);
+      if (this.#bindings.has(key)) fail("ERR_CAPABILITY_V1_BINDING_AMBIGUOUS", key);
+      this.#bindings.set(key, admitted);
     }
   }
 
@@ -107,7 +109,7 @@ export class CapabilityRouterV1 {
   }
 
   #bindingFor(request) {
-    const binding = this.bindings.get(Buffer.from(request.interfaceId).toString("hex"));
+    const binding = this.#bindings.get(Buffer.from(request.interfaceId).toString("hex"));
     if (!binding) fail("ERR_CAPABILITY_V1_INTERFACE_UNCOVERED");
     if (!sameBytes(request.payloadSchemaId, binding.payloadSchemaId) ||
         !sameBytes(request.resultSchemaId, binding.resultSchemaId)) {

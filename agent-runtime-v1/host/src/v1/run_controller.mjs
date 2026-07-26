@@ -169,9 +169,13 @@ export class RunControllerV1 {
     fuel = null,
     hostMetadata = new Uint8Array(0),
     effectMetadata = {},
+    expectedHead = undefined,
   } = {}) {
     const head = await this.headStore.readHead(runId, branchId);
     if (head === null) fail('ERR_APPLICATION_V1_BRANCH_NOT_FOUND');
+    if (expectedHead !== undefined && !sameControllerHead(head, makeHead(expectedHead))) {
+      fail('ERR_APPLICATION_V1_HEAD_CONFLICT');
+    }
     this.#assertHeadApplication(head);
     const parentBytes = await this.blockStore.getBlock(head.frameRef);
     const parent = decodeFrame(parentBytes, this.#manifest.limits);
@@ -466,4 +470,15 @@ function forkJournalBindingId({
     .update(Buffer.from([0]))
     .update(JSON.stringify(snapshot))
     .digest('hex');
+}
+
+function sameControllerHead(left, right) {
+  return left.generation === right.generation &&
+    left.applicationId === right.applicationId &&
+    left.frameId === right.frameId &&
+    left.frameRef.algorithm === right.frameRef.algorithm &&
+    left.frameRef.checksum === right.frameRef.checksum &&
+    left.frameRef.byteLength === right.frameRef.byteLength &&
+    left.status === right.status &&
+    left.journalBindingId === right.journalBindingId;
 }

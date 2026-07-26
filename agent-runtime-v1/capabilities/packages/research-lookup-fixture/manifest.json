@@ -43,8 +43,8 @@
     "worldApplicationRelease": "v1.0.0-rc.2"
   },
   "packageName": "@tkersey/world-capabilities/research-lookup-fixture",
-  "packageVersion": "1.0.0-rc.3",
-  "packFingerprint": "97f8684e8eeb722bb8020a2d6dee0236c75e0aac332f43e01aedb1a0920b93a3",
+  "packageVersion": "1.0.0-rc.4",
+  "packFingerprint": "ff4cecaf449db1bf2032dd22e1b0dcca94c02091ba547719fe36089dd61c205e",
   "packFormatVersion": "foundry-effect-pack-v1",
   "recoverSupport": true,
   "recoveryClass": "pure",
