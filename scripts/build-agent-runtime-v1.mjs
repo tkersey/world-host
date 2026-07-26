@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { ApplicationWorker } from '../src/v1/index.mjs';
+import { WORLD_HOST_RELEASE_SOURCE_PATHS } from './agent-runtime-v1-release-source.mjs';
 import { checkAgentRuntimeV1Pack } from './check-agent-runtime-v1-pack.mjs';
 
 const BOUNDARY_RELEASE = Object.freeze({
@@ -67,16 +68,10 @@ const sourceCommits = options.releaseStatus === 'development'
   : {
       boundaryGitCommit: BOUNDARY_RELEASE_GIT_COMMIT,
       worldGitCommit: WORLD_RELEASE_GIT_COMMIT,
-      worldHostGitCommit: await sourceCommit(options.worldHostRepo, [
-        'bin/world-host-v1.mjs',
-        'docs',
-        'scripts/build-agent-runtime-v1.mjs',
-        'scripts/check-agent-runtime-v1-pack.mjs',
-        'scripts/run-agent-runtime-v1-conformance.mjs',
-        'src/bun/application_v1_cli.mjs',
-        'src/bun/application_v1_inspection_worker.mjs',
-        'src/v1',
-      ]),
+      worldHostGitCommit: await sourceCommit(
+        options.worldHostRepo,
+        WORLD_HOST_RELEASE_SOURCE_PATHS,
+      ),
       worldCapabilitiesGitCommit: CAPABILITY_RELEASE.gitCommit,
     };
 const worldReleaseMaterialization = options.releaseStatus === 'release-candidate'
