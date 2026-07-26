@@ -29,7 +29,7 @@ Check the distribution without loading capability adapters during static pack
 inspection:
 
 ```sh
-bun scripts/check-agent-runtime-v1-pack.mjs ./agent-runtime-v1
+bun agent-runtime-v1/conformance/check-pack.mjs ./agent-runtime-v1
 ```
 
 Run the lifecycle and negative scenarios using only files inside the pack:
