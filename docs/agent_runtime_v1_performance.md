@@ -44,10 +44,10 @@ Fabric-plan loader, or source checkout. The application artifacts are
 WASM uses 64 MiB linear memory and additionally requires an
 `Executable.Image`.
 
-No percentage speedup is claimed. The release candidate satisfies the intended
-cutover criterion through smaller deployment authority and fewer runtime
-boundaries; future optimization must preserve the same Frame and effect
-semantics.
+No percentage speedup is claimed. The released v1.0.0 pack satisfies the
+intended cutover criterion through smaller deployment authority and fewer
+runtime boundaries; future optimization must preserve the same Frame and
+effect semantics.
 
 Reproduce the local measurement:
 

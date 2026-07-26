@@ -60,8 +60,8 @@ requires reviewed and pinned Boundary, World, world-host, and capability
 artifacts plus the cutover gates in `v0_v1_profiles.md`. Existing v0 runs remain
 on Carrier v0; they are not translated into v1 Frames.
 
-The checked-in pack is a release candidate with exact source commits, public
-Boundary and World package identities, and checksum-bound world-capabilities
-release assets. See
+The checked-in pack is the released v1.0.0 distribution. It binds exact source
+commits, public Boundary and World package identities, and checksum-bound
+world-capabilities release assets. See
 [`agent_runtime_v1_performance.md`](agent_runtime_v1_performance.md) for its
 structural and environment-specific performance report.
