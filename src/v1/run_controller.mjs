@@ -108,6 +108,7 @@ export class RunControllerV1 {
         handlerId: 'migration-import',
         handlerConfigurationId: 'receiver-independent-v1',
         recoveryClass: 'replayable',
+        fuel: admitted.retainedEffectFuel,
       });
     }
     const advanced = await headStore.advanceHeadIfCurrent(runId, branchId, null, head);
@@ -197,6 +198,7 @@ export class RunControllerV1 {
           handlerConfigurationId: effectMetadata.handlerConfigurationId,
           recoveryClass: effectMetadata.recoveryClass,
           externalTransactionRef: effectMetadata.externalTransactionRef,
+          fuel,
         });
         await this.#fault('after-result-persistence', { runId, branchId, head, parent, persisted });
       } else {
@@ -226,12 +228,38 @@ export class RunControllerV1 {
   }
 
   async forkBranch(runId, sourceBranchId, targetBranchId) {
-    const source = await this.headStore.readHead(runId, sourceBranchId);
-    if (source === null) fail('ERR_APPLICATION_V1_BRANCH_NOT_FOUND');
-    this.#assertHeadApplication(source);
+    const current = await this.readCurrentFrame(runId, sourceBranchId);
+    if (current === null) fail('ERR_APPLICATION_V1_BRANCH_NOT_FOUND');
+    const source = current.head;
+    const sourceFrame = current.frame;
+    let retained = null;
+    if (sourceFrame.status === FrameStatus.needsEffect) {
+      retained = await this.effectJournal.readResult({
+        runId,
+        branchId: sourceBranchId,
+        parentFrameId: sourceFrame.frameId,
+        request: sourceFrame.pendingEffect,
+        limits: this.#manifest.limits,
+      });
+    }
     const target = makeHead({ ...source, generation: 0 });
     const result = await this.headStore.advanceHeadIfCurrent(runId, targetBranchId, null, target);
     if (!result.advanced) fail('ERR_APPLICATION_V1_BRANCH_EXISTS');
+    if (retained !== null) {
+      await this.effectJournal.persistResult({
+        runId,
+        branchId: targetBranchId,
+        parentFrameId: sourceFrame.frameId,
+        request: sourceFrame.pendingEffect,
+        result: retained.result,
+        limits: this.#manifest.limits,
+        handlerId: retained.record.handlerId,
+        handlerConfigurationId: retained.record.handlerConfigurationId,
+        recoveryClass: retained.record.recoveryClass,
+        externalTransactionRef: retained.record.externalTransactionRef,
+        fuel: retained.record.fuel,
+      });
+    }
     return result.current;
   }
 
@@ -239,6 +267,7 @@ export class RunControllerV1 {
     const current = await this.readCurrentFrame(runId, branchId);
     if (current === null) fail('ERR_APPLICATION_V1_BRANCH_NOT_FOUND');
     let retainedEffectResultBytes = null;
+    let retainedEffectFuel = null;
     if (current.frame.status === FrameStatus.needsEffect) {
       const retained = await this.effectJournal.readResult({
         runId,
@@ -247,7 +276,10 @@ export class RunControllerV1 {
         request: current.frame.pendingEffect,
         limits: this.#manifest.limits,
       });
-      if (retained !== null) retainedEffectResultBytes = Buffer.from(retained.result.encodedBytes);
+      if (retained !== null) {
+        retainedEffectResultBytes = Buffer.from(retained.result.encodedBytes);
+        retainedEffectFuel = retained.record.fuel;
+      }
     }
     return Object.freeze({
       bundleVersion: 'world-host.application-migration-v1',
@@ -260,6 +292,7 @@ export class RunControllerV1 {
       frameStatus: current.frame.status,
       frameBytes: Buffer.from(current.frameBytes),
       retainedEffectResultBytes,
+      retainedEffectFuel,
     });
   }
 
@@ -338,6 +371,15 @@ function assertMigrationBundle(bundle) {
       !Number.isInteger(bundle.frameStatus) || bundle.frameStatus < 0 || bundle.frameStatus > 4) {
     fail('ERR_APPLICATION_V1_MIGRATION_BUNDLE');
   }
+  const retainedEffectResultBytes = bundle.retainedEffectResultBytes === null
+    ? null
+    : Buffer.from(assertBytes(bundle.retainedEffectResultBytes, 'retainedEffectResultBytes'));
+  const retainedEffectFuel = bundle.retainedEffectFuel === null
+    ? null
+    : retainedFuel(bundle.retainedEffectFuel);
+  if ((retainedEffectResultBytes === null) !== (retainedEffectFuel === null)) {
+    fail('ERR_APPLICATION_V1_MIGRATION_RESULT');
+  }
   return Object.freeze({
     bundleVersion: bundle.bundleVersion,
     applicationId: bundle.applicationId,
@@ -348,8 +390,14 @@ function assertMigrationBundle(bundle) {
     frameArtifactChecksum: bundle.frameArtifactChecksum,
     frameStatus: bundle.frameStatus,
     frameBytes: Buffer.from(assertBytes(bundle.frameBytes, 'frameBytes')),
-    retainedEffectResultBytes: bundle.retainedEffectResultBytes === null
-      ? null
-      : Buffer.from(assertBytes(bundle.retainedEffectResultBytes, 'retainedEffectResultBytes')),
+    retainedEffectResultBytes,
+    retainedEffectFuel,
   });
+}
+
+function retainedFuel(value) {
+  if (typeof value !== 'string' || !/^[1-9][0-9]*$/.test(value)) {
+    fail('ERR_APPLICATION_V1_MIGRATION_RESULT');
+  }
+  return value;
 }

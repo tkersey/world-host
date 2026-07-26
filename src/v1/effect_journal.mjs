@@ -31,12 +31,15 @@ export class MemoryEffectJournalV1 extends EffectJournalV1 {
     handlerConfigurationId = 'operator-supplied',
     recoveryClass = 'replayable',
     externalTransactionRef = null,
+    fuel = null,
   }) {
     const admittedResult = admitEffectJournalResult(request, result, limits);
+    const admittedFuel = admitJournalFuel(fuel ?? limits.maximumFuelPerStep, limits);
     const key = effectJournalKey(runId, branchId, parentFrameId, request.requestId);
     const previous = this.records.get(key);
     if (previous !== undefined) {
       if (previous.resultId !== hex(admittedResult.resultId)) fail('ERR_APPLICATION_V1_EFFECT_RESULT_CONFLICT');
+      if (previous.fuel !== admittedFuel) fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL_CONFLICT');
       return cloneRecord(previous);
     }
 
@@ -52,6 +55,7 @@ export class MemoryEffectJournalV1 extends EffectJournalV1 {
       handlerConfigurationId,
       recoveryClass,
       externalTransactionRef,
+      fuel: admittedFuel,
     });
     this.records.set(key, record);
     return cloneRecord(record);
@@ -85,6 +89,7 @@ export function createEffectJournalRecord({
   handlerConfigurationId,
   recoveryClass,
   externalTransactionRef,
+  fuel,
 }) {
   return assertEffectJournalRecord({
     journalVersion: 'world-host.effect-journal-v1',
@@ -98,6 +103,7 @@ export function createEffectJournalRecord({
     handlerId,
     handlerConfigurationId,
     recoveryClass,
+    fuel: requiredFuel(fuel),
     state: 'resolved',
     resultId: hex(result.resultId),
     resultRef,
@@ -121,6 +127,7 @@ export function assertEffectJournalRecord(record) {
     handlerId: requiredText(record.handlerId, 'handlerId'),
     handlerConfigurationId: requiredText(record.handlerConfigurationId, 'handlerConfigurationId'),
     recoveryClass: requiredText(record.recoveryClass, 'recoveryClass'),
+    fuel: requiredFuel(record.fuel),
     state: record.state,
     resultId: digestHex(record.resultId, 'resultId'),
     resultRef: assertResultRef(record.resultRef),
@@ -130,6 +137,7 @@ export function assertEffectJournalRecord(record) {
 
 export async function readEffectJournalResult({ record, blockStore, request, limits }) {
   const admitted = assertEffectJournalRecord(record);
+  admitJournalFuel(admitted.fuel, limits);
   if (admitted.requestId !== hex(request.requestId) || admitted.idempotencyKey !== hex(request.idempotencyKey) ||
       admitted.requestArtifactChecksum !== requestArtifactChecksum(request)) {
     fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_MISMATCH');
@@ -139,6 +147,26 @@ export async function readEffectJournalResult({ record, blockStore, request, lim
   validateEffectResultForRequest(request, result, limits);
   if (hex(result.resultId) !== admitted.resultId) fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_MISMATCH');
   return Object.freeze({ record: cloneRecord(admitted), result });
+}
+
+export function admitJournalFuel(value, limits) {
+  let fuel;
+  try {
+    fuel = typeof value === 'bigint' ? value : BigInt(value);
+  } catch {
+    fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL');
+  }
+  if (fuel <= 0n || fuel > limits.maximumFuelPerStep) {
+    fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL');
+  }
+  return fuel.toString();
+}
+
+function requiredFuel(value) {
+  if (typeof value !== 'string' || !/^[1-9][0-9]*$/.test(value)) {
+    fail('ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL');
+  }
+  return value;
 }
 
 export function effectJournalKey(runId, branchId, parentFrameId, requestId) {

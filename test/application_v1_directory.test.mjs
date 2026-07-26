@@ -102,6 +102,20 @@ describe('World application v1 directory effect journal', () => {
       limits: firstLimits(),
     });
     assert.deepEqual(retained.result.encodedBytes, result.encodedBytes);
+    assert.equal(retained.record.fuel, firstLimits().maximumFuelPerStep.toString());
+
+    await assert.rejects(
+      () => reopened.effectJournal.persistResult({
+        runId: 'run',
+        branchId: 'main',
+        parentFrameId: request.parentFrameId,
+        request,
+        result,
+        limits: firstLimits(),
+        fuel: 1n,
+      }),
+      { code: 'ERR_APPLICATION_V1_EFFECT_JOURNAL_FUEL_CONFLICT' },
+    );
 
     const conflict = createEffectResult({
       requestId: request.requestId,
