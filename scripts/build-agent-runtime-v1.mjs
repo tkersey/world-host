@@ -174,7 +174,20 @@ await copySelected(path.join(capabilitiesRepo, 'docs'), options.out, [
 ], 'docs/world-capabilities');
 
 await mkdir(path.join(options.out, 'conformance'), { recursive: true });
-await copyFile(path.join(options.worldHostRepo, 'scripts/check-agent-runtime-v1-pack.mjs'), path.join(options.out, 'conformance/check-pack.mjs'));
+const checkerSource = await readFile(
+  path.join(options.worldHostRepo, 'scripts/check-agent-runtime-v1-pack.mjs'),
+  'utf8',
+);
+const checkerCommitToken = "'__WORLD_HOST_GIT_COMMIT__'";
+assert.equal(checkerSource.split(checkerCommitToken).length, 2,
+  'pack checker must contain exactly one world-host source commit token');
+const packagedChecker = options.releaseStatus === 'development'
+  ? checkerSource
+  : checkerSource.replace(
+      checkerCommitToken,
+      `'${sourceCommits.worldHostGitCommit}'`,
+    );
+await writeFile(path.join(options.out, 'conformance/check-pack.mjs'), packagedChecker);
 await copyFile(path.join(options.worldHostRepo, 'scripts/run-agent-runtime-v1-conformance.mjs'), path.join(options.out, 'conformance/run.mjs'));
 
 const capabilities = [];
@@ -269,7 +282,9 @@ if (worldReleaseMaterialization !== null) {
   temporaryRoots.delete(worldReleaseMaterialization.temporaryRoot);
 }
 
-const receipt = await checkAgentRuntimeV1Pack(options.out);
+const receipt = await checkAgentRuntimeV1Pack(options.out, {
+  expectedWorldHostGitCommit: sourceCommits.worldHostGitCommit,
+});
 process.stdout.write(`${JSON.stringify({
   command: 'build-agent-runtime-v1',
   output: options.out,

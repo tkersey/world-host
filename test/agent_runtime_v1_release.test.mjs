@@ -5,8 +5,7 @@ import { createHash } from 'node:crypto';
 import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-
-import { checkAgentRuntimeV1Pack } from '../scripts/check-agent-runtime-v1-pack.mjs';
+import { pathToFileURL } from 'node:url';
 
 describe('Agent Runtime v1 pack release identities', () => {
   it('builds and validates development packs without a Boundary checkout', async () => {
@@ -83,7 +82,7 @@ describe('Agent Runtime v1 pack release identities', () => {
         'capabilities/packages/research-lookup-fixture/conformance-receipt.json');
 
       await assert.rejects(
-        () => checkAgentRuntimeV1Pack(pack),
+        () => checkPack(pack),
         /released conformance receipt checksum mismatch/,
       );
     } finally {
@@ -115,7 +114,7 @@ describe('Agent Runtime v1 pack release identities', () => {
       await rewriteOuterChecksum(pack, relative);
 
       await assert.rejects(
-        () => checkAgentRuntimeV1Pack(pack),
+        () => checkPack(pack),
         /manifest identity mismatch/,
       );
     } finally {
@@ -146,14 +145,41 @@ describe('Agent Runtime v1 pack release identities', () => {
       await rewriteOuterChecksum(pack, 'manifest.json');
 
       await assert.rejects(
-        () => checkAgentRuntimeV1Pack(pack),
+        () => checkPack(pack),
         /reviewed manifest checksum mismatch/,
       );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('rejects a self-consistent unreviewed world-host source commit', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agent-runtime-v1-host-source-'));
+    const pack = path.join(root, 'agent-runtime-v1');
+    try {
+      await cp(path.resolve('agent-runtime-v1'), pack, { recursive: true });
+      const manifestPath = path.join(pack, 'manifest.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+      manifest.sourcePins.worldHostGitCommit = '0'.repeat(40);
+      await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+      await rewriteOuterChecksum(pack, 'manifest.json');
+
+      await assert.rejects(
+        () => checkPack(pack),
+        /reviewed world-host source commit mismatch/,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
+
+async function checkPack(pack) {
+  const checker = await import(
+    pathToFileURL(path.join(pack, 'conformance/check-pack.mjs')).href
+  );
+  return checker.checkAgentRuntimeV1Pack(pack);
+}
 
 function reviewedCapabilityFiles() {
   return {
