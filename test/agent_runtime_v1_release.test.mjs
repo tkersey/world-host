@@ -30,14 +30,14 @@ describe('Agent Runtime v1 pack release identities', () => {
     }
   });
 
-  it('rejects untracked files from release-candidate source paths', async () => {
+  it('rejects untracked files from released source paths', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agent-runtime-v1-untracked-'));
     const untracked = path.resolve('src/v1/untracked-release-source.mjs');
     try {
       await writeFile(untracked, 'export const untrackedReleaseSource = true;\n');
       const built = spawnSync(process.execPath, [
         path.resolve('scripts/build-agent-runtime-v1.mjs'),
-        '--release-status', 'release-candidate',
+        '--release-status', 'released',
         '--external-application-root', root,
         '--world-capabilities-runtime-archive', path.join(root, 'capabilities.tar.gz'),
         '--boundary-release-archive', path.join(root, 'boundary.tar.gz'),
@@ -66,7 +66,7 @@ describe('Agent Runtime v1 pack release identities', () => {
       manifest.sourcePins.boundaryGitCommit =
         '7f2472100454aa2cd5c62e07db0c1e23eaf46a77';
       manifest.sourcePins.worldGitCommit =
-        'a79265906bdf75d432b8f5286159598ef2282da0';
+        '1bbd613ed4e9b1b6fbdaf79eec15cbff92d014ab';
       Object.assign(manifest.sourcePins.worldCapabilitiesRelease, reviewedCapabilityFiles());
       await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
       await rewriteOuterChecksum(pack, 'manifest.json');
@@ -100,7 +100,7 @@ describe('Agent Runtime v1 pack release identities', () => {
       outerManifest.sourcePins.boundaryGitCommit =
         '7f2472100454aa2cd5c62e07db0c1e23eaf46a77';
       outerManifest.sourcePins.worldGitCommit =
-        'a79265906bdf75d432b8f5286159598ef2282da0';
+        '1bbd613ed4e9b1b6fbdaf79eec15cbff92d014ab';
       Object.assign(outerManifest.sourcePins.worldCapabilitiesRelease, reviewedCapabilityFiles());
       await writeFile(outerManifestPath, `${JSON.stringify(outerManifest, null, 2)}\n`);
       await rewriteOuterChecksum(pack, 'manifest.json');
@@ -184,13 +184,13 @@ async function checkPack(pack) {
 function reviewedCapabilityFiles() {
   return {
     researchManifestSha256:
-      'd4dd78c9e33094c7a1b68f58503f57418dd82148274272a5ec0dd645280c6787',
+      '696457f7134200bc294049bf92f7943bc89ca305038cf9a8c90d790e32bec2db',
     researchCorpusSha256:
-      '93b00d2b93f035f03bf8ed645a4fc82a60029d2e7f34a05ef0accf315c8944a5',
+      '485027cb5401bc12b84f3b9646c651214ee260881c8bc0f93ede5829efa24fc8',
     researchConformanceSha256:
       '51c401f45457984eba266483305ba1b7be3be9f5044ccabe573fa1544a4442e3',
     researchConformanceReceiptSha256:
-      'e7f067d21c38643ea436e1e4b22794b616f8ce69974048a881a537ad9e0e3eea',
+      '8f0c70ea42a11ebfe91bb721639f53026b59babfa24b66abb0e5f7d800d7b5a3',
     capabilityManifestSha256: {
       '@tkersey/world-capabilities/fixture-model':
         '1b29784e303e9e54253ff701e99adf73650d8b47effb0e61559051bfd7f61645',
@@ -201,7 +201,7 @@ function reviewedCapabilityFiles() {
       '@tkersey/world-capabilities/local-memory-kv':
         '5ba65a48e2a28c2b1b3cdcd27a433724997e915312dd5cd83560efee490106ee',
       '@tkersey/world-capabilities/research-lookup-fixture':
-        'd4dd78c9e33094c7a1b68f58503f57418dd82148274272a5ec0dd645280c6787',
+        '696457f7134200bc294049bf92f7943bc89ca305038cf9a8c90d790e32bec2db',
       '@tkersey/world-capabilities/sandbox-files':
         '7c087eeb01df5f8fed3dab1912a8cf14155c0dc23a88ba765c015c94bfbcb2eb',
     },

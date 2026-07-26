@@ -1,6 +1,6 @@
 {
   "formatVersion": "agent-runtime-v1-pack/v1",
-  "releaseStatus": "release-candidate",
+  "releaseStatus": "released",
   "protocols": {
     "applicationAbiVersion": 1,
     "frameFormatVersion": 1,
@@ -14,42 +14,42 @@
   "applications": [
     {
       "name": "one-effect",
-      "applicationId": "495375e1c26deff7c688c050d3d1395d02a05ab40f7e752f26798ef3b6f3be02",
+      "applicationId": "c5bbd24ac231b8fd4a455629b99d14c6abe86c19715310c35309c04438efe6a3",
       "applicationVersion": "1.0.0",
       "wasmPath": "applications/one-effect.world.wasm",
-      "wasmSha256": "1039ff09b31532c6443351a1d536921d6679f26bff9a330e4f9ba4213def0ab9",
+      "wasmSha256": "01cc5b36fe61f51b69e64f6811a94a29616ebdd65090924cff2ce8646af632ab",
       "manifestPath": "applications/one-effect.manifest.bin",
-      "manifestSha256": "76b70efc44815eadeaab45318e2789058bbd3d76094fce21738fda6939cab3b6",
+      "manifestSha256": "34aaf39129bdbd2dc8d65836d8a3ffa79d58b972ffd930cdaf88a0641a4d22ea",
       "provenance": "coordinated-fixture"
     },
     {
       "name": "skeleton-agent",
-      "applicationId": "aace35102fa37e6205d3d07592fd939f4a915c1a9566de754876a39cb4bbae42",
+      "applicationId": "9db9344c297dd7c2424020bf9bc5216b54a607b62c27243f0c559236eea33bb3",
       "applicationVersion": "1.0.0",
       "wasmPath": "applications/skeleton-agent.world.wasm",
-      "wasmSha256": "32731391f6124f623fe37850dc8e90b984e8213c178a11a22ca783cdd6798e0d",
+      "wasmSha256": "5e51b7955c66560d08897d32c92501073fd285f5fb1dc741ee459e446a60794a",
       "manifestPath": "applications/skeleton-agent.manifest.bin",
-      "manifestSha256": "415f00f17298428a8cd6bee962927ba9138b906128b53d2c682c128c7bd0150e",
+      "manifestSha256": "e22749011bc0e66002dd7ff7438e808a8823f895794bb73b63290227429c53c1",
       "provenance": "coordinated-fixture"
     },
     {
       "name": "fixture-agent",
-      "applicationId": "8b869e3685b2db6f527d65d14d0d0681ffce3c4a661a0c9b962cba7b6117b0e5",
+      "applicationId": "5e2118df0cec520a9a25584cb03565e34a052db3c0ae44ff14bddf3c3fc3d519",
       "applicationVersion": "1.0.0",
       "wasmPath": "applications/fixture-agent.world.wasm",
-      "wasmSha256": "1d775975cb7234d2316e08e2c1c253f463c43798adb813ac4d208f4e76182e50",
+      "wasmSha256": "01e31d5c2a1017b742e981052cae20e66d4fad2ac5de3f5c9670799a648e9e55",
       "manifestPath": "applications/fixture-agent.manifest.bin",
-      "manifestSha256": "732d6199b221f7ab5e495bf7747e0b6f9efb7e3d037f537cbdcf385bd4014642",
+      "manifestSha256": "43abc503ce2ccef6b5e12a20e7973b1f99e712db086e16ce8ba44f0b6d43142c",
       "provenance": "coordinated-fixture"
     },
     {
       "name": "research-digest-agent",
-      "applicationId": "88e5a053c2a16fe9093abe4aa9f0c34d3e56abc9d1080aff5eb346687e72be85",
+      "applicationId": "ae049a7b2a650ddd41a4d63602d5cdd3060ed644054c8d4532fbdd45e9a048c9",
       "applicationVersion": "1.0.0",
       "wasmPath": "applications/research-digest-agent.world.wasm",
-      "wasmSha256": "ced222d3537ca9b36165278190baef8b7ef79b091876d685a1dc24d5a926caca",
+      "wasmSha256": "c5cb0bdde50f88165fa24dfad31baa46e5719e911a4ca77d39c5e88df6f5074d",
       "manifestPath": "applications/research-digest-agent.manifest.bin",
-      "manifestSha256": "e48349346439a8b16040d9f98d90b8ab1e559e56be9a18ca10f7d4a1f1e32c4c",
+      "manifestSha256": "fd9298888aee141948cc62477dc3bbb4ccf89d60a9ad4ac2207ed59832a67f87",
       "provenance": "external-clean-room"
     }
   ],
@@ -85,9 +85,9 @@
     {
       "packageName": "@tkersey/world-capabilities/research-lookup-fixture",
       "path": "capabilities/packages/research-lookup-fixture",
-      "packFingerprint": "ff4cecaf449db1bf2032dd22e1b0dcca94c02091ba547719fe36089dd61c205e",
-      "packageVersion": "1.0.0-rc.4",
-      "manifestSha256": "d4dd78c9e33094c7a1b68f58503f57418dd82148274272a5ec0dd645280c6787"
+      "packFingerprint": "c3106b770e2d14237c981b4671da3d42dfbaed33eed81ccc78c257a42419354e",
+      "packageVersion": "1.0.0",
+      "manifestSha256": "696457f7134200bc294049bf92f7943bc89ca305038cf9a8c90d790e32bec2db"
     },
     {
       "packageName": "@tkersey/world-capabilities/sandbox-files",
@@ -116,7 +116,7 @@
   "sourcePins": {
     "boundaryPackageVersion": "0.7.0",
     "boundaryStaticMachineAbiVersion": 1,
-    "worldPackageVersion": "1.0.0-rc.2",
+    "worldPackageVersion": "1.0.0",
     "worldApplicationAbiVersion": 1,
     "artifactIdentity": "sha256",
     "boundaryRelease": {
@@ -125,40 +125,40 @@
       "url": "https://github.com/tkersey/boundary/archive/refs/tags/v0.7.0.tar.gz"
     },
     "worldRelease": {
-      "tag": "v1.0.0-rc.2",
-      "packageHash": "world-1.0.0-rc.2-XXTUeOXYhwC1anDePj7Lr4SfwDCxG-ofPw92_-PGGyKv",
-      "url": "https://github.com/tkersey/world/archive/refs/tags/v1.0.0-rc.2.tar.gz"
+      "tag": "v1.0.0",
+      "packageHash": "world-1.0.0-XXTUeF0tiAC_5jqj2oVDvgGmmh8c7CRCnuaG8p2i9Zk_",
+      "url": "https://github.com/tkersey/world/archive/refs/tags/v1.0.0.tar.gz"
     },
     "worldCapabilitiesRelease": {
-      "tag": "v1.0.0-rc.4",
-      "gitCommit": "45d023f2bd0658e377142eda9b5103589308870c",
-      "researchPackFingerprint": "ff4cecaf449db1bf2032dd22e1b0dcca94c02091ba547719fe36089dd61c205e",
-      "researchPackAssetSha256": "96ea017436264f7574e1dd8e385df3acb0cde97babd855ca3b98ee43d56f4d1f",
-      "runtimeAssetSha256": "b6b87dc78e90d5ba626f20489016bab4c0f3ff39ae1e9ce77c2ab76ed1150cfc",
-      "researchManifestSha256": "d4dd78c9e33094c7a1b68f58503f57418dd82148274272a5ec0dd645280c6787",
-      "researchCorpusSha256": "93b00d2b93f035f03bf8ed645a4fc82a60029d2e7f34a05ef0accf315c8944a5",
+      "tag": "v1.0.0",
+      "gitCommit": "bb5ed3ebd695b0343d58e5ae2ff658653ff69997",
+      "researchPackFingerprint": "c3106b770e2d14237c981b4671da3d42dfbaed33eed81ccc78c257a42419354e",
+      "researchPackAssetSha256": "99e57ec54d8c39f305aa162e4ba334d102f358eba3ccb78469662bd676e0b6c4",
+      "runtimeAssetSha256": "1d9011faf1932de66ca4f7f24dcfaea41671175999bf278683bda4702854e0ca",
+      "researchManifestSha256": "696457f7134200bc294049bf92f7943bc89ca305038cf9a8c90d790e32bec2db",
+      "researchCorpusSha256": "485027cb5401bc12b84f3b9646c651214ee260881c8bc0f93ede5829efa24fc8",
       "researchConformanceSha256": "51c401f45457984eba266483305ba1b7be3be9f5044ccabe573fa1544a4442e3",
-      "researchConformanceReceiptSha256": "e7f067d21c38643ea436e1e4b22794b616f8ce69974048a881a537ad9e0e3eea",
+      "researchConformanceReceiptSha256": "8f0c70ea42a11ebfe91bb721639f53026b59babfa24b66abb0e5f7d800d7b5a3",
       "capabilityManifestSha256": {
         "@tkersey/world-capabilities/fixture-model": "1b29784e303e9e54253ff701e99adf73650d8b47effb0e61559051bfd7f61645",
         "@tkersey/world-capabilities/generic-http-json": "8c83e794ad6f507f6c2cb9040b464d2e62b7880fcb047a46bf73e1e519adde3e",
         "@tkersey/world-capabilities/human-approval": "2afd6e5ad491d2c8b72be32176922186d48e151bd36c238afadd67c342a6991e",
         "@tkersey/world-capabilities/local-memory-kv": "5ba65a48e2a28c2b1b3cdcd27a433724997e915312dd5cd83560efee490106ee",
-        "@tkersey/world-capabilities/research-lookup-fixture": "d4dd78c9e33094c7a1b68f58503f57418dd82148274272a5ec0dd645280c6787",
+        "@tkersey/world-capabilities/research-lookup-fixture": "696457f7134200bc294049bf92f7943bc89ca305038cf9a8c90d790e32bec2db",
         "@tkersey/world-capabilities/sandbox-files": "7c087eeb01df5f8fed3dab1912a8cf14155c0dc23a88ba765c015c94bfbcb2eb"
       }
     },
     "externalApplicationRelease": {
       "name": "research-digest-agent",
-      "worldReleaseTag": "v1.0.0-rc.2",
-      "wasmSha256": "ced222d3537ca9b36165278190baef8b7ef79b091876d685a1dc24d5a926caca",
-      "manifestSha256": "e48349346439a8b16040d9f98d90b8ab1e559e56be9a18ca10f7d4a1f1e32c4c"
+      "worldReleaseTag": "v1.0.0",
+      "wasmSha256": "c5cb0bdde50f88165fa24dfad31baa46e5719e911a4ca77d39c5e88df6f5074d",
+      "manifestSha256": "fd9298888aee141948cc62477dc3bbb4ccf89d60a9ad4ac2207ed59832a67f87"
     },
-    "worldHostPackageVersion": "1.0.0-rc.2",
+    "worldHostPackageVersion": "1.0.0",
     "boundaryGitCommit": "7f2472100454aa2cd5c62e07db0c1e23eaf46a77",
-    "worldGitCommit": "a79265906bdf75d432b8f5286159598ef2282da0",
-    "worldHostGitCommit": "0bce534f12f926d069be8c0ac5a458a2e9f9f30c",
-    "worldCapabilitiesGitCommit": "45d023f2bd0658e377142eda9b5103589308870c"
+    "worldGitCommit": "1bbd613ed4e9b1b6fbdaf79eec15cbff92d014ab",
+    "worldHostGitCommit": "957fbe0c98f8f4b104530e995c8e0bf69c60e8f7",
+    "worldCapabilitiesGitCommit": "bb5ed3ebd695b0343d58e5ae2ff658653ff69997"
   },
   "externality": {
     "application": "research-digest-agent",

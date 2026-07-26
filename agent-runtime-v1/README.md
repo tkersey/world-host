@@ -1,4 +1,4 @@
-# Agent Runtime v1 release-candidate pack
+# Agent Runtime v1 released pack
 
 This pack contains four application-specific World WASM modules, including one
 clean-room Research Digest application, the minimal
@@ -9,7 +9,7 @@ It requires Bun but no Boundary, World, world-host, or world-capabilities source
 checkout. It contains no Boundary Module, Executable.Image, TurnClosure, or
 universal World runtime.
 
-Release status: `release-candidate`.
+Release status: `released`.
 
 ```sh
 bun conformance/check-pack.mjs

@@ -1,37 +1,37 @@
 {
+  "applicationId": "ae049a7b2a650ddd41a4d63602d5cdd3060ed644054c8d4532fbdd45e9a048c9",
+  "effectRequestBase64": "V1JMREVSUTEBAAAApXNqOdU/GtK0CL9ZfweN+hOnB3SujZrlb3IH6Xg37fauBJp7KmUN3UGk1jYC1c3TBg7WRAVMjUUy+91F6aBIyQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA20QfTaLaK01Wtw8oVnupJ1y1UzZS2D+nvAXI43xbYclMhXY9u/LeWCTrgjDUgkITBmChIprSiFfqrS2FMV387m1B8hut86A6eYKFOMqfLjiZEgzhzpYxS84JSrWFySsSfWP5SsjrIXIXJgAAABoAAABwb3J0YWJsZSBhbGdlYnJhaWMgZWZmZWN0cwIAAAAAAAAAcf6BMdh39fnN+omRDf6kd1gbQNB/GE/B5Vb07RcL6ySAAAAAAAAAAAAABAADAAAA",
   "formatVersion": "research-lookup-fixture-corpus-v1",
-  "worldRelease": {
-    "tag": "v1.0.0-rc.2",
-    "packageHash": "world-1.0.0-rc.2-XXTUeOXYhwC1anDePj7Lr4SfwDCxG-ofPw92_-PGGyKv",
-    "archiveSha256": "0c96627807e53364665572d8628a431073d051b0bc428bf0a1428e4387c9d9de",
-    "applicationWasmSha256": "ced222d3537ca9b36165278190baef8b7ef79b091876d685a1dc24d5a926caca",
-    "applicationManifestSha256": "e48349346439a8b16040d9f98d90b8ab1e559e56be9a18ca10f7d4a1f1e32c4c"
-  },
-  "applicationId": "88e5a053c2a16fe9093abe4aa9f0c34d3e56abc9d1080aff5eb346687e72be85",
-  "effectRequestBase64": "V1JMREVSUTEBAAAANlAsJi4ztHs/sOKOp26C1L+pKJSp9Qp8jpVcj++8YG+I5aBTwqFv6Qk6vkqp8MNNPlarydEICv9es0ZofnK+hQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA20QfTaLaK01Wtw8oVnupJ1y1UzZS2D+nvAXI43xbYclMhXY9u/LeWCTrgjDUgkITBmChIprSiFfqrS2FMV387m1B8hut86A6eYKFOMqfLjiZEgzhzpYxS84JSrWFySsSfWP5SsjrIXIXJgAAABoAAABwb3J0YWJsZSBhbGdlYnJhaWMgZWZmZWN0cwIAAAAAAAAA7yjfuvQdx0IRLIRg6Y28E4mOQ9CWBMWk5A4K9vj5KP6AAAAAAAAAAAAABAADAAAA",
   "interface": {
-    "label": "research.lookup.v1",
+    "authorityRequirements": "128",
     "interfaceId": "56b70f28567ba9275cb5533652d83fa7bc05c8e37c5b61c94c85763dbbf2de58",
+    "label": "research.lookup.v1",
     "payloadSchemaId": "24eb8230d48242130660a1229ad28857eaad2d85315dfcee6d41f21badf3a03a",
-    "resultSchemaId": "79828538ca9f2e3899120ce1ce96314bce094ab585c92b127d63f94ac8eb2172",
-    "authorityRequirements": "128"
+    "resultSchemaId": "79828538ca9f2e3899120ce1ce96314bce094ab585c92b127d63f94ac8eb2172"
   },
   "request": {
-    "query": "portable algebraic effects",
-    "maximumItems": "2"
+    "maximumItems": "2",
+    "query": "portable algebraic effects"
   },
   "response": {
-    "first": {
-      "title": "Effect rows as application boundaries",
-      "summary": "Static closure leaves authority outside the guest."
-    },
-    "second": {
-      "title": "Portable continuations",
-      "summary": "Canonical Frames resume in fresh WASM instances."
-    },
     "digestResult": {
       "digest": "Static closure keeps authority external; canonical Frames keep continuation portable.",
       "itemCount": "2"
+    },
+    "first": {
+      "summary": "Static closure leaves authority outside the guest.",
+      "title": "Effect rows as application boundaries"
+    },
+    "second": {
+      "summary": "Canonical Frames resume in fresh WASM instances.",
+      "title": "Portable continuations"
     }
+  },
+  "worldRelease": {
+    "applicationManifestSha256": "fd9298888aee141948cc62477dc3bbb4ccf89d60a9ad4ac2207ed59832a67f87",
+    "applicationWasmSha256": "c5cb0bdde50f88165fa24dfad31baa46e5719e911a4ca77d39c5e88df6f5074d",
+    "archiveSha256": "9976802090738d61beb49522207c086cf1f529f2f39002de7b54d1c10808b944",
+    "packageHash": "world-1.0.0-XXTUeF0tiAC_5jqj2oVDvgGmmh8c7CRCnuaG8p2i9Zk_",
+    "tag": "v1.0.0"
   }
 }
