@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const MAXIMUM_FILE_BYTES = 64 << 20;
-const REVIEWED_WORLD_HOST_GIT_COMMIT = '957fbe0c98f8f4b104530e995c8e0bf69c60e8f7';
+const REVIEWED_WORLD_HOST_GIT_COMMIT = 'b66324515577323325deccf532efd85e370f51b3';
 const REVIEWED_WORLD_HOST_SOURCE_SHA256 = {"host/bin/world-host-v1.mjs":"93900063f5069de8afb94c1e9e59a5ad6cba9a3dd14533f69b69b388d55e3f25","host/src/bun/application_v1_cli.mjs":"b998b46adf937d62c622c724a276e0e05f878cf8c95eb8e85e70084dd227431a","host/src/bun/application_v1_inspection_worker.mjs":"949c101c92010e3e55d2feaea30e01c64a3ff16ea6a112ad2ea882a6a18d633f","host/src/v1/application_worker.mjs":"34fa722e47e550a5405df7a6db965d999f58fb51447a9bd179de88f694e11e50","host/src/v1/directory_storage.mjs":"45b08e986ba63ac332012cdd4c8bebc60880368961f6884ba5c9a31a5754e92c","host/src/v1/effect_journal.mjs":"fc1d390229e07110940d294e844e94a6963fb2ee60cef1bac34a801fd5f58453","host/src/v1/errors.mjs":"d6bf2c3d68347ed3730f1594f652521558b5b4e43ef2333259312a7015180427","host/src/v1/index.mjs":"e033d4c61ede2b28bcaa75f60f3e9f0c5b94a02847fb1320b9cf5da25b85dc20","host/src/v1/protocol.mjs":"63d6f7e79e41b0401d4cf3740dbcb26a2173946e99533e6bf6d48f4ec2cdcabc","host/src/v1/run_controller.mjs":"9f1afbb90f9b6725abdfbf138f204eb541dd2e3b7c84199e508f17275ac0b5fb","host/src/v1/storage.mjs":"0493514c9190637868f5c57cc8e7dbb4891cba48f5106d2037fac89678bf090b","host/src/v1/wasm_module.mjs":"ca87d67c5b58c2f736de2c0af7a392ff7b11a9f830258967bc1114bcd6632d0f"};
 const REQUIRED_SCENARIOS = [
   'one-effect',
