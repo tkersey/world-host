@@ -6,7 +6,9 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const pack = await packRoot(process.argv[2]);
-const { checkAgentRuntimeV1Pack } = await import(checkerUrl());
+const { checkAgentRuntimeV1Pack } = await import(
+  pathToFileURL(path.join(pack, 'conformance/check-pack.mjs')).href
+);
 const check = await checkAgentRuntimeV1Pack(pack);
 const host = await import(pathToFileURL(path.join(pack, 'host/src/v1/index.mjs')).href);
 const capabilities = await import(pathToFileURL(path.join(pack, 'capabilities/src/v1/index.mjs')).href);
@@ -929,12 +931,4 @@ async function packRoot(argument) {
   const current = fileURLToPath(import.meta.url);
   if (path.basename(path.dirname(current)) === 'conformance') return path.resolve(path.dirname(current), '..');
   return path.resolve('agent-runtime-v1');
-}
-
-function checkerUrl() {
-  const current = fileURLToPath(import.meta.url);
-  const filename = path.basename(path.dirname(current)) === 'conformance'
-    ? 'check-pack.mjs'
-    : 'check-agent-runtime-v1-pack.mjs';
-  return pathToFileURL(path.join(path.dirname(current), filename)).href;
 }

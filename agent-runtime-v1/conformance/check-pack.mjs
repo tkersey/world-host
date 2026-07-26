@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const MAXIMUM_FILE_BYTES = 64 << 20;
+const REVIEWED_WORLD_HOST_GIT_COMMIT = '31d36f6d986348db1d64ecfe4a53f5423151383b';
 const REQUIRED_SCENARIOS = [
   'one-effect',
   'skeleton-agent',
@@ -63,6 +64,7 @@ export async function checkAgentRuntimeV1Pack(packPath, options = {}) {
 
   const manifest = JSON.parse(await readText(root, 'manifest.json'));
   assertPackManifest(manifest);
+  assertReviewedWorldHostSource(manifest, options);
   if (options.requiredReleaseStatus !== undefined) {
     assert.equal(manifest.releaseStatus, options.requiredReleaseStatus, 'release status mismatch');
   }
@@ -323,8 +325,6 @@ function assertPackManifest(manifest) {
       '7f2472100454aa2cd5c62e07db0c1e23eaf46a77');
     assert.equal(manifest.sourcePins.worldGitCommit,
       'a79265906bdf75d432b8f5286159598ef2282da0');
-    assert(/^[0-9a-f]{40}$/.test(manifest.sourcePins.worldHostGitCommit),
-      'invalid source pin: worldHostGitCommit');
     assert.equal(manifest.sourcePins.worldCapabilitiesGitCommit,
       manifest.sourcePins.worldCapabilitiesRelease.gitCommit);
     assert.equal(externalApplication.wasmSha256,
@@ -332,6 +332,18 @@ function assertPackManifest(manifest) {
     assert.equal(externalApplication.manifestSha256,
       manifest.sourcePins.externalApplicationRelease.manifestSha256);
   }
+}
+
+function assertReviewedWorldHostSource(manifest, options) {
+  if (manifest.releaseStatus === 'development') return;
+  const expected = options.expectedWorldHostGitCommit ?? REVIEWED_WORLD_HOST_GIT_COMMIT;
+  assert(/^[0-9a-f]{40}$/.test(expected),
+    'release checker is not bound to a reviewed world-host source commit');
+  assert.equal(
+    manifest.sourcePins.worldHostGitCommit,
+    expected,
+    'reviewed world-host source commit mismatch',
+  );
 }
 
 async function safeRoot(packPath) {
