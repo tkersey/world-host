@@ -31,9 +31,10 @@ jobs:
           tar -xJf "$zig_archive" --strip-components=1 -C "$zig_root"
           "$zig_root/zig" version
       - name: Run deterministic tests
+        env:
+          WORLD_HOST_ZIG_EXE: ${{ github.workspace }}/.ci-toolchain/zig-0.16.0/zig
         run: |
-          export PATH="$GITHUB_WORKSPACE/.ci-toolchain/zig-0.16.0:$PATH"
-          zig version
+          "$WORLD_HOST_ZIG_EXE" version
           bun test --timeout 30000
       - run: bun run proof:v1-tests
       - run: bun run check:public-runtime-v1

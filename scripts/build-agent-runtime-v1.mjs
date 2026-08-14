@@ -382,7 +382,7 @@ async function prepareOutput(output) {
 
 async function buildWorldApplications(worldRepo, releaseMaterialization = null) {
   const args = [
-    'zig',
+    options.zigExecutable,
     'build',
     'world-one-effect-application-wasm',
     'world-skeleton-agent-wasm',
@@ -458,6 +458,7 @@ function parseArgs(args) {
     externalApplicationRoot: null,
     out: path.resolve('agent-runtime-v1'),
     releaseStatus: 'development',
+    zigExecutable: 'zig',
   };
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === '--boundary-repo') result.boundaryRepo = path.resolve(requireValue(args, ++index, '--boundary-repo'));
@@ -465,6 +466,7 @@ function parseArgs(args) {
       result.boundaryReleaseArchive = path.resolve(requireValue(args, ++index, '--boundary-release-archive'));
     }
     else if (args[index] === '--world-repo') result.worldRepo = path.resolve(requireValue(args, ++index, '--world-repo'));
+    else if (args[index] === '--zig') result.zigExecutable = requireValue(args, ++index, '--zig');
     else if (args[index] === '--world-release-archive') {
       result.worldReleaseArchive = path.resolve(requireValue(args, ++index, '--world-release-archive'));
     }
@@ -582,7 +584,7 @@ async function verifyZigReleaseArchive(archivePath, release, globalCache, cwd, l
   const info = await lstat(archivePath);
   assert(info.isFile() && !info.isSymbolicLink(), `${label} release archive must be a regular file`);
   const fetch = Bun.spawn([
-    'zig',
+    options.zigExecutable,
     'fetch',
     '--global-cache-dir',
     globalCache,

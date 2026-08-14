@@ -26,6 +26,7 @@ describe('Agent Runtime v1 pack release identities', () => {
         path.resolve('scripts/build-agent-runtime-v1.mjs'),
         '--boundary-repo', path.join(root, 'missing-boundary'),
         '--capabilities-repo', capabilitiesRepo,
+        '--zig', process.env.WORLD_HOST_ZIG_EXE ?? 'zig',
         '--out', pack,
       ], {
         cwd: process.cwd(),
