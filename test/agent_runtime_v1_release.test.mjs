@@ -25,8 +25,9 @@ describe('Agent Runtime v1 pack release identities', () => {
       const built = spawnSync(process.execPath, [
         path.resolve('scripts/build-agent-runtime-v1.mjs'),
         '--boundary-repo', path.join(root, 'missing-boundary'),
+        '--world-repo', path.join(root, 'missing-world'),
         '--capabilities-repo', capabilitiesRepo,
-        '--zig', process.env.WORLD_HOST_ZIG_EXE ?? 'zig',
+        '--applications-root', path.resolve('agent-runtime-v1/applications'),
         '--out', pack,
       ], {
         cwd: process.cwd(),
