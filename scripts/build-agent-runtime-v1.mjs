@@ -381,14 +381,13 @@ async function prepareOutput(output) {
 }
 
 async function buildWorldApplications(worldRepo, releaseMaterialization = null) {
-  const args = [
-    options.zigExecutable,
+  const args = zigCommand(
     'build',
     'world-one-effect-application-wasm',
     'world-skeleton-agent-wasm',
     'world-fixture-agent-wasm',
     ...(options.externalApplicationRoot === null ? ['check-world-external-build-helper'] : []),
-  ];
+  );
   if (releaseMaterialization !== null) {
     args.push(
       '--cache-dir', releaseMaterialization.localCache,
@@ -583,13 +582,12 @@ async function materializeWorldRelease(boundaryArchivePath, worldArchivePath) {
 async function verifyZigReleaseArchive(archivePath, release, globalCache, cwd, label) {
   const info = await lstat(archivePath);
   assert(info.isFile() && !info.isSymbolicLink(), `${label} release archive must be a regular file`);
-  const fetch = Bun.spawn([
-    options.zigExecutable,
+  const fetch = Bun.spawn(zigCommand(
     'fetch',
     '--global-cache-dir',
     globalCache,
     archivePath,
-  ], {
+  ), {
     cwd,
     stdout: 'pipe',
     stderr: 'pipe',
@@ -602,6 +600,12 @@ async function verifyZigReleaseArchive(archivePath, release, globalCache, cwd, l
   assert.equal(exitCode, 0, errorOutput || `cannot inspect ${label} release archive`);
   assert.equal(output.trim(), release.packageHash,
     `${label} release archive package hash does not match ${release.tag}`);
+}
+
+function zigCommand(...args) {
+  return options.zigExecutable === 'zig'
+    ? ['zig', ...args]
+    : ['/usr/bin/env', options.zigExecutable, ...args];
 }
 
 async function verifyExternalApplicationRoot({
