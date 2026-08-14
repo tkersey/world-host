@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { rmSync } from 'node:fs';
 import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
@@ -381,26 +382,25 @@ async function prepareOutput(output) {
 }
 
 async function buildWorldApplications(worldRepo, releaseMaterialization = null) {
-  const args = zigCommand(
+  const args = [
     'build',
     'world-one-effect-application-wasm',
     'world-skeleton-agent-wasm',
     'world-fixture-agent-wasm',
     ...(options.externalApplicationRoot === null ? ['check-world-external-build-helper'] : []),
-  );
+  ];
   if (releaseMaterialization !== null) {
     args.push(
       '--cache-dir', releaseMaterialization.localCache,
       '--global-cache-dir', releaseMaterialization.globalCache,
     );
   }
-  const process = Bun.spawn(args, {
+  const process = spawnSync(options.zigExecutable, args, {
     cwd: worldRepo,
-    stdout: 'inherit',
-    stderr: 'inherit',
+    stdio: 'inherit',
   });
-  const exitCode = await process.exited;
-  assert.equal(exitCode, 0, 'World application artifact build failed');
+  if (process.error) throw process.error;
+  assert.equal(process.status, 0, 'World application artifact build failed');
 }
 
 async function writeChecksums(root) {
@@ -582,30 +582,19 @@ async function materializeWorldRelease(boundaryArchivePath, worldArchivePath) {
 async function verifyZigReleaseArchive(archivePath, release, globalCache, cwd, label) {
   const info = await lstat(archivePath);
   assert(info.isFile() && !info.isSymbolicLink(), `${label} release archive must be a regular file`);
-  const fetch = Bun.spawn(zigCommand(
+  const fetch = spawnSync(options.zigExecutable, [
     'fetch',
     '--global-cache-dir',
     globalCache,
     archivePath,
-  ), {
+  ], {
     cwd,
-    stdout: 'pipe',
-    stderr: 'pipe',
+    encoding: 'utf8',
   });
-  const [output, errorOutput, exitCode] = await Promise.all([
-    new Response(fetch.stdout).text(),
-    new Response(fetch.stderr).text(),
-    fetch.exited,
-  ]);
-  assert.equal(exitCode, 0, errorOutput || `cannot inspect ${label} release archive`);
-  assert.equal(output.trim(), release.packageHash,
+  if (fetch.error) throw fetch.error;
+  assert.equal(fetch.status, 0, fetch.stderr || `cannot inspect ${label} release archive`);
+  assert.equal(fetch.stdout.trim(), release.packageHash,
     `${label} release archive package hash does not match ${release.tag}`);
-}
-
-function zigCommand(...args) {
-  return options.zigExecutable === 'zig'
-    ? ['zig', ...args]
-    : ['/usr/bin/env', options.zigExecutable, ...args];
 }
 
 async function verifyExternalApplicationRoot({
