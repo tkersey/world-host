@@ -18,9 +18,17 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
+      - name: Install Zig 0.16.0
+        run: |
+          zig_archive="$RUNNER_TEMP/zig-x86_64-linux-0.16.0.tar.xz"
+          curl --fail --location --silent --show-error \
+            --output "$zig_archive" \
+            https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
+          echo "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00  $zig_archive" \
+            | sha256sum --check --strict
+          tar -xJf "$zig_archive" -C "$RUNNER_TEMP"
+          sudo ln -s "$RUNNER_TEMP/zig-x86_64-linux-0.16.0/zig" /usr/local/bin/zig
+          zig version
       - run: bun test --timeout 30000
       - run: bun run proof:v1-tests
       - run: bun run check:public-runtime-v1
