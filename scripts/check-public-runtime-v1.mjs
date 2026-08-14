@@ -20,7 +20,7 @@ try {
     const archiveBytes = await readFile(path.resolve(archive));
     const expected = parseChecksumSidecar(await readFile(path.resolve(checksum), 'utf8'), path.basename(archive));
     assert.equal(sha256(archiveBytes), expected, 'release asset checksum mismatch');
-    extraction = await extractRuntimeArchive(path.resolve(archive), root);
+    extraction = await extractRuntimeArchive(path.resolve(archive), root, archiveBytes);
   }
   const receipt = await verifyRuntimeTree(root);
   let packagedVerifier = null;

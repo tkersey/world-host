@@ -63,11 +63,26 @@ describe('public world-host v1 runtime', () => {
       const canonicalArchive = path.join(root, 'canonical.tar.gz');
       await writeDeterministicArchive(canonical, canonicalArchive);
       const trailing = path.join(root, 'trailing.tar.gz');
-      await writeFile(trailing, gzipSync(Buffer.concat([gunzipSync(await readFile(canonicalArchive)), Buffer.alloc(512, 0x41)])));
+      await writeFile(trailing, canonicalGzip(Buffer.concat([gunzipSync(await readFile(canonicalArchive)), Buffer.alloc(512, 0x41)])));
       await assert.rejects(
         () => extractRuntimeArchive(trailing, path.join(root, 'trailing')),
         /non-zero data follows tar terminator/,
       );
+
+      const gzipMetadata = Buffer.from(await readFile(canonicalArchive));
+      gzipMetadata[3] = 0x04;
+      const withGzipMetadata = path.join(root, 'gzip-metadata.tar.gz');
+      await writeFile(withGzipMetadata, gzipMetadata);
+      await assert.rejects(
+        () => extractRuntimeArchive(withGzipMetadata, path.join(root, 'gzip-metadata')),
+        /non-canonical gzip metadata/,
+      );
+
+      const admittedBytes = await readFile(canonicalArchive);
+      await writeFile(canonicalArchive, adversarialArchive('wrong-root'));
+      const admittedExtraction = path.join(root, 'admitted-bytes');
+      await extractRuntimeArchive(canonicalArchive, admittedExtraction, admittedBytes);
+      assert.equal((await verifyRuntimeTree(admittedExtraction)).sourceCheckoutRequired, false);
 
       const missingChecksum = Bun.spawn(['bun', 'scripts/check-public-runtime-v1.mjs', '--archive', canonicalArchive], {
         cwd: repository,
@@ -94,7 +109,6 @@ function gitBytes(args) {
 }
 
 function adversarialArchive(kind) {
-  const { gzipSync } = require('node:zlib');
   const names = kind === 'duplicate' ? [`${PUBLIC_RUNTIME_ROOT}/README.md`, `${PUBLIC_RUNTIME_ROOT}/README.md`] : [
     kind === 'traversal' ? `${PUBLIC_RUNTIME_ROOT}/../escape`
       : kind === 'backslash-traversal' ? `${PUBLIC_RUNTIME_ROOT}/..\\escape`
@@ -111,7 +125,13 @@ function adversarialArchive(kind) {
     octal(header, 148, 8, [...header].reduce((sum, byte) => sum + byte, 0)); chunks.push(header);
   }
   chunks.push(Buffer.alloc(1024));
-  return gzipSync(Buffer.concat(chunks), { mtime: 0 });
+  return canonicalGzip(Buffer.concat(chunks));
+}
+
+function canonicalGzip(bytes) {
+  const archive = gzipSync(bytes, { level: 9, mtime: 0 });
+  archive[9] = 0xff;
+  return archive;
 }
 
 function octal(buffer, offset, width, value) { const encoded = value.toString(8).padStart(width - 2, '0'); buffer.write(encoded, offset); buffer[offset + width - 2] = 0; buffer[offset + width - 1] = 0x20; }

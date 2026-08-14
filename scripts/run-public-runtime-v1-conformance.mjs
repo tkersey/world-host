@@ -16,7 +16,7 @@ try {
   const expected = parseChecksumSidecar(await readFile(path.resolve(checksum), 'utf8'), path.basename(archivePath));
   assert.equal(sha256(archiveBytes), expected, 'release asset checksum mismatch');
   const runtimeParent = path.join(temporary, 'runtime');
-  const extraction = await extractRuntimeArchive(archivePath, runtimeParent);
+  const extraction = await extractRuntimeArchive(archivePath, runtimeParent, archiveBytes);
   const runtime = runtimeParent;
   await verifyRuntimeTree(runtime);
   const pack = path.join(temporary, 'fixture-pack');

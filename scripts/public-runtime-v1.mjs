@@ -109,9 +109,12 @@ export async function writeDeterministicArchive(treeRoot, outputPath) {
   return { sha256: sha256(archive), bytes: archive.length, entries: entries.length };
 }
 
-export async function extractRuntimeArchive(archivePath, destination) {
-  const archive = await readFile(archivePath);
+export async function extractRuntimeArchive(archivePath, destination, admittedArchive = null) {
+  const archive = admittedArchive ?? await readFile(archivePath);
+  assert(Buffer.isBuffer(archive), 'runtime archive must be admitted as bytes');
   assert(archive.length <= MAXIMUM_ARCHIVE_BYTES, 'runtime archive exceeds maximum size');
+  assert.deepEqual(archive.subarray(0, 10), Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff]),
+    'runtime archive has non-canonical gzip metadata');
   const tar = gunzipSync(archive, { maxOutputLength: MAXIMUM_EXPANDED_BYTES });
   assert.equal(tar.length % 512, 0, 'tar payload is not block aligned');
   let offset = 0;
