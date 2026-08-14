@@ -52,7 +52,7 @@
     "conformance:agent-runtime-v1": "bun scripts/run-agent-runtime-v1-conformance.mjs ./agent-runtime-v1",
     "build:public-runtime-v1": "bun scripts/build-public-runtime-v1.mjs",
     "check:public-runtime-v1": "bun scripts/build-public-runtime-v1.mjs --output-dir zig-out/public-runtime && bun scripts/check-public-runtime-v1.mjs --archive zig-out/public-runtime/world-host-v1.0.1-runtime.tar.gz --checksum zig-out/public-runtime/world-host-v1.0.1-runtime.tar.gz.sha256",
-    "conformance:public-runtime-v1": "bun scripts/run-public-runtime-v1-conformance.mjs --archive zig-out/public-runtime/world-host-v1.0.1-runtime.tar.gz --fixture-pack agent-runtime-v1",
+    "conformance:public-runtime-v1": "bun scripts/run-public-runtime-v1-conformance.mjs --archive zig-out/public-runtime/world-host-v1.0.1-runtime.tar.gz --checksum zig-out/public-runtime/world-host-v1.0.1-runtime.tar.gz.sha256 --fixture-pack agent-runtime-v1",
     "measure:agent-runtime-v1": "bun scripts/measure-agent-runtime-v1.mjs --pack ./agent-runtime-v1 --world-repo ../world",
     "build:agent-runtime-legacy": "bun scripts/build-agent-runtime-pack.mjs",
     "check:agent-runtime-legacy": "bun scripts/check-agent-runtime-pack.mjs && bun scripts/run-agent-runtime-conformance.mjs && bun scripts/check-agent-runtime-pack.mjs --require-release-receipt && bun scripts/check-agent-runtime-release-receipt.mjs"

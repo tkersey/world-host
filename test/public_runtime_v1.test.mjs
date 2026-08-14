@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { gunzipSync, gzipSync } from 'node:zlib';
 
 import { PUBLIC_RUNTIME_ARCHIVE, PUBLIC_RUNTIME_ROOT, buildRuntimeTree, extractRuntimeArchive, runtimeSourcePaths, sha256, verifyRuntimeTree, writeDeterministicArchive } from '../scripts/public-runtime-v1.mjs';
 
@@ -22,6 +23,7 @@ describe('public world-host v1 runtime', () => {
       const second = await writeDeterministicArchive(secondTree, secondArchive);
       assert.equal(first.sha256, second.sha256);
       assert.deepEqual(await readFile(firstArchive), await readFile(secondArchive));
+      assert.equal((await readFile(firstArchive))[9], 0xff);
       assert.equal((await verifyRuntimeTree(firstTree)).sourceCheckoutRequired, false);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -41,7 +43,7 @@ describe('public world-host v1 runtime', () => {
   it('rejects traversal, links, duplicate paths, unexpected roots, and checksum drift', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-public-runtime-negative-'));
     try {
-      for (const mutation of ['traversal', 'symlink', 'duplicate', 'wrong-root']) {
+      for (const mutation of ['traversal', 'backslash-traversal', 'symlink', 'duplicate', 'wrong-root', 'entrypoint-mode']) {
         const archive = path.join(root, `${mutation}.tar.gz`);
         await writeFile(archive, adversarialArchive(mutation));
         await assert.rejects(() => extractRuntimeArchive(archive, path.join(root, mutation)));
@@ -50,6 +52,34 @@ describe('public world-host v1 runtime', () => {
       await buildRuntimeTree(repository, tree);
       await writeFile(path.join(tree, 'README.md'), 'tampered\n');
       await assert.rejects(() => verifyRuntimeTree(tree), /checksum mismatch/);
+
+      const inventory = path.join(root, 'inventory');
+      await buildRuntimeTree(repository, inventory);
+      await rm(path.join(inventory, 'src/v1/protocol.mjs'));
+      await assert.rejects(() => verifyRuntimeTree(inventory), /runtime file inventory mismatch/);
+
+      const canonical = path.join(root, 'canonical');
+      await buildRuntimeTree(repository, canonical);
+      const canonicalArchive = path.join(root, 'canonical.tar.gz');
+      await writeDeterministicArchive(canonical, canonicalArchive);
+      const trailing = path.join(root, 'trailing.tar.gz');
+      await writeFile(trailing, gzipSync(Buffer.concat([gunzipSync(await readFile(canonicalArchive)), Buffer.alloc(512, 0x41)])));
+      await assert.rejects(
+        () => extractRuntimeArchive(trailing, path.join(root, 'trailing')),
+        /non-zero data follows tar terminator/,
+      );
+
+      const missingChecksum = Bun.spawn(['bun', 'scripts/check-public-runtime-v1.mjs', '--archive', canonicalArchive], {
+        cwd: repository,
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      const [missingChecksumError, missingChecksumExit] = await Promise.all([
+        new Response(missingChecksum.stderr).text(),
+        missingChecksum.exited,
+      ]);
+      assert.notEqual(missingChecksumExit, 0);
+      assert.match(missingChecksumError, /--checksum is required with --archive/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -66,7 +96,11 @@ function gitBytes(args) {
 function adversarialArchive(kind) {
   const { gzipSync } = require('node:zlib');
   const names = kind === 'duplicate' ? [`${PUBLIC_RUNTIME_ROOT}/README.md`, `${PUBLIC_RUNTIME_ROOT}/README.md`] : [
-    kind === 'traversal' ? `${PUBLIC_RUNTIME_ROOT}/../escape` : kind === 'wrong-root' ? 'wrong-root/README.md' : `${PUBLIC_RUNTIME_ROOT}/link`,
+    kind === 'traversal' ? `${PUBLIC_RUNTIME_ROOT}/../escape`
+      : kind === 'backslash-traversal' ? `${PUBLIC_RUNTIME_ROOT}/..\\escape`
+        : kind === 'wrong-root' ? 'wrong-root/README.md'
+          : kind === 'entrypoint-mode' ? `${PUBLIC_RUNTIME_ROOT}/bin/world-host-v1.mjs`
+            : `${PUBLIC_RUNTIME_ROOT}/link`,
   ];
   const chunks = [];
   for (const name of names) {

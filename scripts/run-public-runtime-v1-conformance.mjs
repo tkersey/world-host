@@ -4,14 +4,19 @@ import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { extractRuntimeArchive, sha256, verifyRuntimeTree } from './public-runtime-v1.mjs';
+import { extractRuntimeArchive, parseChecksumSidecar, sha256, verifyRuntimeTree } from './public-runtime-v1.mjs';
 
 const archive = required('--archive');
+const checksum = required('--checksum');
 const fixturePack = required('--fixture-pack');
 const temporary = await mkdtemp(path.join(tmpdir(), 'world-host-public-runtime-conformance-'));
 try {
+  const archivePath = path.resolve(archive);
+  const archiveBytes = await readFile(archivePath);
+  const expected = parseChecksumSidecar(await readFile(path.resolve(checksum), 'utf8'), path.basename(archivePath));
+  assert.equal(sha256(archiveBytes), expected, 'release asset checksum mismatch');
   const runtimeParent = path.join(temporary, 'runtime');
-  const extraction = await extractRuntimeArchive(path.resolve(archive), runtimeParent);
+  const extraction = await extractRuntimeArchive(archivePath, runtimeParent);
   const runtime = runtimeParent;
   await verifyRuntimeTree(runtime);
   const pack = path.join(temporary, 'fixture-pack');

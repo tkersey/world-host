@@ -9,17 +9,17 @@ import { PUBLIC_RUNTIME_ARCHIVE, extractRuntimeArchive, parseChecksumSidecar, sh
 const archive = valueAfter('--archive');
 const rootArgument = valueAfter('--root');
 assert((archive === null) !== (rootArgument === null), 'provide exactly one of --archive or --root');
+const checksum = valueAfter('--checksum');
+if (archive !== null) assert(checksum !== null, '--checksum is required with --archive');
+else assert(checksum === null, '--checksum is valid only with --archive');
 const temporary = archive === null ? null : await mkdtemp(path.join(tmpdir(), 'world-host-public-runtime-check-'));
 try {
   const root = archive === null ? path.resolve(rootArgument) : temporary;
   let extraction = null;
   if (archive !== null) {
     const archiveBytes = await readFile(path.resolve(archive));
-    const checksum = valueAfter('--checksum');
-    if (checksum !== null) {
-      const expected = parseChecksumSidecar(await readFile(path.resolve(checksum), 'utf8'), path.basename(archive));
-      assert.equal(sha256(archiveBytes), expected, 'release asset checksum mismatch');
-    }
+    const expected = parseChecksumSidecar(await readFile(path.resolve(checksum), 'utf8'), path.basename(archive));
+    assert.equal(sha256(archiveBytes), expected, 'release asset checksum mismatch');
     extraction = await extractRuntimeArchive(path.resolve(archive), root);
   }
   const receipt = await verifyRuntimeTree(root);

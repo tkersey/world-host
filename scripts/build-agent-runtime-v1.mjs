@@ -485,7 +485,7 @@ function parseArgs(args) {
       result.boundaryReleaseArchive = path.resolve(requireValue(args, ++index, '--boundary-release-archive'));
     }
     else if (args[index] === '--world-repo') result.worldRepo = path.resolve(requireValue(args, ++index, '--world-repo'));
-    else if (args[index] === '--zig') result.zigExecutable = requireValue(args, ++index, '--zig');
+    else if (args[index] === '--zig') result.zigExecutable = resolveExecutableArgument(requireValue(args, ++index, '--zig'));
     else if (args[index] === '--world-release-archive') {
       result.worldReleaseArchive = path.resolve(requireValue(args, ++index, '--world-release-archive'));
     }
@@ -517,6 +517,10 @@ function parseArgs(args) {
     }
   }
   return result;
+}
+
+function resolveExecutableArgument(value) {
+  return value.includes('/') || value.includes('\\') ? path.resolve(value) : value;
 }
 
 async function materializeCapabilityRuntime(archivePath) {

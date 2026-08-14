@@ -18,6 +18,28 @@ export const RUNTIME_SOURCE_PATHS = Object.freeze([
   'src/bun/application_v1_inspection_worker.mjs',
 ]);
 
+const EXPECTED_RUNTIME_FILES = Object.freeze([
+  'LICENSE',
+  'README.md',
+  'bin/world-host-v1.mjs',
+  'checksums.sha256',
+  'conformance/check-runtime.mjs',
+  'conformance/public-runtime-v1.mjs',
+  'manifest.json',
+  'package.json',
+  'src/bun/application_v1_cli.mjs',
+  'src/bun/application_v1_inspection_worker.mjs',
+  'src/v1/application_worker.mjs',
+  'src/v1/directory_storage.mjs',
+  'src/v1/effect_journal.mjs',
+  'src/v1/errors.mjs',
+  'src/v1/index.mjs',
+  'src/v1/protocol.mjs',
+  'src/v1/run_controller.mjs',
+  'src/v1/storage.mjs',
+  'src/v1/wasm_module.mjs',
+]);
+
 export async function runtimeSourcePaths(repository) {
   const paths = [...RUNTIME_SOURCE_PATHS];
   await walk(repository, 'src/v1', paths);
@@ -80,6 +102,7 @@ export async function writeDeterministicArchive(treeRoot, outputPath) {
   }
   chunks.push(Buffer.alloc(1024));
   const archive = gzipSync(Buffer.concat(chunks), { level: 9, mtime: 0 });
+  archive[9] = 0xff;
   assert(archive.length <= MAXIMUM_ARCHIVE_BYTES, 'runtime archive exceeds maximum size');
   await mkdir(path.dirname(outputPath), { recursive: true });
   await writeFile(outputPath, archive);
@@ -90,14 +113,25 @@ export async function extractRuntimeArchive(archivePath, destination) {
   const archive = await readFile(archivePath);
   assert(archive.length <= MAXIMUM_ARCHIVE_BYTES, 'runtime archive exceeds maximum size');
   const tar = gunzipSync(archive, { maxOutputLength: MAXIMUM_EXPANDED_BYTES });
+  assert.equal(tar.length % 512, 0, 'tar payload is not block aligned');
   let offset = 0;
   let expanded = 0;
   let count = 0;
+  let terminated = false;
   const seen = new Set();
+  const portableSeen = new Set();
+  const entries = [];
   while (offset + 512 <= tar.length) {
     const header = tar.subarray(offset, offset + 512);
     offset += 512;
-    if (header.every((byte) => byte === 0)) break;
+    if (header.every((byte) => byte === 0)) {
+      assert(offset + 512 <= tar.length, 'tar terminator is incomplete');
+      assert(tar.subarray(offset, offset + 512).every((byte) => byte === 0), 'tar terminator is incomplete');
+      offset += 512;
+      assert(tar.subarray(offset).every((byte) => byte === 0), 'non-zero data follows tar terminator');
+      terminated = true;
+      break;
+    }
     count += 1;
     assert(count <= MAXIMUM_ENTRY_COUNT, 'runtime archive has too many entries');
     const storedChecksum = octal(header.subarray(148, 156));
@@ -112,24 +146,34 @@ export async function extractRuntimeArchive(archivePath, destination) {
     assert(safeRelative(inside), `unsafe archive path: ${relative}`);
     assert(!seen.has(inside), `duplicate archive path: ${inside}`);
     seen.add(inside);
+    const portable = inside.normalize('NFC').toLowerCase();
+    assert(!portableSeen.has(portable), `non-portable archive path collision: ${inside}`);
+    portableSeen.add(portable);
     const type = header[156];
     assert(type === 0 || type === 0x30, `links and non-files are forbidden: ${inside}`);
     const size = octal(header.subarray(124, 136));
+    assert(header.equals(tarHeader(relative, size, executable(inside) ? 0o755 : 0o644)),
+      `non-canonical tar header: ${inside}`);
     expanded += size;
     assert(expanded <= MAXIMUM_EXPANDED_BYTES, 'runtime archive expansion exceeds maximum');
-    assert(offset + size <= tar.length, 'truncated tar entry');
-    await writeTreeFile(destination, inside, tar.subarray(offset, offset + size), executable(inside));
-    offset += size + ((512 - (size % 512)) % 512);
+    const padding = (512 - (size % 512)) % 512;
+    assert(offset + size + padding <= tar.length, 'truncated tar entry');
+    entries.push({ inside, bytes: tar.subarray(offset, offset + size), isExecutable: executable(inside) });
+    offset += size;
+    assert(tar.subarray(offset, offset + padding).every((byte) => byte === 0), `non-zero tar padding: ${inside}`);
+    offset += padding;
   }
   assert(count > 0, 'runtime archive is empty');
+  assert(terminated, 'runtime archive has no complete terminator');
+  for (const entry of entries) {
+    await writeTreeFile(destination, entry.inside, entry.bytes, entry.isExecutable);
+  }
   return { sha256: sha256(archive), bytes: archive.length, entries: count, expandedBytes: expanded };
 }
 
 export async function verifyRuntimeTree(root) {
   const files = await treeFiles(root);
-  for (const required of ['LICENSE', 'README.md', 'package.json', 'manifest.json', 'checksums.sha256', 'bin/world-host-v1.mjs', 'src/v1/index.mjs', 'conformance/check-runtime.mjs']) {
-    assert(files.includes(required), `missing runtime file: ${required}`);
-  }
+  assert.deepEqual(files, [...EXPECTED_RUNTIME_FILES], 'runtime file inventory mismatch');
   for (const forbidden of files) {
     assert(!/(^|\/)(applications?|capabilities?|fixtures?|stores?|runs?|logs?|transcripts?|evidence|secrets?|\.git)(\/|$)/i.test(forbidden), `forbidden runtime path: ${forbidden}`);
   }
@@ -225,7 +269,7 @@ function textField(bytes) {
 
 function sum(bytes) { let result = 0; for (const byte of bytes) result += byte; return result; }
 function executable(relative) { return relative.startsWith('bin/') || relative.startsWith('conformance/'); }
-function safeRelative(value) { return value.length > 0 && !path.posix.isAbsolute(value) && !value.split('/').some((part) => part === '' || part === '.' || part === '..'); }
+function safeRelative(value) { return value.length > 0 && !value.includes('\\') && !path.posix.isAbsolute(value) && !value.split('/').some((part) => part === '' || part === '.' || part === '..'); }
 export function sha256(bytes) { return createHash('sha256').update(bytes).digest('hex'); }
 function stableJson(value) { return JSON.stringify(value, Object.keys(value).sort(), 2); }
 function parseChecksums(text) {

@@ -11,6 +11,12 @@ import { resolveWorldHostReleaseSourceCommit } from
   '../scripts/agent-runtime-v1-release-source.mjs';
 
 describe('Agent Runtime v1 pack release identities', () => {
+  it('resolves path-valued Zig selections before build cwd changes', async () => {
+    const source = await readFile('scripts/build-agent-runtime-v1.mjs', 'utf8');
+    assert.match(source, /result\.zigExecutable = resolveExecutableArgument\(requireValue/);
+    assert.match(source, /value\.includes\('\/'\).*path\.resolve\(value\)/s);
+  });
+
   it('builds and validates development packs without a Boundary checkout', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agent-runtime-v1-development-'));
     const pack = path.join(root, 'agent-runtime-v1');

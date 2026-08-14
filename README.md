@@ -64,6 +64,7 @@ bun scripts/check-public-runtime-v1.mjs \
   --checksum zig-out/public-runtime/world-host-v1.0.1-runtime.tar.gz.sha256
 bun scripts/run-public-runtime-v1-conformance.mjs \
   --archive zig-out/public-runtime/world-host-v1.0.1-runtime.tar.gz \
+  --checksum zig-out/public-runtime/world-host-v1.0.1-runtime.tar.gz.sha256 \
   --fixture-pack agent-runtime-v1
 ```
 
