@@ -14,10 +14,18 @@ describe('Agent Runtime v1 pack release identities', () => {
   it('builds and validates development packs without a Boundary checkout', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agent-runtime-v1-development-'));
     const pack = path.join(root, 'agent-runtime-v1');
+    const capabilitiesRepo = path.join(root, 'world-capabilities');
     try {
+      await cp(path.resolve('agent-runtime-v1/capabilities'), capabilitiesRepo, { recursive: true });
+      await cp(
+        path.resolve('agent-runtime-v1/docs/world-capabilities'),
+        path.join(capabilitiesRepo, 'docs'),
+        { recursive: true },
+      );
       const built = spawnSync(process.execPath, [
         path.resolve('scripts/build-agent-runtime-v1.mjs'),
         '--boundary-repo', path.join(root, 'missing-boundary'),
+        '--capabilities-repo', capabilitiesRepo,
         '--out', pack,
       ], {
         cwd: process.cwd(),
