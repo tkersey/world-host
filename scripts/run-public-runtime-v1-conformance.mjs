@@ -4,7 +4,7 @@ import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { extractRuntimeArchive, parseChecksumSidecar, readRuntimeArchive, sha256, verifyRuntimeTree } from './public-runtime-v1.mjs';
+import { extractRuntimeArchive, parseChecksumSidecar, readChecksumSidecar, readRuntimeArchive, sha256, verifyRuntimeTree } from './public-runtime-v1.mjs';
 
 const archive = required('--archive');
 const checksum = required('--checksum');
@@ -13,7 +13,7 @@ const temporary = await mkdtemp(path.join(tmpdir(), 'world-host-public-runtime-c
 try {
   const archivePath = path.resolve(archive);
   const archiveBytes = await readRuntimeArchive(archivePath);
-  const expected = parseChecksumSidecar(await readFile(path.resolve(checksum), 'utf8'), path.basename(archivePath));
+  const expected = parseChecksumSidecar(await readChecksumSidecar(path.resolve(checksum)), path.basename(archivePath));
   assert.equal(sha256(archiveBytes), expected, 'release asset checksum mismatch');
   const runtimeParent = path.join(temporary, 'runtime');
   const extraction = await extractRuntimeArchive(archivePath, runtimeParent, archiveBytes);

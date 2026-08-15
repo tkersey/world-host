@@ -11,6 +11,7 @@ export const PUBLIC_RUNTIME_ARCHIVE = `${PUBLIC_RUNTIME_ROOT}.tar.gz`;
 export const MAXIMUM_ARCHIVE_BYTES = 16 << 20;
 export const MAXIMUM_EXPANDED_BYTES = 64 << 20;
 export const MAXIMUM_ENTRY_COUNT = 512;
+export const MAXIMUM_CHECKSUM_SIDECAR_BYTES = 256;
 
 export const RUNTIME_SOURCE_PATHS = Object.freeze([
   'LICENSE',
@@ -93,20 +94,44 @@ export async function buildRuntimeTree(repository, outputRoot) {
 
 export async function writeDeterministicArchive(treeRoot, outputPath) {
   const entries = await treeFiles(treeRoot);
-  const chunks = [];
-  for (const relative of entries) {
-    const bytes = await readFile(path.join(treeRoot, relative));
-    chunks.push(tarHeader(`${PUBLIC_RUNTIME_ROOT}/${relative}`, bytes.length, executable(relative) ? 0o755 : 0o644));
-    chunks.push(bytes);
-    const padding = (512 - (bytes.length % 512)) % 512;
-    if (padding > 0) chunks.push(Buffer.alloc(padding));
+  assert(entries.length <= MAXIMUM_ENTRY_COUNT, 'runtime archive has too many entries');
+  const opened = [];
+  try {
+    let projectedBytes = 1024;
+    for (const relative of entries) {
+      const handle = await open(path.join(treeRoot, relative), fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+      try {
+        const info = await handle.stat();
+        assert(info.isFile(), `runtime archive entry must be a regular file: ${relative}`);
+        projectedBytes += 512 + info.size + ((512 - (info.size % 512)) % 512);
+        assert(projectedBytes <= MAXIMUM_EXPANDED_BYTES, 'runtime archive expansion exceeds maximum');
+        assert(canonicalGzipSize(projectedBytes) <= MAXIMUM_ARCHIVE_BYTES, 'runtime archive exceeds maximum size');
+        opened.push({ handle, info, relative });
+      } catch (error) {
+        await handle.close();
+        throw error;
+      }
+    }
+    const chunks = [];
+    for (const entry of opened) {
+      const current = await entry.handle.stat();
+      assert.equal(current.size, entry.info.size, `runtime archive entry changed during admission: ${entry.relative}`);
+      const bytes = await entry.handle.readFile();
+      assert.equal(bytes.length, entry.info.size, `runtime archive entry changed during admission: ${entry.relative}`);
+      chunks.push(tarHeader(`${PUBLIC_RUNTIME_ROOT}/${entry.relative}`, bytes.length, executable(entry.relative) ? 0o755 : 0o644));
+      chunks.push(bytes);
+      const padding = (512 - (bytes.length % 512)) % 512;
+      if (padding > 0) chunks.push(Buffer.alloc(padding));
+    }
+    chunks.push(Buffer.alloc(1024));
+    const archive = canonicalGzip(Buffer.concat(chunks, projectedBytes));
+    assert(archive.length <= MAXIMUM_ARCHIVE_BYTES, 'runtime archive exceeds maximum size');
+    await mkdir(path.dirname(outputPath), { recursive: true });
+    await writeFile(outputPath, archive);
+    return { sha256: sha256(archive), bytes: archive.length, entries: entries.length };
+  } finally {
+    await Promise.all(opened.map(({ handle }) => handle.close()));
   }
-  chunks.push(Buffer.alloc(1024));
-  const archive = canonicalGzip(Buffer.concat(chunks));
-  assert(archive.length <= MAXIMUM_ARCHIVE_BYTES, 'runtime archive exceeds maximum size');
-  await mkdir(path.dirname(outputPath), { recursive: true });
-  await writeFile(outputPath, archive);
-  return { sha256: sha256(archive), bytes: archive.length, entries: entries.length };
 }
 
 export async function extractRuntimeArchive(archivePath, destination, admittedArchive = null) {
@@ -213,6 +238,10 @@ export function canonicalGzip(bytes) {
   ]);
 }
 
+function canonicalGzipSize(bytes) {
+  return 10 + bytes + (5 * Math.max(1, Math.ceil(bytes / 0xffff))) + 8;
+}
+
 function crc32(bytes) {
   let crc = 0xffffffff;
   for (const byte of bytes) {
@@ -256,6 +285,18 @@ export function parseChecksumSidecar(text, expectedName = PUBLIC_RUNTIME_ARCHIVE
   return match[1];
 }
 
+export async function readChecksumSidecar(checksumPath) {
+  const handle = await open(checksumPath, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+  try {
+    const info = await handle.stat();
+    assert(info.isFile(), 'checksum sidecar must be a regular file');
+    assert(info.size <= MAXIMUM_CHECKSUM_SIDECAR_BYTES, 'checksum sidecar exceeds maximum size');
+    return await handle.readFile({ encoding: 'utf8' });
+  } finally {
+    await handle.close();
+  }
+}
+
 async function walk(root, relative, output) {
   const { readdir, lstat } = await import('node:fs/promises');
   const entries = await readdir(path.join(root, relative));
@@ -265,6 +306,7 @@ async function walk(root, relative, output) {
     assert(!info.isSymbolicLink(), `runtime source symlink forbidden: ${child}`);
     if (info.isDirectory()) await walk(root, child, output);
     else if (info.isFile()) output.push(child);
+    else assert.fail(`unsupported runtime entry: ${child}`);
   }
 }
 

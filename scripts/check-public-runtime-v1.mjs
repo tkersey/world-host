@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { PUBLIC_RUNTIME_ARCHIVE, extractRuntimeArchive, parseChecksumSidecar, readRuntimeArchive, sha256, verifyRuntimeTree } from './public-runtime-v1.mjs';
+import { PUBLIC_RUNTIME_ARCHIVE, extractRuntimeArchive, parseChecksumSidecar, readChecksumSidecar, readRuntimeArchive, sha256, verifyRuntimeTree } from './public-runtime-v1.mjs';
 
 const archive = valueAfter('--archive');
 const rootArgument = valueAfter('--root');
@@ -18,7 +18,7 @@ try {
   let extraction = null;
   if (archive !== null) {
     const archiveBytes = await readRuntimeArchive(path.resolve(archive));
-    const expected = parseChecksumSidecar(await readFile(path.resolve(checksum), 'utf8'), path.basename(archive));
+    const expected = parseChecksumSidecar(await readChecksumSidecar(path.resolve(checksum)), path.basename(archive));
     assert.equal(sha256(archiveBytes), expected, 'release asset checksum mismatch');
     extraction = await extractRuntimeArchive(path.resolve(archive), root, archiveBytes);
   }

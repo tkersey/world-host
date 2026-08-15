@@ -1,11 +1,11 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 
-import { PUBLIC_RUNTIME_ARCHIVE, PUBLIC_RUNTIME_ROOT, buildRuntimeTree, canonicalGzip, extractRuntimeArchive, runtimeSourcePaths, sha256, verifyRuntimeTree, writeDeterministicArchive } from '../scripts/public-runtime-v1.mjs';
+import { MAXIMUM_ARCHIVE_BYTES, PUBLIC_RUNTIME_ARCHIVE, PUBLIC_RUNTIME_ROOT, buildRuntimeTree, canonicalGzip, extractRuntimeArchive, readChecksumSidecar, runtimeSourcePaths, sha256, verifyRuntimeTree, writeDeterministicArchive } from '../scripts/public-runtime-v1.mjs';
 
 const repository = path.resolve(import.meta.dir, '..');
 
@@ -90,6 +90,37 @@ describe('public world-host v1 runtime', () => {
       const admittedExtraction = path.join(root, 'admitted-bytes');
       await extractRuntimeArchive(canonicalArchive, admittedExtraction, admittedBytes);
       assert.equal((await verifyRuntimeTree(admittedExtraction)).sourceCheckoutRequired, false);
+
+      const specialTree = path.join(root, 'special-tree');
+      await buildRuntimeTree(repository, specialTree);
+      assert.equal(Bun.spawnSync(['mkfifo', path.join(specialTree, 'ignored-fifo')]).exitCode, 0);
+      await assert.rejects(() => verifyRuntimeTree(specialTree), /unsupported runtime entry/);
+
+      const hugeSidecar = path.join(root, 'huge.sha256');
+      await writeFile(hugeSidecar, '');
+      await truncate(hugeSidecar, 257);
+      await assert.rejects(() => readChecksumSidecar(hugeSidecar), /checksum sidecar exceeds maximum size/);
+      const fifoSidecar = path.join(root, 'checksum.fifo');
+      assert.equal(Bun.spawnSync(['mkfifo', fifoSidecar]).exitCode, 0);
+      await assert.rejects(() => readChecksumSidecar(fifoSidecar), /checksum sidecar must be a regular file/);
+
+      const oversizedTree = path.join(root, 'oversized-tree');
+      await mkdir(oversizedTree);
+      const oversizedEntry = path.join(oversizedTree, 'payload.bin');
+      await writeFile(oversizedEntry, '');
+      await truncate(oversizedEntry, MAXIMUM_ARCHIVE_BYTES + 1);
+      await assert.rejects(
+        () => writeDeterministicArchive(oversizedTree, path.join(root, 'oversized.tar.gz')),
+        /runtime archive exceeds maximum size/,
+      );
+
+      const crowdedTree = path.join(root, 'crowded-tree');
+      await mkdir(crowdedTree);
+      await Promise.all(Array.from({ length: 513 }, (_, index) => writeFile(path.join(crowdedTree, `${index}.txt`), '')));
+      await assert.rejects(
+        () => writeDeterministicArchive(crowdedTree, path.join(root, 'crowded.tar.gz')),
+        /runtime archive has too many entries/,
+      );
 
       const missingChecksum = Bun.spawn(['bun', 'scripts/check-public-runtime-v1.mjs', '--archive', canonicalArchive], {
         cwd: repository,
