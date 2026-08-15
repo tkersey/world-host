@@ -59,6 +59,8 @@ process.on('exit', () => {
   for (const root of temporaryRoots) rmSync(root, { recursive: true, force: true });
 });
 if (releaseBuild) {
+  assert(options.applicationsRoot === null,
+    'release builds must compile applications from the reviewed World release');
   assert(options.externalApplicationRoot !== null,
     'release builds require --external-application-root from the clean-room World release proof');
   assert(options.capabilitiesRuntimeArchive !== null,
@@ -93,7 +95,9 @@ const capabilityMaterialization = releaseBuild
   : null;
 const capabilitiesRepo = capabilityMaterialization?.packageRoot ?? options.capabilitiesRepo;
 const worldRepo = worldReleaseMaterialization?.packageRoot ?? options.worldRepo;
-const externalApplication = releaseBuild
+const externalApplication = options.applicationsRoot !== null
+  ? Object.freeze({ root: options.applicationsRoot, verified: false })
+  : releaseBuild
   ? await verifyExternalApplicationRoot({
       externalApplicationRoot: options.externalApplicationRoot,
       sourceRoots: [
@@ -110,19 +114,39 @@ const externalApplication = releaseBuild
         path.join(options.worldRepo, 'conformance/external-build-helper/zig-out/world-apps'),
       verified: false,
     });
-await buildWorldApplications(worldRepo, worldReleaseMaterialization);
+if (options.applicationsRoot === null) {
+  await buildWorldApplications(worldRepo, worldReleaseMaterialization);
+}
+await assertInputsOutsideOutput(options.out, [
+  ['application root', externalApplication.root],
+  ['world-host repository', options.worldHostRepo],
+  ['World repository', worldRepo],
+  ['capabilities repository', capabilitiesRepo],
+]);
 await prepareOutput(options.out);
 
 const applications = [];
+const coordinatedApplications = options.applicationsRoot === null
+  ? [
+      { name: 'one-effect', wasm: path.join(worldRepo, 'zig-out/bin/one-effect.world.wasm') },
+      { name: 'skeleton-agent', wasm: path.join(worldRepo, 'zig-out/world-apps/skeleton-agent.world.wasm') },
+      { name: 'fixture-agent', wasm: path.join(worldRepo, 'zig-out/world-apps/fixture-agent.world.wasm') },
+    ]
+  : ['one-effect', 'skeleton-agent', 'fixture-agent'].map((name) => ({
+      name,
+      wasm: path.join(options.applicationsRoot, `${name}.world.wasm`),
+      manifest: path.join(options.applicationsRoot, `${name}.manifest.bin`),
+      provenance: 'coordinated-fixture',
+    }));
 for (const source of [
-  { name: 'one-effect', wasm: path.join(worldRepo, 'zig-out/bin/one-effect.world.wasm') },
-  { name: 'skeleton-agent', wasm: path.join(worldRepo, 'zig-out/world-apps/skeleton-agent.world.wasm') },
-  { name: 'fixture-agent', wasm: path.join(worldRepo, 'zig-out/world-apps/fixture-agent.world.wasm') },
+  ...coordinatedApplications,
   {
     name: 'research-digest-agent',
     wasm: path.join(externalApplication.root, 'research-digest-agent.world.wasm'),
     manifest: path.join(externalApplication.root, 'research-digest-agent.manifest.bin'),
-    provenance: externalApplication.verified ? 'external-clean-room' : 'development-helper',
+    provenance: options.applicationsRoot !== null
+      ? 'coordinated-fixture'
+      : externalApplication.verified ? 'external-clean-room' : 'development-helper',
   },
 ]) {
   applications.push(await copyApplication(source));
@@ -380,9 +404,40 @@ async function prepareOutput(output) {
   await mkdir(output, { recursive: true });
 }
 
+async function assertInputsOutsideOutput(output, inputs) {
+  const resolvedOutput = await projectedRealpath(output);
+  for (const [label, input] of inputs) {
+    let resolvedInput;
+    try {
+      resolvedInput = await realpath(input);
+    } catch (error) {
+      if (error?.code === 'ENOENT') continue;
+      throw error;
+    }
+    assert(!isSameOrBelow(resolvedOutput, resolvedInput), `${label} must be outside pack output`);
+  }
+}
+
+async function projectedRealpath(target) {
+  const resolved = path.resolve(target);
+  let current = resolved;
+  while (true) {
+    try {
+      await lstat(current);
+      const suffix = path.relative(current, resolved);
+      return path.resolve(await realpath(current), suffix);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      const parent = path.dirname(current);
+      if (parent === current) return resolved;
+      current = parent;
+    }
+  }
+}
+
 async function buildWorldApplications(worldRepo, releaseMaterialization = null) {
   const args = [
-    'zig',
+    options.zigExecutable,
     'build',
     'world-one-effect-application-wasm',
     'world-skeleton-agent-wasm',
@@ -455,9 +510,11 @@ function parseArgs(args) {
     worldHostRepo: path.resolve('.'),
     capabilitiesRepo: path.resolve('../world-capabilities'),
     capabilitiesRuntimeArchive: null,
+    applicationsRoot: null,
     externalApplicationRoot: null,
     out: path.resolve('agent-runtime-v1'),
     releaseStatus: 'development',
+    zigExecutable: 'zig',
   };
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === '--boundary-repo') result.boundaryRepo = path.resolve(requireValue(args, ++index, '--boundary-repo'));
@@ -465,11 +522,15 @@ function parseArgs(args) {
       result.boundaryReleaseArchive = path.resolve(requireValue(args, ++index, '--boundary-release-archive'));
     }
     else if (args[index] === '--world-repo') result.worldRepo = path.resolve(requireValue(args, ++index, '--world-repo'));
+    else if (args[index] === '--zig') result.zigExecutable = requireValue(args, ++index, '--zig');
     else if (args[index] === '--world-release-archive') {
       result.worldReleaseArchive = path.resolve(requireValue(args, ++index, '--world-release-archive'));
     }
     else if (args[index] === '--world-host-repo') result.worldHostRepo = path.resolve(requireValue(args, ++index, '--world-host-repo'));
     else if (args[index] === '--capabilities-repo') result.capabilitiesRepo = path.resolve(requireValue(args, ++index, '--capabilities-repo'));
+    else if (args[index] === '--applications-root') {
+      result.applicationsRoot = path.resolve(requireValue(args, ++index, '--applications-root'));
+    }
     else if (args[index] === '--world-capabilities-runtime-archive') {
       result.capabilitiesRuntimeArchive = path.resolve(
         requireValue(args, ++index, '--world-capabilities-runtime-archive'),
@@ -492,7 +553,14 @@ function parseArgs(args) {
       throw new Error(`unknown argument: ${args[index]}`);
     }
   }
+  result.zigExecutable = resolveExecutableArgument(result.zigExecutable);
   return result;
+}
+
+function resolveExecutableArgument(value) {
+  if (value.includes('/') || value.includes('\\')) return path.resolve(value);
+  const resolved = Bun.which(value);
+  return resolved === null ? value : path.resolve(resolved);
 }
 
 async function materializeCapabilityRuntime(archivePath) {
@@ -582,7 +650,7 @@ async function verifyZigReleaseArchive(archivePath, release, globalCache, cwd, l
   const info = await lstat(archivePath);
   assert(info.isFile() && !info.isSymbolicLink(), `${label} release archive must be a regular file`);
   const fetch = Bun.spawn([
-    'zig',
+    options.zigExecutable,
     'fetch',
     '--global-cache-dir',
     globalCache,

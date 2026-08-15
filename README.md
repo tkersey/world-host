@@ -1,5 +1,8 @@
 # world-host
 
+world-host is the public reference host for application-specific World WASM
+and portable Frames.
+
 World Application Host v1 runs application-specific World WASM. It treats:
 
 ```text
@@ -39,8 +42,48 @@ files inside the pack. See
 [`release-candidate performance report`](docs/agent_runtime_v1_performance.md).
 
 Both `world-host` and `world-host-v1` run application-specific v1 artifacts.
-Existing Carrier v0 runs remain available through `world-host-legacy`; v0
-accepts correctness and compatibility changes only.
+Existing Carrier v0 runs remain available through `world-host-legacy`; it is a
+legacy compatibility profile and accepts correctness and compatibility changes
+only.
+
+## Public runtime distribution
+
+world-host v1.0.1 publishes a source-independent runtime at:
+
+```text
+https://github.com/tkersey/world-host/releases/download/v1.0.1/world-host-v1.0.1-runtime.tar.gz
+https://github.com/tkersey/world-host/releases/download/v1.0.1/world-host-v1.0.1-runtime.tar.gz.sha256
+```
+
+Build and verify the exact release shape locally:
+
+```sh
+bun run build:public-runtime-v1
+bun scripts/check-public-runtime-v1.mjs \
+  --archive zig-out/public-runtime/world-host-v1.0.1-runtime.tar.gz \
+  --checksum zig-out/public-runtime/world-host-v1.0.1-runtime.tar.gz.sha256
+bun scripts/run-public-runtime-v1-conformance.mjs \
+  --archive zig-out/public-runtime/world-host-v1.0.1-runtime.tar.gz \
+  --checksum zig-out/public-runtime/world-host-v1.0.1-runtime.tar.gz.sha256 \
+  --fixture-pack agent-runtime-v1
+```
+
+The archive contains only the v1 host runtime, operator entry points, its
+manifest, license, and source-independent verification code. It contains no
+application, capability pack, runtime store, secret, or source-checkout
+dependency. The outer verifier is data-only: it rejects escaping paths, links,
+duplicate entries, unexpected roots, missing licenses, missing entry points,
+incomplete checksum coverage, and oversized expansion without executing code
+from the archive. Executable conformance remains a separate explicit command
+after the caller has bound the archive digest to its trusted release lock.
+
+The deterministic public proof requires no GitHub authentication or receiver
+credential. Live capabilities remain explicit receiver-operated integrations
+and are not part of the default check.
+
+This repository is a reference implementation. Application ABI v1 permits
+alternate hosts. It does not claim exactly-once effects or protection from a
+hostile host.
 
 ## Five-minute external application run
 
