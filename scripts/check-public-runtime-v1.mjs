@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { PUBLIC_RUNTIME_ARCHIVE, extractRuntimeArchive, parseChecksumSidecar, sha256, verifyRuntimeTree } from './public-runtime-v1.mjs';
+import { PUBLIC_RUNTIME_ARCHIVE, extractRuntimeArchive, parseChecksumSidecar, readRuntimeArchive, sha256, verifyRuntimeTree } from './public-runtime-v1.mjs';
 
 const archive = valueAfter('--archive');
 const rootArgument = valueAfter('--root');
@@ -17,7 +17,7 @@ try {
   const root = archive === null ? path.resolve(rootArgument) : temporary;
   let extraction = null;
   if (archive !== null) {
-    const archiveBytes = await readFile(path.resolve(archive));
+    const archiveBytes = await readRuntimeArchive(path.resolve(archive));
     const expected = parseChecksumSidecar(await readFile(path.resolve(checksum), 'utf8'), path.basename(archive));
     assert.equal(sha256(archiveBytes), expected, 'release asset checksum mismatch');
     extraction = await extractRuntimeArchive(path.resolve(archive), root, archiveBytes);
@@ -25,7 +25,7 @@ try {
   const receipt = await verifyRuntimeTree(root);
   let packagedVerifier = null;
   if (archive !== null) {
-    const child = Bun.spawn(['bun', path.join(root, 'conformance/check-runtime.mjs'), '--root', root], {
+    const child = Bun.spawn([process.execPath, path.join(root, 'conformance/check-runtime.mjs'), '--root', root], {
       cwd: root,
       env: process.env,
       stdout: 'pipe',

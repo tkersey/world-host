@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { gunzipSync, gzipSync } from 'node:zlib';
+import { gunzipSync } from 'node:zlib';
 
-import { PUBLIC_RUNTIME_ARCHIVE, PUBLIC_RUNTIME_ROOT, buildRuntimeTree, extractRuntimeArchive, runtimeSourcePaths, sha256, verifyRuntimeTree, writeDeterministicArchive } from '../scripts/public-runtime-v1.mjs';
+import { PUBLIC_RUNTIME_ARCHIVE, PUBLIC_RUNTIME_ROOT, buildRuntimeTree, canonicalGzip, extractRuntimeArchive, runtimeSourcePaths, sha256, verifyRuntimeTree, writeDeterministicArchive } from '../scripts/public-runtime-v1.mjs';
 
 const repository = path.resolve(import.meta.dir, '..');
 
@@ -133,12 +133,6 @@ function adversarialArchive(kind) {
   }
   chunks.push(Buffer.alloc(1024));
   return canonicalGzip(Buffer.concat(chunks));
-}
-
-function canonicalGzip(bytes) {
-  const archive = gzipSync(bytes, { level: 9, mtime: 0 });
-  archive[9] = 0xff;
-  return archive;
 }
 
 function octal(buffer, offset, width, value) { const encoded = value.toString(8).padStart(width - 2, '0'); buffer.write(encoded, offset); buffer[offset + width - 2] = 0; buffer[offset + width - 1] = 0x20; }

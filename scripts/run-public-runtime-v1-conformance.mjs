@@ -4,7 +4,7 @@ import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { extractRuntimeArchive, parseChecksumSidecar, sha256, verifyRuntimeTree } from './public-runtime-v1.mjs';
+import { extractRuntimeArchive, parseChecksumSidecar, readRuntimeArchive, sha256, verifyRuntimeTree } from './public-runtime-v1.mjs';
 
 const archive = required('--archive');
 const checksum = required('--checksum');
@@ -12,7 +12,7 @@ const fixturePack = required('--fixture-pack');
 const temporary = await mkdtemp(path.join(tmpdir(), 'world-host-public-runtime-conformance-'));
 try {
   const archivePath = path.resolve(archive);
-  const archiveBytes = await readFile(archivePath);
+  const archiveBytes = await readRuntimeArchive(archivePath);
   const expected = parseChecksumSidecar(await readFile(path.resolve(checksum), 'utf8'), path.basename(archivePath));
   assert.equal(sha256(archiveBytes), expected, 'release asset checksum mismatch');
   const runtimeParent = path.join(temporary, 'runtime');
@@ -45,6 +45,7 @@ try {
   ]);
   assert.equal(exitCode, 0, stderr || 'public runtime lifecycle failed');
   const lifecycle = JSON.parse(stdout);
+  validateLifecycle(lifecycle);
   process.stdout.write(`${JSON.stringify({
     schema: 'world-host-public-runtime-conformance/v1',
     runtimeArchiveSha256: extraction.sha256,
@@ -56,6 +57,69 @@ try {
   }, null, 2)}\n`);
 } finally {
   await rm(temporary, { recursive: true, force: true });
+}
+
+function validateLifecycle(lifecycle) {
+  assert.deepEqual(lifecycle, {
+    receiptVersion: 'agent-runtime-v1-conformance/v1',
+    packFormatVersion: 'agent-runtime-v1-pack/v1',
+    releaseStatus: 'released',
+    applicationsChecked: ['one-effect', 'skeleton-agent', 'fixture-agent', 'research-digest-agent'],
+    scenarios: {
+      oneEffect: true,
+      skeletonAgent: true,
+      fixtureAgent: true,
+      providerParked: true,
+      deterministicRetry: true,
+      replayFreshEffects: 0,
+      branchingChildren: 2,
+      migrationReceiverPreflight: true,
+      researchDigest: true,
+      researchCustomEffect: true,
+      researchInternalProvider: true,
+      researchExternalCapability: true,
+      researchFreshInstanceResume: true,
+      researchDeterministicRetry: true,
+      researchCapabilityInvocations: 1,
+      researchReplayFreshEffects: 0,
+      researchBranchingChildren: 2,
+      researchMigrationReceiverPreflight: true,
+      researchNegativeCases: {
+        wrongApplicationManifest: true,
+        wrongEffectResultTarget: true,
+        staleOrDuplicateResult: true,
+        wrongSchema: true,
+        excessiveResponseBytes: true,
+        insufficientReceiverLimits: true,
+        missingCapability: true,
+        capabilityPolicyDenial: true,
+        alteredWasmBytes: true,
+        frameForAnotherApplication: true,
+      },
+      researchCli: {
+        inspectApp: true,
+        install: true,
+        run: true,
+        resume: true,
+        retry: true,
+        replay: true,
+        retainedResultOnly: true,
+        branch: true,
+        export: true,
+        import: true,
+        payloadBytesExposed: false,
+      },
+    },
+    exactFixtureOutput: 'actuate updated the fixture',
+    exactFixtureFinal: 'final=fixture updated',
+    exactResearchDigest: 'Static closure keeps authority external; canonical Frames keep continuation portable.',
+    exactResearchItemCount: '2',
+    sourceCheckoutRequired: false,
+    sourceIndependentHost: true,
+    capabilityAuthoredFrame: false,
+    applicationSpecificHostLogic: false,
+    v0RuntimeArtifactPresent: false,
+  }, 'fixture pack did not produce the exact lifecycle receipt');
 }
 
 function required(flag) {

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { gunzipSync, gzipSync, inflateRawSync } from 'node:zlib';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { gunzipSync, inflateRawSync } from 'node:zlib';
+import { mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 export const PUBLIC_RUNTIME_VERSION = '1.0.1';
@@ -101,8 +102,7 @@ export async function writeDeterministicArchive(treeRoot, outputPath) {
     if (padding > 0) chunks.push(Buffer.alloc(padding));
   }
   chunks.push(Buffer.alloc(1024));
-  const archive = gzipSync(Buffer.concat(chunks), { level: 9, mtime: 0 });
-  archive[9] = 0xff;
+  const archive = canonicalGzip(Buffer.concat(chunks));
   assert(archive.length <= MAXIMUM_ARCHIVE_BYTES, 'runtime archive exceeds maximum size');
   await mkdir(path.dirname(outputPath), { recursive: true });
   await writeFile(outputPath, archive);
@@ -110,14 +110,15 @@ export async function writeDeterministicArchive(treeRoot, outputPath) {
 }
 
 export async function extractRuntimeArchive(archivePath, destination, admittedArchive = null) {
-  const archive = admittedArchive ?? await readFile(archivePath);
+  const archive = admittedArchive ?? await readRuntimeArchive(archivePath);
   assert(Buffer.isBuffer(archive), 'runtime archive must be admitted as bytes');
   assert(archive.length <= MAXIMUM_ARCHIVE_BYTES, 'runtime archive exceeds maximum size');
-  assert.deepEqual(archive.subarray(0, 10), Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff]),
+  assert.deepEqual(archive.subarray(0, 10), Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff]),
     'runtime archive has non-canonical gzip metadata');
   const inflated = inflateRawSync(archive.subarray(10), { info: true, maxOutputLength: MAXIMUM_EXPANDED_BYTES });
   assert.equal(10 + inflated.engine.bytesWritten + 8, archive.length, 'runtime archive must contain exactly one gzip member');
   const tar = gunzipSync(archive, { maxOutputLength: MAXIMUM_EXPANDED_BYTES });
+  assert(archive.equals(canonicalGzip(tar)), 'runtime archive gzip encoding is not canonical');
   assert.equal(tar.length % 512, 0, 'tar payload is not block aligned');
   let offset = 0;
   let expanded = 0;
@@ -174,6 +175,51 @@ export async function extractRuntimeArchive(archivePath, destination, admittedAr
     await writeTreeFile(destination, entry.inside, entry.bytes, entry.isExecutable);
   }
   return { sha256: sha256(archive), bytes: archive.length, entries: count, expandedBytes: expanded };
+}
+
+export async function readRuntimeArchive(archivePath) {
+  const handle = await open(archivePath, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+  try {
+    const info = await handle.stat();
+    assert(info.isFile(), 'runtime archive must be a regular file');
+    assert(info.size <= MAXIMUM_ARCHIVE_BYTES, 'runtime archive exceeds maximum size');
+    const archive = await handle.readFile();
+    assert(archive.length <= MAXIMUM_ARCHIVE_BYTES, 'runtime archive exceeds maximum size');
+    return archive;
+  } finally {
+    await handle.close();
+  }
+}
+
+export function canonicalGzip(bytes) {
+  const blocks = [];
+  for (let offset = 0; offset < bytes.length || blocks.length === 0;) {
+    const length = Math.min(0xffff, bytes.length - offset);
+    const final = offset + length === bytes.length;
+    const header = Buffer.alloc(5);
+    header[0] = final ? 1 : 0;
+    header.writeUInt16LE(length, 1);
+    header.writeUInt16LE(length ^ 0xffff, 3);
+    blocks.push(header, bytes.subarray(offset, offset + length));
+    offset += length;
+  }
+  const trailer = Buffer.alloc(8);
+  trailer.writeUInt32LE(crc32(bytes), 0);
+  trailer.writeUInt32LE(bytes.length >>> 0, 4);
+  return Buffer.concat([
+    Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff]),
+    ...blocks,
+    trailer,
+  ]);
+}
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return (crc ^ 0xffffffff) >>> 0;
 }
 
 export async function verifyRuntimeTree(root) {
