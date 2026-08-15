@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { gunzipSync, gzipSync } from 'node:zlib';
+import { gunzipSync, gzipSync, inflateRawSync } from 'node:zlib';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -115,6 +115,8 @@ export async function extractRuntimeArchive(archivePath, destination, admittedAr
   assert(archive.length <= MAXIMUM_ARCHIVE_BYTES, 'runtime archive exceeds maximum size');
   assert.deepEqual(archive.subarray(0, 10), Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff]),
     'runtime archive has non-canonical gzip metadata');
+  const inflated = inflateRawSync(archive.subarray(10), { info: true, maxOutputLength: MAXIMUM_EXPANDED_BYTES });
+  assert.equal(10 + inflated.engine.bytesWritten + 8, archive.length, 'runtime archive must contain exactly one gzip member');
   const tar = gunzipSync(archive, { maxOutputLength: MAXIMUM_EXPANDED_BYTES });
   assert.equal(tar.length % 512, 0, 'tar payload is not block aligned');
   let offset = 0;

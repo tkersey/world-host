@@ -78,6 +78,13 @@ describe('public world-host v1 runtime', () => {
         /non-canonical gzip metadata/,
       );
 
+      const extraGzipMember = path.join(root, 'extra-gzip-member.tar.gz');
+      await writeFile(extraGzipMember, Buffer.concat([await readFile(canonicalArchive), canonicalGzip(Buffer.alloc(512))]));
+      await assert.rejects(
+        () => extractRuntimeArchive(extraGzipMember, path.join(root, 'extra-gzip-member')),
+        /exactly one gzip member/,
+      );
+
       const admittedBytes = await readFile(canonicalArchive);
       await writeFile(canonicalArchive, adversarialArchive('wrong-root'));
       const admittedExtraction = path.join(root, 'admitted-bytes');
