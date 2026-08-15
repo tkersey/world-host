@@ -1,6 +1,6 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, truncate, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
@@ -40,10 +40,25 @@ describe('public world-host v1 runtime', () => {
     }
   });
 
+  it('refuses to package runtime bytes outside the reviewed v1.0.0 identity', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'world-host-public-runtime-identity-'));
+    try {
+      await mkdir(path.join(root, 'scripts'));
+      for (const relative of ['LICENSE', 'bin', 'src', 'scripts/public-runtime-v1.mjs', 'scripts/check-public-runtime-v1.mjs']) {
+        await cp(path.join(repository, relative), path.join(root, relative), { recursive: true });
+      }
+      await writeFile(path.join(root, 'src/v1/errors.mjs'), 'export const changed = true;\n');
+      await assert.rejects(() => buildRuntimeTree(root, path.join(root, 'out')),
+        /runtime source differs from reviewed v1\.0\.0: src\/v1\/errors\.mjs/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('rejects traversal, links, duplicate paths, unexpected roots, and checksum drift', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-public-runtime-negative-'));
     try {
-      for (const mutation of ['traversal', 'backslash-traversal', 'symlink', 'duplicate', 'wrong-root', 'entrypoint-mode']) {
+      for (const mutation of ['traversal', 'backslash-traversal', 'windows-stream', 'windows-trailing-dot', 'windows-device', 'symlink', 'duplicate', 'wrong-root', 'entrypoint-mode']) {
         const archive = path.join(root, `${mutation}.tar.gz`);
         await writeFile(archive, adversarialArchive(mutation));
         await assert.rejects(() => extractRuntimeArchive(archive, path.join(root, mutation)));
@@ -161,6 +176,9 @@ function adversarialArchive(kind) {
   const names = kind === 'duplicate' ? [`${PUBLIC_RUNTIME_ROOT}/README.md`, `${PUBLIC_RUNTIME_ROOT}/README.md`] : [
     kind === 'traversal' ? `${PUBLIC_RUNTIME_ROOT}/../escape`
       : kind === 'backslash-traversal' ? `${PUBLIC_RUNTIME_ROOT}/..\\escape`
+        : kind === 'windows-stream' ? `${PUBLIC_RUNTIME_ROOT}/README.md:payload`
+          : kind === 'windows-trailing-dot' ? `${PUBLIC_RUNTIME_ROOT}/README.md.`
+            : kind === 'windows-device' ? `${PUBLIC_RUNTIME_ROOT}/con.txt`
         : kind === 'wrong-root' ? 'wrong-root/README.md'
           : kind === 'entrypoint-mode' ? `${PUBLIC_RUNTIME_ROOT}/bin/world-host-v1.mjs`
             : `${PUBLIC_RUNTIME_ROOT}/link`,

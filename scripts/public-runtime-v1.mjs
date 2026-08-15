@@ -20,6 +20,21 @@ export const RUNTIME_SOURCE_PATHS = Object.freeze([
   'src/bun/application_v1_inspection_worker.mjs',
 ]);
 
+const V1_0_0_RUNTIME_SHA256 = Object.freeze({
+  'bin/world-host-v1.mjs': '93900063f5069de8afb94c1e9e59a5ad6cba9a3dd14533f69b69b388d55e3f25',
+  'src/bun/application_v1_cli.mjs': 'b998b46adf937d62c622c724a276e0e05f878cf8c95eb8e85e70084dd227431a',
+  'src/bun/application_v1_inspection_worker.mjs': '949c101c92010e3e55d2feaea30e01c64a3ff16ea6a112ad2ea882a6a18d633f',
+  'src/v1/application_worker.mjs': '34fa722e47e550a5405df7a6db965d999f58fb51447a9bd179de88f694e11e50',
+  'src/v1/directory_storage.mjs': '45b08e986ba63ac332012cdd4c8bebc60880368961f6884ba5c9a31a5754e92c',
+  'src/v1/effect_journal.mjs': 'fc1d390229e07110940d294e844e94a6963fb2ee60cef1bac34a801fd5f58453',
+  'src/v1/errors.mjs': 'd6bf2c3d68347ed3730f1594f652521558b5b4e43ef2333259312a7015180427',
+  'src/v1/index.mjs': 'e033d4c61ede2b28bcaa75f60f3e9f0c5b94a02847fb1320b9cf5da25b85dc20',
+  'src/v1/protocol.mjs': '63d6f7e79e41b0401d4cf3740dbcb26a2173946e99533e6bf6d48f4ec2cdcabc',
+  'src/v1/run_controller.mjs': '9f1afbb90f9b6725abdfbf138f204eb541dd2e3b7c84199e508f17275ac0b5fb',
+  'src/v1/storage.mjs': '0493514c9190637868f5c57cc8e7dbb4891cba48f5106d2037fac89678bf090b',
+  'src/v1/wasm_module.mjs': 'ca87d67c5b58c2f736de2c0af7a392ff7b11a9f830258967bc1114bcd6632d0f',
+});
+
 const EXPECTED_RUNTIME_FILES = Object.freeze([
   'LICENSE',
   'README.md',
@@ -50,8 +65,14 @@ export async function runtimeSourcePaths(repository) {
 
 export async function buildRuntimeTree(repository, outputRoot) {
   const files = await runtimeSourcePaths(repository);
+  assert.deepEqual(files.filter((relative) => relative !== 'LICENSE'), Object.keys(V1_0_0_RUNTIME_SHA256),
+    'runtime source inventory differs from reviewed v1.0.0');
   for (const relative of files) {
     const bytes = await readFile(path.join(repository, relative));
+    if (relative !== 'LICENSE') {
+      assert.equal(sha256(bytes), V1_0_0_RUNTIME_SHA256[relative],
+        `runtime source differs from reviewed v1.0.0: ${relative}`);
+    }
     await writeTreeFile(outputRoot, relative, bytes, executable(relative));
   }
   await writeTreeFile(outputRoot, 'package.json', Buffer.from(`${JSON.stringify({
@@ -393,7 +414,15 @@ function textField(bytes) {
 
 function sum(bytes) { let result = 0; for (const byte of bytes) result += byte; return result; }
 function executable(relative) { return relative.startsWith('bin/') || relative.startsWith('conformance/'); }
-function safeRelative(value) { return value.length > 0 && !value.includes('\\') && !path.posix.isAbsolute(value) && !value.split('/').some((part) => part === '' || part === '.' || part === '..'); }
+function safeRelative(value) {
+  return value.length > 0 && !value.includes('\\') && !path.posix.isAbsolute(value)
+    && !value.split('/').some((part) => part === '' || part === '.' || part === '..' || !windowsSafeComponent(part));
+}
+function windowsSafeComponent(value) {
+  if (/[<>:"|?*\u0000-\u001f]/u.test(value) || /[. ]$/u.test(value)) return false;
+  const stem = value.split('.')[0].toUpperCase();
+  return !/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/u.test(stem);
+}
 export function sha256(bytes) { return createHash('sha256').update(bytes).digest('hex'); }
 function stableJson(value) { return JSON.stringify(value, Object.keys(value).sort(), 2); }
 function parseChecksums(text) {
