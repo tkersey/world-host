@@ -485,7 +485,7 @@ function parseArgs(args) {
       result.boundaryReleaseArchive = path.resolve(requireValue(args, ++index, '--boundary-release-archive'));
     }
     else if (args[index] === '--world-repo') result.worldRepo = path.resolve(requireValue(args, ++index, '--world-repo'));
-    else if (args[index] === '--zig') result.zigExecutable = resolveExecutableArgument(requireValue(args, ++index, '--zig'));
+    else if (args[index] === '--zig') result.zigExecutable = requireValue(args, ++index, '--zig');
     else if (args[index] === '--world-release-archive') {
       result.worldReleaseArchive = path.resolve(requireValue(args, ++index, '--world-release-archive'));
     }
@@ -516,11 +516,14 @@ function parseArgs(args) {
       throw new Error(`unknown argument: ${args[index]}`);
     }
   }
+  result.zigExecutable = resolveExecutableArgument(result.zigExecutable);
   return result;
 }
 
 function resolveExecutableArgument(value) {
-  return value.includes('/') || value.includes('\\') ? path.resolve(value) : value;
+  if (value.includes('/') || value.includes('\\')) return path.resolve(value);
+  const resolved = Bun.which(value);
+  return resolved === null ? value : path.resolve(resolved);
 }
 
 async function materializeCapabilityRuntime(archivePath) {

@@ -104,6 +104,11 @@ describe('public world-host v1 runtime', () => {
       assert.equal(Bun.spawnSync(['mkfifo', fifoSidecar]).exitCode, 0);
       await assert.rejects(() => readChecksumSidecar(fifoSidecar), /checksum sidecar must be a regular file/);
 
+      const oversizedRoot = path.join(root, 'oversized-root');
+      await buildRuntimeTree(repository, oversizedRoot);
+      await truncate(path.join(oversizedRoot, 'README.md'), MAXIMUM_ARCHIVE_BYTES * 5);
+      await assert.rejects(() => verifyRuntimeTree(oversizedRoot), /runtime tree exceeds maximum size/);
+
       const oversizedTree = path.join(root, 'oversized-tree');
       await mkdir(oversizedTree);
       const oversizedEntry = path.join(oversizedTree, 'payload.bin');

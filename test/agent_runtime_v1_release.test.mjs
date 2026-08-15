@@ -13,8 +13,10 @@ import { resolveWorldHostReleaseSourceCommit } from
 describe('Agent Runtime v1 pack release identities', () => {
   it('resolves path-valued Zig selections before build cwd changes', async () => {
     const source = await readFile('scripts/build-agent-runtime-v1.mjs', 'utf8');
-    assert.match(source, /result\.zigExecutable = resolveExecutableArgument\(requireValue/);
+    assert.match(source, /result\.zigExecutable = resolveExecutableArgument\(result\.zigExecutable\)/);
     assert.match(source, /value\.includes\('\/'\).*path\.resolve\(value\)/s);
+    assert.match(source, /Bun\.which\(value\)/);
+    assert.match(source, /resolved === null \? value : path\.resolve\(resolved\)/);
   });
 
   it('builds and validates development packs without a Boundary checkout', async () => {

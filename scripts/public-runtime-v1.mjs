@@ -257,7 +257,8 @@ export async function verifyRuntimeTree(root) {
   for (const forbidden of files) {
     assert(!/(^|\/)(applications?|capabilities?|fixtures?|stores?|runs?|logs?|transcripts?|evidence|secrets?|\.git)(\/|$)/i.test(forbidden), `forbidden runtime path: ${forbidden}`);
   }
-  const manifest = JSON.parse(await readFile(path.join(root, 'manifest.json'), 'utf8'));
+  const snapshot = await snapshotRuntimeFiles(root, files);
+  const manifest = JSON.parse(snapshot.get('manifest.json').toString('utf8'));
   assert.deepEqual(manifest, {
     applicationAbiVersion: 1,
     archiveRoot: PUBLIC_RUNTIME_ROOT,
@@ -269,13 +270,43 @@ export async function verifyRuntimeTree(root) {
     verifier: 'conformance/check-runtime.mjs',
     version: PUBLIC_RUNTIME_VERSION,
   });
-  const checksums = parseChecksums(await readFile(path.join(root, 'checksums.sha256'), 'utf8'));
+  const checksums = parseChecksums(snapshot.get('checksums.sha256').toString('utf8'));
   const covered = files.filter((file) => !['checksums.sha256', 'manifest.json'].includes(file));
   assert.deepEqual([...checksums.keys()].sort(), covered, 'runtime checksum coverage mismatch');
   for (const relative of covered) {
-    assert.equal(sha256(await readFile(path.join(root, relative))), checksums.get(relative), `runtime checksum mismatch: ${relative}`);
+    assert.equal(sha256(snapshot.get(relative)), checksums.get(relative), `runtime checksum mismatch: ${relative}`);
   }
   return { format: manifest.format, version: manifest.version, fileCount: files.length, checksumCount: checksums.size, sourceCheckoutRequired: false };
+}
+
+async function snapshotRuntimeFiles(root, files) {
+  const snapshot = new Map();
+  let totalBytes = 0;
+  for (const relative of files) {
+    const handle = await open(path.join(root, relative), fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+    try {
+      const before = await handle.stat();
+      assert(before.isFile(), `runtime entry must be a regular file: ${relative}`);
+      assert(before.size <= MAXIMUM_EXPANDED_BYTES - totalBytes, 'runtime tree exceeds maximum size');
+      const bytes = Buffer.alloc(before.size);
+      let offset = 0;
+      while (offset < bytes.length) {
+        const read = await handle.read(bytes, offset, bytes.length - offset, offset);
+        assert(read.bytesRead > 0, `runtime file changed while reading: ${relative}`);
+        offset += read.bytesRead;
+      }
+      const extra = Buffer.alloc(1);
+      assert.equal((await handle.read(extra, 0, 1, bytes.length)).bytesRead, 0,
+        `runtime file changed while reading: ${relative}`);
+      const after = await handle.stat();
+      assert.equal(after.size, before.size, `runtime file changed while reading: ${relative}`);
+      totalBytes += bytes.length;
+      snapshot.set(relative, bytes);
+    } finally {
+      await handle.close();
+    }
+  }
+  return snapshot;
 }
 
 export function parseChecksumSidecar(text, expectedName = PUBLIC_RUNTIME_ARCHIVE) {
