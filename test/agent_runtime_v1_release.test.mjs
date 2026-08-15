@@ -19,6 +19,28 @@ describe('Agent Runtime v1 pack release identities', () => {
     assert.match(source, /resolved === null \? value : path\.resolve\(resolved\)/);
   });
 
+  it('rejects application inputs inside the deletable pack output', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agent-runtime-v1-overlap-'));
+    const out = path.join(root, 'agent-runtime-v1');
+    const applications = path.join(out, 'applications');
+    const marker = path.join(applications, 'keep.txt');
+    try {
+      await mkdir(applications, { recursive: true });
+      await writeFile(path.join(out, 'manifest.json'), JSON.stringify({ formatVersion: 'agent-runtime-v1-pack/v1' }));
+      await writeFile(marker, 'keep');
+      const built = spawnSync(process.execPath, [
+        path.resolve('scripts/build-agent-runtime-v1.mjs'),
+        '--applications-root', applications,
+        '--out', out,
+      ], { cwd: process.cwd(), encoding: 'utf8' });
+      assert.notEqual(built.status, 0);
+      assert.match(built.stderr, /application root must be outside pack output/);
+      assert.equal(await readFile(marker, 'utf8'), 'keep');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('builds and validates development packs without a Boundary checkout', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agent-runtime-v1-development-'));
     const pack = path.join(root, 'agent-runtime-v1');

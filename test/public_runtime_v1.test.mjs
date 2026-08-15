@@ -25,6 +25,9 @@ describe('public world-host v1 runtime', () => {
       assert.deepEqual(await readFile(firstArchive), await readFile(secondArchive));
       assert.equal((await readFile(firstArchive))[9], 0xff);
       assert.equal((await verifyRuntimeTree(firstTree)).sourceCheckoutRequired, false);
+      const runtimeReadme = await readFile(path.join(firstTree, 'README.md'), 'utf8');
+      assert.match(runtimeReadme, /separately obtained trusted release lock/);
+      assert.doesNotMatch(runtimeReadme, /bun conformance\/check-runtime\.mjs/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -85,7 +85,7 @@ export async function buildRuntimeTree(repository, outputRoot) {
     engines: { bun: '>=1.3.2' },
     dependencies: {},
   }, null, 2)}\n`));
-  await writeTreeFile(outputRoot, 'README.md', Buffer.from(`# world-host v${PUBLIC_RUNTIME_VERSION} runtime\n\nThis source-independent distribution runs Application ABI v1 World WASM with Bun 1.3.2 or newer. It contains no application, capability, receiver secret, or runtime store.\n\nVerify it with:\n\n\`\`\`sh\nbun conformance/check-runtime.mjs --root .\n\`\`\`\n`));
+  await writeTreeFile(outputRoot, 'README.md', Buffer.from(`# world-host v${PUBLIC_RUNTIME_VERSION} runtime\n\nThis source-independent distribution runs Application ABI v1 World WASM with Bun 1.3.2 or newer. It contains no application, capability, receiver secret, or runtime store.\n\nBind the archive SHA-256 to a separately obtained trusted release lock, then use the data-only verifier from that trusted source. Do not execute files from this archive to establish the archive's authenticity. The bundled conformance checker is available only for post-admission integrity checks.\n`));
   for (const script of ['public-runtime-v1.mjs', 'check-public-runtime-v1.mjs']) {
     const target = script === 'check-public-runtime-v1.mjs' ? 'check-runtime.mjs' : script;
     await writeTreeFile(outputRoot, `conformance/${target}`, await readFile(path.join(repository, 'scripts', script)), true);

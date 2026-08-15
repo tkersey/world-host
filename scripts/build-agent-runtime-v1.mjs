@@ -117,6 +117,12 @@ const externalApplication = options.applicationsRoot !== null
 if (options.applicationsRoot === null) {
   await buildWorldApplications(worldRepo, worldReleaseMaterialization);
 }
+await assertInputsOutsideOutput(options.out, [
+  ['application root', externalApplication.root],
+  ['world-host repository', options.worldHostRepo],
+  ['World repository', worldRepo],
+  ['capabilities repository', capabilitiesRepo],
+]);
 await prepareOutput(options.out);
 
 const applications = [];
@@ -396,6 +402,37 @@ async function prepareOutput(output) {
     if (error?.code !== 'ENOENT') throw error;
   }
   await mkdir(output, { recursive: true });
+}
+
+async function assertInputsOutsideOutput(output, inputs) {
+  const resolvedOutput = await projectedRealpath(output);
+  for (const [label, input] of inputs) {
+    let resolvedInput;
+    try {
+      resolvedInput = await realpath(input);
+    } catch (error) {
+      if (error?.code === 'ENOENT') continue;
+      throw error;
+    }
+    assert(!isSameOrBelow(resolvedOutput, resolvedInput), `${label} must be outside pack output`);
+  }
+}
+
+async function projectedRealpath(target) {
+  const resolved = path.resolve(target);
+  let current = resolved;
+  while (true) {
+    try {
+      await lstat(current);
+      const suffix = path.relative(current, resolved);
+      return path.resolve(await realpath(current), suffix);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      const parent = path.dirname(current);
+      if (parent === current) return resolved;
+      current = parent;
+    }
+  }
 }
 
 async function buildWorldApplications(worldRepo, releaseMaterialization = null) {
