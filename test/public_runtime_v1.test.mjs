@@ -1,6 +1,6 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
-import { cp, mkdir, mkdtemp, readFile, rm, truncate, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
@@ -28,6 +28,8 @@ describe('public world-host v1 runtime', () => {
       const runtimeReadme = await readFile(path.join(firstTree, 'README.md'), 'utf8');
       assert.match(runtimeReadme, /separately obtained trusted release lock/);
       assert.doesNotMatch(runtimeReadme, /bun conformance\/check-runtime\.mjs/);
+      await chmod(path.join(firstTree, 'bin/world-host-v1.mjs'), 0o644);
+      await assert.rejects(() => verifyRuntimeTree(firstTree), /runtime file mode mismatch: bin\/world-host-v1\.mjs/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

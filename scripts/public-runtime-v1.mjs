@@ -308,6 +308,8 @@ async function snapshotRuntimeFiles(root, files) {
     try {
       const before = await handle.stat();
       assert(before.isFile(), `runtime entry must be a regular file: ${relative}`);
+      assert.equal(before.mode & 0o777, executable(relative) ? 0o755 : 0o644,
+        `runtime file mode mismatch: ${relative}`);
       assert(before.size <= MAXIMUM_EXPANDED_BYTES - totalBytes, 'runtime tree exceeds maximum size');
       const bytes = Buffer.alloc(before.size);
       let offset = 0;
