@@ -137,6 +137,12 @@ describe('public world-host v1 runtime', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('keeps archive verification data-only', async () => {
+    const source = await readFile(path.join(repository, 'scripts/check-public-runtime-v1.mjs'), 'utf8');
+    assert.doesNotMatch(source, /Bun\.spawn|spawnSync|process\.execPath/);
+    assert.match(source, /executesRuntimeCode: false/);
+  });
 });
 
 function gitLines(args) { return new TextDecoder().decode(gitBytes(args)).trim().split('\n').filter(Boolean); }

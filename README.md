@@ -71,9 +71,11 @@ bun scripts/run-public-runtime-v1-conformance.mjs \
 The archive contains only the v1 host runtime, operator entry points, its
 manifest, license, and source-independent verification code. It contains no
 application, capability pack, runtime store, secret, or source-checkout
-dependency. The verifier rejects escaping paths, links, duplicate entries,
-unexpected roots, missing licenses, missing entry points, incomplete checksum
-coverage, and oversized expansion.
+dependency. The outer verifier is data-only: it rejects escaping paths, links,
+duplicate entries, unexpected roots, missing licenses, missing entry points,
+incomplete checksum coverage, and oversized expansion without executing code
+from the archive. Executable conformance remains a separate explicit command
+after the caller has bound the archive digest to its trusted release lock.
 
 The deterministic public proof requires no GitHub authentication or receiver
 credential. Live capabilities remain explicit receiver-operated integrations

@@ -23,25 +23,12 @@ try {
     extraction = await extractRuntimeArchive(path.resolve(archive), root, archiveBytes);
   }
   const receipt = await verifyRuntimeTree(root);
-  let packagedVerifier = null;
-  if (archive !== null) {
-    const child = Bun.spawn([process.execPath, path.join(root, 'conformance/check-runtime.mjs'), '--root', root], {
-      cwd: root,
-      env: process.env,
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ]);
-    assert.equal(exitCode, 0, stderr || 'packaged runtime verifier failed');
-    packagedVerifier = JSON.parse(stdout);
-    assert.equal(packagedVerifier.schema, 'world-host-public-runtime-check/v1');
-    assert.equal(packagedVerifier.sourceCheckoutRequired, false);
-  }
-  process.stdout.write(`${JSON.stringify({ schema: 'world-host-public-runtime-check/v1', ...receipt, archive: extraction, packagedVerifier }, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({
+    schema: 'world-host-public-runtime-check/v1',
+    ...receipt,
+    archive: extraction,
+    executesRuntimeCode: false,
+  }, null, 2)}\n`);
 } finally {
   if (temporary !== null) await rm(temporary, { recursive: true, force: true });
 }
