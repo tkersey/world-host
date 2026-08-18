@@ -4,6 +4,7 @@ import { ApplicationWorker } from './application_worker.mjs';
 import { assertBytes, fail } from './errors.mjs';
 import { MemoryEffectJournalV1, admitJournalFuel } from './effect_journal.mjs';
 import {
+  DEFAULT_ADMISSION_LIMITS,
   FrameStatus,
   createEffectResult,
   decodeApplicationManifest,
@@ -21,8 +22,9 @@ export class RunControllerV1 {
     wasmBytes,
     blockStore,
     headStore,
+    admissionLimits = DEFAULT_ADMISSION_LIMITS,
     effectJournal = null,
-    workerFactory = () => new ApplicationWorker(),
+    workerFactory = () => new ApplicationWorker({ admissionLimits }),
     preflight = async () => ({ blockers: [] }),
     faultInjector = async () => {},
   }) {
@@ -36,7 +38,7 @@ export class RunControllerV1 {
       const report = await preflight(manifest);
       if (!report || !Array.isArray(report.blockers)) fail('ERR_APPLICATION_V1_PREFLIGHT_REPORT');
       if (report.blockers.length !== 0) fail('ERR_APPLICATION_V1_PREFLIGHT_BLOCKED', 'receiver policy rejected application', { blockers: report.blockers });
-      const retainedManifest = decodeApplicationManifest(manifestBytes);
+      const retainedManifest = decodeApplicationManifest(manifestBytes, admissionLimits);
       const wasmRef = await blockStore.putBlock(applicationBytes);
       const manifestRef = await blockStore.putBlock(retainedManifest.encodedBytes);
       return new RunControllerV1({
@@ -61,8 +63,9 @@ export class RunControllerV1 {
     branchId,
     blockStore,
     headStore,
+    admissionLimits = DEFAULT_ADMISSION_LIMITS,
     effectJournal = null,
-    workerFactory = () => new ApplicationWorker(),
+    workerFactory = () => new ApplicationWorker({ admissionLimits }),
     preflight = async () => ({ blockers: [] }),
     faultInjector = async () => {},
   }) {
@@ -72,6 +75,7 @@ export class RunControllerV1 {
       wasmBytes: admitted.applicationWasmBytes,
       blockStore,
       headStore,
+      admissionLimits,
       effectJournal: journal,
       workerFactory,
       preflight,
