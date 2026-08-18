@@ -948,11 +948,14 @@ async function checkerFor(pack) {
   }
 
   const repository = path.resolve(path.dirname(current), '..');
-  const { worldHostReleaseSourceEvidence } = await import(
+  const { AGENT_RUNTIME_V1_WORLD_HOST_GIT_COMMIT, worldHostReleaseSourceEvidence } = await import(
     pathToFileURL(path.join(path.dirname(current), 'agent-runtime-v1-release-source.mjs')).href
   );
   return Object.freeze({
     path: path.join(path.dirname(current), 'check-agent-runtime-v1-pack.mjs'),
-    ...await worldHostReleaseSourceEvidence(repository),
+    ...await worldHostReleaseSourceEvidence(
+      repository,
+      AGENT_RUNTIME_V1_WORLD_HOST_GIT_COMMIT,
+    ),
   });
 }
