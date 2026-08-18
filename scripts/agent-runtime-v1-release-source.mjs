@@ -20,11 +20,17 @@ export const WORLD_HOST_RUNTIME_SOURCE_PATHS = Object.freeze([
   'src/v1',
 ]);
 
-export async function worldHostReleaseSourceEvidence(repository) {
-  const commit = await resolveWorldHostReleaseSourceCommit(repository);
+export const AGENT_RUNTIME_V1_WORLD_HOST_GIT_COMMIT =
+  'b66324515577323325deccf532efd85e370f51b3';
+
+export async function worldHostReleaseSourceEvidence(
+  repository,
+  commit = null,
+) {
+  const admittedCommit = commit ?? await resolveWorldHostReleaseSourceCommit(repository);
   return Object.freeze({
-    expectedWorldHostGitCommit: commit,
-    expectedWorldHostSourceSha256: await worldHostReleaseSourceSha256(repository, commit),
+    expectedWorldHostGitCommit: admittedCommit,
+    expectedWorldHostSourceSha256: await worldHostReleaseSourceSha256(repository, admittedCommit),
   });
 }
 

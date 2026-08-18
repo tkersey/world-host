@@ -5,7 +5,7 @@ import { gunzipSync, inflateRawSync } from 'node:zlib';
 import { mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-export const PUBLIC_RUNTIME_VERSION = '1.0.1';
+export const PUBLIC_RUNTIME_VERSION = '1.0.2';
 export const PUBLIC_RUNTIME_ROOT = `world-host-v${PUBLIC_RUNTIME_VERSION}-runtime`;
 export const PUBLIC_RUNTIME_ARCHIVE = `${PUBLIC_RUNTIME_ROOT}.tar.gz`;
 export const MAXIMUM_ARCHIVE_BYTES = 16 << 20;
@@ -20,7 +20,7 @@ export const RUNTIME_SOURCE_PATHS = Object.freeze([
   'src/bun/application_v1_inspection_worker.mjs',
 ]);
 
-const V1_0_0_RUNTIME_SHA256 = Object.freeze({
+const REVIEWED_RUNTIME_SHA256 = Object.freeze({
   'bin/world-host-v1.mjs': '93900063f5069de8afb94c1e9e59a5ad6cba9a3dd14533f69b69b388d55e3f25',
   'src/bun/application_v1_cli.mjs': 'b998b46adf937d62c622c724a276e0e05f878cf8c95eb8e85e70084dd227431a',
   'src/bun/application_v1_inspection_worker.mjs': '949c101c92010e3e55d2feaea30e01c64a3ff16ea6a112ad2ea882a6a18d633f',
@@ -30,7 +30,7 @@ const V1_0_0_RUNTIME_SHA256 = Object.freeze({
   'src/v1/errors.mjs': 'd6bf2c3d68347ed3730f1594f652521558b5b4e43ef2333259312a7015180427',
   'src/v1/index.mjs': 'e033d4c61ede2b28bcaa75f60f3e9f0c5b94a02847fb1320b9cf5da25b85dc20',
   'src/v1/protocol.mjs': '63d6f7e79e41b0401d4cf3740dbcb26a2173946e99533e6bf6d48f4ec2cdcabc',
-  'src/v1/run_controller.mjs': '9f1afbb90f9b6725abdfbf138f204eb541dd2e3b7c84199e508f17275ac0b5fb',
+  'src/v1/run_controller.mjs': 'cbc9d44ca7a1c3ca094e887225917075b2f717a4bd6b264db097c6b3e6a30eaf',
   'src/v1/storage.mjs': '0493514c9190637868f5c57cc8e7dbb4891cba48f5106d2037fac89678bf090b',
   'src/v1/wasm_module.mjs': 'ca87d67c5b58c2f736de2c0af7a392ff7b11a9f830258967bc1114bcd6632d0f',
 });
@@ -65,13 +65,13 @@ export async function runtimeSourcePaths(repository) {
 
 export async function buildRuntimeTree(repository, outputRoot) {
   const files = await runtimeSourcePaths(repository);
-  assert.deepEqual(files.filter((relative) => relative !== 'LICENSE'), Object.keys(V1_0_0_RUNTIME_SHA256),
-    'runtime source inventory differs from reviewed v1.0.0');
+  assert.deepEqual(files.filter((relative) => relative !== 'LICENSE'), Object.keys(REVIEWED_RUNTIME_SHA256),
+    'runtime source inventory differs from reviewed v1.0.2');
   for (const relative of files) {
     const bytes = await readFile(path.join(repository, relative));
     if (relative !== 'LICENSE') {
-      assert.equal(sha256(bytes), V1_0_0_RUNTIME_SHA256[relative],
-        `runtime source differs from reviewed v1.0.0: ${relative}`);
+      assert.equal(sha256(bytes), REVIEWED_RUNTIME_SHA256[relative],
+        `runtime source differs from reviewed v1.0.2: ${relative}`);
     }
     await writeTreeFile(outputRoot, relative, bytes, executable(relative));
   }

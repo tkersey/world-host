@@ -48,11 +48,11 @@ only.
 
 ## Public runtime distribution
 
-world-host v1.0.1 publishes a source-independent runtime at:
+world-host v1.0.2 publishes a source-independent runtime at:
 
 ```text
-https://github.com/tkersey/world-host/releases/download/v1.0.1/world-host-v1.0.1-runtime.tar.gz
-https://github.com/tkersey/world-host/releases/download/v1.0.1/world-host-v1.0.1-runtime.tar.gz.sha256
+https://github.com/tkersey/world-host/releases/download/v1.0.2/world-host-v1.0.2-runtime.tar.gz
+https://github.com/tkersey/world-host/releases/download/v1.0.2/world-host-v1.0.2-runtime.tar.gz.sha256
 ```
 
 Build and verify the exact release shape locally:
@@ -60,11 +60,11 @@ Build and verify the exact release shape locally:
 ```sh
 bun run build:public-runtime-v1
 bun scripts/check-public-runtime-v1.mjs \
-  --archive zig-out/public-runtime/world-host-v1.0.1-runtime.tar.gz \
-  --checksum zig-out/public-runtime/world-host-v1.0.1-runtime.tar.gz.sha256
+  --archive zig-out/public-runtime/world-host-v1.0.2-runtime.tar.gz \
+  --checksum zig-out/public-runtime/world-host-v1.0.2-runtime.tar.gz.sha256
 bun scripts/run-public-runtime-v1-conformance.mjs \
-  --archive zig-out/public-runtime/world-host-v1.0.1-runtime.tar.gz \
-  --checksum zig-out/public-runtime/world-host-v1.0.1-runtime.tar.gz.sha256 \
+  --archive zig-out/public-runtime/world-host-v1.0.2-runtime.tar.gz \
+  --checksum zig-out/public-runtime/world-host-v1.0.2-runtime.tar.gz.sha256 \
   --fixture-pack agent-runtime-v1
 ```
 

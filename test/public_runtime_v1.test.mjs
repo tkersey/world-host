@@ -35,17 +35,18 @@ describe('public world-host v1 runtime', () => {
     }
   });
 
-  it('preserves every released v1.0.0 executable runtime byte', async () => {
+  it('changes only the reviewed RunController admission boundary from v1.0.1', async () => {
     const currentPaths = await runtimeSourcePaths(repository);
-    const releasedPaths = gitLines(['ls-tree', '-r', '--name-only', 'v1.0.0', '--', 'bin/world-host-v1.mjs', 'src/bun/application_v1_cli.mjs', 'src/bun/application_v1_inspection_worker.mjs', 'src/v1']);
+    const releasedPaths = gitLines(['ls-tree', '-r', '--name-only', 'v1.0.1', '--', 'bin/world-host-v1.mjs', 'src/bun/application_v1_cli.mjs', 'src/bun/application_v1_inspection_worker.mjs', 'src/v1']);
     assert.deepEqual(currentPaths.filter((value) => value !== 'LICENSE'), releasedPaths);
     for (const relative of releasedPaths) {
-      const released = gitBytes(['show', `v1.0.0:${relative}`]);
-      assert.equal(sha256(await readFile(path.join(repository, relative))), sha256(released), relative);
+      const released = gitBytes(['show', `v1.0.1:${relative}`]);
+      if (relative === 'src/v1/run_controller.mjs') assert.notEqual(sha256(await readFile(path.join(repository, relative))), sha256(released), relative);
+      else assert.equal(sha256(await readFile(path.join(repository, relative))), sha256(released), relative);
     }
   });
 
-  it('refuses to package runtime bytes outside the reviewed v1.0.0 identity', async () => {
+  it('refuses to package runtime bytes outside the reviewed v1.0.2 identity', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'world-host-public-runtime-identity-'));
     try {
       await mkdir(path.join(root, 'scripts'));
@@ -54,7 +55,7 @@ describe('public world-host v1 runtime', () => {
       }
       await writeFile(path.join(root, 'src/v1/errors.mjs'), 'export const changed = true;\n');
       await assert.rejects(() => buildRuntimeTree(root, path.join(root, 'out')),
-        /runtime source differs from reviewed v1\.0\.0: src\/v1\/errors\.mjs/);
+        /runtime source differs from reviewed v1\.0\.2: src\/v1\/errors\.mjs/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

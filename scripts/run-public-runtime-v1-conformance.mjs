@@ -23,16 +23,17 @@ try {
   await cp(path.resolve(fixturePack), pack, { recursive: true });
   await rm(path.join(pack, 'host'), { recursive: true, force: true });
   await cp(runtime, path.join(pack, 'host'), { recursive: true });
-  // The public runtime has the same v1 executable source as v1.0.0. Only its
-  // generated package metadata and verification files differ, so rebuild the
-  // outer fixture checksum list before invoking the released lifecycle proof.
+  // Rebuild the outer fixture checksum list, then use the trusted source-side
+  // driver in explicit substitution mode: the historical fixture pack keeps
+  // its reviewed commit pin while the separately authenticated successor
+  // runtime bytes are checked against their current reviewed source hashes.
   const files = await listFiles(pack);
   const lines = [];
   for (const relative of files.filter((value) => value !== 'checksums.sha256')) {
     lines.push(`${sha256(await readFile(path.join(pack, relative)))}  ${relative}`);
   }
   await writeFile(path.join(pack, 'checksums.sha256'), `${lines.join('\n')}\n`);
-  const command = Bun.spawn(['bun', path.join(pack, 'conformance/run.mjs'), pack], {
+  const command = Bun.spawn(['bun', path.resolve('scripts/run-agent-runtime-v1-conformance.mjs'), pack, '--substituted-reviewed-runtime'], {
     cwd: temporary,
     env: anonymousEnvironment(),
     stdout: 'pipe',
@@ -144,6 +145,6 @@ async function listFiles(root, relative = '') {
 function anonymousEnvironment() {
   const env = { ...process.env };
   for (const key of ['GH_TOKEN', 'GITHUB_TOKEN', 'OPENAI_API_KEY']) delete env[key];
-  env.PATH = path.dirname(process.execPath);
+  env.PATH = `${path.dirname(process.execPath)}:/usr/bin:/bin`;
   return env;
 }
