@@ -6,7 +6,10 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const pack = await packRoot(process.argv[2]);
-const checker = await checkerFor(pack);
+const checker = await checkerFor(
+  pack,
+  process.argv.includes('--substituted-reviewed-runtime'),
+);
 const { checkAgentRuntimeV1Pack } = await import(
   pathToFileURL(checker.path).href
 );
@@ -937,7 +940,7 @@ async function packRoot(argument) {
   return path.resolve('agent-runtime-v1');
 }
 
-async function checkerFor(pack) {
+async function checkerFor(pack, substitutedReviewedRuntime) {
   const current = fileURLToPath(import.meta.url);
   if (path.basename(path.dirname(current)) === 'conformance') {
     return Object.freeze({
@@ -951,11 +954,14 @@ async function checkerFor(pack) {
   const { AGENT_RUNTIME_V1_WORLD_HOST_GIT_COMMIT, worldHostReleaseSourceEvidence } = await import(
     pathToFileURL(path.join(path.dirname(current), 'agent-runtime-v1-release-source.mjs')).href
   );
+  const source = await worldHostReleaseSourceEvidence(repository, substitutedReviewedRuntime
+    ? null
+    : AGENT_RUNTIME_V1_WORLD_HOST_GIT_COMMIT);
   return Object.freeze({
     path: path.join(path.dirname(current), 'check-agent-runtime-v1-pack.mjs'),
-    ...await worldHostReleaseSourceEvidence(
-      repository,
-      AGENT_RUNTIME_V1_WORLD_HOST_GIT_COMMIT,
-    ),
+    ...source,
+    expectedWorldHostGitCommit: substitutedReviewedRuntime
+      ? AGENT_RUNTIME_V1_WORLD_HOST_GIT_COMMIT
+      : source.expectedWorldHostGitCommit,
   });
 }
